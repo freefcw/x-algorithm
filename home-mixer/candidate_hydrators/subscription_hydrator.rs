@@ -17,7 +17,6 @@ impl SubscriptionHydrator {
 
 #[async_trait]
 impl Hydrator<ScoredPostsQuery, PostCandidate> for SubscriptionHydrator {
-    #[xai_stats_macro::receive_stats]
     async fn hydrate(
         &self,
         _query: &ScoredPostsQuery,

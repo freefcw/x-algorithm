@@ -1,0 +1,10 @@
+graph LR
+    U[用户历史] --> UT[用户塔]
+    P[正样本内容] --> IT1[物品塔]
+    N[负样本内容] --> IT2[物品塔]
+    UT --> S1[dot positive]
+    IT1 --> S1
+    UT --> S2[dot negative]
+    IT2 --> S2
+    S1 --> L[召回损失]
+    S2 --> L

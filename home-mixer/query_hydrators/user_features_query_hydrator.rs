@@ -1,10 +1,9 @@
 use crate::candidate_pipeline::query::ScoredPostsQuery;
 use crate::candidate_pipeline::query_features::UserFeatures;
-use crate::clients::strato_client::StratoClient;
+use crate::clients::strato_client::{StratoClient, StratoResult, StratoValue, decode};
 use std::sync::Arc;
 use tonic::async_trait;
 use xai_candidate_pipeline::query_hydrator::QueryHydrator;
-use xai_strato::{StratoResult, StratoValue, decode};
 
 pub struct UserFeaturesQueryHydrator {
     pub strato_client: Arc<dyn StratoClient + Send + Sync>,
@@ -12,7 +11,6 @@ pub struct UserFeaturesQueryHydrator {
 
 #[async_trait]
 impl QueryHydrator<ScoredPostsQuery> for UserFeaturesQueryHydrator {
-    #[xai_stats_macro::receive_stats]
     async fn hydrate(&self, query: &ScoredPostsQuery) -> Result<ScoredPostsQuery, String> {
         let user_id = query.user_id;
         let client = &self.strato_client;

@@ -1,0 +1,222 @@
+# 执行流程与语义
+
+本篇只讨论 `candidate-pipeline/candidate_pipeline.rs` 里的真实执行行为，不讨论业务组件内部逻辑。
+
+## 1. `execute()` 的逐步展开
+
+`CandidatePipeline::execute(query)` 的固定流程如下：
+
+| 步骤 | 调用 | 输入 | 输出 | 说明 |
+| --- | --- | --- | --- | --- |
+| 1 | `hydrate_query` | 原始 `Q` | hydrated `Q` | 并行执行所有启用的 `QueryHydrator` |
+| 2 | `fetch_candidates` | hydrated `Q` | `Vec<C>` | 并行执行所有启用的 `Source` 并拼接结果 |
+| 3 | `hydrate` | hydrated `Q` + candidates | hydrated `Vec<C>` | 并行执行候选补全 |
+| 4 | `filter` | hydrated `Q` + hydrated candidates | `(kept, removed)` | 串行执行 pre-selection filters |
+| 5 | `score` | hydrated `Q` + kept | scored `Vec<C>` | 串行执行 scorers |
+| 6 | `select` | hydrated `Q` + scored | selected `Vec<C>` | selector 排序和裁剪 |
+| 7 | `hydrate_post_selection` | hydrated `Q` + selected | hydrated `Vec<C>` | 对已选中候选做后补全 |
+| 8 | `filter_post_selection` | hydrated `Q` + post-hydrated | `(kept, removed)` | 串行执行 post-selection filters |
+| 9 | `truncate(result_size)` | kept | final `Vec<C>` | 结果再次裁剪 |
+| 10 | `run_side_effects` | query + final candidates | 无 | fire-and-forget |
+| 11 | 组装 `PipelineResult` | 各阶段中间结果 | `PipelineResult<Q, C>` | 返回给调用方 |
+
+## 2. 并发与串行策略
+
+### 2.1 并发阶段
+
+以下阶段使用 `futures::future::join_all`：
+
+- `hydrate_query`
+- `fetch_candidates`
+- `run_hydrators`
+- `run_side_effects`
+
+这意味着这些阶段里的每个组件都会同时启动异步任务，但是否真正并行取决于具体运行时和组件内部是否做了 IO。
+
+### 2.2 串行阶段
+
+以下阶段严格按组件列表顺序执行：
+
+- `run_filters`
+- `score`
+- `select`
+
+这几类组件天然存在顺序语义：
+
+- filter 的前一个结果会直接影响后一个 filter 的输入
+- scorer 的后一个结果通常依赖前一个 scorer 写入的字段
+- selector 本身就是顺序阶段
+
+## 3. 结果合并语义
+
+### 3.1 QueryHydrator
+
+`hydrate_query()` 的行为是：
+
+1. 过滤出 `enable(query)` 为真的 hydrator
+2. 所有 hydrator 基于同一份原始 `query` 并发运行
+3. 每个 hydrator 返回一个局部 hydrated `Q`
+4. 框架按 hydrator 列表顺序调用 `update(&mut hydrated_query, partial_query)` 合并结果
+
+关键结论：
+
+- 同一轮 `QueryHydrator` 看不到彼此的输出
+- 最终合并顺序是装配顺序，不是完成顺序
+
+### 3.2 Source
+
+`fetch_candidates()` 的行为是：
+
+1. 并发执行每个 source
+2. 成功返回的 `Vec<C>` 依次 append 到总结果里
+
+关键结论：
+
+- source 结果顺序由 source 列表顺序决定
+- 不会按返回时间做交错 merge
+
+### 3.3 Hydrator
+
+`run_hydrators()` 的行为和 query hydrator 类似：
+
+1. 所有启用的 hydrator 都基于同一份候选快照 `&candidates` 运行
+2. 每个 hydrator 必须返回与输入相同长度、相同顺序的 `Vec<C>`
+3. 框架再按 hydrator 列表顺序调用 `update_all()`
+
+关键结论：
+
+- 同 stage 的 hydrator 之间不能依赖彼此新增字段
+- 任一 hydrator 返回长度不一致时，整份结果会被跳过并打 warning
+
+### 3.4 Filter
+
+`run_filters()` 对每个 filter 都会：
+
+1. 先保存一份 `backup = candidates.clone()`
+2. 执行 `filter(query, candidates)`
+3. 成功时用 `result.kept` 覆盖当前候选，并把 `result.removed` 追加到总 removed 列表
+4. 失败时记录错误，并回滚到 `backup`
+
+关键结论：
+
+- filter 是 fail-open
+- 某个 filter 失败不会丢失前面 filter 已经成功移除的候选
+
+### 3.5 Scorer
+
+`score()` 和 hydrator 类似，但按 scorer 列表串行执行：
+
+1. scorer 基于当前候选切片返回等长结果
+2. 框架调用 `update_all()` 合并
+
+关键结论：
+
+- scorer 可以显式依赖前一个 scorer 写入的字段
+- scorer 返回长度不一致时会被跳过，不会中断整条链路
+
+## 4. 错误处理矩阵
+
+| 阶段 | 失败后行为 | 是否中断流水线 | 备注 |
+| --- | --- | --- | --- |
+| `QueryHydrator` | 记录 error，忽略该 hydrator 输出 | 否 | 查询保留已有字段 |
+| `Source` | 记录 error，忽略该 source 输出 | 否 | 其他 source 继续 |
+| `Hydrator` | 记录 error，忽略该 hydrator 输出 | 否 | 候选保留原值 |
+| `Hydrator` 长度不匹配 | 记录 warning，跳过该 hydrator | 否 | 是契约违规保护 |
+| `Filter` | 记录 error，回滚到该 filter 执行前 | 否 | fail-open |
+| `Scorer` | 记录 error，忽略该 scorer 输出 | 否 | 保留当前得分字段 |
+| `Scorer` 长度不匹配 | 记录 warning，跳过该 scorer | 否 | 是契约违规保护 |
+| `Selector` | 无 `Result`，无框架级错误处理 | 是，若内部 panic | 当前需业务自行保证 |
+| `SideEffect` | 被 `join_all` 收集，但结果被直接丢弃 | 否 | 默认无错误日志 |
+
+这说明该框架整体是“尽量给结果”的降级风格，而不是严格的 fail-fast 风格。
+
+## 5. 输出裁剪语义
+
+这里有两个裁剪点：
+
+- `selector().size()`：发生在 select 阶段
+- `result_size()`：发生在 post-selection 过滤之后
+
+这两个值可以不同。当前 `home-mixer` 的装配就是：
+
+- selector 先保留 Top 100
+- post-selection 过滤后再截断到 50
+
+这会产生一个非常重要的行为：
+
+- 如果 post-selection 过滤后只剩 31 条，框架不会回到 selector 之前补候选
+- 最终结果允许少于 `result_size()`
+
+## 6. `PipelineResult` 的真实含义
+
+### `retrieved_candidates`
+
+它保存的是：
+
+- source 召回结果
+- 再经过 pre-selection hydrators 合并后的结果
+
+它不是 source 原始输出快照。
+
+### `filtered_candidates`
+
+它是两部分 removed 的拼接：
+
+- pre-selection filters 移除的候选
+- post-selection filters 移除的候选
+
+没有额外字段标记某个候选是在哪个 filter 被移除的。
+
+### `selected_candidates`
+
+它保存的是：
+
+- 经过 scorer
+- 经过 selector
+- 经过 post-selection hydrator/filter
+- 再经过最终 truncate
+
+之后的最终结果。
+
+## 7. 非直观但很关键的行为
+
+### 7.1 同 stage 的 hydrator 使用的是同一份旧快照
+
+这意味着如果：
+
+- `Hydrator B` 依赖 `Hydrator A` 写入的字段
+- 但两者被放在同一个 hydrator 列表里
+
+那么 `B` 看到的仍然是写入前的数据。
+
+### 7.2 SideEffect 是 fire-and-forget
+
+框架对 side effect 的处理是：
+
+- `tokio::spawn`
+- 不 await
+- 不检查每个 side effect 的结果
+
+所以它不会影响主链路返回，但也意味着默认观测较弱。
+
+### 7.3 selector 不在 `PipelineStage` 里
+
+当前框架对 selector 没有统一日志包装；如果需要观测 selector 选择前后规模或排序行为，需要在业务 selector 内部自行打点。
+
+### 7.4 过滤和打分阶段都允许“静默降级”
+
+只要组件返回 `Err(String)`，框架就会继续执行后续阶段。这很适合高可用 Feed，但对问题定位提出了更高要求：
+
+- 需要稳定的 request_id
+- 需要阶段级 metrics
+- 需要在业务组件里补充更具体的 error 上下文
+
+## 8. 对实现者的约束总结
+
+如果你要新增一个组件，至少要遵守下面这些硬约束：
+
+1. `Hydrator` / `Scorer` 必须返回与输入一一对应、等长同序的结果。
+2. `update()` / `update_all()` 只能改自己拥有的字段。
+3. 同 stage 组件之间不能假设存在数据依赖。
+4. `Filter` 如果要失败，必须让失败后的旧输入仍然可继续使用。
+5. `SideEffect` 不能依赖“必须成功”语义，因为框架不会等待它完成。

@@ -1,0 +1,15 @@
+graph TD
+    A[RecsysBatch + RecsysEmbeddings] --> B[PhoenixModel.build_inputs]
+    B --> C[block_user_reduce]
+    B --> D[block_history_reduce]
+    B --> E[block_candidate_reduce]
+    C --> F[拼接为一条序列]
+    D --> F
+    E --> F
+    F --> G[Transformer]
+    G --> H[layer_norm]
+    H --> I[抽取候选位置输出]
+    I --> J[unembedding]
+    J --> K[logits]
+    K --> L[sigmoid]
+    L --> M[按 favorite_score 排序]

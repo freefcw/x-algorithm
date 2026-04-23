@@ -1,0 +1,8 @@
+[workspace]
+resolver = "2"
+members = [
+    "proto",                # 协议定义（生成 Rust 桩代码）
+    "candidate-pipeline",   # 候选流水线框架
+    "thunder",              # 实时帖子内存缓存服务
+    "home-mixer",           # Feed 流编排主服务
+]

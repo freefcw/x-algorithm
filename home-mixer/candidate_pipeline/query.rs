@@ -1,8 +1,8 @@
 use crate::candidate_pipeline::query_features::UserFeatures;
 use crate::util::request_util::generate_request_id;
+use crate::visibility::vf_client::{GetTwitterContextViewer, TwitterContextViewer};
 use xai_candidate_pipeline::candidate_pipeline::HasRequestId;
-use xai_home_mixer_proto::ImpressionBloomFilterEntry;
-use xai_twittercontext_proto::{GetTwitterContextViewer, TwitterContextViewer};
+use x_algorithm_proto::home_mixer::ImpressionBloomFilterEntry;
 
 #[derive(Clone, Default, Debug)]
 pub struct ScoredPostsQuery {
@@ -15,7 +15,7 @@ pub struct ScoredPostsQuery {
     pub in_network_only: bool,
     pub is_bottom_request: bool,
     pub bloom_filter_entries: Vec<ImpressionBloomFilterEntry>,
-    pub user_action_sequence: Option<xai_recsys_proto::UserActionSequence>,
+    pub user_action_sequence: Option<x_algorithm_proto::recsys::UserActionSequence>,
     pub user_features: UserFeatures,
     pub request_id: String,
 }
@@ -57,7 +57,6 @@ impl GetTwitterContextViewer for ScoredPostsQuery {
             client_application_id: self.client_app_id as i64,
             request_country_code: self.country_code.clone(),
             request_language_code: self.language_code.clone(),
-            ..Default::default()
         })
     }
 }

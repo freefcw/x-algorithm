@@ -1,17 +1,18 @@
 use anyhow::Result;
 use log::{info, warn};
+use rdkafka::config::ClientConfig;
+use rdkafka::consumer::{CommitMode, Consumer, StreamConsumer};
+use rdkafka::message::Message;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
-use std::time::{Duration, Instant};
-use tokio::sync::{RwLock, Semaphore};
-use xai_kafka::{KafkaMessage, config::KafkaConsumerConfig, consumer::KafkaConsumer};
+use std::time::Instant;
 
-use xai_thunder_proto::{LightPost, TweetDeleteEvent, in_network_event};
+use x_algorithm_proto::thunder::{LightPost, TweetDeleteEvent, in_network_event};
 
 use crate::{
     args::Args,
     deserializer::deserialize_tweet_event_v2,
-    kafka::utils::{create_kafka_consumer, deserialize_kafka_messages},
+    kafka::utils::{KafkaMessage, deserialize_kafka_messages},
     metrics,
     posts::post_store::PostStore,
 };
@@ -21,101 +22,79 @@ static DESER_LOG_COUNTER: AtomicUsize = AtomicUsize::new(0);
 
 /// Start the tweet event processing loop in the background with configurable number of threads
 pub async fn start_tweet_event_processing_v2(
-    base_config: KafkaConsumerConfig,
-    post_store: Arc<PostStore>,
     args: &Args,
+    post_store: Arc<PostStore>,
     tx: tokio::sync::mpsc::Sender<i64>,
 ) {
-    let num_partitions = args.kafka_tweet_events_v2_num_partitions;
     let kafka_num_threads = args.kafka_num_threads;
 
-    // Use all available partitions
-    let partitions_to_use: Vec<i32> = (0..num_partitions as i32).collect();
-    let partitions_per_thread = num_partitions.div_ceil(kafka_num_threads);
-
     info!(
-        "Starting {} message processing threads for {} partitions ({} partitions per thread)",
-        kafka_num_threads, num_partitions, partitions_per_thread
+        "Starting {} Kafka v2 consumer threads (brokers: {})",
+        kafka_num_threads, args.kafka_brokers
     );
 
-    spawn_processing_threads_v2(base_config, partitions_to_use, post_store, args, tx);
-}
-
-/// Spawn multiple processing threads, each handling a subset of partitions
-fn spawn_processing_threads_v2(
-    base_config: KafkaConsumerConfig,
-    partitions_to_use: Vec<i32>,
-    post_store: Arc<PostStore>,
-    args: &Args,
-    tx: tokio::sync::mpsc::Sender<i64>,
-) {
-    let total_partitions = partitions_to_use.len();
-    let partitions_per_thread = total_partitions.div_ceil(args.kafka_num_threads);
-
-    // Create shared semaphore to prevent too many tweet_events partition updates at the same time
-    let semaphore = Arc::new(Semaphore::new(3));
-
-    for thread_id in 0..args.kafka_num_threads {
-        let start_idx = thread_id * partitions_per_thread;
-        let end_idx = ((thread_id + 1) * partitions_per_thread).min(total_partitions);
-
-        if start_idx >= total_partitions {
-            break;
-        }
-
-        let thread_partitions = partitions_to_use[start_idx..end_idx].to_vec();
-        let mut thread_config = base_config.clone();
-        thread_config.partitions = Some(thread_partitions.clone());
-
+    for thread_id in 0..kafka_num_threads {
         let post_store_clone = Arc::clone(&post_store);
-        let topic = thread_config.base_config.topic.clone();
-        let lag_monitor_interval_secs = args.lag_monitor_interval_secs;
+        let brokers = args.kafka_brokers.clone();
+        let group_id = format!("{}-{}-{}", args.kafka_group_id, "v2", thread_id);
         let batch_size = args.kafka_batch_size;
         let tx_clone = tx.clone();
-        let semaphore_clone = Arc::clone(&semaphore);
+        let security_protocol = args.security_protocol.clone();
+        let sasl_mechanism = args.producer_sasl_mechanism.clone();
+        let sasl_username = args.producer_sasl_username.clone();
+        let sasl_password = args.producer_sasl_password.clone();
+        let auto_offset_reset = args.auto_offset_reset.clone();
 
         tokio::spawn(async move {
             info!(
-                "Starting message processing thread {} for partitions {:?}",
-                thread_id, thread_partitions
+                "Starting v2 consumer thread {}",
+                thread_id,
             );
 
-            match create_kafka_consumer(thread_config).await {
-                Ok(consumer) => {
-                    // Start partition lag monitoring for this thread's partitions
-                    crate::kafka::tweet_events_listener::start_partition_lag_monitor(
-                        Arc::clone(&consumer),
-                        topic,
-                        lag_monitor_interval_secs,
-                    );
+            // Build rdkafka consumer
+            let mut config = ClientConfig::new();
+            config
+                .set("bootstrap.servers", &brokers)
+                .set("group.id", &group_id)
+                .set("auto.offset.reset", &auto_offset_reset)
+                .set("enable.auto.commit", "false")
+                .set("security.protocol", &security_protocol);
 
-                    if let Err(e) = process_tweet_events_v2(
-                        consumer,
-                        post_store_clone,
-                        batch_size,
-                        tx_clone,
-                        semaphore_clone,
-                    )
-                    .await
-                    {
-                        panic!(
-                            "Tweet events processing thread {} exited unexpectedly: {:#}. This is a critical failure - the feeder cannot function without tweet event processing.",
-                            thread_id, e
-                        );
-                    }
+            if security_protocol != "PLAINTEXT" {
+                config.set("sasl.mechanism", &sasl_mechanism);
+                config.set("sasl.username", &sasl_username);
+                if let Some(ref password) = sasl_password {
+                    config.set("sasl.password", password);
                 }
-                Err(e) => {
-                    panic!(
-                        "Failed to create consumer for thread {}: {:#}",
-                        thread_id, e
-                    );
-                }
+            }
+
+            let consumer: StreamConsumer = config
+                .create()
+                .expect("Failed to create Kafka consumer");
+
+            // Subscribe to in-network events topic
+            consumer
+                .subscribe(&["in-network-events"])
+                .expect("Failed to subscribe to topic");
+
+            if let Err(e) = process_tweet_events_v2(
+                consumer,
+                post_store_clone,
+                batch_size,
+                tx_clone,
+            )
+            .await
+            {
+                panic!(
+                    "Tweet events v2 processing thread {} exited unexpectedly: {:#}",
+                    thread_id, e
+                );
             }
         });
     }
 }
 
-/// Process a single batch of messages: deserialize, extract posts, and store them
+/// Deserialize a batch of InNetworkEvent messages
 fn deserialize_batch(
     messages: Vec<KafkaMessage>,
 ) -> Result<(Vec<LightPost>, Vec<TweetDeleteEvent>)> {
@@ -139,26 +118,28 @@ fn deserialize_batch(
     let mut delete_tweets = Vec::with_capacity(10);
 
     for tweet_event in results {
-        match tweet_event.event_variant.unwrap() {
-            in_network_event::EventVariant::TweetCreateEvent(create_event) => {
-                create_tweets.push(LightPost {
-                    post_id: create_event.post_id,
-                    author_id: create_event.author_id,
-                    created_at: create_event.created_at,
-                    in_reply_to_post_id: create_event.in_reply_to_post_id,
-                    in_reply_to_user_id: create_event.in_reply_to_user_id,
-                    is_retweet: create_event.is_retweet,
-                    is_reply: create_event.is_reply
-                        || create_event.in_reply_to_post_id.is_some()
-                        || create_event.in_reply_to_user_id.is_some(),
-                    source_post_id: create_event.source_post_id,
-                    source_user_id: create_event.source_user_id,
-                    has_video: create_event.has_video,
-                    conversation_id: create_event.conversation_id,
-                });
-            }
-            in_network_event::EventVariant::TweetDeleteEvent(delete_event) => {
-                delete_tweets.push(delete_event);
+        if let Some(variant) = tweet_event.event_variant {
+            match variant {
+                in_network_event::EventVariant::TweetCreateEvent(create_event) => {
+                    create_tweets.push(LightPost {
+                        post_id: create_event.post_id,
+                        author_id: create_event.author_id,
+                        created_at: create_event.created_at,
+                        in_reply_to_post_id: create_event.in_reply_to_post_id,
+                        in_reply_to_user_id: create_event.in_reply_to_user_id,
+                        is_retweet: create_event.is_retweet,
+                        is_reply: create_event.is_reply
+                            || create_event.in_reply_to_post_id.is_some()
+                            || create_event.in_reply_to_user_id.is_some(),
+                        source_post_id: create_event.source_post_id,
+                        source_user_id: create_event.source_user_id,
+                        has_video: create_event.has_video,
+                        conversation_id: create_event.conversation_id,
+                    });
+                }
+                in_network_event::EventVariant::TweetDeleteEvent(delete_event) => {
+                    delete_tweets.push(delete_event);
+                }
             }
         }
     }
@@ -166,63 +147,30 @@ fn deserialize_batch(
     Ok((create_tweets, delete_tweets))
 }
 
-/// Main message processing loop that polls Kafka, batches messages, and stores posts
+/// Main message processing loop using rdkafka StreamConsumer
 async fn process_tweet_events_v2(
-    consumer: Arc<RwLock<KafkaConsumer>>,
+    consumer: StreamConsumer,
     post_store: Arc<PostStore>,
     batch_size: usize,
     tx: tokio::sync::mpsc::Sender<i64>,
-    semaphore: Arc<Semaphore>,
 ) -> Result<()> {
-    let mut message_buffer = Vec::new();
-    let mut batch_count = 0_usize;
+    let mut message_buffer: Vec<KafkaMessage> = Vec::new();
     let mut init_data_downloaded = false;
 
     loop {
-        let poll_result = {
-            let mut consumer_lock = consumer.write().await;
-            consumer_lock.poll(batch_size).await
-        };
-
-        match poll_result {
-            Ok(messages) => {
-                let catchup_sender = if !init_data_downloaded {
-                    let consumer_lock = consumer.read().await;
-                    if let Ok(lags) = consumer_lock.get_partition_lags().await {
-                        let total_lag: i64 = lags.iter().map(|l| l.lag).sum();
-                        if total_lag < (lags.len() * batch_size) as i64 {
-                            init_data_downloaded = true;
-                            Some((tx.clone(), total_lag))
-                        } else {
-                            None
-                        }
-                    } else {
-                        None
-                    }
-                } else {
-                    None
-                };
-
-                message_buffer.extend(messages);
+        match consumer.recv().await {
+            Ok(msg) => {
+                let payload = msg.payload().map(|p| p.to_vec());
+                message_buffer.push(KafkaMessage { payload });
 
                 // Process batch when we have enough messages
                 if message_buffer.len() >= batch_size {
-                    batch_count += 1;
                     let messages = std::mem::take(&mut message_buffer);
                     let post_store_clone = Arc::clone(&post_store);
 
-                    // Acquire semaphore permit if init data is downloaded to allow enough CPU for serving requests
-                    let permit = if init_data_downloaded {
-                        Some(semaphore.clone().acquire_owned().await.unwrap())
-                    } else {
-                        None
-                    };
-
-                    // Send batch to blocking thread pool for processing
                     let _ = tokio::task::spawn_blocking(move || {
-                        let _permit = permit; // Hold permit until task completes
                         match deserialize_batch(messages) {
-                            Err(e) => warn!("Error processing batch {}: {:#}", batch_count, e),
+                            Err(e) => warn!("Error processing batch: {:#}", e),
                             Ok((light_posts, delete_posts)) => {
                                 post_store_clone.insert_posts(light_posts);
                                 post_store_clone.mark_as_deleted(delete_posts);
@@ -231,18 +179,25 @@ async fn process_tweet_events_v2(
                     })
                     .await;
 
-                    if let Some((sender, lag)) = catchup_sender {
-                        info!("Completed kafka init for a single thread");
-                        if let Err(e) = sender.send(lag).await {
-                            log::error!("error sending {}", e);
+                    // Commit offsets after processing
+                    if let Err(e) = consumer.commit_consumer_state(CommitMode::Async) {
+                        warn!("Failed to commit offsets: {}", e);
+                    }
+
+                    // Signal init completion once caught up
+                    if !init_data_downloaded {
+                        init_data_downloaded = true;
+                        info!("Completed kafka v2 init for a single thread");
+                        if let Err(e) = tx.send(0).await {
+                            log::error!("error sending init signal: {}", e);
                         }
                     }
                 }
             }
             Err(e) => {
-                warn!("Error polling messages: {:#}", e);
+                warn!("Error receiving Kafka message: {}", e);
                 metrics::KAFKA_POLL_ERRORS.inc();
-                tokio::time::sleep(Duration::from_millis(100)).await;
+                tokio::time::sleep(std::time::Duration::from_millis(100)).await;
             }
         }
     }

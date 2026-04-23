@@ -1,4 +1,4 @@
-use lazy_static::lazy_static;
+
 use log::{debug, info, warn};
 use std::cmp::Reverse;
 use std::collections::HashSet;
@@ -7,7 +7,7 @@ use std::time::{Instant, SystemTime, UNIX_EPOCH};
 use tokio::sync::Semaphore;
 use tonic::{Request, Response, Status};
 
-use xai_thunder_proto::{
+use x_algorithm_proto::thunder::{
     GetInNetworkPostsRequest, GetInNetworkPostsResponse, LightPost,
     in_network_posts_service_server::{InNetworkPostsService, InNetworkPostsServiceServer},
 };
@@ -55,8 +55,8 @@ impl ThunderServiceImpl {
     /// Create a gRPC server for this service
     pub fn server(self) -> InNetworkPostsServiceServer<Self> {
         InNetworkPostsServiceServer::new(self)
-            .accept_compressed(tonic::codec::CompressionEncoding::Zstd)
-            .send_compressed(tonic::codec::CompressionEncoding::Zstd)
+            .accept_compressed(tonic::codec::CompressionEncoding::Gzip)
+            .send_compressed(tonic::codec::CompressionEncoding::Gzip)
     }
 
     /// Analyze found posts, calculate statistics, and report metrics
@@ -253,9 +253,10 @@ impl InNetworkPostsService for ThunderServiceImpl {
                 following_count, MAX_INPUT_LIST_SIZE, req.user_id
             );
         }
-        let following_user_ids: Vec<u64> = following_user_ids
+        let following_user_ids: Vec<i64> = following_user_ids
             .into_iter()
             .take(MAX_INPUT_LIST_SIZE)
+            .map(|id| id as i64)
             .collect();
 
         let exclude_count = req.exclude_tweet_ids.len();

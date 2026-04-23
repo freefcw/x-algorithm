@@ -2,13 +2,12 @@ use crate::candidate_pipeline::candidate::PostCandidate;
 use crate::candidate_pipeline::query::ScoredPostsQuery;
 use tonic::async_trait;
 use xai_candidate_pipeline::filter::{Filter, FilterResult};
-use xai_visibility_filtering::models::{Action, FilteredReason};
+use crate::visibility::models::{Action, FilteredReason};
 
 pub struct VFFilter;
 
 #[async_trait]
 impl Filter<ScoredPostsQuery, PostCandidate> for VFFilter {
-    #[xai_stats_macro::receive_stats]
     async fn filter(
         &self,
         _query: &ScoredPostsQuery,

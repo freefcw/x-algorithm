@@ -1,0 +1,62 @@
+graph TD
+    subgraph Entry[入口层]
+        A1[run_ranker.py]
+        A2[run_retrieval.py]
+        A3[api_server.py]
+        A4[services/ranker_service.py]
+        A5[services/retrieval_service.py]
+    end
+
+    subgraph Runner[推理执行层]
+        B1[ModelRunner]
+        B2[RecsysInferenceRunner]
+        B3[RetrievalModelRunner]
+        B4[RecsysRetrievalInferenceRunner]
+    end
+
+    subgraph Model[模型层]
+        C1[PhoenixModel]
+        C2[PhoenixRetrievalModel]
+        C3[CandidateTower]
+    end
+
+    subgraph Core[基础算子层]
+        D1[Transformer]
+        D2[DecoderLayer]
+        D3[MultiHeadAttention]
+        D4[RotaryEmbedding]
+        D5[make_recsys_attn_mask]
+    end
+
+    subgraph Support[服务配套层]
+        E1[FeatureStore]
+        E2[ModelRegistry]
+        E3[MetricsCollector]
+        E4[Config]
+    end
+
+    A1 --> B1
+    A1 --> B2
+    A2 --> B3
+    A2 --> B4
+    A3 --> B2
+    A3 --> B4
+    A4 --> E1
+    A4 --> E2
+    A4 --> E3
+    A4 --> E4
+    A5 --> E1
+    A5 --> E2
+    A5 --> E3
+    A5 --> E4
+    B1 --> C1
+    B2 --> C1
+    B3 --> C2
+    B4 --> C2
+    C1 --> D1
+    C2 --> D1
+    C2 --> C3
+    D1 --> D2
+    D2 --> D3
+    D3 --> D4
+    D1 --> D5

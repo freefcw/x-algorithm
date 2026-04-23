@@ -18,7 +18,6 @@ impl VideoDurationCandidateHydrator {
 
 #[async_trait]
 impl Hydrator<ScoredPostsQuery, PostCandidate> for VideoDurationCandidateHydrator {
-    #[xai_stats_macro::receive_stats]
     async fn hydrate(
         &self,
         _query: &ScoredPostsQuery,

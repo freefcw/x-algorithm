@@ -1,36 +1,33 @@
 use clap::Parser;
 use log::info;
-use std::time::Duration;
+use std::net::SocketAddr;
 
-use tonic::codec::CompressionEncoding;
 use tonic::service::RoutesBuilder;
 use tonic_reflection::server::Builder;
 
-use xai_home_mixer_proto as pb;
-use xai_http_server::{CancellationToken, GrpcConfig, HttpServer};
+use x_algorithm_proto::home_mixer as pb;
 
-use xai_home_mixer::HomeMixerServer;
-use xai_home_mixer::params;
+use home_mixer::HomeMixerServer;
+use home_mixer::params;
 
 #[derive(Parser, Debug)]
 #[command(about = "HomeMixer gRPC Server")]
 struct Args {
-    #[arg(long)]
+    #[arg(long, default_value = "50051")]
     grpc_port: u16,
-    #[arg(long)]
+    #[arg(long, default_value = "9090")]
     metrics_port: u16,
-    #[arg(long)]
+    #[arg(long, default_value = "5")]
     reload_interval_minutes: u64,
-    #[arg(long)]
+    #[arg(long, default_value = "100")]
     chunk_size: usize,
 }
 
-#[xai_stats_macro::main(name = "home-mixer")]
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
+    env_logger::init();
     let args = Args::parse();
-    xai_init_utils::init().log();
-    xai_init_utils::init().rustls();
+
     info!(
         "Starting server with gRPC port: {}, metrics port: {}, reload interval: {} minutes, chunk size: {}",
         args.grpc_port, args.metrics_port, args.reload_interval_minutes, args.chunk_size,
@@ -38,7 +35,7 @@ async fn main() -> anyhow::Result<()> {
 
     // Create the service implementation
     let service = HomeMixerServer::new().await;
-    // Keep a reference to stats_receiver before service is moved
+    // Build gRPC reflection service
     let reflection_service = Builder::configure()
         .register_encoded_file_descriptor_set(pb::FILE_DESCRIPTOR_SET)
         .build_v1()?;
@@ -48,31 +45,36 @@ async fn main() -> anyhow::Result<()> {
     grpc_routes.add_service(
         pb::scored_posts_service_server::ScoredPostsServiceServer::new(service)
             .max_decoding_message_size(params::MAX_GRPC_MESSAGE_SIZE)
-            .max_encoding_message_size(params::MAX_GRPC_MESSAGE_SIZE)
-            .accept_compressed(CompressionEncoding::Gzip)
-            .accept_compressed(CompressionEncoding::Zstd)
-            .send_compressed(CompressionEncoding::Gzip)
-            .send_compressed(CompressionEncoding::Zstd),
+            .max_encoding_message_size(params::MAX_GRPC_MESSAGE_SIZE),
     );
 
     grpc_routes.add_service(reflection_service);
 
-    let grpc_config = GrpcConfig::new(args.grpc_port, grpc_routes.routes());
+    // Start gRPC server
+    let grpc_addr: SocketAddr = ([0, 0, 0, 0], args.grpc_port).into();
+    let grpc_handle = tokio::spawn(async move {
+        info!("gRPC server listening on {}", grpc_addr);
+        tonic::transport::Server::builder()
+            .add_routes(grpc_routes.routes())
+            .serve(grpc_addr)
+            .await
+            .expect("gRPC server failed");
+    });
 
-    let http_router = axum::Router::default();
+    // Start HTTP server (health/metrics)
+    let http_router = axum::Router::new();
+    let http_addr: SocketAddr = ([0, 0, 0, 0], args.metrics_port).into();
+    let _http_handle = tokio::spawn(async move {
+        info!("HTTP server listening on {}", http_addr);
+        let listener = tokio::net::TcpListener::bind(http_addr).await.unwrap();
+        axum::serve(listener, http_router).await.unwrap();
+    });
 
-    let mut server = HttpServer::new(
-        args.metrics_port,
-        http_router,
-        Some(grpc_config),
-        CancellationToken::new(),
-        Duration::from_secs(20),
-    )
-    .await?;
-
-    server.set_readiness(true);
     info!("Server ready");
-    server.wait_for_termination().await;
-    info!("Server shutdown complete");
+
+    // Wait for shutdown signal
+    tokio::signal::ctrl_c().await?;
+    info!("Shutdown signal received, server shutting down");
+
     Ok(())
 }

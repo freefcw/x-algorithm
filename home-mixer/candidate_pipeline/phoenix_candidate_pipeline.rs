@@ -42,6 +42,9 @@ use crate::selectors::TopKScoreSelector;
 use crate::side_effects::cache_request_info_side_effect::CacheRequestInfoSideEffect;
 use crate::sources::phoenix_source::PhoenixSource;
 use crate::sources::thunder_source::ThunderSource;
+use crate::visibility::vf_client::{
+    ProdVisibilityFilteringClient, VisibilityFilteringClient,
+};
 use std::sync::Arc;
 use std::time::Duration;
 use tonic::async_trait;
@@ -53,9 +56,6 @@ use xai_candidate_pipeline::scorer::Scorer;
 use xai_candidate_pipeline::selector::Selector;
 use xai_candidate_pipeline::side_effect::SideEffect;
 use xai_candidate_pipeline::source::Source;
-use xai_visibility_filtering::vf_client::{
-    ProdVisibilityFilteringClient, VisibilityFilteringClient,
-};
 
 pub struct PhoenixCandidatePipeline {
     query_hydrators: Vec<Box<dyn QueryHydrator<ScoredPostsQuery>>>,

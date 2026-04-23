@@ -9,7 +9,6 @@ pub struct WeightedScorer;
 
 #[async_trait]
 impl Scorer<ScoredPostsQuery, PostCandidate> for WeightedScorer {
-    #[xai_stats_macro::receive_stats]
     async fn score(
         &self,
         _query: &ScoredPostsQuery,

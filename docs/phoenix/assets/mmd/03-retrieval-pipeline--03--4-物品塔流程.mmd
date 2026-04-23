@@ -1,0 +1,9 @@
+flowchart TD
+    A[post embeddings] --> C[concat]
+    B[author embeddings] --> C
+    C --> D[reshape]
+    D --> E[Linear 1]
+    E --> F[SiLU]
+    F --> G[Linear 2]
+    G --> H[L2 Norm]
+    H --> I[候选向量]

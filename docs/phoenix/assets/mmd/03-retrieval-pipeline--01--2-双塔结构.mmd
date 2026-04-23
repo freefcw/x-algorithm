@@ -1,0 +1,32 @@
+graph LR
+    subgraph UserTower[用户塔]
+        U1[用户哈希]
+        U2[历史 post/author]
+        U3[历史动作/场景]
+        U4[Transformer]
+        U5[Mean Pooling]
+        U6[L2 Norm]
+        U7[用户向量]
+        U1 --> U4
+        U2 --> U4
+        U3 --> U4
+        U4 --> U5
+        U5 --> U6
+        U6 --> U7
+    end
+
+    subgraph ItemTower[物品塔]
+        I1[候选 post embedding]
+        I2[候选 author embedding]
+        I3[两层 MLP]
+        I4[L2 Norm]
+        I5[物品向量]
+        I1 --> I3
+        I2 --> I3
+        I3 --> I4
+        I4 --> I5
+    end
+
+    U7 --> S[点积相似度]
+    I5 --> S
+    S --> K[Top-K]

@@ -1,0 +1,13 @@
+sequenceDiagram
+    participant Client as 客户端
+    participant API as ranker_service
+    participant FS as FeatureStore
+    participant Runner as RecsysInferenceRunner
+
+    Client->>API: POST /v1/rank
+    API->>FS: build_recsys_batch(user_id, candidate_ids)
+    FS-->>API: batch + embeddings
+    API->>Runner: rank(batch, embeddings)
+    Runner-->>API: scores + ranked_indices
+    API->>API: 计算 overall_score
+    API-->>Client: 排序结果

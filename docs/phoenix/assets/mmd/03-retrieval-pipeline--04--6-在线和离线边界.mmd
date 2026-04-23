@@ -1,0 +1,12 @@
+sequenceDiagram
+    participant Offline as 离线任务
+    participant ItemTower as 物品塔
+    participant Index as 向量索引
+    participant Online as 在线请求
+    participant UserTower as 用户塔
+
+    Offline->>ItemTower: 批量物品特征
+    ItemTower->>Index: 物品向量写入
+    Online->>UserTower: 用户特征 + 历史
+    UserTower->>Index: 用户向量检索 Top-K
+    Index-->>Online: 召回候选

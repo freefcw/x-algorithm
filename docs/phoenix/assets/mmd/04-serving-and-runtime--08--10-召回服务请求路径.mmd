@@ -1,0 +1,13 @@
+sequenceDiagram
+    participant Client as 客户端
+    participant API as retrieval_service
+    participant Runner as RecsysRetrievalInferenceRunner
+    participant Index as VectorIndex / Corpus
+
+    Client->>API: POST /v1/retrieve
+    API->>API: create_example_batch()
+    API->>Runner: retrieve(batch, embeddings, top_k)
+    Runner->>Index: corpus_embeddings
+    Index-->>Runner: Top-K 索引
+    Runner-->>API: similarity scores
+    API-->>Client: 召回结果

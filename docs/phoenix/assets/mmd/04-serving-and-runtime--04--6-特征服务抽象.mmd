@@ -1,0 +1,7 @@
+graph TD
+    A[FeatureStore 抽象] --> B[get_user_features]
+    A --> C[get_user_embeddings]
+    A --> D[get_item_embeddings]
+    A --> E[get_author_embeddings]
+    A --> F[build_recsys_batch]
+    G[MockFeatureStore] --> A

@@ -7,7 +7,7 @@ use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 use tonic::async_trait;
 use xai_candidate_pipeline::scorer::Scorer;
-use xai_recsys_proto::{ActionName, ContinuousActionName};
+use x_algorithm_proto::recsys::{ActionName, ContinuousActionName};
 
 pub struct PhoenixScorer {
     pub phoenix_client: Arc<dyn PhoenixPredictionClient + Send + Sync>,
@@ -15,7 +15,6 @@ pub struct PhoenixScorer {
 
 #[async_trait]
 impl Scorer<ScoredPostsQuery, PostCandidate> for PhoenixScorer {
-    #[xai_stats_macro::receive_stats]
     async fn score(
         &self,
         query: &ScoredPostsQuery,
@@ -26,12 +25,12 @@ impl Scorer<ScoredPostsQuery, PostCandidate> for PhoenixScorer {
         let last_scored_at_ms = Self::current_timestamp_millis();
 
         if let Some(sequence) = &query.user_action_sequence {
-            let tweet_infos: Vec<xai_recsys_proto::TweetInfo> = candidates
+            let tweet_infos: Vec<x_algorithm_proto::recsys::TweetInfo> = candidates
                 .iter()
                 .map(|c| {
                     let tweet_id = c.retweeted_tweet_id.unwrap_or(c.tweet_id as u64);
                     let author_id = c.retweeted_user_id.unwrap_or(c.author_id);
-                    xai_recsys_proto::TweetInfo {
+                    x_algorithm_proto::recsys::TweetInfo {
                         tweet_id,
                         author_id,
                         ..Default::default()
@@ -86,7 +85,7 @@ impl PhoenixScorer {
     /// Builds Map[tweet_id -> ActionPredictions]
     fn build_predictions_map(
         &self,
-        response: &xai_recsys_proto::PredictNextActionsResponse,
+        response: &x_algorithm_proto::recsys::PredictNextActionsResponse,
     ) -> HashMap<u64, ActionPredictions> {
         let mut predictions_map = HashMap::new();
 

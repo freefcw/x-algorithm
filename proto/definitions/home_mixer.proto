@@ -1,0 +1,113 @@
+// Home Mixer 服务 - 推荐 Feed 流编排主服务
+// 替代原始 xai_home_mixer_proto crate
+//
+// 该协议定义了 Home Mixer 的所有数据结构和 RPC 接口。
+// Home Mixer 是推荐系统的编排层入口，负责：
+//   1. 接收客户端请求，获取用户特征
+//   2. 向 Thunder 和 Phoenix 发起并行召回
+//   3. 对候选帖子进行过滤、打分聚合
+//   4. 返回最终排序后的 Feed 流
+
+syntax = "proto3";
+
+package home_mixer;
+
+// =============================================================================
+// 请求/响应消息体
+// =============================================================================
+
+// 曝光布隆过滤器条目 —— 用于高效判断帖子是否已被用户看过
+// 客户端维护本地布隆过滤器并在请求中传递条目，避免重复推送
+message ImpressionBloomFilterEntry {
+  // 布隆过滤器的二进制数据
+  bytes data = 1;
+  // 过滤器的位数
+  int32 num_bits = 2;
+  // 哈希函数数量
+  int32 num_hash_functions = 3;
+}
+
+// 评分帖子查询请求 —— 客户端发往 Home Mixer 的 Feed 获取请求
+message ScoredPostsQuery {
+  // 当前查看 Feed 的用户 ID（观察者）
+  int64 viewer_id = 1;
+  // 客户端应用 ID（iOS/Android/Web 等不同端）
+  int32 client_app_id = 2;
+  // 请求所在的国家代码（ISO 3166-1 alpha-2，如 "CN", "US"）
+  string country_code = 3;
+  // 请求所在的语言代码（BCP 47，如 "zh", "en"）
+  string language_code = 4;
+  // 客户端已看过的帖子 ID 列表
+  repeated int64 seen_ids = 5;
+  // 服务端已投递过的帖子 ID 列表
+  repeated int64 served_ids = 6;
+  // 是否仅返回网络内（关注者）帖子
+  bool in_network_only = 7;
+  // 是否为向下滚动加载更多的请求（翻页）
+  bool is_bottom_request = 8;
+  // 客户端本地布隆过滤器条目
+  repeated ImpressionBloomFilterEntry bloom_filter_entries = 9;
+}
+
+// 帖子投递类型 —— 标识帖子来自哪个召回通道
+enum ServedType {
+  SERVED_TYPE_UNSPECIFIED = 0;
+  // 来自用户关注网络的帖子（Thunder 召回）
+  FOR_YOU_IN_NETWORK = 1;
+  // 来自 Phoenix 算法检索的全局召回帖子
+  FOR_YOU_PHOENIX_RETRIEVAL = 2;
+}
+
+// 单条评分帖子 —— 已经过管道打分后的帖子
+message ScoredPost {
+  // 帖子 ID
+  uint64 tweet_id = 1;
+  // 帖子作者 ID
+  uint64 author_id = 2;
+  // 如果是转发帖，原始帖子 ID
+  uint64 retweeted_tweet_id = 3;
+  // 如果是转发帖，原始帖子作者 ID
+  uint64 retweeted_user_id = 4;
+  // 被回复帖的 ID
+  uint64 in_reply_to_tweet_id = 5;
+  // 综合排序得分
+  float score = 6;
+  // 是否来自关注列表网络内
+  bool in_network = 7;
+  // 投递类型（来源标记）
+  int32 served_type = 8;
+  // 最后一次被 Phoenix 打分的时间戳（毫秒）
+  uint64 last_scored_timestamp_ms = 9;
+  // Phoenix 预测请求 ID（用于链路追踪）
+  uint64 prediction_request_id = 10;
+  // 对话祖先帖子 ID 列表（用于对话线程还原）
+  repeated uint64 ancestors = 11;
+  // 帖子相关用户的 screen name 映射（user_id -> screen_name）
+  map<uint64, string> screen_names = 12;
+  // 可见性过滤原因（如果有内容安全问题）
+  optional VisibilityFilteredReason visibility_reason = 13;
+}
+
+// 可见性过滤原因 —— 内容安全审核结果
+message VisibilityFilteredReason {
+  // 过滤类型代码
+  int32 reason_code = 1;
+  // 可读描述
+  string description = 2;
+}
+
+// 评分帖子响应
+message ScoredPostsResponse {
+  // 经过排序的帖子列表
+  repeated ScoredPost scored_posts = 1;
+}
+
+// =============================================================================
+// gRPC 服务定义
+// =============================================================================
+
+// Home Mixer 核心服务 —— 对外暴露的 Feed 流获取接口
+service ScoredPostsService {
+  // 获取为特定用户排序好的推荐帖子列表
+  rpc GetScoredPosts(ScoredPostsQuery) returns (ScoredPostsResponse);
+}

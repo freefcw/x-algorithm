@@ -1,0 +1,5 @@
+flowchart LR
+    U[用户块<br/>B x 1 x D] --> S[拼接序列]
+    H[历史块<br/>B x S x D] --> S
+    C[候选块<br/>B x C x D] --> S
+    S --> O[最终输入<br/>B x 1+S+C x D]

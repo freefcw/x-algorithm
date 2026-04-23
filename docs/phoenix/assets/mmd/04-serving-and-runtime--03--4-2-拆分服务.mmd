@@ -1,0 +1,8 @@
+graph LR
+    A[api_server.py] --> B[单体 API]
+
+    C[run_services.py] --> D[ranker_service.py]
+    C --> E[retrieval_service.py]
+
+    D --> F[精排模型]
+    E --> G[召回模型]

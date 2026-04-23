@@ -1,0 +1,8 @@
+graph TD
+    A[initialize] --> B[创建 dummy batch]
+    B --> C[初始化 Haiku 参数]
+    C --> D[暴露 encode_user_fn]
+    C --> E[暴露 encode_candidates_fn]
+    C --> F[暴露 retrieve_fn]
+    G[set_corpus] --> H[存储 corpus_embeddings / ids]
+    H --> F

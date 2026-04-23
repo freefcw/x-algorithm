@@ -1,0 +1,219 @@
+// Recsys/Phoenix 推荐系统协议定义
+// 替代原始 xai_recsys_proto crate
+//
+// 该协议定义了 Phoenix（精排/召回模型）服务与 Home Mixer 之间的通信协议。
+// 包含两大核心功能：
+//   1. 精排预测（PredictNextActions）—— 为候选帖子预估各互动行为的概率
+//   2. 双塔召回（Retrieve）—— 基于用户历史行为检索全局相关帖子
+//
+// 以及支撑这两大功能的通用数据结构：用户行为序列、聚合动作等。
+
+syntax = "proto3";
+
+package recsys;
+
+// =============================================================================
+// 互动行为枚举 —— Phoenix 模型预测的目标动作
+// =============================================================================
+
+// 离散互动行为（由精排模型预估概率）
+enum ActionName {
+  ACTION_NAME_UNSPECIFIED = 0;
+  // 服务端确认触发的行为
+  SERVER_TWEET_FAV = 1;           // 点赞
+  SERVER_TWEET_REPLY = 2;         // 回复
+  SERVER_TWEET_RETWEET = 3;       // 转发
+  SERVER_TWEET_QUOTE = 4;         // 引用转发
+
+  // 客户端追踪的行为
+  CLIENT_TWEET_PHOTO_EXPAND = 5;  // 展开图片
+  CLIENT_TWEET_CLICK = 6;         // 点击帖子详情
+  CLIENT_TWEET_CLICK_PROFILE = 7; // 点击作者头像
+  CLIENT_TWEET_VIDEO_QUALITY_VIEW = 8; // 视频有效观看（VQV）
+  CLIENT_TWEET_SHARE = 9;              // 分享
+  CLIENT_TWEET_CLICK_SEND_VIA_DIRECT_MESSAGE = 10; // 通过私信分享
+  CLIENT_TWEET_SHARE_VIA_COPY_LINK = 11;            // 复制链接分享
+  CLIENT_TWEET_RECAP_DWELLED = 12;      // 停留（Dwell）
+  CLIENT_QUOTED_TWEET_CLICK = 13;       // 点击引用帖
+
+  // 正向信号
+  CLIENT_TWEET_FOLLOW_AUTHOR = 14;      // 关注作者
+
+  // 负向信号
+  CLIENT_TWEET_NOT_INTERESTED_IN = 15;  // 不感兴趣
+  CLIENT_TWEET_BLOCK_AUTHOR = 16;       // 拉黑作者
+  CLIENT_TWEET_MUTE_AUTHOR = 17;        // 静音作者
+  CLIENT_TWEET_REPORT = 18;             // 举报
+}
+
+// 连续动作类型（非二值分类，而是回归预测）
+enum ContinuousActionName {
+  CONTINUOUS_ACTION_NAME_UNSPECIFIED = 0;
+  DWELL_TIME = 1;  // 预测的停留时长（秒）
+}
+
+// =============================================================================
+// 用户行为序列（User Action Sequence / UAS）
+// 这是 Phoenix 精排模型最核心的输入特征
+// =============================================================================
+
+// 用户行为序列元数据
+message UserActionSequenceMeta {
+  // 序列长度
+  uint64 length = 1;
+  // 序列中第一条记录的时间戳（毫秒）
+  uint64 first_sequence_time = 2;
+  // 序列中最后一条记录的时间戳（毫秒）
+  uint64 last_sequence_time = 3;
+  // 序列最后修改时间（毫秒）
+  uint64 last_modified_epoch_ms = 4;
+  // 上一次 Kafka 发布的时间（毫秒）
+  uint64 previous_kafka_publish_epoch_ms = 5;
+}
+
+// 掩码 —— 用于标记序列中哪些元素是新事件
+message Mask {
+  MaskType mask_type = 1;
+  repeated bool mask = 2;
+}
+
+// 掩码类型
+enum MaskType {
+  MASK_TYPE_UNSPECIFIED = 0;
+  NEW_EVENT = 1;         // 新事件标记
+  EXISTING_EVENT = 2;    // 已有事件标记
+}
+
+// 聚合后的单条用户行为记录
+message AggregatedUserAction {
+  // 帖子 ID（目标推文）
+  uint64 tweet_id = 1;
+  // 帖子作者 ID
+  uint64 author_id = 2;
+  // 曝光时间（毫秒时间戳）
+  uint64 impressed_time_ms = 3;
+  // 该帖子上的行为位掩码（每个 bit 对应一种 ActionName）
+  repeated bool action_mask = 4;
+  // 产品场景码（如 Home Timeline、Search 等）
+  int32 product_surface = 5;
+}
+
+// 聚合用户行为列表
+message AggregatedUserActionList {
+  // 按时间排序的聚合行为记录
+  repeated AggregatedUserAction aggregated_user_actions = 1;
+  // 聚合算法提供者名称
+  string aggregation_provider = 2;
+  // 聚合时间（毫秒时间戳）
+  uint64 aggregation_time_ms = 3;
+}
+
+// 用户行为序列数据容器 —— 使用 oneof 以支持未来扩展其他数据格式
+message UserActionSequenceDataContainer {
+  oneof data {
+    // 有序的聚合用户行为列表（当前唯一实现）
+    AggregatedUserActionList ordered_aggregated_user_actions_list = 1;
+  }
+}
+
+// 用户行为序列 —— 传递给 Phoenix 模型的完整上下文
+message UserActionSequence {
+  // 用户 ID
+  uint64 user_id = 1;
+  // 序列元数据
+  UserActionSequenceMeta metadata = 2;
+  // 行为数据
+  UserActionSequenceDataContainer user_actions_data = 3;
+  // 掩码集合
+  repeated Mask masks = 4;
+}
+
+// =============================================================================
+// 精排预测（Predict）—— Phoenix 对候选帖子的行为概率估计
+// =============================================================================
+
+// 推文基本信息 —— 传入 Phoenix 用于预测
+message TweetInfo {
+  uint64 tweet_id = 1;
+  uint64 author_id = 2;
+  // 帖子被回复的原始帖 ID（如果适用）
+  uint64 in_reply_to_tweet_id = 3;
+}
+
+// 单个候选帖子的预测分布
+message CandidateDistribution {
+  // 候选帖子信息
+  TweetInfo candidate = 1;
+  // 各离散行为的 log 概率值（按 ActionName 枚举索引对齐）
+  repeated float top_log_probs = 2;
+  // 各连续行为的预测值（按 ContinuousActionName 枚举索引对齐）
+  repeated float continuous_actions_values = 3;
+}
+
+// 候选分布集合（对应单次批量预测）
+message DistributionSet {
+  repeated CandidateDistribution candidate_distributions = 1;
+}
+
+// 精排预测请求
+message PredictNextActionsRequest {
+  // 目标用户 ID
+  uint64 user_id = 1;
+  // 用户最近的行为序列
+  UserActionSequence user_action_sequence = 2;
+  // 待评分的候选帖子列表
+  repeated TweetInfo candidates = 3;
+}
+
+// 精排预测响应
+message PredictNextActionsResponse {
+  // 预测分布集合（通常只有一个元素）
+  repeated DistributionSet distribution_sets = 1;
+}
+
+// =============================================================================
+// 双塔召回（Retrieve）—— Phoenix 全局候选帖子检索
+// =============================================================================
+
+// 单个被召回的候选帖子（带有召回分数）
+message ScoredCandidate {
+  // 候选帖子信息
+  TweetInfo candidate = 1;
+  // 召回匹配分数
+  float score = 2;
+}
+
+// 一组召回候选（可能来自同一召回通道）
+message ScoredCandidates {
+  repeated ScoredCandidate candidates = 1;
+}
+
+// 召回请求
+message RetrieveRequest {
+  // 目标用户 ID
+  uint64 user_id = 1;
+  // 用户行为序列
+  UserActionSequence user_action_sequence = 2;
+  // 请求的最大召回数量
+  uint32 max_results = 3;
+}
+
+// 召回响应
+message RetrieveResponse {
+  // 返回的 top-K 候选集（可按召回通道分组）
+  repeated ScoredCandidates top_k_candidates = 1;
+}
+
+// =============================================================================
+// gRPC 服务定义
+// =============================================================================
+
+// Phoenix 精排服务 —— 对候选帖子进行行为概率预测
+service PhoenixPredictionService {
+  rpc PredictNextActions(PredictNextActionsRequest) returns (PredictNextActionsResponse);
+}
+
+// Phoenix 召回服务 —— 基于双塔模型检索全局相关帖子
+service PhoenixRetrievalService {
+  rpc Retrieve(RetrieveRequest) returns (RetrieveResponse);
+}

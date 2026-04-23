@@ -1,24 +1,24 @@
 use crate::candidate_pipeline::query::ScoredPostsQuery;
 use crate::clients::uas_fetcher::{UserActionSequenceFetcher, UserActionSequenceOps};
 use crate::params as p;
+use crate::recsys_compat::aggregation::{DefaultAggregator, UserActionAggregator};
+use crate::recsys_compat::filters::{
+    AggregatedActionFilter, DenseAggregatedActionFilter, KeepOriginalUserActionFilter,
+    UserActionFilter,
+};
+use crate::uas_compat::convert::thrift_to_proto_aggregated_user_action;
+use crate::uas_compat::{
+    AggregatedUserAction as ThriftAggregatedUserAction,
+    UserActionSequence as ThriftUserActionSequence,
+    UserActionSequenceMeta as ThriftUserActionSequenceMeta,
+};
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 use tonic::async_trait;
 use xai_candidate_pipeline::query_hydrator::QueryHydrator;
-use xai_recsys_aggregation::aggregation::{DefaultAggregator, UserActionAggregator};
-use xai_recsys_aggregation::filters::{
-    AggregatedActionFilter, DenseAggregatedActionFilter, KeepOriginalUserActionFilter,
-    UserActionFilter,
-};
-use xai_recsys_proto::{
+use x_algorithm_proto::recsys::{
     AggregatedUserActionList, Mask, MaskType, UserActionSequence, UserActionSequenceDataContainer,
     UserActionSequenceMeta, user_action_sequence_data_container::Data as ProtoDataContainer,
-};
-use xai_uas_thrift::convert::thrift_to_proto_aggregated_user_action;
-use xai_uas_thrift::user_action_sequence::{
-    AggregatedUserAction as ThriftAggregatedUserAction,
-    UserActionSequence as ThriftUserActionSequence,
-    UserActionSequenceMeta as ThriftUserActionSequenceMeta,
 };
 
 /// Hydrate a sequence that captures the user's recent actions
@@ -42,7 +42,6 @@ impl UserActionSeqQueryHydrator {
 
 #[async_trait]
 impl QueryHydrator<ScoredPostsQuery> for UserActionSeqQueryHydrator {
-    #[xai_stats_macro::receive_stats]
     async fn hydrate(&self, query: &ScoredPostsQuery) -> Result<ScoredPostsQuery, String> {
         let uas_thrift = self
             .uas_fetcher

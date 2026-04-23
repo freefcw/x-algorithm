@@ -1,0 +1,50 @@
+[package]
+name = "thunder"
+version = "0.1.0"
+edition = "2021"
+
+[features]
+default = []
+legacy = ["thrift"]  # 启用 v1 Thrift Kafka 管道
+
+[dependencies]
+# 协议定义
+x-algorithm-proto = { path = "../proto" }
+
+# 异步运行时
+anyhow = "1.0"
+tokio = { version = "1", features = ["full"] }
+tokio-util = "0.7"
+
+# 日志
+log = "0.4"
+env_logger = "0.11"
+
+# gRPC / HTTP
+prost = "0.13"
+tonic = { version = "0.12", features = ["gzip"] }
+axum = "0.7"
+
+# Kafka
+rdkafka = { version = "0.36", features = ["libz", "zstd"] }
+
+# 数据结构
+dashmap = "5"
+uuid = { version = "1", features = ["v4"] }
+
+# 命令行
+clap = { version = "4", features = ["derive"] }
+
+# 监控
+prometheus = "0.13"
+lazy_static = "1.4"
+
+# 可选依赖（legacy v1 管道）
+thrift = { version = "0.17", optional = true }
+
+[[bin]]
+name = "thunder"
+path = "main.rs"
+
+[lib]
+path = "lib.rs"

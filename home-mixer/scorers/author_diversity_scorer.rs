@@ -33,7 +33,6 @@ impl AuthorDiversityScorer {
 
 #[async_trait]
 impl Scorer<ScoredPostsQuery, PostCandidate> for AuthorDiversityScorer {
-    #[xai_stats_macro::receive_stats]
     async fn score(
         &self,
         _query: &ScoredPostsQuery,
@@ -69,5 +68,24 @@ impl Scorer<ScoredPostsQuery, PostCandidate> for AuthorDiversityScorer {
 
     fn update(&self, candidate: &mut PostCandidate, scored: PostCandidate) {
         candidate.score = scored.score;
+    }
+}
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_multiplier_decay() {
+        let scorer = AuthorDiversityScorer::new(0.9, 0.5);
+        
+        let position_0 = scorer.multiplier(0);
+        let position_1 = scorer.multiplier(1);
+        let position_5 = scorer.multiplier(5);
+        
+        // 1.0 -> 0.95 -> ~0.795 -> approaches 0.5
+        assert!((position_0 - 1.0).abs() < 1e-6);
+        assert!(position_1 < position_0);
+        assert!(position_5 < position_1);
+        assert!(position_5 >= 0.5);
     }
 }

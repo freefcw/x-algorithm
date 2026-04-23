@@ -1,0 +1,15 @@
+sequenceDiagram
+    participant User as 用户请求
+    participant Retrieval as 召回模型
+    participant Corpus as 候选向量库
+    participant Ranker as 精排模型
+    participant Feed as 输出结果
+
+    User->>Retrieval: 用户特征 + 历史行为
+    Retrieval->>Retrieval: 编码用户向量
+    Retrieval->>Corpus: 点积相似度检索 Top-K
+    Corpus-->>Retrieval: 候选集合
+    Retrieval-->>Ranker: 候选 IDs / 候选特征
+    Ranker->>Ranker: 构造 [用户, 历史, 候选] 序列
+    Ranker->>Ranker: 候选隔离 Transformer 打分
+    Ranker-->>Feed: 多行为分数 + 排序索引

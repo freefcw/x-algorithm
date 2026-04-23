@@ -1,11 +1,10 @@
 use crate::candidate_pipeline::candidate::PostCandidate;
 use crate::candidate_pipeline::query::ScoredPostsQuery;
-use crate::clients::strato_client::StratoClient;
+use crate::clients::strato_client::{StratoClient, StratoResult, StratoValue, decode};
 use std::env;
 use std::sync::Arc;
 use tonic::async_trait;
 use xai_candidate_pipeline::side_effect::{SideEffect, SideEffectInput};
-use xai_strato::{StratoResult, StratoValue, decode};
 
 pub struct CacheRequestInfoSideEffect {
     pub strato_client: Arc<dyn StratoClient + Send + Sync>,

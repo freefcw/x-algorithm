@@ -1,17 +1,14 @@
-# Copyright 2026 X.AI Corp.
+# 版权所有 2026 X.AI Corp.
 #
-# Licensed under the Apache License, Version 2.0 (the "License");
-# you may not use this file except in compliance with the License.
-# You may obtain a copy of the License at
+# 根据 Apache 许可证 2.0 版本（“许可证”）授权；
+# 除非遵守许可证，否则您不得使用此文件。
+# 您可以在以下网址获得许可证副本：
 #
 #     http://www.apache.org/licenses/LICENSE-2.0
 #
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the License is distributed on an "AS IS" BASIS,
-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-# See the License for the specific language governing permissions and
-# limitations under the License.
-
+# 除非适用法律要求或书面同意，否则根据许可证分发的软件
+# 是按“原样”基础分发的，不附带任何形式明示或暗示的保证或条件。
+# 请参阅许可证以了解管理权限和限制的特定语言。
 
 import functools
 import logging
@@ -24,6 +21,7 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 
+# 导入底层定义
 from grok import TrainingState
 from recsys_retrieval_model import PhoenixRetrievalModelConfig
 from recsys_retrieval_model import RetrievalOutput as ModelRetrievalOutput
@@ -35,6 +33,7 @@ from recsys_model import (
     RecsysModelOutput,
 )
 
+# 初始化专门用于排名的日志记录器
 rank_logger = logging.getLogger("rank")
 
 
@@ -45,17 +44,9 @@ def create_dummy_batch_from_config(
     num_actions: int,
     batch_size: int = 1,
 ) -> RecsysBatch:
-    """Create a dummy batch for initialization.
-
-    Args:
-        hash_config: HashConfig with num_user_hashes, num_item_hashes, num_author_hashes
-        history_len: History sequence length
-        num_candidates: Number of candidates
-        num_actions: Number of action types
-        batch_size: Batch size
-
-    Returns:
-        RecsysBatch with zeros
+    """
+    根据配置创建用于初始化的全零模拟批次数据（RecsysBatch）。
+    用于探测模型输入形状并触发 Haiku 的参数初始化逻辑。
     """
     return RecsysBatch(
         user_hashes=np.zeros((batch_size, hash_config.num_user_hashes), dtype=np.int32),
@@ -84,17 +75,8 @@ def create_dummy_embeddings_from_config(
     num_candidates: int,
     batch_size: int = 1,
 ) -> RecsysEmbeddings:
-    """Create dummy embeddings for initialization.
-
-    Args:
-        hash_config: HashConfig with num_user_hashes, num_item_hashes, num_author_hashes
-        emb_size: Embedding dimension
-        history_len: History sequence length
-        num_candidates: Number of candidates
-        batch_size: Batch size
-
-    Returns:
-        RecsysEmbeddings with zeros
+    """
+    根据配置创建用于初始化的全零模拟嵌入数据（RecsysEmbeddings）。
     """
     return RecsysEmbeddings(
         user_embeddings=np.zeros(
@@ -119,60 +101,67 @@ def create_dummy_embeddings_from_config(
 
 @dataclass
 class BaseModelRunner(ABC):
-    """Base class for model runners with shared initialization logic."""
+    """
+    模型运行器的基类。
+    管理计算设备、随机数种子以及通用的模型初始化逻辑。
+    """
 
-    bs_per_device: float = 2.0
+    bs_per_device: float = 2.0  # 每个计算设备分配的 Batch Size
     rng_seed: int = 42
 
     @property
     @abstractmethod
     def model(self) -> Any:
-        """Return the model config."""
+        """返回具体的模型配置实例。"""
         pass
 
     @property
     def _model_name(self) -> str:
-        """Return model name for logging."""
+        """模型名称，用于日志记录。"""
         return "model"
 
     @abstractmethod
     def make_forward_fn(self):
-        """Create the forward function. Must be implemented by subclasses."""
+        """创建 Haiku 转换后的前向传播函数。由子类实现具体逻辑。"""
         pass
 
     def initialize(self):
-        """Initialize the model runner."""
+        """执行模型初始化：配置精度、计算 batch size 并封装 forward 函数。"""
         self.model.initialize()
-        self.model.fprop_dtype = jnp.bfloat16
+        self.model.fprop_dtype = jnp.bfloat16 # 使用 bfloat16 以获得更好的推理性能
         num_local_gpus = len(jax.local_devices())
 
+        # 动态计算总批次大小
         self.batch_size = max(1, int(self.bs_per_device * num_local_gpus))
 
-        rank_logger.info(f"Initializing {self._model_name}...")
+        rank_logger.info(f"正在初始化 {self._model_name}...")
         self.forward = self.make_forward_fn()
 
 
 @dataclass
 class BaseInferenceRunner(ABC):
-    """Base class for inference runners with shared dummy data creation."""
+    """
+    推理运行器基类。
+    主要负责创建模拟数据，辅助模型的热启动或参数初始化。
+    """
 
     name: str
 
     @property
     @abstractmethod
     def runner(self) -> BaseModelRunner:
-        """Return the underlying model runner."""
+        """返回关联的模型运行器。"""
         pass
 
     def _get_num_actions(self) -> int:
-        """Get number of actions. Override in subclasses if needed."""
+        """获取模型预测的动作数量。"""
         model_config = self.runner.model
         if hasattr(model_config, "num_actions"):
             return model_config.num_actions
-        return 19
+        return 19 # 默认值
 
     def create_dummy_batch(self, batch_size: int = 1) -> RecsysBatch:
-        """Create a dummy batch for initialization."""
+        """便捷方法：创建模拟批次。"""
         model_config = self.runner.model
         return create_dummy_batch_from_config(
             hash_config=model_config.hash_config,
@@ -183,7 +172,7 @@ class BaseInferenceRunner(ABC):
         )
 
     def create_dummy_embeddings(self, batch_size: int = 1) -> RecsysEmbeddings:
-        """Create dummy embeddings for initialization."""
+        """便捷方法：创建模拟嵌入。"""
         model_config = self.runner.model
         return create_dummy_embeddings_from_config(
             hash_config=model_config.hash_config,
@@ -195,44 +184,44 @@ class BaseInferenceRunner(ABC):
 
     @abstractmethod
     def initialize(self):
-        """Initialize the inference runner. Must be implemented by subclasses."""
+        """初始化推理运行器。必须由具体业务逻辑实现。"""
         pass
 
 
+# 推荐系统关注的一系列用户互动动作名称
 ACTIONS: List[str] = [
-    "favorite_score",
-    "reply_score",
-    "repost_score",
-    "photo_expand_score",
-    "click_score",
-    "profile_click_score",
-    "vqv_score",
-    "share_score",
-    "share_via_dm_score",
-    "share_via_copy_link_score",
-    "dwell_score",
-    "quote_score",
-    "quoted_click_score",
-    "follow_author_score",
-    "not_interested_score",
-    "block_author_score",
-    "mute_author_score",
-    "report_score",
-    "dwell_time",
+    "favorite_score",             # 点赞
+    "reply_score",                # 回复
+    "repost_score",               # 转发
+    "photo_expand_score",         # 图片展开
+    "click_score",                # 点击
+    "profile_click_score",        # 个人资料点击
+    "vqv_score",                  # 视频播放质量
+    "share_score",                # 分享
+    "share_via_dm_score",         # 私信分享
+    "share_via_copy_link_score",  # 复制链接分享
+    "dwell_score",                # 停留（是否停留超过阈值）
+    "quote_score",                # 引用
+    "quoted_click_score",         # 引用点击
+    "follow_author_score",        # 关注作者
+    "not_interested_score",       # 不感兴趣
+    "block_author_score",         # 屏蔽作者
+    "mute_author_score",          # 静音作者
+    "report_score",               # 举报
+    "dwell_time",                 # 具体停留时长
 ]
 
 
 class RankingOutput(NamedTuple):
-    """Output from ranking candidates.
-
-    Contains both the raw scores array and individual probability fields
-    for each engagement type.
+    """
+    精排输出结果容器。
+    封装了总分数矩阵、排序后的索引以及针对各项行为的细分概率预测值。
     """
 
-    scores: jax.Array
+    scores: jax.Array        # 原始概率分数 [B, C, num_actions]
+    ranked_indices: jax.Array # 排序后的索引 [B, C]
 
-    ranked_indices: jax.Array
-
+    # 各项互动概率的细分字段
     p_favorite_score: jax.Array
     p_reply_score: jax.Array
     p_repost_score: jax.Array
@@ -256,7 +245,10 @@ class RankingOutput(NamedTuple):
 
 @dataclass
 class ModelRunner(BaseModelRunner):
-    """Runner for the recommendation ranking model."""
+    """
+    推荐精排模型运行器。
+    负责具体的 Haiku 变换和参数初始化。
+    """
 
     _model: PhoenixModelConfig = None  # type: ignore
 
@@ -274,6 +266,7 @@ class ModelRunner(BaseModelRunner):
         return "ranking model"
 
     def make_forward_fn(self):  # type: ignore
+        """包装模型实例化和前向传播。"""
         def forward(batch: RecsysBatch, recsys_embeddings: RecsysEmbeddings):
             out = self.model.make()(batch, recsys_embeddings)
             return out
@@ -283,6 +276,7 @@ class ModelRunner(BaseModelRunner):
     def init(
         self, rng: jax.Array, data: RecsysBatch, embeddings: RecsysEmbeddings
     ) -> TrainingState:
+        """执行 Haiku 的 init 过程，生成模型参数。"""
         assert self.forward is not None
         rng, init_rng = jax.random.split(rng)
         params = self.forward.init(init_rng, data, embeddings)
@@ -293,6 +287,7 @@ class ModelRunner(BaseModelRunner):
         init_data: RecsysBatch,
         init_embeddings: RecsysEmbeddings,
     ):
+        """加载或初始化模型权重。当前实现仅支持随机初始化。"""
         rng = jax.random.PRNGKey(self.rng_seed)
         state = self.init(rng, init_data, init_embeddings)
         return state
@@ -300,7 +295,10 @@ class ModelRunner(BaseModelRunner):
 
 @dataclass
 class RecsysInferenceRunner(BaseInferenceRunner):
-    """Inference runner for the recommendation ranking model."""
+    """
+    推荐精排推理运行器。
+    实现了核心的 `rank` 方法，支持将模型 logits 转换为具体的排序结果。
+    """
 
     _runner: ModelRunner
 
@@ -313,7 +311,12 @@ class RecsysInferenceRunner(BaseInferenceRunner):
         return self._runner
 
     def initialize(self):
-        """Initialize the inference runner."""
+        """
+        初始化推理环境：
+        1. 实例化 ModelRunner。
+        2. 生成模拟输入并触发参数初始化。
+        3. 编译（JIT）精排推理函数。
+        """
         runner = self.runner
 
         dummy_batch = self.create_dummy_batch(batch_size=1)
@@ -324,6 +327,7 @@ class RecsysInferenceRunner(BaseInferenceRunner):
         state = runner.load_or_init(dummy_batch, dummy_embeddings)
         self.params = state.params
 
+        # 使用 lru_cache 确保模型对象在一次应用中只被实例化一次
         @functools.lru_cache
         def model():
             return runner.model.make()
@@ -336,16 +340,25 @@ class RecsysInferenceRunner(BaseInferenceRunner):
         def hk_rank_candidates(
             batch: RecsysBatch, recsys_embeddings: RecsysEmbeddings
         ) -> RankingOutput:
-            """Rank candidates by their predicted engagement scores."""
+            """
+            模型前向传播并处理结果：
+            1. 计算 Logits。
+            2. 应用 Sigmoid 将 Logits 转换为概率分数。
+            3. 以第一项互动行为（favorite）作为主排序依据生成索引。
+            """
             output = hk_forward(batch, recsys_embeddings)
             logits = output.logits
 
+            # Logits -> Probs
             probs = jax.nn.sigmoid(logits)
 
+            # 提取第一个动作的分数作为排序基准
             primary_scores = probs[:, :, 0]
 
+            # 降序排序索引
             ranked_indices = jnp.argsort(-primary_scores, axis=-1)
 
+            # 组装完整的 RankingOutput
             return RankingOutput(
                 scores=probs,
                 ranked_indices=ranked_indices,
@@ -370,19 +383,12 @@ class RecsysInferenceRunner(BaseInferenceRunner):
                 p_dwell_time=probs[:, :, 18],
             )
 
+        # 转换为无状态的前向应用函数（去掉 RNG 依赖）
         rank_ = hk.without_apply_rng(hk.transform(hk_rank_candidates))
         self.rank_candidates = rank_.apply
 
     def rank(self, batch: RecsysBatch, recsys_embeddings: RecsysEmbeddings) -> RankingOutput:
-        """Rank candidates for the given batch.
-
-        Args:
-            batch: RecsysBatch containing hashes, actions, product surfaces
-            recsys_embeddings: RecsysEmbeddings containing pre-looked-up embeddings
-
-        Returns:
-            RankingOutput with scores and ranked indices
-        """
+        """执行推理：对给定批次进行评分排序。"""
         return self.rank_candidates(self.params, batch, recsys_embeddings)
 
 
@@ -400,35 +406,31 @@ def create_example_batch(
     num_post_embeddings: int = 100000,
     num_author_embeddings: int = 100000,
 ) -> Tuple[RecsysBatch, RecsysEmbeddings]:
-    """Create an example batch with random data for testing.
-
-    This simulates a recommendation scenario where:
-    - We have a user with some embedding
-    - The user has interacted with some posts in their history
-    - We want to rank a set of candidate posts
-
-    Note on embedding table sizes:
-        The num_*_embeddings parameters define the size of the embedding tables for each
-        entity type. Hash values are generated in the range [1, num_*_embeddings) to ensure
-        they can be used as valid indices into the corresponding embedding tables.
-        Hash value 0 is reserved for padding/invalid entries.
-
-    Returns:
-        Tuple of (RecsysBatch, RecsysEmbeddings)
+    """
+    创建一个包含随机数据的示例批次，用于功能测试。
+    
+    模拟场景说明：
+    1. 生成指定哈希范围内的用户 ID。
+    2. 生成历史记录，并随机截断模拟不同长度的历史。
+    3. 生成历史互动动作（0/1）及场景。
+    4. 生成候选池数据。
+    5. 生成对应的嵌入向量。
     """
     rng = np.random.default_rng(42)
 
+    # 1. 生成用户哈希
     user_hashes = rng.integers(1, num_user_embeddings, size=(batch_size, num_user_hashes)).astype(
         np.int32
     )
 
+    # 2. 生成历史记录哈希并应用随机截断
     history_post_hashes = rng.integers(
         1, num_post_embeddings, size=(batch_size, history_len, num_item_hashes)
     ).astype(np.int32)
 
     for b in range(batch_size):
         valid_len = rng.integers(history_len // 2, history_len + 1)
-        history_post_hashes[b, valid_len:, :] = 0
+        history_post_hashes[b, valid_len:, :] = 0 # 0 表示填充位
 
     history_author_hashes = rng.integers(
         1, num_author_embeddings, size=(batch_size, history_len, num_author_hashes)
@@ -437,6 +439,7 @@ def create_example_batch(
         valid_len = rng.integers(history_len // 2, history_len + 1)
         history_author_hashes[b, valid_len:, :] = 0
 
+    # 3. 生成历史行为数据
     history_actions = (rng.random(size=(batch_size, history_len, num_actions)) > 0.7).astype(
         np.float32
     )
@@ -445,6 +448,7 @@ def create_example_batch(
         0, product_surface_vocab_size, size=(batch_size, history_len)
     ).astype(np.int32)
 
+    # 4. 生成候选推文哈希
     candidate_post_hashes = rng.integers(
         1, num_post_embeddings, size=(batch_size, num_candidates, num_item_hashes)
     ).astype(np.int32)
@@ -457,6 +461,7 @@ def create_example_batch(
         0, product_surface_vocab_size, size=(batch_size, num_candidates)
     ).astype(np.int32)
 
+    # 组装批次
     batch = RecsysBatch(
         user_hashes=user_hashes,
         history_post_hashes=history_post_hashes,
@@ -468,6 +473,7 @@ def create_example_batch(
         candidate_product_surface=candidate_product_surface,
     )
 
+    # 5. 生成对应的嵌入向量
     embeddings = RecsysEmbeddings(
         user_embeddings=rng.normal(size=(batch_size, num_user_hashes, emb_size)).astype(np.float32),
         history_post_embeddings=rng.normal(
@@ -488,21 +494,22 @@ def create_example_batch(
 
 
 class RetrievalOutput(NamedTuple):
-    """Output from retrieval inference.
-
-    Contains user representations and retrieved candidates.
+    """
+    召回推理输出结果容器。
+    封装了用户向量以及召回到的候选集索引和分数。
     """
 
     user_representation: jax.Array
-
     top_k_indices: jax.Array
-
     top_k_scores: jax.Array
 
 
 @dataclass
 class RetrievalModelRunner(BaseModelRunner):
-    """Runner for the Phoenix retrieval model."""
+    """
+    召回模型运行器。
+    管理召回模型（双塔架构）的 Haiku 变换和初始化。
+    """
 
     _model: PhoenixRetrievalModelConfig = None  # type: ignore
 
@@ -525,6 +532,7 @@ class RetrievalModelRunner(BaseModelRunner):
         return "retrieval model"
 
     def make_forward_fn(self):  # type: ignore
+        """包装召回前向传播和候选塔构建。"""
         def forward(
             batch: RecsysBatch,
             recsys_embeddings: RecsysEmbeddings,
@@ -532,8 +540,9 @@ class RetrievalModelRunner(BaseModelRunner):
             top_k: int,
         ) -> ModelRetrievalOutput:
             model = self.model.make()
+            # 执行检索
             out = model(batch, recsys_embeddings, corpus_embeddings, top_k)
-
+            # 同时也确保候选塔的构建逻辑被包含在参数 init 过程中
             _ = model.build_candidate_representation(batch, recsys_embeddings)
             return out
 
@@ -566,16 +575,17 @@ class RetrievalModelRunner(BaseModelRunner):
 
 @dataclass
 class RecsysRetrievalInferenceRunner(BaseInferenceRunner):
-    """Inference runner for the Phoenix retrieval model.
-
-    This runner provides methods for:
-    1. Encoding users to get user representations
-    2. Encoding candidates to get candidate embeddings
-    3. Retrieving top-k candidates from a corpus
+    """
+    召回模型推理运行器。
+    提供了三个核心能力：
+    1. `encode_user`: 将用户特征映射为向量。
+    2. `encode_candidates`: 将物品特征映射为向量（用于构建离线索引）。
+    3. `retrieve`: 在全量池中执行在线检索。
     """
 
     _runner: RetrievalModelRunner = None  # type: ignore
 
+    # 存储全局候选池的数据
     corpus_embeddings: jax.Array | None = None
     corpus_post_ids: jax.Array | None = None
 
@@ -590,7 +600,7 @@ class RecsysRetrievalInferenceRunner(BaseInferenceRunner):
         return self._runner
 
     def initialize(self):
-        """Initialize the retrieval inference runner."""
+        """初始化召回推理函数。"""
         runner = self.runner
 
         dummy_batch = self.create_dummy_batch(batch_size=1)
@@ -600,6 +610,7 @@ class RecsysRetrievalInferenceRunner(BaseInferenceRunner):
 
         runner.initialize()
 
+        # 初始化参数
         state = runner.load_or_init(dummy_batch, dummy_embeddings, dummy_corpus, dummy_top_k)
         self.params = state.params
 
@@ -607,8 +618,8 @@ class RecsysRetrievalInferenceRunner(BaseInferenceRunner):
         def model():
             return runner.model.make()
 
+        # 定义封装函数，利用同一个模型参数提供不同功能
         def hk_encode_user(batch: RecsysBatch, recsys_embeddings: RecsysEmbeddings) -> jax.Array:
-            """Encode user to get user representation."""
             m = model()
             user_rep, _ = m.build_user_representation(batch, recsys_embeddings)
             return user_rep
@@ -616,7 +627,6 @@ class RecsysRetrievalInferenceRunner(BaseInferenceRunner):
         def hk_encode_candidates(
             batch: RecsysBatch, recsys_embeddings: RecsysEmbeddings
         ) -> jax.Array:
-            """Encode candidates to get candidate representations."""
             m = model()
             cand_rep, _ = m.build_candidate_representation(batch, recsys_embeddings)
             return cand_rep
@@ -627,10 +637,10 @@ class RecsysRetrievalInferenceRunner(BaseInferenceRunner):
             corpus_embeddings: jax.Array,
             top_k: int,
         ) -> "RetrievalOutput":
-            """Retrieve top-k candidates from corpus."""
             m = model()
             return m(batch, recsys_embeddings, corpus_embeddings, top_k)
 
+        # 转换为无状态 apply 函数
         encode_user_ = hk.without_apply_rng(hk.transform(hk_encode_user))
         encode_candidates_ = hk.without_apply_rng(hk.transform(hk_encode_candidates))
         retrieve_ = hk.without_apply_rng(hk.transform(hk_retrieve))
@@ -640,29 +650,13 @@ class RecsysRetrievalInferenceRunner(BaseInferenceRunner):
         self.retrieve_fn = retrieve_.apply
 
     def encode_user(self, batch: RecsysBatch, recsys_embeddings: RecsysEmbeddings) -> jax.Array:
-        """Encode users to get user representations.
-
-        Args:
-            batch: RecsysBatch containing user and history information
-            recsys_embeddings: RecsysEmbeddings containing pre-looked-up embeddings
-
-        Returns:
-            User representations [B, D]
-        """
+        """编码用户。"""
         return self.encode_user_fn(self.params, batch, recsys_embeddings)
 
     def encode_candidates(
         self, batch: RecsysBatch, recsys_embeddings: RecsysEmbeddings
     ) -> jax.Array:
-        """Encode candidates to get candidate representations.
-
-        Args:
-            batch: RecsysBatch containing candidate information
-            recsys_embeddings: RecsysEmbeddings containing pre-looked-up embeddings
-
-        Returns:
-            Candidate representations [B, C, D]
-        """
+        """编码候选物品。"""
         return self.encode_candidates_fn(self.params, batch, recsys_embeddings)
 
     def set_corpus(
@@ -670,12 +664,7 @@ class RecsysRetrievalInferenceRunner(BaseInferenceRunner):
         corpus_embeddings: jax.Array,
         corpus_post_ids: jax.Array,
     ):
-        """Set the corpus embeddings for retrieval.
-
-        Args:
-            corpus_embeddings: Pre-computed candidate embeddings [N, D]
-            corpus_post_ids: Optional post IDs corresponding to embeddings [N]
-        """
+        """设置全量候选池索引，供在线检索使用。"""
         self.corpus_embeddings = corpus_embeddings
         self.corpus_post_ids = corpus_post_ids
 
@@ -686,17 +675,7 @@ class RecsysRetrievalInferenceRunner(BaseInferenceRunner):
         top_k: int = 100,
         corpus_embeddings: Optional[jax.Array] = None,
     ) -> RetrievalOutput:
-        """Retrieve top-k candidates for users.
-
-        Args:
-            batch: RecsysBatch containing user and history information
-            recsys_embeddings: RecsysEmbeddings containing pre-looked-up embeddings
-            top_k: Number of candidates to retrieve per user
-            corpus_embeddings: Optional corpus embeddings (uses set_corpus if not provided)
-
-        Returns:
-            RetrievalOutput with user representations and top-k candidates
-        """
+        """执行在线检索。"""
         if corpus_embeddings is None:
             corpus_embeddings = self.corpus_embeddings
 
@@ -708,18 +687,16 @@ def create_example_corpus(
     emb_size: int,
     seed: int = 123,
 ) -> Tuple[jax.Array, jax.Array]:
-    """Create example corpus embeddings for testing retrieval.
-
-    Args:
-        corpus_size: Number of candidates in corpus
-        emb_size: Embedding dimension
-        seed: Random seed
-
-    Returns:
-        Tuple of (corpus_embeddings [N, D], corpus_post_ids [N])
+    """
+    创建示例候选池全量数据，模拟海量推文库。
+    
+    返回：
+        corpus_embeddings: 归一化的向量库 [N, D]
+        corpus_post_ids: 物品 ID 列表 [N]
     """
     rng = np.random.default_rng(seed)
 
+    # 生成并归一化
     corpus_embeddings = rng.normal(size=(corpus_size, emb_size)).astype(np.float32)
     norms = np.linalg.norm(corpus_embeddings, axis=-1, keepdims=True)
     corpus_embeddings = corpus_embeddings / np.maximum(norms, 1e-12)

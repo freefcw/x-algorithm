@@ -5,9 +5,9 @@ use crate::params as p;
 use std::sync::Arc;
 use tonic::async_trait;
 use xai_candidate_pipeline::source::Source;
-use xai_home_mixer_proto as pb;
-use xai_thunder_proto::GetInNetworkPostsRequest;
-use xai_thunder_proto::in_network_posts_service_client::InNetworkPostsServiceClient;
+use x_algorithm_proto::home_mixer as pb;
+use x_algorithm_proto::thunder::GetInNetworkPostsRequest;
+use x_algorithm_proto::thunder::in_network_posts_service_client::InNetworkPostsServiceClient;
 
 pub struct ThunderSource {
     pub thunder_client: Arc<ThunderClient>,
@@ -15,7 +15,6 @@ pub struct ThunderSource {
 
 #[async_trait]
 impl Source<ScoredPostsQuery, PostCandidate> for ThunderSource {
-    #[xai_stats_macro::receive_stats]
     async fn get_candidates(&self, query: &ScoredPostsQuery) -> Result<Vec<PostCandidate>, String> {
         let cluster = ThunderCluster::Amp;
         let channel = self

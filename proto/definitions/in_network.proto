@@ -1,0 +1,117 @@
+// Thunder 服务 - 实时内存缓存帖子检索
+// 替代原始 xai_thunder_proto crate
+//
+// 该协议定义了 Thunder（雷霆）服务的所有数据结构和 RPC 接口。
+// Thunder 消费 Kafka 事件流，维护用户关注列表中的帖子内存缓存，
+// 并提供亚毫秒级别的"网络内（In-Network）"帖子查询。
+
+syntax = "proto3";
+
+package thunder;
+
+// =============================================================================
+// 核心数据结构
+// =============================================================================
+
+// 轻量级帖子表示 —— 存储在 Thunder 内存中的帖子核心信息
+// 设计意图：仅保留足够支撑召回和初步过滤所需的字段，避免存储全量帖子数据
+message LightPost {
+  // 帖子唯一标识
+  int64 post_id = 1;
+  // 作者用户 ID
+  int64 author_id = 2;
+  // 创建时间（Unix 秒级时间戳）
+  int64 created_at = 3;
+
+  // ---------- 回复/对话相关 ----------
+  // 如果是回复帖，原始被回复帖的 ID
+  optional int64 in_reply_to_post_id = 4;
+  // 如果是回复帖，被回复用户的 ID
+  optional int64 in_reply_to_user_id = 5;
+  // 对话根帖 ID（同一对话线程共享）
+  optional int64 conversation_id = 6;
+
+  // ---------- 类型标记 ----------
+  // 是否为转发帖
+  bool is_retweet = 7;
+  // 是否为回复帖
+  bool is_reply = 8;
+  // 是否包含有效视频（满足最低时长要求）
+  bool has_video = 9;
+
+  // ---------- 转发来源 ----------
+  // 若为转发帖，原始帖子 ID
+  optional int64 source_post_id = 10;
+  // 若为转发帖，原始帖子作者 ID
+  optional int64 source_user_id = 11;
+}
+
+// =============================================================================
+// Kafka 事件系统 —— 用于 Thunder 消费的帖子生命周期事件
+// =============================================================================
+
+// 帖子创建事件（从 Kafka topic 消费）
+// 包含与 LightPost 完全一致的字段，用于传输层解耦
+message TweetCreateEvent {
+  int64 post_id = 1;
+  int64 author_id = 2;
+  int64 created_at = 3;
+  optional int64 in_reply_to_post_id = 4;
+  optional int64 in_reply_to_user_id = 5;
+  bool is_retweet = 6;
+  bool is_reply = 7;
+  optional int64 source_post_id = 8;
+  optional int64 source_user_id = 9;
+  bool has_video = 10;
+  optional int64 conversation_id = 11;
+}
+
+// 帖子删除事件
+message TweetDeleteEvent {
+  // 被删除的帖子 ID
+  int64 post_id = 1;
+  // 删除时间（Unix 秒级时间戳）
+  int64 deleted_at = 2;
+}
+
+// 网络内事件封装 —— 统一创建/删除事件的 oneof 容器
+// Thunder 的 v2 Kafka 消费管道使用此格式，支持 Protobuf 原生序列化
+message InNetworkEvent {
+  oneof event_variant {
+    TweetCreateEvent tweet_create_event = 1;
+    TweetDeleteEvent tweet_delete_event = 2;
+  }
+}
+
+// =============================================================================
+// gRPC 服务定义 —— Thunder 对外暴露的查询接口
+// =============================================================================
+
+// 网络内帖子查询请求
+message GetInNetworkPostsRequest {
+  // 发起查询的用户 ID
+  uint64 user_id = 1;
+  // 该用户关注的用户 ID 列表（来源：Strato/Redis）
+  repeated uint64 following_user_ids = 2;
+  // 最大返回帖子数
+  uint32 max_results = 3;
+  // 需要排除的帖子 ID（已曝光/已投递的帖子）
+  repeated uint64 exclude_tweet_ids = 4;
+  // 召回算法名称（可用于 A/B 测试路由）
+  string algorithm = 5;
+  // 是否开启调试日志
+  bool debug = 6;
+  // 是否为视频帖子专属请求
+  bool is_video_request = 7;
+}
+
+// 网络内帖子查询响应
+message GetInNetworkPostsResponse {
+  repeated LightPost posts = 1;
+}
+
+// Thunder 网络内帖子检索服务
+service InNetworkPostsService {
+  // 检索指定用户关注列表中的最新帖子
+  rpc GetInNetworkPosts(GetInNetworkPostsRequest) returns (GetInNetworkPostsResponse);
+}

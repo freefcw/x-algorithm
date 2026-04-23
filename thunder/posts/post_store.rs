@@ -4,7 +4,7 @@ use log::info;
 use std::collections::{HashSet, VecDeque};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
-use xai_thunder_proto::{LightPost, TweetDeleteEvent};
+use x_algorithm_proto::thunder::{LightPost, TweetDeleteEvent};
 
 use crate::config::{
     DELETE_EVENT_KEY, MAX_ORIGINAL_POSTS_PER_AUTHOR, MAX_REPLY_POSTS_PER_AUTHOR,
@@ -147,12 +147,12 @@ impl PostStore {
             let mut video_eligible = post.has_video;
 
             // If this is a retweet and the retweeted post has video, mark has_video as true
-            if !video_eligible
-                && post.is_retweet
-                && let Some(source_post_id) = post.source_post_id
-                && let Some(source_post) = self.posts.get(&source_post_id)
-            {
-                video_eligible = !source_post.is_reply && source_post.has_video;
+            if !video_eligible && post.is_retweet {
+                if let Some(source_post_id) = post.source_post_id {
+                    if let Some(source_post) = self.posts.get(&source_post_id) {
+                        video_eligible = !source_post.is_reply && source_post.has_video;
+                    }
+                }
             }
 
             if post.is_reply {

@@ -1,0 +1,7 @@
+graph LR
+    A[HTTP 请求] --> B[record_request]
+    C[模型调用] --> D[record_inference]
+    E[批处理大小] --> F[record_batch_size]
+    B --> G[Prometheus 指标]
+    D --> G
+    F --> G

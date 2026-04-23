@@ -1,0 +1,17 @@
+graph TD
+    A[业务日志<br/>曝光 / 互动 / 历史行为] --> B[样本构造]
+    B --> C[RecsysBatch]
+    B --> D[RecsysEmbeddings]
+    B --> E[Labels]
+    C --> F[Phoenix 排序模型]
+    D --> F
+    E --> G[排序损失]
+    C --> H[Phoenix 召回模型]
+    D --> H
+    H --> I[召回损失]
+    G --> J[训练产物<br/>ranker checkpoint]
+    I --> K[训练产物<br/>retrieval checkpoint]
+    K --> L[离线物品向量编码]
+    L --> M[向量索引]
+    J --> N[精排服务]
+    M --> O[召回服务]

@@ -1,0 +1,11 @@
+sequenceDiagram
+    participant Log as 曝光日志
+    participant Hist as 用户历史
+    participant Feat as Embedding / 特征查表
+    participant Label as 标签构造
+    participant Train as Ranker 训练样本
+
+    Log->>Train: user_id + candidate_ids + surface
+    Hist->>Train: 最近历史 post / author / actions
+    Feat->>Train: user / post / author embeddings
+    Label->>Train: 每个候选的 19 维目标

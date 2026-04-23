@@ -8,7 +8,6 @@ pub struct InNetworkCandidateHydrator;
 
 #[async_trait]
 impl Hydrator<ScoredPostsQuery, PostCandidate> for InNetworkCandidateHydrator {
-    #[xai_stats_macro::receive_stats]
     async fn hydrate(
         &self,
         query: &ScoredPostsQuery,

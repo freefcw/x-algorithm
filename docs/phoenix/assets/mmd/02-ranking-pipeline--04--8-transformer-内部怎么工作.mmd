@@ -1,0 +1,8 @@
+flowchart TD
+    A[输入 embeddings] --> B[构造 mask]
+    B --> C[DecoderLayer 1]
+    C --> D[DecoderLayer 2]
+    D --> E[...]
+    E --> F[最终序列输出]
+    F --> G[layer_norm]
+    G --> H[只取候选区间]

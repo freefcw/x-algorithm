@@ -8,7 +8,9 @@ dependencies = [
     "dm-haiku>=0.0.13",
     "jax==0.8.1",
     "numpy>=1.26.4",
-    "pyright>=1.1.408",
+    "optax>=0.2.8",
+    "pandas>=2.0.0",
+    "pyarrow>=15.0.0",
 ]
 
 [tool.uv]
@@ -32,7 +34,19 @@ ignore = [
 ]
 select = ["ISC001"]
 
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["."]
+
 [dependency-groups]
 dev = [
     "pytest",
+    "requests",
+    "ty",
+]
+service = [
+    "fastapi>=0.115.0",
+    "pydantic>=2.10.0",
+    "uvicorn>=0.34.0",
+    "prometheus-client>=0.21.0",
 ]

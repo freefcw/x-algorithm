@@ -6,8 +6,8 @@ use std::sync::Arc;
 use std::time::Instant;
 use tonic::{Request, Response, Status};
 use xai_candidate_pipeline::candidate_pipeline::CandidatePipeline;
-use xai_home_mixer_proto as pb;
-use xai_home_mixer_proto::{ScoredPost, ScoredPostsResponse};
+use x_algorithm_proto::home_mixer as pb;
+use x_algorithm_proto::home_mixer::{ScoredPost, ScoredPostsResponse};
 
 pub struct HomeMixerServer {
     phx_candidate_pipeline: Arc<PhoenixCandidatePipeline>,
@@ -23,7 +23,6 @@ impl HomeMixerServer {
 
 #[tonic::async_trait]
 impl pb::scored_posts_service_server::ScoredPostsService for HomeMixerServer {
-    #[xai_stats_macro::receive_stats]
     async fn get_scored_posts(
         &self,
         request: Request<pb::ScoredPostsQuery>,
@@ -67,7 +66,13 @@ impl pb::scored_posts_service_server::ScoredPostsService for HomeMixerServer {
                     prediction_request_id: candidate.prediction_request_id.unwrap_or(0),
                     ancestors: candidate.ancestors,
                     screen_names,
-                    visibility_reason: candidate.visibility_reason.map(|r| r.into()),
+                    visibility_reason: candidate.visibility_reason.map(|r| {
+                        let (code, desc) = r.into_proto();
+                        pb::VisibilityFilteredReason {
+                            reason_code: code,
+                            description: desc,
+                        }
+                    }),
                 }
             })
             .collect();

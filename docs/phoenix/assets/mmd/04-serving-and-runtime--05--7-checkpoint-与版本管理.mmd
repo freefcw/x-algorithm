@@ -1,0 +1,10 @@
+flowchart TD
+    A[checkpoint_path] --> B{路径类型}
+    B -->|pkl/pickle| C[pickle.load]
+    B -->|npy| D[np.load]
+    B -->|目录| E[逐文件加载]
+    C --> F[convert_to_jax]
+    D --> F
+    E --> F
+    F --> G[current_params]
+    G --> H[current_version]

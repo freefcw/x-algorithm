@@ -1,16 +1,15 @@
 use crate::candidate_pipeline::candidate::PostCandidate;
 use crate::candidate_pipeline::query::ScoredPostsQuery;
+use crate::visibility::models::FilteredReason;
+use crate::visibility::vf_client::{
+    GetTwitterContextViewer, SafetyLevel, SafetyLevel::TimelineHome,
+    SafetyLevel::TimelineHomeRecommendations, TwitterContextViewer, VisibilityFilteringClient,
+};
 use futures::future::join;
 use std::collections::HashMap;
 use std::sync::Arc;
 use tonic::async_trait;
 use xai_candidate_pipeline::hydrator::Hydrator;
-use xai_twittercontext_proto::GetTwitterContextViewer;
-use xai_twittercontext_proto::TwitterContextViewer;
-use xai_visibility_filtering::models::FilteredReason;
-use xai_visibility_filtering::vf_client::SafetyLevel;
-use xai_visibility_filtering::vf_client::SafetyLevel::{TimelineHome, TimelineHomeRecommendations};
-use xai_visibility_filtering::vf_client::VisibilityFilteringClient;
 
 pub struct VFCandidateHydrator {
     pub vf_client: Arc<dyn VisibilityFilteringClient + Send + Sync>,
@@ -41,7 +40,6 @@ impl VFCandidateHydrator {
 
 #[async_trait]
 impl Hydrator<ScoredPostsQuery, PostCandidate> for VFCandidateHydrator {
-    #[xai_stats_macro::receive_stats]
     async fn hydrate(
         &self,
         query: &ScoredPostsQuery,

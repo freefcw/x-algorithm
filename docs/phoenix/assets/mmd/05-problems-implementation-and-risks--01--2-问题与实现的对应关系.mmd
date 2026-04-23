@@ -1,0 +1,6 @@
+graph TD
+    P1[离散 ID 规模大] --> S1[多哈希 embedding + 线性归约]
+    P2[历史是时序数据] --> S2[Transformer + RoPE + 因果 mask]
+    P3[候选互相干扰] --> S3[make_recsys_attn_mask 候选隔离]
+    P4[召回要求低时延] --> S4[双塔 + 离线物品向量 + 在线 Top-K]
+    P5[需要服务部署] --> S5[runner + FastAPI + config + metrics]

@@ -5,7 +5,7 @@ use crate::params as p;
 use std::sync::Arc;
 use tonic::async_trait;
 use xai_candidate_pipeline::source::Source;
-use xai_home_mixer_proto as pb;
+use x_algorithm_proto::home_mixer as pb;
 
 pub struct PhoenixSource {
     pub phoenix_retrieval_client: Arc<dyn PhoenixRetrievalClient + Send + Sync>,
@@ -17,7 +17,6 @@ impl Source<ScoredPostsQuery, PostCandidate> for PhoenixSource {
         !query.in_network_only
     }
 
-    #[xai_stats_macro::receive_stats]
     async fn get_candidates(&self, query: &ScoredPostsQuery) -> Result<Vec<PostCandidate>, String> {
         let user_id = query.user_id as u64;
 

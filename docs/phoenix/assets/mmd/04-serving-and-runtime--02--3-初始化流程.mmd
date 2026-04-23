@@ -1,0 +1,15 @@
+sequenceDiagram
+    participant App as FastAPI 生命周期
+    participant Config as Config
+    participant Registry as ModelRegistry
+    participant Feature as FeatureStore
+    participant Runner as InferenceRunner
+
+    App->>Config: from_env()
+    App->>Feature: create_feature_store()
+    App->>Runner: _init_model()
+    Runner->>Runner: initialize()
+    Runner->>Runner: dummy batch init params
+    App->>Registry: create_model_registry()
+    Registry-->>App: checkpoint params 或 None
+    App->>Runner: 覆盖 params 或保留随机初始化

@@ -40,3 +40,31 @@ impl Filter<ScoredPostsQuery, PostCandidate> for AuthorSocialgraphFilter {
         Ok(FilterResult { kept, removed })
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::candidate_pipeline::query_features::UserFeatures;
+
+    #[tokio::test]
+    async fn test_socialgraph_filter() {
+        let filter = AuthorSocialgraphFilter;
+        let mut query = ScoredPostsQuery::default();
+        query.user_features = UserFeatures {
+            blocked_user_ids: vec![200],
+            muted_user_ids: vec![300],
+            ..Default::default()
+        };
+
+        let candidates = vec![
+            PostCandidate { author_id: 100, ..Default::default() }, // clear
+            PostCandidate { author_id: 200, ..Default::default() }, // blocked
+            PostCandidate { author_id: 300, ..Default::default() }, // muted
+        ];
+
+        let result = filter.filter(&query, candidates).await.unwrap();
+        assert_eq!(result.kept.len(), 1);
+        assert_eq!(result.kept[0].author_id, 100);
+        assert_eq!(result.removed.len(), 2);
+    }
+}

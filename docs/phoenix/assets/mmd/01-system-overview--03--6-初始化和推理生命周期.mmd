@@ -1,0 +1,9 @@
+flowchart TD
+    A[构造 Config] --> B[创建 Runner]
+    B --> C[create_dummy_batch / embeddings]
+    C --> D[Haiku init 初始化参数]
+    D --> E[缓存 model 实例]
+    E --> F[生成 apply 函数]
+    F --> G[接受真实 batch]
+    G --> H[JAX/Haiku 前向推理]
+    H --> I[业务后处理<br/>排序 / Top-K / HTTP 响应]

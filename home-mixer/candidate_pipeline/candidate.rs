@@ -1,6 +1,6 @@
 use std::collections::HashMap;
-use xai_home_mixer_proto as pb;
-use xai_visibility_filtering::models as vf;
+use crate::visibility::models as vf;
+use x_algorithm_proto::home_mixer as pb;
 
 #[derive(Clone, Debug, Default)]
 pub struct PostCandidate {

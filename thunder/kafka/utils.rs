@@ -1,24 +1,13 @@
-use anyhow::{Context, Result};
-use std::sync::Arc;
-use tokio::sync::RwLock;
-use xai_kafka::{KafkaMessage, config::KafkaConsumerConfig, consumer::KafkaConsumer};
+use anyhow::Result;
 
 use crate::metrics;
 
-/// Create and start a Kafka consumer with the given configuration
-pub async fn create_kafka_consumer(
-    config: KafkaConsumerConfig,
-) -> Result<Arc<RwLock<KafkaConsumer>>> {
-    let mut consumer = KafkaConsumer::new(config);
-    consumer
-        .start()
-        .await
-        .context("Failed to start Kafka consumer")?;
-
-    Ok(Arc::new(RwLock::new(consumer)))
+/// Kafka 消息简易封装
+pub struct KafkaMessage {
+    pub payload: Option<Vec<u8>>,
 }
 
-/// Process a batch of Kafka messages and deserialize them using the provided deserializer function
+/// 批量反序列化 Kafka 消息
 pub fn deserialize_kafka_messages<T, F>(
     messages: Vec<KafkaMessage>,
     deserializer: F,

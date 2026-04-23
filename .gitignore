@@ -1,1 +1,72 @@
+# ---------- Rust ----------
+# 构建产物 & 二进制
+target/
+**/*.rs.bk
+
+# ---------- Python ----------
 __pycache__/
+*.py[cod]
+*.pyo
+*.egg-info/
+*.egg
+dist/
+build/
+
+# 虚拟环境
+.venv/
+venv/
+
+# 测试 / 覆盖率 / lint 缓存
+.pytest_cache/
+.coverage
+htmlcov/
+.mypy_cache/
+.ruff_cache/
+
+# ---------- 数据文件 ----------
+*.parquet
+*.csv
+*.tsv
+*.jsonl
+*.arrow
+*.h5
+*.hdf5
+*.tfrecord
+*.npy
+*.npz
+*.pkl
+*.pickle
+phoenix/data/
+
+# ---------- 模型权重 & 检查点 ----------
+*.ckpt
+*.ckpt.*
+*.safetensors
+*.bin
+*.pt
+*.pth
+checkpoints/
+
+# ---------- 训练实验追踪 ----------
+wandb/
+mlruns/
+runs/
+tensorboard/
+logs/
+
+# ---------- Jupyter ----------
+.ipynb_checkpoints/
+
+# ---------- IDE & 编辑器 ----------
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+.DS_Store
+Thumbs.db
+
+# ---------- 其他 ----------
+*.log
+*.tmp
+*.bak

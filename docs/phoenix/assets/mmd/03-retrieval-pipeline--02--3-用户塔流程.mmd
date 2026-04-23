@@ -1,0 +1,8 @@
+flowchart LR
+    A[用户 embedding] --> D[拼接序列]
+    B[历史 embedding] --> D
+    C[动作/场景 embedding] --> D
+    D --> E[Transformer]
+    E --> F[按 padding mask 做 Mean Pooling]
+    F --> G[L2 归一化]
+    G --> H[用户向量 B x D]

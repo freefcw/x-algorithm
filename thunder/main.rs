@@ -1,11 +1,12 @@
-use anyhow::{Context, Result};
+use anyhow::Result;
 use axum::Router;
 use clap::Parser;
 use log::info;
+use std::net::SocketAddr;
 use std::sync::Arc;
-use std::time::{Duration, Instant};
+use std::time::Instant;
+use tokio_util::sync::CancellationToken;
 use tonic::service::Routes;
-use xai_http_server::{CancellationToken, GrpcConfig, HttpServer};
 
 use thunder::{
     args, kafka_utils, posts::post_store::PostStore, strato_client::StratoClient,
@@ -43,25 +44,35 @@ async fn main() -> Result<()> {
         "Initialized with max_concurrent_requests={}",
         args.max_concurrent_requests
     );
-    let routes = Routes::new(thunder_service.server());
 
-    // Set up gRPC config
-    let grpc_config = GrpcConfig::new(args.grpc_port, routes);
+    // Build gRPC routes
+    let grpc_routes = Routes::new(thunder_service.server());
 
-    // Create HTTP server with gRPC support
-    let mut http_server = HttpServer::new(
-        args.http_port,
-        Router::new(),
-        Some(grpc_config),
-        CancellationToken::new(),
-        Duration::from_secs(10),
-    )
-    .await
-    .context("Failed to create HTTP server")?;
+    // Create cancellation token for graceful shutdown
+    let cancel_token = CancellationToken::new();
 
-    if args.enable_profiling {
-        xai_profiling::spawn_server(3000, CancellationToken::new()).await;
-    }
+    // Build combined HTTP + gRPC server
+    let http_router = Router::new();
+    let combined = http_router.into_make_service();
+
+    // Start gRPC server
+    let grpc_addr: SocketAddr = ([0, 0, 0, 0], args.grpc_port).into();
+    let _grpc_handle = tokio::spawn(async move {
+        info!("gRPC server listening on {}", grpc_addr);
+        tonic::transport::Server::builder()
+            .add_routes(grpc_routes)
+            .serve(grpc_addr)
+            .await
+            .expect("gRPC server failed");
+    });
+
+    // Start HTTP server (health check / metrics)
+    let http_addr: SocketAddr = ([0, 0, 0, 0], args.http_port).into();
+    let _http_handle = tokio::spawn(async move {
+        info!("HTTP server listening on {}", http_addr);
+        let listener = tokio::net::TcpListener::bind(http_addr).await.unwrap();
+        axum::serve(listener, combined).await.unwrap();
+    });
 
     // Create channel for post events
     let (tx, mut rx) = tokio::sync::mpsc::channel::<i64>(args.kafka_num_threads);
@@ -89,11 +100,12 @@ async fn main() -> Result<()> {
         );
     }
 
-    http_server.set_readiness(true);
-    info!("HTTP/gRPC server is ready");
+    info!("Server ready");
 
     // Wait for termination signal
-    http_server.wait_for_termination().await;
+    tokio::signal::ctrl_c().await?;
+    info!("Shutdown signal received");
+    cancel_token.cancel();
     info!("Server terminated");
 
     Ok(())

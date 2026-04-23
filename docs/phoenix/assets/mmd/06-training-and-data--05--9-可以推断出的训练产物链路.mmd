@@ -1,0 +1,10 @@
+graph TD
+    A[训练数据] --> B[训练 ranker]
+    A --> C[训练 retrieval]
+    B --> D[ranker checkpoint]
+    C --> E[retrieval checkpoint]
+    E --> F[全量物品离线编码]
+    F --> G[向量索引]
+    D --> H[ranker_service]
+    E --> I[retrieval_service]
+    G --> I

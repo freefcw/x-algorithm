@@ -1,0 +1,7 @@
+graph TD
+    A[HTTP 请求] --> B[FastAPI 接口]
+    B --> C[Feature Store / 向量索引 / Checkpoint Registry]
+    C --> D[Inference Runner]
+    D --> E[Haiku/JAX 模型]
+    E --> F[业务结果]
+    F --> G[HTTP 响应]
