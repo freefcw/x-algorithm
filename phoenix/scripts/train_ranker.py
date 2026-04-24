@@ -180,8 +180,8 @@ def loss_fn(batch: RecsysBatch, embeddings: RecsysEmbeddings, labels: jax.Array)
 
 def make_simulated_batch(batch_size: int) -> tuple[RecsysBatch, np.ndarray]:
     """
-    生成模拟训练 batch（不需要真实数据）。
-    返回 (batch, labels)，labels 形状 [B, C, num_actions]。
+    生成模拟训练 batch（不需要真实数据）。仅在 init/dummy 阶段使用。
+    主训练循环应使用向量化的 `make_simulated_batch_fast`。
     """
     batch, _ = create_example_batch(
         batch_size=batch_size,
@@ -202,55 +202,290 @@ def make_simulated_batch(batch_size: int) -> tuple[RecsysBatch, np.ndarray]:
     return batch, labels
 
 
-def load_parquet_batch(parquet_path: str, batch_size: int) -> tuple[RecsysBatch, np.ndarray]:
-    """
-    从 Parquet 文件加载一个 batch。
+def make_simulated_batch_fast(
+    batch_size: int, rng: np.random.Generator
+) -> tuple[RecsysBatch, np.ndarray]:
+    """向量化版模拟 batch，去除 create_example_batch 里的 Python for 循环。
 
-    Parquet 每行字段（对应 docs/training_data_spec.md §6）：
-        user_hashes:              list[int], shape [2]
-        history_post_hashes:      list[list[int]], shape [32, 2]
-        history_author_hashes:    list[list[int]], shape [32, 2]
-        history_actions:          list[list[float]], shape [32, 19]
-        history_product_surface:  list[int], shape [32]
-        candidate_post_hashes:    list[list[int]], shape [8, 2]
-        candidate_author_hashes:  list[list[int]], shape [8, 2]
-        candidate_product_surface: list[int], shape [8]
-        labels:                   list[list[float]], shape [8, 19]
+    主训练循环每步都调用；实测单步构造时间比原版下降一个数量级以上。
+    """
+    B = batch_size
+    user_hashes = rng.integers(1, TABLE_SIZE, size=(B, NUM_HASHES), dtype=np.int32)
+    history_post_hashes = rng.integers(
+        1, TABLE_SIZE, size=(B, HISTORY_LEN, NUM_HASHES), dtype=np.int32
+    )
+    history_author_hashes = rng.integers(
+        1, TABLE_SIZE, size=(B, HISTORY_LEN, NUM_HASHES), dtype=np.int32
+    )
+
+    # 向量化随机截断历史（valid_len 在 [HISTORY_LEN//2, HISTORY_LEN] 内均匀）
+    valid_len_post = rng.integers(HISTORY_LEN // 2, HISTORY_LEN + 1, size=B)
+    valid_len_author = rng.integers(HISTORY_LEN // 2, HISTORY_LEN + 1, size=B)
+    pos = np.arange(HISTORY_LEN)[None, :]
+    history_post_hashes = np.where(
+        (pos < valid_len_post[:, None])[:, :, None], history_post_hashes, np.int32(0)
+    )
+    history_author_hashes = np.where(
+        (pos < valid_len_author[:, None])[:, :, None], history_author_hashes, np.int32(0)
+    )
+
+    history_actions = (rng.random(size=(B, HISTORY_LEN, NUM_ACTIONS)) > 0.7).astype(np.float32)
+    history_product_surface = rng.integers(
+        0, SURFACE_VOCAB, size=(B, HISTORY_LEN), dtype=np.int32
+    )
+
+    candidate_post_hashes = rng.integers(
+        1, TABLE_SIZE, size=(B, NUM_CANDIDATES, NUM_HASHES), dtype=np.int32
+    )
+    candidate_author_hashes = rng.integers(
+        1, TABLE_SIZE, size=(B, NUM_CANDIDATES, NUM_HASHES), dtype=np.int32
+    )
+    candidate_product_surface = rng.integers(
+        0, SURFACE_VOCAB, size=(B, NUM_CANDIDATES), dtype=np.int32
+    )
+
+    batch = RecsysBatch(
+        user_hashes=user_hashes,
+        history_post_hashes=history_post_hashes,
+        history_author_hashes=history_author_hashes,
+        history_actions=history_actions,
+        history_product_surface=history_product_surface,
+        candidate_post_hashes=candidate_post_hashes,
+        candidate_author_hashes=candidate_author_hashes,
+        candidate_product_surface=candidate_product_surface,
+    )
+    labels = (rng.random(size=(B, NUM_CANDIDATES, NUM_ACTIONS)) < 0.1).astype(np.float32)
+    labels[:, :, 18] = rng.random(size=(B, NUM_CANDIDATES)).astype(np.float32)
+    return batch, labels
+
+
+def _col_to_numpy(col, tail_shape: tuple, dtype):
+    """把一个 pyarrow list 列（可能嵌套两层）一次性展开并 reshape 为紧凑 numpy 数组。
+
+    假设每条样本中 list 的长度都相同（本项目固定为 HISTORY_LEN / NUM_CANDIDATES / NUM_HASHES /
+    NUM_ACTIONS），这样可以直接取底层 buffer 并 reshape，避免 Python 逐元素转换。
+    """
+    a = col.combine_chunks()
+    for _ in tail_shape:
+        a = a.values
+    flat = a.to_numpy(zero_copy_only=False)
+    return flat.reshape(-1, *tail_shape).astype(dtype, copy=False)
+
+
+# 每列的 numpy shape（不含 batch 维）与 dtype，供流式加载复用。
+_PARQUET_COLUMN_SPEC = {
+    "user_hashes": ((NUM_HASHES,), np.int32),
+    "history_post_hashes": ((HISTORY_LEN, NUM_HASHES), np.int32),
+    "history_author_hashes": ((HISTORY_LEN, NUM_HASHES), np.int32),
+    "history_actions": ((HISTORY_LEN, NUM_ACTIONS), np.float32),
+    "history_product_surface": ((HISTORY_LEN,), np.int32),
+    "candidate_post_hashes": ((NUM_CANDIDATES, NUM_HASHES), np.int32),
+    "candidate_author_hashes": ((NUM_CANDIDATES, NUM_HASHES), np.int32),
+    "candidate_product_surface": ((NUM_CANDIDATES,), np.int32),
+    "labels": ((NUM_CANDIDATES, NUM_ACTIONS), np.float32),
+}
+
+
+def load_parquet_dataset(
+    data_dir: str,
+    max_samples: int | None = None,
+    max_files: int | None = None,
+    row_group_batch_size: int = 8192,
+) -> dict:
+    """流式加载目录下所有 Parquet，返回紧凑 numpy 字典。
+
+    为什么用 `iter_batches` 而不是 `pq.read_table + concat`：
+      - 单个 Parquet 解压后可能达到数 GB，再整个目录 concat 容易导致 macOS
+        下被内核静默杀死（Python 进程 exit code 也会是 0），日志表现为“开始加
+        载...”之后沉默退出。
+      - 按 RowGroup/batch 逐块读取并立即 flatten+cast 为紧凑 int32/float32，
+        peak memory 稳定在单个 chunk 的规模。
+
+    参数：
+      max_samples: 累计行数达到此值后立即停止，便于快速试跡。
+      max_files:   只读前 N 个 Parquet 文件（文件已按名排序）。
+      row_group_batch_size: 分块读取时每块的行数。
     """
     try:
+        import pyarrow as pa  # noqa: F401
         import pyarrow.parquet as pq
     except ImportError:
         raise ImportError("读取 Parquet 需要安装 pyarrow：uv add pyarrow")
 
-    table = pq.read_table(parquet_path)
-    df = table.to_pydict()
-    n = min(batch_size, len(df["user_hashes"]))
-
-    batch = RecsysBatch(
-        user_hashes=np.array(df["user_hashes"][:n], dtype=np.int32),
-        history_post_hashes=np.array(df["history_post_hashes"][:n], dtype=np.int32),
-        history_author_hashes=np.array(df["history_author_hashes"][:n], dtype=np.int32),
-        history_actions=np.array(df["history_actions"][:n], dtype=np.float32),
-        history_product_surface=np.array(df["history_product_surface"][:n], dtype=np.int32),
-        candidate_post_hashes=np.array(df["candidate_post_hashes"][:n], dtype=np.int32),
-        candidate_author_hashes=np.array(df["candidate_author_hashes"][:n], dtype=np.int32),
-        candidate_product_surface=np.array(df["candidate_product_surface"][:n], dtype=np.int32),
-    )
-    labels = np.array(df["labels"][:n], dtype=np.float32)
-    return batch, labels
-
-
-def iter_parquet_dir(data_dir: str, batch_size: int):
-    """遍历目录下所有 Parquet 文件，逐 batch 产出 (batch, labels)。"""
     files = sorted(Path(data_dir).rglob("*.parquet"))
     if not files:
         raise FileNotFoundError(f"在 {data_dir} 下没有找到任何 .parquet 文件")
-    logger.info(f"找到 {len(files)} 个 Parquet 文件")
+    if max_files is not None:
+        files = files[:max_files]
+    logger.info(
+        f"找到 {len(files)} 个 Parquet 文件"
+        + (f"（限制 max_samples={max_samples}）" if max_samples else "")
+        + "，开始流式加载..."
+    )
+
+    # 每列各自占一个小 chunk 列表，最后 concatenate，避免把 arrow table 整体做留存。
+    chunks: dict[str, list[np.ndarray]] = {name: [] for name in _PARQUET_COLUMN_SPEC}
+    total_rows = 0
     for f in files:
+        if max_samples is not None and total_rows >= max_samples:
+            break
         try:
-            yield load_parquet_batch(str(f), batch_size)
+            pf = pq.ParquetFile(str(f))
         except Exception as e:
             logger.warning(f"跳过 {f}：{e}")
+            continue
+        for rb in pf.iter_batches(
+            batch_size=row_group_batch_size,
+            columns=list(_PARQUET_COLUMN_SPEC.keys()),
+        ):
+            take = rb.num_rows
+            if max_samples is not None:
+                remain = max_samples - total_rows
+                if remain <= 0:
+                    break
+                if take > remain:
+                    rb = rb.slice(0, remain)
+                    take = remain
+            tbl = pa.Table.from_batches([rb])
+            for name, (tail_shape, dtype) in _PARQUET_COLUMN_SPEC.items():
+                chunks[name].append(_col_to_numpy(tbl[name], tail_shape, dtype))
+            total_rows += take
+            del tbl, rb
+        logger.info(f"  已加载 {f.name}，累计 {total_rows} 行")
+
+    if total_rows == 0:
+        raise RuntimeError(f"{data_dir} 下所有 Parquet 都无法读取")
+
+    logger.info(f"共加载 {total_rows} 条样本，正在拼接紧凑 numpy...")
+    data = {name: np.concatenate(arrs, axis=0) for name, arrs in chunks.items()}
+    return data
+
+
+def _make_batch_labels(data: dict, sl) -> tuple[RecsysBatch, np.ndarray]:
+    """从 numpy 字典按索引切出 (RecsysBatch, labels)。供 in-memory 与 streaming 共用。"""
+    batch = RecsysBatch(
+        user_hashes=data["user_hashes"][sl],
+        history_post_hashes=data["history_post_hashes"][sl],
+        history_author_hashes=data["history_author_hashes"][sl],
+        history_actions=data["history_actions"][sl],
+        history_product_surface=data["history_product_surface"][sl],
+        candidate_post_hashes=data["candidate_post_hashes"][sl],
+        candidate_author_hashes=data["candidate_author_hashes"][sl],
+        candidate_product_surface=data["candidate_product_surface"][sl],
+    )
+    labels = data["labels"][sl]
+    return batch, labels
+
+
+def iterate_parquet_dataset(
+    data: dict,
+    batch_size: int,
+    shuffle: bool = True,
+    seed: int = 0,
+):
+    """把内存中的数据按 batch_size 无限循环切片产出 (RecsysBatch, labels)。
+
+    每个 epoch 结束会重新 shuffle 索引。
+    """
+    n = len(data["user_hashes"])
+    if n < batch_size:
+        raise ValueError(f"样本数 {n} 小于 batch_size {batch_size}")
+    rng = np.random.default_rng(seed)
+    while True:
+        idx = rng.permutation(n) if shuffle else np.arange(n)
+        for start in range(0, n - batch_size + 1, batch_size):
+            yield _make_batch_labels(data, idx[start:start + batch_size])
+
+
+def stream_parquet_batches(
+    data_dir: str,
+    batch_size: int,
+    shuffle_buffer_size: int = 16384,
+    max_files: int | None = None,
+    row_group_batch_size: int = 8192,
+    seed: int = 0,
+):
+    """无限流式产出 (RecsysBatch, labels)，内存 O(shuffle_buffer)，与数据集大小无关。
+
+    策略：
+      1. 遍历所有 parquet 文件；iter_batches 分块读取、flatten+cast 为紧凑 numpy。
+      2. 将 chunks 累加到 shuffle buffer；累计达到 shuffle_buffer_size 后做一次
+         局部全排列 + 按 batch_size 切片输出，近似于 TF shuffle buffer 的效果。
+      3. 不满 batch 的残留行转入下一轮 buffer，避免丢数据。
+      4. 文件读完后回到开头，无限 epoch。
+
+    参数：
+      shuffle_buffer_size: 内存中同时保留的样本数。默认 16384 ≈ 62 MB (每样 ~3.8 KB)。
+      row_group_batch_size: 单次从 parquet 读取的行数。
+    """
+    try:
+        import pyarrow as pa  # noqa: F401
+        import pyarrow.parquet as pq
+    except ImportError:
+        raise ImportError("读取 Parquet 需要安装 pyarrow：uv add pyarrow")
+
+    files = sorted(Path(data_dir).rglob("*.parquet"))
+    if not files:
+        raise FileNotFoundError(f"在 {data_dir} 下没有找到任何 .parquet 文件")
+    if max_files is not None:
+        files = files[:max_files]
+    logger.info(
+        f"[streaming] 覆盖 {len(files)} 个 Parquet 文件，"
+        f"shuffle_buffer={shuffle_buffer_size}, chunk={row_group_batch_size}"
+    )
+    rng = np.random.default_rng(seed)
+
+    if shuffle_buffer_size < batch_size:
+        raise ValueError(f"shuffle_buffer_size {shuffle_buffer_size} 小于 batch_size {batch_size}")
+
+    def _chunk_iter():
+        """无限产出每个 chunk 的紧凑 numpy 字典。"""
+        epoch = 0
+        while True:
+            epoch += 1
+            for f in files:
+                try:
+                    pf = pq.ParquetFile(str(f))
+                except Exception as e:
+                    logger.warning(f"跳过 {f}：{e}")
+                    continue
+                for rb in pf.iter_batches(
+                    batch_size=row_group_batch_size,
+                    columns=list(_PARQUET_COLUMN_SPEC.keys()),
+                ):
+                    tbl = pa.Table.from_batches([rb])
+                    chunk = {
+                        name: _col_to_numpy(tbl[name], tail, dtype)
+                        for name, (tail, dtype) in _PARQUET_COLUMN_SPEC.items()
+                    }
+                    del tbl, rb
+                    yield chunk
+            logger.info(f"[streaming] 完成第 {epoch} 轮遍历，继续下一轮 epoch")
+
+    chunks: dict[str, list[np.ndarray]] = {name: [] for name in _PARQUET_COLUMN_SPEC}
+    in_buffer = 0
+    for chunk in _chunk_iter():
+        size = len(chunk["user_hashes"])
+        for name in chunks:
+            chunks[name].append(chunk[name])
+        in_buffer += size
+        if in_buffer < shuffle_buffer_size:
+            continue
+        # buffer 满，一次性全排列 + 切 batch
+        merged = {name: np.concatenate(arrs, axis=0) for name, arrs in chunks.items()}
+        perm = rng.permutation(in_buffer)
+        n_full = (in_buffer // batch_size) * batch_size
+        for start in range(0, n_full, batch_size):
+            yield _make_batch_labels(merged, perm[start:start + batch_size])
+        # 不满 batch 的残留行留给下一轮，避免丢数据
+        leftover = in_buffer - n_full
+        if leftover > 0:
+            tail_sl = perm[n_full:]
+            chunks = {name: [merged[name][tail_sl]] for name in merged}
+            in_buffer = leftover
+        else:
+            chunks = {name: [] for name in chunks}
+            in_buffer = 0
 
 
 # ── 检查点保存 ────────────────────────────────────────────────────────────────
@@ -288,7 +523,12 @@ def train(args):
         user_emb, post_emb, author_emb = init_embedding_tables()
         logger.info("随机初始化嵌入表")
 
-    # 2. 初始化模型参数
+    # 2. 嵌入表上设备（一次性，之后 jnp.take 全部在设备上完成）
+    user_emb_dev = jax.device_put(jnp.asarray(user_emb))
+    post_emb_dev = jax.device_put(jnp.asarray(post_emb))
+    author_emb_dev = jax.device_put(jnp.asarray(author_emb))
+
+    # 3. 初始化模型参数（init 阶段仍用 host numpy 查表，JIT 前一次性即可）
     loss_transform = hk.without_apply_rng(hk.transform(loss_fn))
 
     dummy_batch, dummy_labels = make_simulated_batch(batch_size=1)
@@ -302,52 +542,115 @@ def train(args):
         params = load_checkpoint(args.resume_params)
         logger.info(f"已加载模型参数：{args.resume_params}")
 
-    # 3. 初始化优化器
+    # 4. 优化器
     optimizer = optax.adam(learning_rate=args.lr)
     opt_state = optimizer.init(params)
 
-    # 4. JIT 编译 train_step
+    # 5. JIT 编译 train_step：查表与前反向一起融合，避免 per-step host↔device 拷贝。
+    def jax_lookup(batch: RecsysBatch) -> RecsysEmbeddings:
+        return RecsysEmbeddings(
+            user_embeddings=user_emb_dev[batch.user_hashes],
+            history_post_embeddings=post_emb_dev[batch.history_post_hashes],
+            candidate_post_embeddings=post_emb_dev[batch.candidate_post_hashes],
+            history_author_embeddings=author_emb_dev[batch.history_author_hashes],
+            candidate_author_embeddings=author_emb_dev[batch.candidate_author_hashes],
+        )
+
     @jax.jit
-    def train_step(params, opt_state, batch, embeddings, labels):
-        loss_val, grads = jax.value_and_grad(
-            lambda p: loss_transform.apply(p, batch, embeddings, labels)
-        )(params)
+    def train_step(params, opt_state, batch, labels):
+        def loss(p):
+            embeddings = jax_lookup(batch)
+            return loss_transform.apply(p, batch, embeddings, labels)
+        loss_val, grads = jax.value_and_grad(loss)(params)
         updates, new_opt_state = optimizer.update(grads, opt_state)
         new_params = optax.apply_updates(params, updates)
         return new_params, new_opt_state, loss_val
 
-    # 5. 训练循环
+    # 6. 数据源：根据 --streaming 选择 in-memory 或流式迭代器
+    if args.data_dir is not None:
+        if args.streaming:
+            data_iter = stream_parquet_batches(
+                args.data_dir,
+                batch_size=args.batch_size,
+                shuffle_buffer_size=args.shuffle_buffer,
+                max_files=args.max_files,
+                seed=0,
+            )
+        else:
+            dataset = load_parquet_dataset(
+                args.data_dir,
+                max_samples=args.max_samples,
+                max_files=args.max_files,
+            )
+            data_iter = iterate_parquet_dataset(dataset, args.batch_size, shuffle=True, seed=0)
+    else:
+        sim_rng = np.random.default_rng(0)
+
+        def _sim_gen():
+            while True:
+                yield make_simulated_batch_fast(args.batch_size, sim_rng)
+
+        data_iter = _sim_gen()
+
+    # 7. 训练循环：loss 在 device 上累加，每 log_every 步才同步一次
     logger.info("开始训练循环（首次 step 因 JIT 编译会较慢）...")
+    loss_accum = jnp.zeros((), dtype=jnp.float32)
+    accum_count = 0
     step = 0
-    loss_accum = 0.0
 
     while step < args.steps:
-        # 数据来源：真实 Parquet 或模拟数据
-        if args.data_dir is not None:
-            data_iter = iter_parquet_dir(args.data_dir, args.batch_size)
-        else:
-            data_iter = (make_simulated_batch(args.batch_size) for _ in range(args.steps))
+        batch, labels = next(data_iter)
+        # tree_map 下异步 device_put，下一步 train_step 会与之流水重叠
+        batch_dev = jax.tree_util.tree_map(jnp.asarray, batch)
+        labels_dev = jnp.asarray(labels)
 
-        for batch, labels in data_iter:
-            if step >= args.steps:
-                break
+        params, opt_state, loss_val = train_step(params, opt_state, batch_dev, labels_dev)
+        loss_accum = loss_accum + loss_val
+        accum_count += 1
+        step += 1
 
-            embeddings = lookup_embeddings(batch, user_emb, post_emb, author_emb)
-            labels_jnp = jnp.array(labels)
+        if step % args.log_every == 0:
+            avg_loss = float(loss_accum) / max(accum_count, 1)
+            logger.info(f"step {step:5d} / {args.steps}  loss={avg_loss:.4f}")
+            loss_accum = jnp.zeros((), dtype=jnp.float32)
+            accum_count = 0
 
-            params, opt_state, loss_val = train_step(params, opt_state, batch, embeddings, labels_jnp)
-            loss_accum += float(loss_val)
-            step += 1
+        if step % args.save_every == 0:
+            save_checkpoint(args.ckpt_dir, params, step)
 
-            if step % args.log_every == 0:
-                avg_loss = loss_accum / args.log_every
-                logger.info(f"step {step:5d} / {args.steps}  loss={avg_loss:.4f}")
-                loss_accum = 0.0
+    # 8. 可选 benchmark：训练循环之后追加一段稳态 step 计时（不会写 checkpoint）
+    if args.benchmark:
+        import time
+        warmup = max(0, args.warmup_steps)
+        bench = max(1, args.benchmark_steps)
+        logger.info(f"[bench] warmup={warmup} 步，计时={bench} 步，batch={args.batch_size}")
+        for _ in range(warmup):
+            batch, labels = next(data_iter)
+            batch_dev = jax.tree_util.tree_map(jnp.asarray, batch)
+            labels_dev = jnp.asarray(labels)
+            params, opt_state, loss_val = train_step(
+                params, opt_state, batch_dev, labels_dev
+            )
+        # barrier：确保 warmup 都落盘后再开始计时
+        jax.block_until_ready(loss_val)
+        t0 = time.perf_counter()
+        for _ in range(bench):
+            batch, labels = next(data_iter)
+            batch_dev = jax.tree_util.tree_map(jnp.asarray, batch)
+            labels_dev = jnp.asarray(labels)
+            params, opt_state, loss_val = train_step(
+                params, opt_state, batch_dev, labels_dev
+            )
+        jax.block_until_ready(loss_val)
+        dt = time.perf_counter() - t0
+        step_ms = dt / bench * 1000
+        samples_per_sec = bench * args.batch_size / dt
+        logger.info(
+            f"[bench] avg_step={step_ms:.2f} ms, samples/sec={samples_per_sec:.1f} "
+            f"({bench} steps after {warmup} warmup)"
+        )
 
-            if step % args.save_every == 0:
-                save_checkpoint(args.ckpt_dir, params, step)
-
-    # 6. 最终保存
+    # 9. 最终保存
     save_checkpoint(args.ckpt_dir, params, step)
     save_embedding_tables(emb_path, user_emb, post_emb, author_emb)
     logger.info("=== 训练完成 ===")
@@ -373,6 +676,34 @@ if __name__ == "__main__":
     parser.add_argument("--save-every", type=int, default=100, help="每隔多少步保存一次检查点")
     parser.add_argument("--resume-params", type=str, default=None, help="从此路径加载模型参数继续训练")
     parser.add_argument("--resume-emb", action="store_true", help="从 ckpt-dir 加载嵌入表继续训练")
+    parser.add_argument(
+        "--max-samples", type=int, default=None,
+        help="in-memory 模式下 Parquet 最多加载的样本行数（防 OOM / 快速试跡）",
+    )
+    parser.add_argument(
+        "--max-files", type=int, default=None,
+        help="只读 Parquet 目录下排序后前 N 个文件",
+    )
+    parser.add_argument(
+        "--streaming", action="store_true",
+        help="流式读取 Parquet，内存与数据集大小解耦（推荐用于全量大数据训练）",
+    )
+    parser.add_argument(
+        "--shuffle-buffer", type=int, default=16384,
+        help="streaming 模式下的 shuffle buffer 大小（样本行数，默认 16384 ≈ 62 MB）",
+    )
+    parser.add_argument(
+        "--benchmark", action="store_true",
+        help="训练循环后追加一段稳态 step 计时，输出平均 step 耗时与 samples/sec",
+    )
+    parser.add_argument(
+        "--benchmark-steps", type=int, default=50,
+        help="benchmark 阶段的计时步数",
+    )
+    parser.add_argument(
+        "--warmup-steps", type=int, default=10,
+        help="benchmark 阶段的热身步数（不计入结果）",
+    )
     args = parser.parse_args()
 
     train(args)
