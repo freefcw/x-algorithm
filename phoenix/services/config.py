@@ -60,7 +60,15 @@ class RankerServiceConfig:
     # 监控
     enable_metrics: bool = True
     metrics_port: int = 9091
-    
+
+    # ── 精排策略（策略模式）──
+    # 主策略: phoenix (方案B) | rule (方案A) | deepctr (方案C) | llm (方案D)
+    strategy: str = "phoenix"
+    # 可选兜底策略；主策略初始化或推理异常时自动降级
+    fallback_strategy: Optional[str] = None
+    # 规则策略可选：post 元数据 parquet，提供 post_id / publish_time 字段用于新鲜度打分
+    rule_post_metadata_path: Optional[str] = None
+
     @classmethod
     def from_env(cls) -> "RankerServiceConfig":
         """从环境变量加载配置"""
@@ -73,6 +81,9 @@ class RankerServiceConfig:
             feature_service_url=os.getenv("FEATURE_SERVICE_URL", "http://localhost:8090"),
             enable_metrics=os.getenv("ENABLE_METRICS", "true").lower() == "true",
             metrics_port=int(os.getenv("RANKER_METRICS_PORT", "9091")),
+            strategy=os.getenv("RANKER_STRATEGY", "phoenix"),
+            fallback_strategy=os.getenv("RANKER_FALLBACK_STRATEGY") or None,
+            rule_post_metadata_path=os.getenv("RANKER_RULE_POST_META") or None,
         )
 
 

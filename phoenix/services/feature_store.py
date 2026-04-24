@@ -72,6 +72,25 @@ class FeatureStore(abc.ABC):
         """获取作者 embedding"""
         pass
 
+    @abc.abstractmethod
+    async def build_recsys_batch(
+        self,
+        user_id: str,
+        candidate_ids: List[str],
+        history_len: int,
+        num_actions: int,
+        num_user_hashes: int,
+        num_item_hashes: int,
+        num_author_hashes: int,
+        product_surface_vocab_size: int,
+    ) -> Tuple[RecsysBatch, RecsysEmbeddings]:
+        """
+        组装完整 (RecsysBatch, RecsysEmbeddings)，供精排策略直接消费。
+
+        各后端可按需要复用更细粒度的 get_* 接口拼接，也可以在此处做批量优化。
+        """
+        pass
+
 
 class MockFeatureStore(FeatureStore):
     """Mock 特征存储 - 用于开发和测试"""
