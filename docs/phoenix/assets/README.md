@@ -2,6 +2,8 @@
 
 本目录用于存放从 `docs/phoenix/*.md` 中 Mermaid 代码块导出的图资源。
 
+源文件以 `docs/phoenix/*.md` 内的 Mermaid 代码块为准；本目录下的 `mmd/`、`svg/`、`png/` 都是导出产物。修改图时先改 Markdown，再重新运行导出脚本。
+
 目录约定：
 
 - `mmd/`：抽取后的 Mermaid 源文件。

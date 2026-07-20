@@ -137,22 +137,28 @@ sequenceDiagram
 
 | 依赖 | 当前实现状态 | 说明 |
 | --- | --- | --- |
-| `ThunderClient` | 简化版真实客户端 | 会连 gRPC Thunder 服务 |
-| `UserActionSequenceFetcher` | stub | 默认返回空行为序列 |
-| `PhoenixRetrievalClient` | stub | 默认不返回候选 |
-| `PhoenixPredictionClient` | stub | 默认返回空预测 |
-| `StratoClient` | stub | 默认返回空用户特征，写缓存静默成功 |
-| `TESClient` | stub | 默认所有帖子无 core data / media / subscription |
+| `ThunderClient` | 简化版真实客户端 | 会连 gRPC Thunder 服务（`THUNDER_GRPC_ADDR`） |
+| `PhoenixRetrievalClient` | 真实 gRPC 客户端（可选） | 设置 `PHOENIX_RETRIEVAL_GRPC_ADDR` 后调用 Phoenix 网关；未设置退化为 stub（无网外候选） |
+| `PhoenixPredictionClient` | 真实 gRPC 客户端（可选） | 设置 `PHOENIX_PREDICT_GRPC_ADDR` 后调用 Phoenix 网关；未设置退化为 stub（空预测） |
+| `UserActionSequenceFetcher` | stub | 返回空行为序列；`HOME_MIXER_DEMO=1` 时装配层改为注入 `DemoUserActionSequenceFetcher`（合成序列） |
+| `StratoClient` | stub | 返回空用户特征；演示模式注入 `DemoStratoClient`（固定关注列表）；写缓存静默成功 |
+| `TESClient` | stub | 所有帖子无 core data；演示模式注入 `DemoTESClient`（占位文本） |
 | `GizmoduckClient` | stub | 默认所有用户资料为空 |
 | `VisibilityFilteringClient` | stub | 默认全部通过审核 |
 
+演示实现是独立的 `Demo*` 类型，由 `phoenix_candidate_pipeline::prod()` 在装配时按 `HOME_MIXER_DEMO` 选择注入；生产 stub 内部没有任何演示分支，替换 stub 时不需要关心演示逻辑。演示数据的共享契约（账号集合、Snowflake 工具）在 `proto/src/demo.rs`，thunder 与 home-mixer 共用一份。
+
 ```mermaid
 flowchart TD
-    A["home-mixer"] --> B["ThunderClient<br/>相对可用"]
-    A --> C["Strato / TES / Phoenix / UAS / Gizmoduck / VF<br/>大量 stub"]
-    B --> D["可拿到部分网内候选"]
-    C --> E["但补全、召回、打分和审核大量退化"]
+    A["home-mixer"] --> B["ThunderClient<br/>真连 gRPC"]
+    A --> P["Phoenix Predict / Retrieval<br/>设环境变量后真连 gRPC 网关"]
+    A --> C["Strato / TES / UAS / Gizmoduck / VF<br/>stub（部分支持演示模式）"]
+    B --> D["网内候选"]
+    P --> E["网外候选 + 行为概率"]
+    C --> F["默认空数据会导致链路退化；<br/>HOME_MIXER_DEMO=1 可自洽跑通"]
 ```
+
+接真实平台时的替换顺序和每个 stub 对应的改造点，见 [getting-started：从演示到真实系统](../getting-started/06-从演示到真实系统.md)。
 
 ## 7. S2S 认证的现实状态
 

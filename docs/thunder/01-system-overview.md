@@ -25,6 +25,7 @@ Thunder 在这套仓库里的定位非常清晰：它是网络内实时召回服
 |---|---|---|
 | `main.rs` | 已实现 | 服务入口，负责组装依赖并启动线程/端口 |
 | Kafka v2 消费器 | 已实现 | 从 `in-network-events` 读取 `InNetworkEvent` |
+| `demo_seed.rs` | 已实现 | 演示模式数据源：`--demo-seed-posts N` 时生成模拟帖子灌入内存，替代 Kafka |
 | `PostStore` | 已实现 | 内存中的帖子索引与删除墓碑集合 |
 | `ThunderServiceImpl` | 已实现 | gRPC 查询入口 |
 | `StratoClient` | stub | 按设计用于补齐 following list，当前总返回空 |
@@ -74,10 +75,13 @@ flowchart LR
 4. 创建 `ThunderServiceImpl`。
 5. 立即启动 gRPC server。
 6. 立即启动 HTTP server。
-7. 启动 Kafka 消费线程。
-8. 在 `is_serving=true` 时，等待每个 Kafka 线程发送一次初始化信号。
-9. 调用 `post_store.finalize_init()`，随后开启统计日志和自动裁剪。
-10. 打印 `Server ready`。
+7. 根据运行模式二选一：
+   - **演示模式**（`--demo-seed-posts N > 0`）：调用 `demo_seed::generate_demo_posts` 生成 N 条模拟帖子直接灌入 `PostStore`，不启动 Kafka。用于没有 Kafka 环境时快速跑通链路（作者固定为 101~105，与 home-mixer 演示模式的关注列表一致）。
+   - **正常模式**：启动 Kafka 消费线程；在 `is_serving=true` 时，等待每个 Kafka 线程发送一次初始化信号（每线程需先消费满一个 batch，默认 1000 条）。
+8. 调用 `post_store.finalize_init()`，随后开启统计日志和自动裁剪。
+9. 打印 `Server ready`。
+
+> 注意：正常模式下如果没有可用的 Kafka（或消息量不足一个 batch），启动会一直停在等待初始化信号，这是"没有 Kafka 就起不来"的根因。本地演示请用 `--demo-seed-posts`。
 
 ```mermaid
 sequenceDiagram

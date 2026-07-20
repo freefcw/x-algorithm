@@ -74,8 +74,9 @@ Phoenix 里实际上存在两套 API 形态。
 
 `services/` 下把精排和召回拆开：
 
-- `services/ranker_service.py`
-- `services/retrieval_service.py`
+- `services/ranker_service.py`：精排 HTTP 服务（FastAPI，8081）。
+- `services/retrieval_service.py`：召回 HTTP 服务（FastAPI，8082）。
+- `services/grpc_gateway.py`：gRPC 网关（50053），实现 `proto/definitions/recsys.proto` 的 `PhoenixPredictionService` / `PhoenixRetrievalService`，是 home-mixer 调用 Phoenix 的实际入口；与 HTTP 服务的区别是它真正消费请求里的用户行为序列来构造模型输入。
 
 适合生产化部署时分开扩容和隔离资源。
 
@@ -83,11 +84,16 @@ Phoenix 里实际上存在两套 API 形态。
 graph LR
     A[api_server.py] --> B[单体 API]
 
-    C[run_services.py] --> D[ranker_service.py]
+    C[scripts/run_services.py] --> D[ranker_service.py]
     C --> E[retrieval_service.py]
+
+    K[scripts/run_grpc_gateway.py] --> L[grpc_gateway.py<br/>gRPC 50053]
+    L -.被调用.- M[home-mixer]
 
     D --> F[精排模型]
     E --> G[召回模型]
+    L --> F
+    L --> G
 ```
 
 ## 5. 配置体系
@@ -133,7 +139,7 @@ graph TD
 
 `services/model_registry.py` 做了一个轻量注册表：
 
-- 支持 `.pkl`、`.pickle`、`.npy`、目录格式。
+- 支持 `.npz`（训练脚本标准产物）、`.pkl`、`.pickle`、`.npy`、目录格式。
 - 能把 `numpy` 参数转成 `jax` 参数。
 - 支持按文件修改时间检查热更新。
 

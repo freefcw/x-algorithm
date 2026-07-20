@@ -2,10 +2,12 @@
 
 ## 1. 这篇文档的边界
 
-Phoenix 当前仓库并没有训练脚本、训练循环或损失函数实现，因此这篇文档分成两层事实：
+> 更新说明：训练脚本现已落地——`phoenix/scripts/train_ranker.py`（精排）和 `phoenix/scripts/train_retrieval.py`（召回）实现了训练循环、损失函数、Parquet 数据加载和 checkpoint 保存。**怎么跑训练**请看 [phoenix/docs/训练指引.md](../../phoenix/docs/训练指引.md) 和 [getting-started 第三步](../getting-started/04-第三步-训练自己的模型.md)。本文保留的价值是从模型接口出发解释训练契约的"为什么"。
+
+这篇文档分成两层事实：
 
 - 代码已明确表达的训练输入契约：来自 `RecsysBatch`、`RecsysEmbeddings`、模型输出形状。
-- 结合现有规格文档可合理推断的训练闭环：主要参考仓库中的 `docs/training_data_spec.md`。
+- 结合现有规格文档描述的训练闭环：主要参考仓库中的 [../training/training_data_spec.md](../training/training_data_spec.md)。
 
 凡是属于第二类内容，本文都会明确标注为“推断”。
 
@@ -55,7 +57,7 @@ Phoenix 的训练输入契约虽然没有被训练代码消费，但已经被模
 
 ## 4. 排序模型应该如何构造训练样本
 
-这一部分与 `docs/training_data_spec.md` 一致，也和当前模型接口完全兼容。
+这一部分与 [../training/training_data_spec.md](../training/training_data_spec.md) 一致，也和当前模型接口完全兼容。
 
 ### 4.1 一条排序样本是什么
 
@@ -88,7 +90,7 @@ sequenceDiagram
 labels: [B, C, num_actions]
 ```
 
-这和 `docs/training_data_spec.md` 中的 `labels [B, 8, 19]` 是一致的。
+这和 [../training/training_data_spec.md](../training/training_data_spec.md) 中的 `labels [B, 8, 19]` 是一致的。
 
 ### 4.3 当前代码暗示的目标语义
 
@@ -178,7 +180,7 @@ flowchart TD
 
 ## 8. 现有训练数据规格能支持到什么程度
 
-仓库内的 [training_data_spec.md](/Users/hejun/work/mp/x-algorithm/docs/training_data_spec.md) 已经提供了较完整的数据规格，包括：
+仓库内的 [training_data_spec.md](../training/training_data_spec.md) 已经提供了较完整的数据规格，包括：
 
 - 曝光事件表
 - 行为日志表

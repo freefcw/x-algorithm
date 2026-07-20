@@ -60,6 +60,8 @@ services/
 
 ## 快速启动
 
+以下命令在 `phoenix/` 目录下执行。
+
 ### 1. 安装依赖
 
 ```bash
@@ -70,18 +72,18 @@ uv sync --group service
 
 **精排服务:**
 ```bash
-python run_services.py ranker
+uv run scripts/run_services.py ranker
 ```
 
 **召回服务:**
 ```bash
-python run_services.py retrieval
+uv run scripts/run_services.py retrieval
 ```
 
 ### 3. 开发模式 (同时启动两个服务)
 
 ```bash
-python run_services.py all
+uv run scripts/run_services.py all
 ```
 
 服务将启动在:
@@ -92,10 +94,28 @@ python run_services.py all
 
 ### 4. 加载 Checkpoint (可选)
 
+Checkpoint 是训练脚本（`scripts/train_*.py`）产出的 `.npz` 文件：
+
 ```bash
-python run_services.py ranker --ranker-checkpoint ./checkpoints/ranker.pkl
-python run_services.py retrieval --retrieval-checkpoint ./checkpoints/retrieval.pkl
+uv run scripts/run_services.py ranker --ranker-checkpoint ./checkpoints/model_params_step200.npz
+uv run scripts/run_services.py retrieval --retrieval-checkpoint ./checkpoints/retrieval_params_step200.npz
 ```
+
+## gRPC 网关（供 home-mixer 调用）
+
+上面的 HTTP 服务面向人工调试和外部系统。推荐主链路中，home-mixer（Rust）通过
+`proto/definitions/recsys.proto` 定义的 gRPC 协议调用 Phoenix，对应服务是：
+
+```bash
+uv run scripts/run_grpc_gateway.py                # 随机权重，监听 50053
+uv run scripts/run_grpc_gateway.py \
+    --ranker-checkpoint checkpoints/model_params_step200.npz \
+    --emb-tables checkpoints/embedding_tables.npz  # 加载训练产物
+```
+
+实现见 `services/grpc_gateway.py`：真正消费请求里的用户行为序列构造模型输入，
+候选池在启动时合成并用候选塔编码（生产环境应替换为离线向量索引）。
+端到端用法见 [docs/getting-started 第四步](../../docs/getting-started/05-第四步-跑通完整推荐链路.md)。
 
 ## API 接口
 
@@ -229,7 +249,7 @@ WORKDIR /app
 COPY . .
 RUN pip install uv && uv sync --group service
 EXPOSE 8081 9091
-CMD ["python", "run_services.py", "ranker"]
+CMD ["uv", "run", "scripts/run_services.py", "ranker"]
 ```
 
 **Kubernetes:**
@@ -253,7 +273,7 @@ spec:
         - containerPort: 9091
         env:
         - name: RANKER_CHECKPOINT_PATH
-          value: "/models/ranker.pkl"
+          value: "/models/model_params_step200.npz"
 ```
 
 ### 5. 监控告警
@@ -279,7 +299,7 @@ Grafana Dashboard 推荐维度:
 
 ```bash
 # 启动所有服务
-python run_services.py all
+uv run scripts/run_services.py all
 
 # 另一个终端调用 API
 curl -X POST http://localhost:8081/v1/rank \

@@ -22,6 +22,8 @@
 
 ### 1.2 默认 stub 组合下，流水线几乎必然返回空结果
 
+> 现状更新：这个问题已经有了标准解法——`HOME_MIXER_DEMO=1` 让 Strato/UAS/TES stub 返回自洽演示数据，配合 Phoenix gRPC 网关和 thunder 演示模式即可端到端出结果（见 [getting-started 第四步](../getting-started/05-第四步-跑通完整推荐链路.md)）。以下退化链描述的是**不设环境变量**的默认状态，细节以 [home-mixer 风险文档](../home-mixer/06-current-behavior-risks-roadmap.md) 为权威。
+
 关键链路如下：
 
 1. UAS fetcher 返回空序列
@@ -31,28 +33,15 @@
 5. `TESClient` 返回空 core data
 6. `CoreDataHydrationFilter` 过滤掉所有 `tweet_text` 为空的候选
 
-结果：
+### 1.3 `WeightedScorer` 的负分 offset 公式（已修复）
 
-- 不是“排序效果不好”
-- 而是默认装配下几乎没有候选能穿过整条链路
-
-如果目标是让 demo 先跑出非空结果，优先级应该是补齐外部依赖或临时放宽过滤条件，而不是继续增加 scorer。
-
-### 1.3 `WeightedScorer` 的负分 offset 公式与注释不一致
-
-`params.rs` 注释声称负分会被映射到一个非负区间，但当前代码：
-
-```rust
-(combined_score + p::NEGATIVE_WEIGHTS_SUM) / p::WEIGHTS_SUM * p::NEGATIVE_SCORES_OFFSET
-```
-
-在 `NEGATIVE_WEIGHTS_SUM = -591.0` 时会把负分推得更负，而不是映射到 `[0, 1]`。
-
-这意味着：
-
-- 当前实现语义和文档注释不一致
-- 排序结果可能与预期相反
-- 如果后续有人按注释调参数，会得到错误直觉
+> 现状更新：原实现 `(combined_score + NEGATIVE_WEIGHTS_SUM) / WEIGHTS_SUM * OFFSET` 会把负分推得更负、与注释语义相反。当前代码已改为以负权重和的绝对值做线性归一：
+>
+> ```rust
+> (combined_score - p::NEGATIVE_WEIGHTS_SUM) / -p::NEGATIVE_WEIGHTS_SUM * p::NEGATIVE_SCORES_OFFSET
+> ```
+>
+> 负分被映射进 `[0, NEGATIVE_SCORES_OFFSET)`，正分整体抬高 `NEGATIVE_SCORES_OFFSET`，排序语义与注释一致。保留本节作为"公式与注释必须同改"的提醒。
 
 ### 1.4 Post-selection 过滤后没有回填机制
 

@@ -54,20 +54,17 @@ flowchart TD
 
 ## 3. 环境变量
 
-当前代码里真正读取的环境变量很少。
-
 ### 3.1 已实际读取
 
 | 变量 | 读取位置 | 作用 | 默认行为 |
 | --- | --- | --- | --- |
 | `THUNDER_GRPC_ADDR` | `clients/thunder_client.rs` | Thunder gRPC 地址 | 默认 `http://localhost:50052` |
+| `PHOENIX_PREDICT_GRPC_ADDR` | `clients/phoenix_prediction_client.rs` | Phoenix 精排 gRPC 地址 | 未设置时退化为 stub（空预测） |
+| `PHOENIX_RETRIEVAL_GRPC_ADDR` | `clients/phoenix_retrieval_client.rs` | Phoenix 召回 gRPC 地址 | 未设置时退化为 stub（无网外候选） |
+| `HOME_MIXER_DEMO` | `demo.rs`（仅装配层 `phoenix_candidate_pipeline::prod()` 读取） | 设为 `1` 时装配层注入 `Demo*` 客户端，返回自洽的演示数据（关注列表、行为序列、帖子文本） | 未设置时注入生产 stub，返回空数据 |
 | `APP_ENV` | `side_effects/cache_request_info_side_effect.rs` | 控制是否写请求缓存 | 非 `prod` 时 side effect 不启用 |
 
-### 3.2 仅在注释中预留
-
-| 变量 | 位置 | 当前状态 |
-| --- | --- | --- |
-| `PHOENIX_PREDICT_GRPC_ADDR` | `clients/phoenix_prediction_client.rs` | 只在注释里，当前未实际读取 |
+Phoenix 两个地址通常同时指向 `phoenix/scripts/run_grpc_gateway.py` 启动的网关（默认 `http://localhost:50053`）。完整启动组合见 [getting-started 第四步](../getting-started/05-第四步-跑通完整推荐链路.md)。
 
 ### 3.3 证书路径
 

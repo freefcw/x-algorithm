@@ -4,8 +4,9 @@
 
 现在推荐这样读：
 
-1. 先看主文档 [00-handbook.md](./00-handbook.md)
-2. 再按主题查附录 [appendices.md](./appendices.md)
+1. 想先把服务跑起来：去 [getting-started](../getting-started/)，那里有验证过的启动步骤
+2. 想理解实现：先看主文档 [00-handbook.md](./00-handbook.md)
+3. 再按主题查附录 [appendices.md](./appendices.md)
 
 先看结论：
 

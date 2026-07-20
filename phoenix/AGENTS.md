@@ -9,11 +9,13 @@
 ## 构建、测试与开发命令
 使用 `uv` 管理环境与依赖。
 
-- `uv sync --dev`：安装运行与测试依赖。
+- `uv sync --dev --group service`：安装运行、测试与服务依赖（含 grpcio）。
 - `uv run scripts/run_ranker.py`：运行精排模型示例。
 - `uv run scripts/run_retrieval.py`：运行召回模型示例。
 - `uv run scripts/train_ranker.py`：训练精排模型。
 - `uv run scripts/train_retrieval.py`：训练召回模型。
+- `uv run scripts/run_services.py all`：启动精排/召回 HTTP 服务（8081/8082）。
+- `uv run scripts/run_grpc_gateway.py`：启动供 home-mixer 调用的 gRPC 网关（50053）。
 - `uv run pytest`：运行全部 Python 测试。
 - `uv run pytest tests/test_recsys_model.py`：仅验证精排相关改动。
 - `uv run ty check`：做一次基础静态类型检查。

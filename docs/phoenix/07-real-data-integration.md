@@ -1,8 +1,10 @@
 # Phoenix 真实数据接入实操指引
 
+> 同主题的**完整操作手册**是 [phoenix/docs/真实数据接入指引.md](../../phoenix/docs/真实数据接入指引.md)（字段规范更全、与代码同步更勤），动手时以那份为准；本文侧重从代码结构角度解释"为什么这样接"。
+
 ## 1. 这篇文档解决什么问题
 
-`docs/training_data_spec.md` 解决的是"训练数据字段怎么定义"，`06-training-and-data.md` 解决的是"训练侧全局结构分析"。  
+[../training/training_data_spec.md](../training/training_data_spec.md) 解决的是"训练数据字段怎么定义"，`06-training-and-data.md` 解决的是"训练侧全局结构分析"。  
 本文档解决的是更靠近代码的实操问题：
 
 - 有了原始业务数据，如何一步步构造出 `RecsysBatch` 和 `RecsysEmbeddings`
@@ -76,7 +78,7 @@ def id_to_hashes(entity_id, num_hashes: int = 2, table_size: int = 100_000) -> l
     return [hash((entity_id, seed)) % table_size + 1 for seed in range(num_hashes)]
 ```
 
-> 与 `training_data_spec.md §4.1` 中的 MD5 版本等价，两种写法均可，保持训练与推理一致即可。
+> 与 [../training/training_data_spec.md](../training/training_data_spec.md) §4.1 中的 MD5 版本等价，两种写法均可，保持训练与推理一致即可。
 
 ### 3.4 嵌入表的两种状态
 
@@ -144,7 +146,7 @@ RecsysEmbeddings（查表结果）
 
 ### 4.3 完整构造代码
 
-参见仓库中的 `phoenix/run_real_data_demo.py`，该文件是本文档的可运行配套示例。
+参见仓库中的 `phoenix/scripts/run_real_data_demo.py`，该文件是本文档的可运行配套示例。
 
 核心流程：
 
@@ -243,31 +245,32 @@ runner.params = unflatten_dict({k: raw[k] for k in raw.files})  # 再覆盖
 
 ## 6. 训练流程的阶段路径
 
-当前项目只有推理，没有训练脚本。完整训练闭环需要分阶段建设：
+> 更新说明：下述阶段 1~4 均已在仓库中落地，操作方式见 [phoenix/docs/训练指引.md](../../phoenix/docs/训练指引.md)。本节保留阶段划分，作为理解训练闭环建设顺序的框架。
 
 ```
 阶段 1（已完成）
   用随机参数跑通推理流程
-  → run_ranker.py / run_retrieval.py 可正常运行
+  → scripts/run_ranker.py / scripts/run_retrieval.py 可正常运行
 
-阶段 2（下一步）
+阶段 2（已完成）
   用模拟数据 + 随机 labels 跑通训练循环（不需要真实数据）
-  → 验证损失函数、优化器、梯度流动正常
-  → 需要安装 optax：uv add optax
+  → uv run scripts/train_ranker.py（optax 已在依赖中）
 
-阶段 3
+阶段 3（已完成，需自备数据）
   接入真实行为日志数据
-  → 参考 docs/training_data_spec.md 的字段规范
-  → 参考本文档第 4 节构造 RecsysBatch / RecsysEmbeddings
+  → 参考 ../training/training_data_spec.md 的字段规范
+  → 工具链：examples/generate_example_data.py + data_preprocessor.py
+  → uv run scripts/train_ranker.py --data-dir ./data/training_samples
 
-阶段 4
-  保存训练产物，接回推理流程（情况 B）
-  → 参考本文档第 5 节的保存/加载代码
+阶段 4（已完成）
+  保存训练产物，接回推理流程
+  → 训练自动保存 model_params_step*.npz + embedding_tables.npz
+  → 服务加载：scripts/run_services.py / scripts/run_grpc_gateway.py 的 checkpoint 参数
 ```
 
 ### 6.1 训练数据来自哪里
 
-详细字段规范见 `docs/training_data_spec.md`。简要说：
+详细字段规范见 [../training/training_data_spec.md](../training/training_data_spec.md)。简要说：
 
 **需要采集 3 张表：**
 
@@ -356,8 +359,8 @@ assert (batch.candidate_post_hashes > 0).all()
 
 | 文档 | 位置 | 解决的问题 |
 |---|---|---|
-| 训练数据字段规范 | `docs/training_data_spec.md` | 原始日志字段定义、SQL 示例、Parquet 格式 |
+| 训练数据字段规范 | [../training/training_data_spec.md](../training/training_data_spec.md) | 原始日志字段定义、SQL 示例、Parquet 格式 |
 | 训练侧全局分析 | `docs/phoenix/06-training-and-data.md` | 训练与推理一致性、损失函数推断、训练缺口清单 |
 | 本文档 | `docs/phoenix/07-real-data-integration.md` | 哈希嵌入实操、构造代码、保存/加载、阶段路径 |
-| 可运行示例 | `phoenix/run_real_data_demo.py` | 端到端代码，直接 `uv run run_real_data_demo.py` |
+| 可运行示例 | `phoenix/scripts/run_real_data_demo.py` | 端到端代码，直接 `uv run scripts/run_real_data_demo.py` |
 | 双塔模型输入输出 | `phoenix/双塔模型输入输出指引文档.md` | 召回模型专项说明 |

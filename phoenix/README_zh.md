@@ -187,17 +187,24 @@ Phoenix 是一个预测用户对内容参与度（点赞、转发、回复等）
 ### 运行排序器 (Ranker)
 
 ```shell
-uv run run_ranker.py
+uv run scripts/run_ranker.py
 ```
 
 ### 运行检索 (Retrieval)
 
 ```shell
-uv run run_retrieval.py
+uv run scripts/run_retrieval.py
 ```
 
 ### 运行测试
 
 ```shell
-uv run pytest test_recsys_model.py test_recsys_retrieval_model.py
+uv run pytest
 ```
+
+### 更进一步
+
+- 训练自己的权重：`uv run scripts/train_ranker.py`（见 [docs/训练指引.md](docs/训练指引.md)）
+- HTTP 服务：`uv run scripts/run_services.py all`（见 [services/README.md](services/README.md)）
+- 供 home-mixer 调用的 gRPC 服务：`uv run scripts/run_grpc_gateway.py`
+- 端到端完整链路：在仓库根目录执行 `../scripts/run_demo.sh`

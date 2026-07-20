@@ -190,17 +190,24 @@ Install [uv](https://docs.astral.sh/uv/getting-started/installation/)
 ### Running the Ranker
 
 ```shell
-uv run run_ranker.py
+uv run scripts/run_ranker.py
 ```
 
 ### Running Retrieval
 
 ```shell
-uv run run_retrieval.py
+uv run scripts/run_retrieval.py
 ```
 
 ### Running Tests
 
 ```shell
-uv run pytest test_recsys_model.py test_recsys_retrieval_model.py
+uv run pytest
 ```
+
+### Going Further
+
+- Train your own weights: `uv run scripts/train_ranker.py` (see [docs/训练指引.md](docs/训练指引.md))
+- Serve over HTTP: `uv run scripts/run_services.py all` (see [services/README.md](services/README.md))
+- Serve over gRPC for home-mixer: `uv run scripts/run_grpc_gateway.py`
+- Run the full end-to-end pipeline: `../scripts/run_demo.sh` from the repo root

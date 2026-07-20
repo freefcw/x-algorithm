@@ -2,9 +2,12 @@
 
 前面几篇讲的是结构，本篇讲“这份仓库现在真实会怎样跑”。
 
+> 本篇是"默认 stub 退化行为 + 补齐路线"的**权威文档**；[candidate-pipeline 风险文档](../candidate-pipeline/06-risks-tests-and-roadmap.md) 只保留框架层面的风险，不再复述这套退化故事。
+> 另外注意：下述退化描述的是**不设任何环境变量**的默认状态。设置 `HOME_MIXER_DEMO=1` + Phoenix gRPC 地址后，三条退化链都会被演示数据补上，端到端可跑通（见 [getting-started 第四步](../getting-started/05-第四步-跑通完整推荐链路.md)）；接真实平台的改造点见 [从演示到真实系统](../getting-started/06-从演示到真实系统.md)。
+
 ## 1. 默认代码路径下的真实行为
 
-如果直接按仓库当前默认实现启动 `home-mixer`，它不是“效果一般”，而是会发生明显退化。
+如果直接按仓库当前默认实现（不设环境变量）启动 `home-mixer`，它不是“效果一般”，而是会发生明显退化。
 
 ```mermaid
 flowchart TD

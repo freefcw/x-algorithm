@@ -199,23 +199,23 @@ Thunder 对 `home-mixer` 的价值不是“直接返回排好序的网内 Feed�
 
 | 依赖 | 当前状态 |
 | --- | --- |
-| ThunderClient | 相对可用 |
-| StratoClient | stub |
-| TESClient | stub |
-| PhoenixRetrievalClient | stub |
-| PhoenixPredictionClient | stub |
-| UserActionSequenceFetcher | stub |
+| ThunderClient | 相对可用（`THUNDER_GRPC_ADDR`） |
+| PhoenixRetrievalClient | 设 `PHOENIX_RETRIEVAL_GRPC_ADDR` 后真连 gRPC 网关，否则 stub |
+| PhoenixPredictionClient | 设 `PHOENIX_PREDICT_GRPC_ADDR` 后真连 gRPC 网关，否则 stub |
+| StratoClient | stub；`HOME_MIXER_DEMO=1` 时装配层注入 `DemoStratoClient`（演示关注列表） |
+| TESClient | stub；演示模式注入 `DemoTESClient`（演示文本） |
+| UserActionSequenceFetcher | stub；演示模式注入 `DemoUserActionSequenceFetcher`（合成行为序列） |
 | GizmoduckClient | stub |
 | VisibilityFilteringClient | stub |
 
 这意味着：
 
 - 框架和装配已经完整
-- 但默认业务链大量退化
+- 不配置环境变量时业务链大量退化；配好演示组合可端到端跑通（见 [getting-started 第四步](../getting-started/05-第四步-跑通完整推荐链路.md)）
 
 ## 10. 当前默认运行行为
 
-默认 stub 组合下，最常见的不是“排序不理想”，而是“候选很容易被清空”。
+默认（不设任何环境变量的）stub 组合下，最常见的不是“排序不理想”，而是“候选很容易被清空”。
 
 核心原因通常是三条：
 
@@ -232,6 +232,8 @@ flowchart TD
     D --> G
     F --> G
 ```
+
+`HOME_MIXER_DEMO=1` 正是针对这三条缺口注入演示数据，让链路不依赖外部平台也能出结果。
 
 ## 11. 当前最值得关注的风险
 

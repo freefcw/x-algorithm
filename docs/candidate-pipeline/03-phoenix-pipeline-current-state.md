@@ -193,24 +193,22 @@
 
 ## 7. 外部依赖图
 
-当前 `PhoenixCandidatePipeline` 依赖的外部客户端如下：
+当前 `PhoenixCandidatePipeline` 依赖的外部客户端如下（成熟度权威表见 [home-mixer 外部依赖文档](../home-mixer/05-external-deps-and-contracts.md)）：
 
 | 依赖 | 当前用途 | 当前实现状态 |
 | --- | --- | --- |
-| `UserActionSequenceFetcher` | 取用户行为序列 | stub |
-| `PhoenixPredictionClient` | 精排模型预测 | stub |
-| `PhoenixRetrievalClient` | 双塔召回 | stub |
 | `ThunderClient` | 调 Thunder 取网内候选 | 简化版真实客户端 |
-| `StratoClient` | 取用户特征、缓存请求信息 | stub |
-| `TESClient` | 取帖子文本/媒体/订阅信息 | stub |
+| `PhoenixPredictionClient` | 精排模型预测 | 设 `PHOENIX_PREDICT_GRPC_ADDR` 后真连 gRPC，否则 stub |
+| `PhoenixRetrievalClient` | 双塔召回 | 设 `PHOENIX_RETRIEVAL_GRPC_ADDR` 后真连 gRPC，否则 stub |
+| `UserActionSequenceFetcher` | 取用户行为序列 | stub（`HOME_MIXER_DEMO=1` 时装配层注入 Demo 实现） |
+| `StratoClient` | 取用户特征、缓存请求信息 | stub（演示模式注入 `DemoStratoClient`） |
+| `TESClient` | 取帖子文本/媒体/订阅信息 | stub（演示模式注入 `DemoTESClient`） |
 | `GizmoduckClient` | 取作者资料 | stub |
 | `VisibilityFilteringClient` | 可见性审核 | stub |
 
-这意味着当前仓库里真正“可工作的业务依赖”只有 Thunder 客户端相对接近实装，其他大多还是占位接口。
-
 ## 8. 当前默认实现推导出来的运行结果
 
-按现在仓库里的默认 stub 组合，流水线的实际行为不是“效果差一些”，而是“基本无法产出完整结果”。
+按不设任何环境变量的默认 stub 组合，流水线的实际行为不是“效果差一些”，而是“基本无法产出完整结果”（演示组合下的可跑通路径见 [getting-started 第四步](../getting-started/05-第四步-跑通完整推荐链路.md)）。
 
 ### 8.1 UAS 补全会失败
 

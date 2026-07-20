@@ -1,39 +1,45 @@
 # X For You Feed Algorithm
 
-This repository contains the core recommendation system powering the "For You" feed on X. It combines in-network content (from accounts you follow) with out-of-network content (discovered through ML-based retrieval) and ranks everything using a Grok-based transformer model.
+This repository contains a runnable port of the core recommendation system powering the "For You" feed on X. It combines in-network content (from accounts you follow) with out-of-network content (discovered through ML-based retrieval) and ranks everything using a Grok-based transformer model.
 
 > **Note:** The transformer implementation is ported from the [Grok-1 open source release](https://github.com/xai-org/grok-1) by xAI, adapted for recommendation system use cases.
 
-## Table of Contents
+## Project Status — Read This First
 
-- [Overview](#overview)
-- [System Architecture](#system-architecture)
-- [Components](#components)
-  - [Home Mixer](#home-mixer)
-  - [Thunder](#thunder)
-  - [Phoenix](#phoenix)
-  - [Candidate Pipeline](#candidate-pipeline)
-- [How It Works](#how-it-works)
-  - [Pipeline Stages](#pipeline-stages)
-  - [Scoring and Ranking](#scoring-and-ranking)
-  - [Filtering](#filtering)
-- [Key Design Decisions](#key-design-decisions)
-- [License](#license)
+X open-sourced the core algorithm, not its production infrastructure. The internal services the original system depends on (user profiles, content store, engagement logs, trust & safety) were **not** released. This repository fills those gaps with trait-based client stubs and a demo mode, so the full pipeline can actually run on your machine:
 
----
+| Capability | Status |
+|-----------|--------|
+| Compile everything (`cargo build --workspace`, `uv sync`) | Works |
+| Run ranking / retrieval model inference locally | Works (random weights out of the box) |
+| Serve the models over HTTP and gRPC | Works |
+| Train your own model weights (simulated or real data) | Works |
+| Run the **full end-to-end pipeline** (Thunder + Phoenix + Home Mixer) and get a ranked feed | Works in demo mode: `./scripts/run_demo.sh` |
+| Production deployment with real data | Requires integration work — the client stubs in `home-mixer/clients/` must be pointed at your platform's services. See the [gap checklist](docs/getting-started/06-从演示到真实系统.md) |
 
-## Overview
+No pretrained weights are included. With random weights the pipeline runs and ranks, but scores are only meaningful after you train (takes minutes on CPU for the demo config).
 
-The For You feed algorithm retrieves, ranks, and filters posts from two sources:
+## Quick Start
 
-1. **In-Network (Thunder)**: Posts from accounts you follow
-2. **Out-of-Network (Phoenix Retrieval)**: Posts discovered from a global corpus
+Prerequisites: [Rust](https://rustup.rs/), `protoc` (`brew install protobuf`), and [uv](https://docs.astral.sh/uv/). No Kafka, Redis, or GPU needed for the demo.
 
-Both sources are combined and ranked together using **Phoenix**, a Grok-based transformer model that predicts engagement probabilities for each post. The final score is a weighted combination of these predicted engagements.
+```bash
+# One command: builds, starts all three services, requests a feed, prints it
+cd phoenix && uv sync --group service && cd ..
+./scripts/run_demo.sh
+```
 
-We have eliminated every single hand-engineered feature and most heuristics from the system. The Grok-based transformer does all the heavy lifting by understanding your engagement history (what you liked, replied to, shared, etc.) and using that to determine what content is relevant to you.
+Expected output — a ranked feed mixing both retrieval sources:
 
----
+```text
+#    Post ID              Author   Score      In-Net     Source
+1    2079102310290007235  212      0.2642     no         Phoenix (out-of-network)
+...
+48   2079100111060730041  101      0.1717     yes        Thunder (in-network)
+Total 50 posts: 12 in-network + 38 out-of-network. Pipeline works.
+```
+
+The full walkthrough (environment setup → model demo → serving → training → end-to-end → production gaps) lives in **[docs/getting-started/](docs/getting-started/)** (Chinese, as is most documentation in this repo). The documentation hub is [docs/README.md](docs/README.md).
 
 ## System Architecture
 
@@ -121,8 +127,6 @@ We have eliminated every single hand-engineered feature and most heuristics from
 └─────────────────────────────────────────────────────────────────────────────────────────────┘
 ```
 
----
-
 ## Components
 
 ### Home Mixer
@@ -142,9 +146,7 @@ The orchestration layer that assembles the For You feed. It leverages the `Candi
 | Post-Selection Filters | Final visibility and dedup checks |
 | Side Effects | Cache request info for future use |
 
-The server exposes a gRPC endpoint (`ScoredPostsService`) that returns ranked posts for a given user.
-
----
+The server exposes a gRPC endpoint (`ScoredPostsService`) that returns ranked posts for a given user. Upstream dependencies (user profiles, post content, engagement logs, trust & safety) are abstracted behind traits in `home-mixer/clients/` — currently stubs with a demo mode (`HOME_MIXER_DEMO=1`), designed to be replaced with your platform's services.
 
 ### Thunder
 
@@ -152,20 +154,18 @@ The server exposes a gRPC endpoint (`ScoredPostsService`) that returns ranked po
 
 An in-memory post store and realtime ingestion pipeline that tracks recent posts from all users. It:
 
-- Consumes post create/delete events from Kafka
+- Consumes post create/delete events from Kafka (or seeds itself with demo posts via `--demo-seed-posts N`, no Kafka required)
 - Maintains per-user stores for original posts, replies/reposts, and video posts
 - Serves "in-network" post candidates from accounts the requesting user follows
 - Automatically trims posts older than the retention period
 
 Thunder enables sub-millisecond lookups for in-network content without hitting an external database.
 
----
-
 ### Phoenix
 
 **Location:** [`phoenix/`](phoenix/)
 
-The ML component with two main functions:
+The ML component (Python 3.11 / JAX) with two main functions:
 
 #### 1. Retrieval (Two-Tower Model)
 Finds relevant out-of-network posts:
@@ -179,9 +179,7 @@ Predicts engagement probabilities for each candidate:
 - Uses special attention masking so candidates cannot attend to each other
 - Outputs probabilities for each action type (like, reply, repost, click, etc.)
 
-See [`phoenix/README.md`](phoenix/README.md) for detailed architecture documentation.
-
----
+Phoenix ships with training scripts (`phoenix/scripts/train_*.py`), HTTP services, and a gRPC gateway (`phoenix/scripts/run_grpc_gateway.py`) that implements the `recsys.proto` contract consumed by Home Mixer. See [`phoenix/README.md`](phoenix/README.md).
 
 ### Candidate Pipeline
 
@@ -200,13 +198,11 @@ A reusable framework for building recommendation pipelines. Defines traits for:
 
 The framework runs sources and hydrators in parallel where possible, with configurable error handling and logging.
 
----
-
 ## How It Works
 
 ### Pipeline Stages
 
-1. **Query Hydration**: Fetch the user's recent engagements history and metadata (eg. following list)
+1. **Query Hydration**: Fetch the user's recent engagement history and metadata (eg. following list)
 
 2. **Candidate Sourcing**: Retrieve candidates from:
    - **Thunder**: Recent posts from followed accounts (in-network)
@@ -237,8 +233,6 @@ The framework runs sources and hydrators in parallel where possible, with config
 
 7. **Post-Selection Processing**: Final validation of post candidates to be served
 
----
-
 ### Scoring and Ranking
 
 The Phoenix Grok-based transformer model predicts probabilities for multiple engagement types:
@@ -268,9 +262,7 @@ The **Weighted Scorer** combines these into a final score:
 Final Score = Σ (weight_i × P(action_i))
 ```
 
-Positive actions (like, repost, share) have positive weights. Negative actions (block, mute, report) have negative weights, pushing down content the user would likely dislike.
-
----
+Positive actions (like, repost, share) have positive weights. Negative actions (block, mute, report) have negative weights, pushing down content the user would likely dislike. The weights live in [`home-mixer/params.rs`](home-mixer/params.rs) — they are open-source defaults, not X's production values.
 
 ### Filtering
 
@@ -282,8 +274,8 @@ Filters run at two stages:
 | `DropDuplicatesFilter` | Remove duplicate post IDs |
 | `CoreDataHydrationFilter` | Remove posts that failed to hydrate core metadata |
 | `AgeFilter` | Remove posts older than threshold |
-| `SelfpostFilter` | Remove user's own posts |
-| `RepostDeduplicationFilter` | Dedupe reposts of same content |
+| `SelfTweetFilter` | Remove user's own posts |
+| `RetweetDeduplicationFilter` | Dedupe reposts of same content |
 | `IneligibleSubscriptionFilter` | Remove paywalled content user can't access |
 | `PreviouslySeenPostsFilter` | Remove posts user has already seen |
 | `PreviouslyServedPostsFilter` | Remove posts already served in session |
@@ -296,18 +288,16 @@ Filters run at two stages:
 | `VFFilter` | Remove posts that are deleted/spam/violence/gore etc. |
 | `DedupConversationFilter` | Deduplicate multiple branches of the same conversation thread |
 
----
-
 ## Key Design Decisions
 
 ### 1. No Hand-Engineered Features
-The system relies entirely on the Grok-based transformer to learn relevance from user engagement sequences. No manual feature engineering for content relevance. This significantly reduces the complexity in our data pipelines and serving infrastructure.
+The system relies entirely on the Grok-based transformer to learn relevance from user engagement sequences. No manual feature engineering for content relevance. This significantly reduces the complexity in data pipelines and serving infrastructure.
 
 ### 2. Candidate Isolation in Ranking
 During transformer inference, candidates cannot attend to each other—only to the user context. This ensures the score for a post doesn't depend on which other posts are in the batch, making scores consistent and cacheable.
 
 ### 3. Hash-Based Embeddings
-Both retrieval and ranking use multiple hash functions for embedding lookup
+Both retrieval and ranking use multiple hash functions for embedding lookup.
 
 ### 4. Multi-Action Prediction
 Rather than predicting a single "relevance" score, the model predicts probabilities for many actions.
@@ -318,7 +308,11 @@ The `candidate-pipeline` crate provides a flexible framework for building recomm
 - Parallel execution of independent stages and graceful error handling
 - Easy addition of new sources, hydrations, filters, and scorers
 
----
+## Documentation
+
+- **[docs/getting-started/](docs/getting-started/)** — step-by-step: environment → model demo → serving → training → full pipeline → production gaps (Chinese)
+- **[docs/README.md](docs/README.md)** — documentation hub with per-module deep dives
+- **[README_zh.md](README_zh.md)** — this document in Chinese
 
 ## License
 
