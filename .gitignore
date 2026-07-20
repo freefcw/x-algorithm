@@ -66,6 +66,10 @@ logs/
 .DS_Store
 Thumbs.db
 
+# ---------- 生成代码 ----------
+# gRPC 网关运行时从 proto/definitions/recsys.proto 自动生成
+phoenix/services/proto_gen/
+
 # ---------- 其他 ----------
 *.log
 *.tmp

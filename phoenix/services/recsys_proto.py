@@ -1,0 +1,78 @@
+# 版权所有 2026 X.A.I Corp.
+#
+# 根据 Apache 许可证 2.0 版本（"许可证"）授权；
+# 除非遵守许可证，否则您不得使用此文件。
+
+"""
+recsys.proto Python 桩代码加载器。
+
+gRPC 网关需要 `proto/definitions/recsys.proto` 编译出的 Python 代码。
+为避免把生成代码提交进仓库，这里在首次使用（或 proto 文件更新后）
+用 grpcio-tools 自动生成到 `services/proto_gen/`，该目录已被 gitignore。
+
+用法:
+    from services.recsys_proto import load_proto_modules
+    recsys_pb2, recsys_pb2_grpc = load_proto_modules()
+"""
+
+from pathlib import Path
+
+_SERVICES_DIR = Path(__file__).resolve().parent
+_GEN_DIR = _SERVICES_DIR / "proto_gen"
+# 仓库布局：<repo>/proto/definitions/recsys.proto 与 <repo>/phoenix/services/
+_PROTO_PATH = _SERVICES_DIR.parent.parent / "proto" / "definitions" / "recsys.proto"
+
+
+def _needs_regen() -> bool:
+    pb2 = _GEN_DIR / "recsys_pb2.py"
+    if not pb2.exists():
+        return True
+    return _PROTO_PATH.stat().st_mtime > pb2.stat().st_mtime
+
+
+def _generate() -> None:
+    try:
+        from grpc_tools import protoc
+    except ImportError as exc:
+        raise ImportError(
+            "生成 gRPC 桩代码需要 grpcio-tools，请先执行: uv sync --group service"
+        ) from exc
+
+    _GEN_DIR.mkdir(exist_ok=True)
+    (_GEN_DIR / "__init__.py").touch()
+
+    rc = protoc.main(
+        [
+            "protoc",
+            f"-I{_PROTO_PATH.parent}",
+            f"--python_out={_GEN_DIR}",
+            f"--grpc_python_out={_GEN_DIR}",
+            str(_PROTO_PATH),
+        ]
+    )
+    if rc != 0:
+        raise RuntimeError(f"recsys.proto 编译失败 (exit code {rc})")
+
+    # 生成的 *_grpc.py 使用绝对导入 `import recsys_pb2`，
+    # 改成包内相对导入，避免污染 sys.path。
+    grpc_file = _GEN_DIR / "recsys_pb2_grpc.py"
+    text = grpc_file.read_text()
+    text = text.replace(
+        "import recsys_pb2 as", "from . import recsys_pb2 as"
+    )
+    grpc_file.write_text(text)
+
+
+def load_proto_modules():
+    """返回 (recsys_pb2, recsys_pb2_grpc)，必要时先自动生成。"""
+    if not _PROTO_PATH.exists():
+        raise FileNotFoundError(
+            f"找不到 proto 定义: {_PROTO_PATH}\n"
+            "gRPC 网关需要完整仓库布局（proto/ 与 phoenix/ 同级）。"
+        )
+    if _needs_regen():
+        _generate()
+
+    from services.proto_gen import recsys_pb2, recsys_pb2_grpc
+
+    return recsys_pb2, recsys_pb2_grpc

@@ -47,6 +47,7 @@ class CheckpointLoader:
         从路径加载 checkpoint
         
         支持格式:
+        - .npz: 训练脚本 (scripts/train_*.py) 的标准产物（flatten 后的 Haiku 参数）
         - .pkl / .pickle: Python pickle
         - .npy: NumPy 格式
         - 目录: 假设包含多个参数文件
@@ -60,7 +61,19 @@ class CheckpointLoader:
             raise FileNotFoundError(f"Checkpoint not found: {checkpoint_path}")
         
         # 根据后缀选择加载方式
-        if path.suffix == ".pkl" or path.suffix == ".pickle":
+        if path.suffix == ".npz":
+            # Haiku 参数是 {模块路径: {参数名: 数组}} 两层结构，模块路径本身含 "/"。
+            # 训练脚本按 "{模块路径}/{参数名}" 存成单层 key，
+            # 这里用 rsplit 从右侧只切一次还原，避免把模块路径切碎。
+            raw = np.load(path, allow_pickle=False)
+            params: Dict[str, Any] = {}
+            for key in raw.files:
+                module_path, param_name = key.rsplit("/", 1)
+                params.setdefault(module_path, {})[param_name] = raw[key]
+            logger.info(f"Loaded npz checkpoint from {checkpoint_path}")
+            return params
+
+        elif path.suffix == ".pkl" or path.suffix == ".pickle":
             import pickle
             with open(path, "rb") as f:
                 params = pickle.load(f)
