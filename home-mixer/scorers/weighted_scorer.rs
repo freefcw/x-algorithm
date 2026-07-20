@@ -79,13 +79,89 @@ impl WeightedScorer {
         }
     }
 
+    /// 把加权分数映射为非负值，保持排序语义：
+    ///   - 负分（负向行为占优）归一化进 [0, NEGATIVE_SCORES_OFFSET)；
+    ///   - 正分整体抬高 NEGATIVE_SCORES_OFFSET，始终高于任何负分。
+    /// 负分理论下界是 NEGATIVE_WEIGHTS_SUM（所有负向行为概率均为 1），
+    /// 以它为分母做线性归一。分数非负也是后续乘法调整
+    /// （作者多样性衰减、网外降权）语义成立的前提。
     fn offset_score(combined_score: f64) -> f64 {
         if p::WEIGHTS_SUM == 0.0 {
             combined_score.max(0.0)
         } else if combined_score < 0.0 {
-            (combined_score + p::NEGATIVE_WEIGHTS_SUM) / p::WEIGHTS_SUM * p::NEGATIVE_SCORES_OFFSET
+            (combined_score - p::NEGATIVE_WEIGHTS_SUM) / -p::NEGATIVE_WEIGHTS_SUM
+                * p::NEGATIVE_SCORES_OFFSET
         } else {
             combined_score + p::NEGATIVE_SCORES_OFFSET
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_offset_score_negative_maps_into_offset_band() {
+        // 负分必须落在 [0, NEGATIVE_SCORES_OFFSET) 区间，而不是被推得更负
+        let s = WeightedScorer::offset_score(-1.0);
+        assert!(s >= 0.0, "负分映射后必须非负，实际 {}", s);
+        assert!(
+            s < p::NEGATIVE_SCORES_OFFSET,
+            "负分映射后必须低于正分底线 {}，实际 {}",
+            p::NEGATIVE_SCORES_OFFSET,
+            s
+        );
+
+        // 理论最低分（所有负向行为概率均为 1）映射到 0
+        let floor = WeightedScorer::offset_score(p::NEGATIVE_WEIGHTS_SUM);
+        assert!(floor.abs() < 1e-9, "理论最低分应映射为 0，实际 {}", floor);
+    }
+
+    #[test]
+    fn test_offset_score_preserves_ordering() {
+        // 越负的分数映射后仍然越小（保序），且任何正分都高于任何负分
+        let very_bad = WeightedScorer::offset_score(-100.0);
+        let bad = WeightedScorer::offset_score(-1.0);
+        let neutral = WeightedScorer::offset_score(0.0);
+        let good = WeightedScorer::offset_score(5.0);
+
+        assert!(very_bad < bad);
+        assert!(bad < neutral);
+        assert!(neutral < good);
+        assert_eq!(neutral, p::NEGATIVE_SCORES_OFFSET);
+    }
+
+    #[test]
+    fn test_positive_candidate_outranks_negative_candidate() {
+        // 业务语义：预测"会点赞"的帖子必须排在预测"会举报"的帖子前面
+        let liked = PostCandidate {
+            phoenix_scores: PhoenixScores {
+                favorite_score: Some(0.9),
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        let reported = PostCandidate {
+            phoenix_scores: PhoenixScores {
+                report_score: Some(0.9),
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+
+        let liked_score = WeightedScorer::compute_weighted_score(&liked);
+        let reported_score = WeightedScorer::compute_weighted_score(&reported);
+
+        assert!(
+            liked_score > reported_score,
+            "点赞候选 {} 应高于举报候选 {}",
+            liked_score,
+            reported_score
+        );
+        assert!(
+            reported_score >= 0.0,
+            "举报候选分数也必须非负（乘法降权的前提）"
+        );
     }
 }
