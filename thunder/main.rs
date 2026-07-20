@@ -74,30 +74,46 @@ async fn main() -> Result<()> {
         axum::serve(listener, combined).await.unwrap();
     });
 
-    // Create channel for post events
-    let (tx, mut rx) = tokio::sync::mpsc::channel::<i64>(args.kafka_num_threads);
-    kafka_utils::start_kafka(&args, post_store.clone(), "", tx).await?;
-
-    if args.is_serving {
-        // Wait for Kafka catchup signal
-        let start = Instant::now();
-        for _ in 0..args.kafka_num_threads {
-            rx.recv().await;
-        }
-        info!("Kafka init took {:?}", start.elapsed());
-
+    if args.demo_seed_posts > 0 {
+        // 演示模式：不消费 Kafka，直接生成模拟帖子灌入内存
+        let posts = thunder::demo_seed::generate_demo_posts(args.demo_seed_posts);
+        let count = posts.len();
+        post_store.insert_posts(posts);
         post_store.finalize_init().await?;
-
-        // Start stats logger
-        Arc::clone(&post_store).start_stats_logger();
-        info!("Started PostStore stats logger",);
-
-        // Start auto-trim task to remove posts older than retention period
-        Arc::clone(&post_store).start_auto_trim(2); // Run every 2 minutes
         info!(
-            "Started PostStore auto-trim task (interval: 2 minutes, retention: {:.1} days)",
-            args.post_retention_seconds as f64 / 86400.0
+            "Demo mode: seeded {} posts from authors {:?} (Kafka disabled)",
+            count,
+            x_algorithm_proto::demo::DEMO_AUTHOR_IDS
         );
+
+        Arc::clone(&post_store).start_stats_logger();
+        Arc::clone(&post_store).start_auto_trim(2);
+    } else {
+        // Create channel for post events
+        let (tx, mut rx) = tokio::sync::mpsc::channel::<i64>(args.kafka_num_threads);
+        kafka_utils::start_kafka(&args, post_store.clone(), "", tx).await?;
+
+        if args.is_serving {
+            // Wait for Kafka catchup signal
+            let start = Instant::now();
+            for _ in 0..args.kafka_num_threads {
+                rx.recv().await;
+            }
+            info!("Kafka init took {:?}", start.elapsed());
+
+            post_store.finalize_init().await?;
+
+            // Start stats logger
+            Arc::clone(&post_store).start_stats_logger();
+            info!("Started PostStore stats logger",);
+
+            // Start auto-trim task to remove posts older than retention period
+            Arc::clone(&post_store).start_auto_trim(2); // Run every 2 minutes
+            info!(
+                "Started PostStore auto-trim task (interval: 2 minutes, retention: {:.1} days)",
+                args.post_retention_seconds as f64 / 86400.0
+            );
+        }
     }
 
     info!("Server ready");
