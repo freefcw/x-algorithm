@@ -7,8 +7,8 @@
 //   - bloom_filter: 布隆过滤器（客户端已阅帖子去重）
 //   - candidates_util: 候选帖子工具函数
 
+pub mod bloom_filter;
+pub mod candidates_util;
 pub mod request_util;
 pub mod score_normalizer;
 pub mod snowflake;
-pub mod bloom_filter;
-pub mod candidates_util;

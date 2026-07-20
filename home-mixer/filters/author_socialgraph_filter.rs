@@ -57,9 +57,18 @@ mod tests {
         };
 
         let candidates = vec![
-            PostCandidate { author_id: 100, ..Default::default() }, // clear
-            PostCandidate { author_id: 200, ..Default::default() }, // blocked
-            PostCandidate { author_id: 300, ..Default::default() }, // muted
+            PostCandidate {
+                author_id: 100,
+                ..Default::default()
+            }, // clear
+            PostCandidate {
+                author_id: 200,
+                ..Default::default()
+            }, // blocked
+            PostCandidate {
+                author_id: 300,
+                ..Default::default()
+            }, // muted
         ];
 
         let result = filter.filter(&query, candidates).await.unwrap();

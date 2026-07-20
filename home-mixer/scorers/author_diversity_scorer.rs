@@ -77,11 +77,11 @@ mod tests {
     #[test]
     fn test_multiplier_decay() {
         let scorer = AuthorDiversityScorer::new(0.9, 0.5);
-        
+
         let position_0 = scorer.multiplier(0);
         let position_1 = scorer.multiplier(1);
         let position_5 = scorer.multiplier(5);
-        
+
         // 1.0 -> 0.95 -> ~0.795 -> approaches 0.5
         assert!((position_0 - 1.0).abs() < 1e-6);
         assert!(position_1 < position_0);

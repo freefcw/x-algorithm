@@ -4,8 +4,8 @@ use crate::clients::phoenix_retrieval_client::PhoenixRetrievalClient;
 use crate::params as p;
 use std::sync::Arc;
 use tonic::async_trait;
-use xai_candidate_pipeline::source::Source;
 use x_algorithm_proto::home_mixer as pb;
+use xai_candidate_pipeline::source::Source;
 
 pub struct PhoenixSource {
     pub phoenix_retrieval_client: Arc<dyn PhoenixRetrievalClient + Send + Sync>,

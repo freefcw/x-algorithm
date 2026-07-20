@@ -7,8 +7,8 @@ use tonic_reflection::server::Builder;
 
 use x_algorithm_proto::home_mixer as pb;
 
-use home_mixer::HomeMixerServer;
 use home_mixer::params;
+use home_mixer::HomeMixerServer;
 
 #[derive(Parser, Debug)]
 #[command(about = "HomeMixer gRPC Server")]
@@ -52,7 +52,7 @@ async fn main() -> anyhow::Result<()> {
 
     // Start gRPC server
     let grpc_addr: SocketAddr = ([0, 0, 0, 0], args.grpc_port).into();
-    let grpc_handle = tokio::spawn(async move {
+    let _grpc_handle = tokio::spawn(async move {
         info!("gRPC server listening on {}", grpc_addr);
         tonic::transport::Server::builder()
             .add_routes(grpc_routes.routes())

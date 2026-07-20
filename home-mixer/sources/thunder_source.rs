@@ -4,10 +4,10 @@ use crate::clients::thunder_client::{ThunderClient, ThunderCluster};
 use crate::params as p;
 use std::sync::Arc;
 use tonic::async_trait;
-use xai_candidate_pipeline::source::Source;
 use x_algorithm_proto::home_mixer as pb;
-use x_algorithm_proto::thunder::GetInNetworkPostsRequest;
 use x_algorithm_proto::thunder::in_network_posts_service_client::InNetworkPostsServiceClient;
+use x_algorithm_proto::thunder::GetInNetworkPostsRequest;
+use xai_candidate_pipeline::source::Source;
 
 pub struct ThunderSource {
     pub thunder_client: Arc<ThunderClient>,

@@ -6,8 +6,8 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 use tonic::async_trait;
-use xai_candidate_pipeline::scorer::Scorer;
 use x_algorithm_proto::recsys::{ActionName, ContinuousActionName};
+use xai_candidate_pipeline::scorer::Scorer;
 
 pub struct PhoenixScorer {
     pub phoenix_client: Arc<dyn PhoenixPredictionClient + Send + Sync>,

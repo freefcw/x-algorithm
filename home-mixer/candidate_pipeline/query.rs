@@ -1,8 +1,8 @@
 use crate::candidate_pipeline::query_features::UserFeatures;
 use crate::util::request_util::generate_request_id;
 use crate::visibility::vf_client::{GetTwitterContextViewer, TwitterContextViewer};
-use xai_candidate_pipeline::candidate_pipeline::HasRequestId;
 use x_algorithm_proto::home_mixer::ImpressionBloomFilterEntry;
+use xai_candidate_pipeline::candidate_pipeline::HasRequestId;
 
 #[derive(Clone, Default, Debug)]
 pub struct ScoredPostsQuery {

@@ -1,4 +1,4 @@
-use std::any::{Any, type_name_of_val};
+use std::any::{type_name_of_val, Any};
 use tonic::async_trait;
 
 use crate::util;

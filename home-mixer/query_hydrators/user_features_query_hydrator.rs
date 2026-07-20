@@ -1,6 +1,6 @@
 use crate::candidate_pipeline::query::ScoredPostsQuery;
 use crate::candidate_pipeline::query_features::UserFeatures;
-use crate::clients::strato_client::{StratoClient, StratoResult, StratoValue, decode};
+use crate::clients::strato_client::{decode, StratoClient, StratoResult, StratoValue};
 use std::sync::Arc;
 use tonic::async_trait;
 use xai_candidate_pipeline::query_hydrator::QueryHydrator;

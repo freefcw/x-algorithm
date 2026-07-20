@@ -1,5 +1,5 @@
 use crate::util;
-use std::any::{Any, type_name_of_val};
+use std::any::{type_name_of_val, Any};
 use tonic::async_trait;
 
 // Hydrators run in parallel and update candidate fields

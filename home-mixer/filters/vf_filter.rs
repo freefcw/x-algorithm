@@ -1,8 +1,8 @@
 use crate::candidate_pipeline::candidate::PostCandidate;
 use crate::candidate_pipeline::query::ScoredPostsQuery;
+use crate::visibility::models::{Action, FilteredReason};
 use tonic::async_trait;
 use xai_candidate_pipeline::filter::{Filter, FilterResult};
-use crate::visibility::models::{Action, FilteredReason};
 
 pub struct VFFilter;
 

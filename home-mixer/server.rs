@@ -5,9 +5,9 @@ use log::info;
 use std::sync::Arc;
 use std::time::Instant;
 use tonic::{Request, Response, Status};
-use xai_candidate_pipeline::candidate_pipeline::CandidatePipeline;
 use x_algorithm_proto::home_mixer as pb;
 use x_algorithm_proto::home_mixer::{ScoredPost, ScoredPostsResponse};
+use xai_candidate_pipeline::candidate_pipeline::CandidatePipeline;
 
 pub struct HomeMixerServer {
     phx_candidate_pipeline: Arc<PhoenixCandidatePipeline>,

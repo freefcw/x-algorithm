@@ -103,7 +103,10 @@ mod tests {
     #[test]
     fn test_into_proto_drop() {
         let reason = FilteredReason::SafetyResult(SafetyResult {
-            action: Action::Drop(DropAction { reason_code: 404, description: "Drop reason".to_string() }),
+            action: Action::Drop(DropAction {
+                reason_code: 404,
+                description: "Drop reason".to_string(),
+            }),
             description: Some("safety rule 1".to_string()),
         });
         let (code, desc) = reason.into_proto();

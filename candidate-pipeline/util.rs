@@ -9,10 +9,7 @@
 /// 用于在日志和 metrics 中显示易读的组件名称。
 /// 返回 `&'static str` 因为输入来自 `std::any::type_name`（返回 `&'static str`）。
 pub fn short_type_name(full_name: &'static str) -> &'static str {
-    full_name
-        .rsplit("::")
-        .next()
-        .unwrap_or(full_name)
+    full_name.rsplit("::").next().unwrap_or(full_name)
 }
 
 #[cfg(test)]

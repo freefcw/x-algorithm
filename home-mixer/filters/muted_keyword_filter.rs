@@ -1,9 +1,9 @@
 use crate::candidate_pipeline::candidate::PostCandidate;
 use crate::candidate_pipeline::query::ScoredPostsQuery;
+use crate::post_text::{MatchTweetGroup, TokenSequence, TweetTokenizer, UserMutes};
 use std::sync::Arc;
 use tonic::async_trait;
 use xai_candidate_pipeline::filter::{Filter, FilterResult};
-use crate::post_text::{MatchTweetGroup, TokenSequence, TweetTokenizer, UserMutes};
 
 pub struct MutedKeywordFilter {
     pub tokenizer: Arc<TweetTokenizer>,
