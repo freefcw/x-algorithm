@@ -14,11 +14,16 @@
 //   - Thunder: 返回用户关注者的帖子（In-Network）
 //   - Phoenix Retrieval: 返回全局相关帖子（Out-of-Network）
 //
-// 当前为 stub 实现，返回空候选列表。
-// TODO: 当 Phoenix 模型训练完成后，连接真实的 Phoenix Retrieval gRPC 服务
+// 连接方式：
+//   - 设置环境变量 PHOENIX_RETRIEVAL_GRPC_ADDR（如 http://localhost:50053）
+//     时，走真实 gRPC 调用 PhoenixRetrievalService.Retrieve；
+//   - 未设置时退化为 stub，返回空候选列表（Feed 中只有网内帖子）。
 
+use log::{info, warn};
 use tonic::async_trait;
+use tonic::transport::Channel;
 use x_algorithm_proto::recsys;
+use x_algorithm_proto::recsys::phoenix_retrieval_service_client::PhoenixRetrievalServiceClient;
 
 /// Phoenix 双塔召回客户端 trait
 ///
@@ -43,18 +48,30 @@ pub trait PhoenixRetrievalClient: Send + Sync {
     ) -> Result<recsys::RetrieveResponse, anyhow::Error>;
 }
 
-/// 生产环境 Phoenix 召回客户端（Stub 实现）
+/// 生产环境 Phoenix 召回客户端
 ///
-/// 当前返回空候选列表（即不产生 Out-of-Network 候选帖子）。
-/// 这意味着 Feed 中只包含用户关注者的帖子（来自 Thunder）。
-///
-/// 当 Phoenix 模型训练完成后，替换为实际的 gRPC 客户端。
-pub struct ProdPhoenixRetrievalClient;
+/// 设置 `PHOENIX_RETRIEVAL_GRPC_ADDR` 后调用真实的 Phoenix Retrieval gRPC 服务；
+/// 未设置时退化为 stub（返回空候选，Feed 中只有 Thunder 网内帖子）。
+pub struct ProdPhoenixRetrievalClient {
+    channel: Option<Channel>,
+}
 
 impl ProdPhoenixRetrievalClient {
     pub async fn new() -> Result<Self, anyhow::Error> {
-        // TODO: 从环境变量读取 Phoenix retrieval 服务地址
-        Ok(Self)
+        let channel = match std::env::var("PHOENIX_RETRIEVAL_GRPC_ADDR") {
+            Ok(addr) => {
+                info!("PhoenixRetrievalClient: connecting to {}", addr);
+                Some(Channel::from_shared(addr)?.connect_lazy())
+            }
+            Err(_) => {
+                warn!(
+                    "PhoenixRetrievalClient: PHOENIX_RETRIEVAL_GRPC_ADDR not set, \
+                     using stub (no out-of-network candidates)"
+                );
+                None
+            }
+        };
+        Ok(Self { channel })
     }
 }
 
@@ -62,13 +79,23 @@ impl ProdPhoenixRetrievalClient {
 impl PhoenixRetrievalClient for ProdPhoenixRetrievalClient {
     async fn retrieve(
         &self,
-        _user_id: u64,
-        _sequence: recsys::UserActionSequence,
-        _max_results: u32,
+        user_id: u64,
+        sequence: recsys::UserActionSequence,
+        max_results: u32,
     ) -> Result<recsys::RetrieveResponse, anyhow::Error> {
-        // Stub: 返回空的候选列表
-        Ok(recsys::RetrieveResponse {
-            top_k_candidates: vec![],
-        })
+        let Some(channel) = &self.channel else {
+            return Ok(recsys::RetrieveResponse {
+                top_k_candidates: vec![],
+            });
+        };
+
+        let mut client = PhoenixRetrievalServiceClient::new(channel.clone());
+        let request = recsys::RetrieveRequest {
+            user_id,
+            user_action_sequence: Some(sequence),
+            max_results,
+        };
+        let response = client.retrieve(request).await?;
+        Ok(response.into_inner())
     }
 }

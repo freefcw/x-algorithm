@@ -18,11 +18,16 @@
 // 预测输出：
 //   - PredictNextActionsResponse: 每条帖子上各行为的概率分布
 //
-// 当前为 stub 实现，返回空预测结果。
-// TODO: 当 Phoenix 模型训练完成后，连接真实的 Phoenix gRPC 服务
+// 连接方式：
+//   - 设置环境变量 PHOENIX_PREDICT_GRPC_ADDR（如 http://localhost:50053）
+//     时，走真实 gRPC 调用 PhoenixPredictionService.PredictNextActions；
+//   - 未设置时退化为 stub，返回空预测结果（所有帖子得分为默认值）。
 
+use log::{info, warn};
 use tonic::async_trait;
+use tonic::transport::Channel;
 use x_algorithm_proto::recsys;
+use x_algorithm_proto::recsys::phoenix_prediction_service_client::PhoenixPredictionServiceClient;
 
 /// Phoenix 精排预测客户端 trait
 ///
@@ -47,19 +52,30 @@ pub trait PhoenixPredictionClient: Send + Sync {
     ) -> Result<recsys::PredictNextActionsResponse, anyhow::Error>;
 }
 
-/// 生产环境 Phoenix 精排客户端（Stub 实现）
+/// 生产环境 Phoenix 精排客户端
 ///
-/// 当前返回空预测结果（所有帖子得分为默认值）。
-/// 当 Phoenix 模型训练完成并部署后，此实现应替换为
-/// 实际的 gRPC 客户端调用 `PhoenixPredictionService.PredictNextActions`。
-pub struct ProdPhoenixPredictionClient;
+/// 设置 `PHOENIX_PREDICT_GRPC_ADDR` 后调用真实的 Phoenix gRPC 服务；
+/// 未设置时退化为 stub（返回空预测，WeightedScorer 会将 None 视为 0.0）。
+pub struct ProdPhoenixPredictionClient {
+    channel: Option<Channel>,
+}
 
 impl ProdPhoenixPredictionClient {
     pub async fn new() -> Result<Self, anyhow::Error> {
-        // TODO: 从环境变量读取 Phoenix prediction 服务地址
-        // let addr = std::env::var("PHOENIX_PREDICT_GRPC_ADDR")
-        //     .unwrap_or_else(|_| "http://localhost:50053".to_string());
-        Ok(Self)
+        let channel = match std::env::var("PHOENIX_PREDICT_GRPC_ADDR") {
+            Ok(addr) => {
+                info!("PhoenixPredictionClient: connecting to {}", addr);
+                Some(Channel::from_shared(addr)?.connect_lazy())
+            }
+            Err(_) => {
+                warn!(
+                    "PhoenixPredictionClient: PHOENIX_PREDICT_GRPC_ADDR not set, \
+                     using stub (empty predictions)"
+                );
+                None
+            }
+        };
+        Ok(Self { channel })
     }
 }
 
@@ -67,15 +83,23 @@ impl ProdPhoenixPredictionClient {
 impl PhoenixPredictionClient for ProdPhoenixPredictionClient {
     async fn predict(
         &self,
-        _user_id: u64,
-        _sequence: recsys::UserActionSequence,
-        _candidates: Vec<recsys::TweetInfo>,
+        user_id: u64,
+        sequence: recsys::UserActionSequence,
+        candidates: Vec<recsys::TweetInfo>,
     ) -> Result<recsys::PredictNextActionsResponse, anyhow::Error> {
-        // Stub: 返回空预测结果
-        // 这意味着所有帖子的 PhoenixScores 为默认值 (None)
-        // WeightedScorer 会将 None 视为 0.0
-        Ok(recsys::PredictNextActionsResponse {
-            distribution_sets: vec![],
-        })
+        let Some(channel) = &self.channel else {
+            return Ok(recsys::PredictNextActionsResponse {
+                distribution_sets: vec![],
+            });
+        };
+
+        let mut client = PhoenixPredictionServiceClient::new(channel.clone());
+        let request = recsys::PredictNextActionsRequest {
+            user_id,
+            user_action_sequence: Some(sequence),
+            candidates,
+        };
+        let response = client.predict_next_actions(request).await?;
+        Ok(response.into_inner())
     }
 }
