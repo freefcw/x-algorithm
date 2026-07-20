@@ -1,5 +1,9 @@
 # X (Twitter) 推荐算法：双塔模型深度分析
 
+状态：`research`
+
+本文是外部资料和算法背景整理，不作为当前仓库行为的事实来源。当前 Phoenix 召回实现请看 [../phoenix/03-retrieval-pipeline.md](../phoenix/03-retrieval-pipeline.md)。
+
 在 X（原 Twitter）的推荐系统中，双塔模型（Two-Tower Model）是其核心架构的重要组成部分，尤其在处理海量候选 Tweet 的“候选生成”（Candidate Generation，即召回）阶段发挥着至关重要的作用 <cite>[Singhajit](https://singhajit.com/system-design/x-twitter-for-you-algorithm/)</cite><cite>[Github](https://github.com/xai-org/x-algorithm)</cite>。
 
 ## 1. 为什么采用双塔模型？

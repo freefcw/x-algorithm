@@ -1,6 +1,8 @@
 # 数据持续更新运维手册（Runbook）
 
-本文档是 `docs/data_preparation.md` 的**操作层姊妹篇**：前者讲"为什么这样设计"，本文讲"具体怎么做"。
+状态：`runbook`
+
+本文档是 [../training/data_preparation.md](../training/data_preparation.md) 的**操作层姊妹篇**：前者讲"为什么这样设计"，本文讲"具体怎么做"。
 
 面向读者是数据/ML 平台工程师，拿到这份文档应该能直接照着搭出一套可持续运行的网内 + 网外数据管道。
 
@@ -53,9 +55,9 @@
 
 **Topic schema 约束：**
 
-- 消息 payload 为 protobuf（见 `@/Users/hejun/work/mp/x-algorithm/proto/definitions/thunder/`）。
-- v1 消费原始 `TweetCreateEvent / TweetDeleteEvent`（`@/Users/hejun/work/mp/x-algorithm/thunder/kafka/tweet_events_listener.rs`）。
-- v2 消费已经筛选好的 `InNetworkEvent`（`@/Users/hejun/work/mp/x-algorithm/thunder/kafka/tweet_events_listener_v2.rs:76-78`），订阅固定 topic `in-network-events`。
+- 消息 payload 为 protobuf（见 [../../proto/definitions/in_network.proto](../../proto/definitions/in_network.proto)）。
+- v1 消费原始 `TweetCreateEvent / TweetDeleteEvent`（[../../thunder/kafka/tweet_events_listener.rs](../../thunder/kafka/tweet_events_listener.rs)）。
+- v2 消费已经筛选好的 `InNetworkEvent`（[../../thunder/kafka/tweet_events_listener_v2.rs](../../thunder/kafka/tweet_events_listener_v2.rs)），订阅固定 topic `in-network-events`。
 
 **容量规划：**
 
@@ -86,7 +88,7 @@ cargo run --release -p thunder -- \
   --is-serving true
 ```
 
-**启动过程关键路径**（见 `@/Users/hejun/work/mp/x-algorithm/thunder/main.rs:79-100`）：
+**启动过程关键路径**（见 [../../thunder/main.rs](../../thunder/main.rs)）：
 
 1. `kafka_utils::start_kafka` 拉起 N 个 consumer 线程。
 2. 每个线程 replay 到最新 offset 后向 `mpsc::channel` 发送"初始化完成"信号。
@@ -132,7 +134,7 @@ cargo run --release -p thunder -- \
 | 帖子元数据 | 每日快照 or 实时查询 | T+1 或实时 | 物品塔输入 |
 | 用户 / 作者 embedding 特征 | 特征表 | T+1 | 双塔输入 |
 
-字段定义见 `@/Users/hejun/work/mp/x-algorithm/docs/training_data_spec.md` §2。
+字段定义见 [../training/training_data_spec.md](../training/training_data_spec.md) §2。
 
 **基础设施：**
 
@@ -142,7 +144,7 @@ cargo run --release -p thunder -- \
 | 调度器（Airflow / cron / Flyte / …） | 跑每日重训和 encode |
 | 流式执行器（Flink / 自研 / 普通 Kafka consumer） | 增量 encode job |
 | ANN 引擎（FAISS / Milvus / Vespa） | 向量索引 |
-| Model Registry（可用 `@/Users/hejun/work/mp/x-algorithm/phoenix/services/model_registry.py` 扩展） | checkpoint 版本管理 |
+| Model Registry（可用 [../../phoenix/services/model_registry.py](../../phoenix/services/model_registry.py) 扩展） | checkpoint 版本管理 |
 | GPU / TPU（训练用） | 训练任务 |
 
 **目录约定**（强烈建议照抄，下游脚本依赖）：
@@ -151,8 +153,8 @@ cargo run --release -p thunder -- \
 s3://your-bucket/
 ├─ training_data/date=YYYY-MM-DD/*.parquet
 ├─ checkpoints/
-│  ├─ retrieval/vYYYYMMDD/{params.pkl, config.json, _SUCCESS}
-│  └─ ranker/vYYYYMMDD/{params.pkl, config.json, _SUCCESS}
+│  ├─ retrieval/vYYYYMMDD/{model_params.npz, config.json, _SUCCESS}
+│  └─ ranker/vYYYYMMDD/{model_params.npz, config.json, _SUCCESS}
 ├─ vector_index/retrieval/vYYYYMMDD/{embeddings.npy, post_ids.npy, ann.index, _SUCCESS}
 └─ registry/retrieval_active.txt   # 单行，内容是当前生产版本号
 ```
@@ -332,8 +334,8 @@ with DAG("phoenix_ann_cleanup_hourly", schedule="0 * * * *") as dag:
 ```
 
 **服务侧实现对应位置**：
-- `@/Users/hejun/work/mp/x-algorithm/phoenix/services/retrieval_service.py:243-253` 现在是启动期一次性 `_init_model + vector_index.load + set_corpus`，生产化时需要把这三步包成"原子重新加载"函数并定期调用或响应信号。
-- `@/Users/hejun/work/mp/x-algorithm/phoenix/services/model_registry.py` 已经是独立的 registry 抽象，可以在此基础上加版本监听。
+- [../../phoenix/services/retrieval_service.py](../../phoenix/services/retrieval_service.py) 现在是启动期一次性 `_init_model + vector_index.load + set_corpus`，生产化时需要把这三步包成"原子重新加载"函数并定期调用或响应信号。
+- [../../phoenix/services/model_registry.py](../../phoenix/services/model_registry.py) 已经是独立的 registry 抽象，可以在此基础上加版本监听。
 
 **两个铁律**：
 - **checkpoint 和 ANN index 成对切**：绝不允许 "新 params × 旧 corpus"。
@@ -377,7 +379,7 @@ with DAG("phoenix_ranker_daily", schedule="0 3 * * *") as dag:
     t1 >> t2
 ```
 
-**ranker_service 热加载对应位置**：`@/Users/hejun/work/mp/x-algorithm/phoenix/services/ranker_service.py` + `@/Users/hejun/work/mp/x-algorithm/phoenix/services/model_registry.py`。同样推荐监听 `active.txt`，发现变化后原子替换 params。
+**ranker_service 热加载对应位置**：[../../phoenix/services/ranker_service.py](../../phoenix/services/ranker_service.py) + [../../phoenix/services/model_registry.py](../../phoenix/services/model_registry.py)。同样推荐监听 `active.txt`，发现变化后原子替换 params。
 
 精排重训频率**可以高于召回**（小时级也可行），因为不涉及 corpus 重算，代价小得多。
 
@@ -428,10 +430,10 @@ with DAG("phoenix_ranker_daily", schedule="0 3 * * *") as dag:
 
 ## 参考文档
 
-- `@/Users/hejun/work/mp/x-algorithm/docs/data_preparation.md`：数据生命周期和架构设计
-- `@/Users/hejun/work/mp/x-algorithm/docs/training_data_spec.md`：训练样本字段规格
-- `@/Users/hejun/work/mp/x-algorithm/docs/phoenix/03-retrieval-pipeline.md`：召回链路内部结构
-- `@/Users/hejun/work/mp/x-algorithm/docs/phoenix/06-training-and-data.md`：训练侧现状与缺口
-- `@/Users/hejun/work/mp/x-algorithm/thunder/main.rs`：Thunder 启动流程
-- `@/Users/hejun/work/mp/x-algorithm/phoenix/services/retrieval_service.py`：召回服务入口
-- `@/Users/hejun/work/mp/x-algorithm/phoenix/services/model_registry.py`：checkpoint 注册表
+- [../training/data_preparation.md](../training/data_preparation.md)：数据生命周期和架构设计
+- [../training/training_data_spec.md](../training/training_data_spec.md)：训练样本字段规格
+- [../phoenix/03-retrieval-pipeline.md](../phoenix/03-retrieval-pipeline.md)：召回链路内部结构
+- [../phoenix/06-training-and-data.md](../phoenix/06-training-and-data.md)：训练侧现状与缺口
+- [../../thunder/main.rs](../../thunder/main.rs)：Thunder 启动流程
+- [../../phoenix/services/retrieval_service.py](../../phoenix/services/retrieval_service.py)：召回服务入口
+- [../../phoenix/services/model_registry.py](../../phoenix/services/model_registry.py)：checkpoint 注册表

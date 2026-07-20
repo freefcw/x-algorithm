@@ -1,8 +1,10 @@
 # X 推荐算法迁移进度记录
 
+状态：`historical`
+
 本文档记录 `x-algorithm` 从 X 内部专有系统迁移为可独立运行的开源推荐系统的执行进度。
 
-迁移路线图参考 [迁移指南](x_algorithm_migration_guide.md)。
+迁移路线图参考 [迁移指南](./x_algorithm_migration_guide.md)。本文保留早期迁移阶段视角；当前代码事实请优先阅读 [../README.md](../../README.md) 中列出的模块文档。
 
 ---
 
@@ -97,10 +99,22 @@
 
 ---
 
-## 阶段三 🔲：Phoenix 模型训练跑通
+## 阶段三：Phoenix 模型链路
 
-待执行。参考 [迁移指南 - 阶段三](x_algorithm_migration_guide.md)。
+早期迁移记录里这一阶段标记为“待执行”。当前仓库已经包含 `phoenix/` 推理、服务封装、样例数据和专题文档，但仍缺完整训练流水线。
 
-## 阶段四 🔲：组装 Home Mixer
+当前状态请看：
 
-待执行。参考 [迁移指南 - 阶段四](x_algorithm_migration_guide.md)。
+- [../phoenix/README.md](../../phoenix/README.md)：Phoenix 当前实现边界。
+- [../phoenix/06-training-and-data.md](../../phoenix/06-training-and-data.md)：训练侧现状与缺口。
+- [../training/README.md](../../training/README.md)：训练数据规格和离线链路设计。
+
+## 阶段四：组装 Home Mixer
+
+早期迁移记录里这一阶段标记为“待执行”。当前仓库已经包含 `home-mixer/` 服务骨架、候选流装配、Thunder 集成和大量当前实现文档，但默认外部依赖仍多为 stub。
+
+当前状态请看：
+
+- [../home-mixer/README.md](../../home-mixer/README.md)：Home Mixer 当前实现。
+- [../candidate-pipeline/README.md](../../candidate-pipeline/README.md)：候选流框架执行语义。
+- [../thunder/README.md](../../thunder/README.md)：Thunder 当前实现和集成边界。

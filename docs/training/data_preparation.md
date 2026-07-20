@@ -1,8 +1,10 @@
 # 数据准备规范（Data Preparation Spec）
 
+状态：`design`
+
 本文档定义"为你推荐"Feed 在生产环境下的**数据生命周期**——哪些数据是全量的、哪些是增量的、哪些需要周期性重做，以及它们与模型训练节奏之间的耦合关系。
 
-本文是 `docs/training_data_spec.md`（训练样本字段规格）的互补文档：前者回答"训练样本长什么样"，本文回答"候选池 / 索引 / 模型 / 样本分别怎么更新"。
+本文是 [training_data_spec.md](./training_data_spec.md)（训练样本字段规格）的互补文档：前者回答"训练样本长什么样"，本文回答"候选池 / 索引 / 模型 / 样本分别怎么更新"。
 
 ---
 
@@ -266,11 +268,11 @@ graph TD
 | `post_features`（每日快照或实时） | 帖子元数据 + 原始 embedding 输入 | T+1 或实时 |
 | `user_features`（每日快照） | 用户元数据 | T+1 |
 
-`impressions` / `action_log` / `user_action_sequence` 的字段定义见 `docs/training_data_spec.md` §2.1 / §2.2 / §2.3。
+`impressions` / `action_log` / `user_action_sequence` 的字段定义见 [training_data_spec.md](./training_data_spec.md) §2.1 / §2.2 / §2.3。
 
 ### 7.2 训练样本产出物
 
-按日分区 Parquet（参考 `docs/training_data_spec.md` §6）：
+按日分区 Parquet（参考 [training_data_spec.md](./training_data_spec.md) §6）：
 
 ```text
 training_data/
@@ -288,7 +290,7 @@ training_data/
 checkpoints/
   retrieval/
     v20260423/
-      params.pkl
+      model_params.npz
       config.json
       _SUCCESS
   ranker/
@@ -371,8 +373,8 @@ vector_index/
 
 ## 参考
 
-- `docs/data_operations_runbook.md`：**本文档的操作层姊妹篇**，具体的部署步骤、调度任务、故障处理
-- `docs/training_data_spec.md`：训练样本字段规格
+- [../operations/data_operations_runbook.md](../operations/data_operations_runbook.md)：**本文档的操作层姊妹篇**，具体的部署步骤、调度任务、故障处理
+- [training_data_spec.md](./training_data_spec.md)：训练样本字段规格
 - `docs/phoenix/03-retrieval-pipeline.md`：召回链路设计
 - `docs/phoenix/06-training-and-data.md`：训练侧能力评估
 - `thunder/args.rs` / `thunder/posts/post_store.rs`：网内缓存的保留窗口实现
