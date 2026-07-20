@@ -74,7 +74,7 @@ pub trait TESClient: Send + Sync {
 
 /// 生产环境 TES 客户端（Stub 实现）
 ///
-/// 当前返回空的帖子元数据。
+/// 返回空的帖子元数据。
 /// TODO: 替换为你平台的帖子微服务客户端
 pub struct ProdTESClient;
 
@@ -111,6 +111,59 @@ impl TESClient for ProdTESClient {
         tweet_ids: Vec<i64>,
     ) -> Result<HashMap<i64, Option<u64>>, anyhow::Error> {
         // Stub: 所有帖子非订阅内容
+        let results: HashMap<i64, Option<u64>> =
+            tweet_ids.into_iter().map(|id| (id, None)).collect();
+        Ok(results)
+    }
+}
+
+/// 演示环境 TES 客户端
+///
+/// 为每条帖子编造占位文本，让候选能通过 CoreDataHydrationFilter
+/// （该过滤器要求非空文本，否则候选会被全部清空）。
+/// 由装配层在 HOME_MIXER_DEMO=1 时注入。
+pub struct DemoTESClient;
+
+#[async_trait]
+impl TESClient for DemoTESClient {
+    async fn get_tweet_core_datas(
+        &self,
+        tweet_ids: Vec<i64>,
+    ) -> Result<HashMap<i64, Option<PureCoreData>>, anyhow::Error> {
+        // CoreDataCandidateHydrator 的 update 不会覆盖候选的 author_id，
+        // 所以这里 author_id 填 0 即可，候选保留来自召回源的真实作者。
+        let results: HashMap<i64, Option<PureCoreData>> = tweet_ids
+            .into_iter()
+            .map(|id| {
+                (
+                    id,
+                    Some(PureCoreData {
+                        author_id: 0,
+                        text: format!("Demo post {} — placeholder text for local run", id),
+                        source_tweet_id: None,
+                        source_user_id: None,
+                        in_reply_to_tweet_id: None,
+                        in_reply_to_user_id: None,
+                    }),
+                )
+            })
+            .collect();
+        Ok(results)
+    }
+
+    async fn get_tweet_media_entities(
+        &self,
+        tweet_ids: Vec<i64>,
+    ) -> Result<HashMap<i64, Option<MediaEntities>>, anyhow::Error> {
+        let results: HashMap<i64, Option<MediaEntities>> =
+            tweet_ids.into_iter().map(|id| (id, None)).collect();
+        Ok(results)
+    }
+
+    async fn get_subscription_author_ids(
+        &self,
+        tweet_ids: Vec<i64>,
+    ) -> Result<HashMap<i64, Option<u64>>, anyhow::Error> {
         let results: HashMap<i64, Option<u64>> =
             tweet_ids.into_iter().map(|id| (id, None)).collect();
         Ok(results)

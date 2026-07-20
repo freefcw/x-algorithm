@@ -9,6 +9,7 @@
 mod candidate_hydrators;
 mod candidate_pipeline;
 pub mod clients;
+pub mod demo;
 mod filters;
 pub mod params;
 mod query_hydrators;
@@ -20,9 +21,9 @@ mod sources;
 pub mod util;
 
 // 内联替代模块（替代原始 xai_* 私有依赖）
-pub mod visibility;
-pub mod uas_compat;
-pub mod recsys_compat;
 pub mod post_text;
+pub mod recsys_compat;
+pub mod uas_compat;
+pub mod visibility;
 
 pub use server::HomeMixerServer;

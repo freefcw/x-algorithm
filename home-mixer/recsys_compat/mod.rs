@@ -51,13 +51,17 @@ pub trait UserActionAggregator: Send + Sync {
 /// 默认聚合器
 ///
 /// 按帖子 ID 分组，将同一帖子上的所有行为合并为一条 AggregatedUserAction。
-/// 对于 Stub 实现，直接将每条 UserAction 转为一条 AggregatedUserAction。
+/// 对于 Stub 实现，直接将每条 UserAction 转为一条 AggregatedUserAction，
+/// 并把 action_type 转成 action_mask 位掩码（位下标对应 proto ActionName 枚举值）。
 ///
 /// 原始 X 实现中的聚合逻辑更复杂：
 ///   - 行为时间窗口验证
 ///   - 时间戳对齐（使用曝光时间作为锚点）
 ///   - 行为权重衰减（近期行为 > 远期行为）
 pub struct DefaultAggregator;
+
+/// action_mask 的长度：覆盖 proto ActionName 枚举 0..=18
+const ACTION_MASK_LEN: usize = 19;
 
 impl UserActionAggregator for DefaultAggregator {
     fn run(
@@ -69,12 +73,21 @@ impl UserActionAggregator for DefaultAggregator {
         // Stub: 将每条 UserAction 直接转为 AggregatedUserAction
         actions
             .iter()
-            .map(|action| AggregatedUserAction {
-                tweet_id: action.tweet_id,
-                author_id: action.author_id,
-                impressed_time_ms: action.action_time_ms,
-                action_mask: vec![],
-                product_surface: None,
+            .map(|action| {
+                let mut action_mask = vec![false; ACTION_MASK_LEN];
+                if let Some(action_type) = action.action_type {
+                    let idx = action_type as usize;
+                    if (1..ACTION_MASK_LEN).contains(&idx) {
+                        action_mask[idx] = true;
+                    }
+                }
+                AggregatedUserAction {
+                    tweet_id: action.tweet_id,
+                    author_id: action.author_id,
+                    impressed_time_ms: action.action_time_ms,
+                    action_mask,
+                    product_surface: None,
+                }
             })
             .collect()
     }

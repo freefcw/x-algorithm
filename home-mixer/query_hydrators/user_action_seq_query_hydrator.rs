@@ -1,5 +1,5 @@
 use crate::candidate_pipeline::query::ScoredPostsQuery;
-use crate::clients::uas_fetcher::{UserActionSequenceFetcher, UserActionSequenceOps};
+use crate::clients::uas_fetcher::UserActionSequenceOps;
 use crate::params as p;
 use crate::recsys_compat::aggregation::{DefaultAggregator, UserActionAggregator};
 use crate::recsys_compat::filters::{
@@ -15,22 +15,22 @@ use crate::uas_compat::{
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 use tonic::async_trait;
-use xai_candidate_pipeline::query_hydrator::QueryHydrator;
 use x_algorithm_proto::recsys::{
-    AggregatedUserActionList, Mask, MaskType, UserActionSequence, UserActionSequenceDataContainer,
-    UserActionSequenceMeta, user_action_sequence_data_container::Data as ProtoDataContainer,
+    user_action_sequence_data_container::Data as ProtoDataContainer, AggregatedUserActionList,
+    Mask, MaskType, UserActionSequence, UserActionSequenceDataContainer, UserActionSequenceMeta,
 };
+use xai_candidate_pipeline::query_hydrator::QueryHydrator;
 
 /// Hydrate a sequence that captures the user's recent actions
 pub struct UserActionSeqQueryHydrator {
-    pub uas_fetcher: Arc<UserActionSequenceFetcher>,
+    pub uas_fetcher: Arc<dyn UserActionSequenceOps>,
     global_filter: Arc<dyn UserActionFilter>,
     aggregator: Arc<dyn UserActionAggregator>,
     post_filters: Vec<Arc<dyn AggregatedActionFilter>>,
 }
 
 impl UserActionSeqQueryHydrator {
-    pub fn new(uas_fetcher: Arc<UserActionSequenceFetcher>) -> Self {
+    pub fn new(uas_fetcher: Arc<dyn UserActionSequenceOps>) -> Self {
         Self {
             uas_fetcher,
             global_filter: Arc::new(KeepOriginalUserActionFilter::new()),

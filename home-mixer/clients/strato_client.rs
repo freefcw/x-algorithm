@@ -111,7 +111,7 @@ pub trait StratoClient: Send + Sync {
 
 /// 生产环境 Strato 客户端（Stub 实现）
 ///
-/// 当前返回空的用户特征（关注列表为空等）。
+/// 返回空的用户特征（关注列表为空等）。
 /// TODO: 替换为从你平台的 Redis 或用户微服务获取
 pub struct ProdStratoClient;
 
@@ -125,7 +125,6 @@ impl ProdStratoClient {
 impl StratoClient for ProdStratoClient {
     async fn get_user_features(&self, _user_id: i64) -> Result<Vec<u8>, anyhow::Error> {
         // Stub: 返回空的用户特征 JSON
-        // UserFeatures { muted_keywords: [], blocked_user_ids: [], ... }
         let empty_features = serde_json::json!({
             "mutedKeywords": [],
             "blockedUserIds": [],
@@ -142,6 +141,35 @@ impl StratoClient for ProdStratoClient {
         _post_ids: Vec<i64>,
     ) -> Result<Vec<u8>, anyhow::Error> {
         // Stub: 静默成功
+        Ok(vec![])
+    }
+}
+
+/// 演示环境 Strato 客户端
+///
+/// 返回固定关注列表（`x_algorithm_proto::demo::DEMO_AUTHOR_IDS`），
+/// 与 thunder 演示数据的作者集合一致，让网内召回能命中帖子。
+/// 由装配层在 HOME_MIXER_DEMO=1 时注入，生产实现里没有任何演示分支。
+pub struct DemoStratoClient;
+
+#[async_trait]
+impl StratoClient for DemoStratoClient {
+    async fn get_user_features(&self, _user_id: i64) -> Result<Vec<u8>, anyhow::Error> {
+        let features = serde_json::json!({
+            "mutedKeywords": [],
+            "blockedUserIds": [],
+            "mutedUserIds": [],
+            "followedUserIds": x_algorithm_proto::demo::DEMO_AUTHOR_IDS.to_vec(),
+            "subscribedUserIds": []
+        });
+        Ok(serde_json::to_vec(&features)?)
+    }
+
+    async fn store_request_info(
+        &self,
+        _user_id: i64,
+        _post_ids: Vec<i64>,
+    ) -> Result<Vec<u8>, anyhow::Error> {
         Ok(vec![])
     }
 }

@@ -15,10 +15,12 @@ use crate::clients::phoenix_retrieval_client::{
 };
 use crate::clients::s2s::{S2S_CHAIN_PATH, S2S_CRT_PATH, S2S_KEY_PATH};
 use crate::clients::socialgraph_client::SocialGraphClient;
-use crate::clients::strato_client::{ProdStratoClient, StratoClient};
+use crate::clients::strato_client::{DemoStratoClient, ProdStratoClient, StratoClient};
 use crate::clients::thunder_client::ThunderClient;
-use crate::clients::tweet_entity_service_client::{ProdTESClient, TESClient};
-use crate::clients::uas_fetcher::UserActionSequenceFetcher;
+use crate::clients::tweet_entity_service_client::{DemoTESClient, ProdTESClient, TESClient};
+use crate::clients::uas_fetcher::{
+    DemoUserActionSequenceFetcher, UserActionSequenceFetcher, UserActionSequenceOps,
+};
 use crate::filters::age_filter::AgeFilter;
 use crate::filters::author_socialgraph_filter::AuthorSocialgraphFilter;
 use crate::filters::core_data_hydration_filter::CoreDataHydrationFilter;
@@ -42,9 +44,7 @@ use crate::selectors::TopKScoreSelector;
 use crate::side_effects::cache_request_info_side_effect::CacheRequestInfoSideEffect;
 use crate::sources::phoenix_source::PhoenixSource;
 use crate::sources::thunder_source::ThunderSource;
-use crate::visibility::vf_client::{
-    ProdVisibilityFilteringClient, VisibilityFilteringClient,
-};
+use crate::visibility::vf_client::{ProdVisibilityFilteringClient, VisibilityFilteringClient};
 use std::sync::Arc;
 use std::time::Duration;
 use tonic::async_trait;
@@ -71,7 +71,7 @@ pub struct PhoenixCandidatePipeline {
 
 impl PhoenixCandidatePipeline {
     async fn build_with_clients(
-        uas_fetcher: Arc<UserActionSequenceFetcher>,
+        uas_fetcher: Arc<dyn UserActionSequenceOps>,
         phoenix_client: Arc<dyn PhoenixPredictionClient + Send + Sync>,
         phoenix_retrieval_client: Arc<dyn PhoenixRetrievalClient + Send + Sync>,
         thunder_client: Arc<ThunderClient>,
@@ -159,9 +159,41 @@ impl PhoenixCandidatePipeline {
         }
     }
 
+    /// 生产装配入口。
+    ///
+    /// 演示模式（HOME_MIXER_DEMO=1）在这里统一决策：把 UAS / Strato / TES
+    /// 三个数据依赖换成 Demo 实现，其余装配完全一致。
+    /// 生产实现内部不包含任何演示分支，替换 stub 时无需关心演示逻辑。
     pub async fn prod() -> PhoenixCandidatePipeline {
-        let uas_fetcher =
-            Arc::new(UserActionSequenceFetcher::new().expect("Failed to create UAS fetcher"));
+        let demo_mode = crate::demo::is_demo_mode();
+        if demo_mode {
+            log::info!("HOME_MIXER_DEMO=1: injecting demo UAS / Strato / TES clients");
+        }
+
+        let uas_fetcher: Arc<dyn UserActionSequenceOps> = if demo_mode {
+            Arc::new(DemoUserActionSequenceFetcher)
+        } else {
+            Arc::new(UserActionSequenceFetcher::new().expect("Failed to create UAS fetcher"))
+        };
+        let strato_client: Arc<dyn StratoClient + Send + Sync> = if demo_mode {
+            Arc::new(DemoStratoClient)
+        } else {
+            Arc::new(
+                ProdStratoClient::new()
+                    .await
+                    .expect("Failed to create Strato client"),
+            )
+        };
+        let tes_client: Arc<dyn TESClient + Send + Sync> = if demo_mode {
+            Arc::new(DemoTESClient)
+        } else {
+            Arc::new(
+                ProdTESClient::new()
+                    .await
+                    .expect("Failed to create TES client"),
+            )
+        };
+
         let _sgs_client = Arc::new(SocialGraphClient::new());
         let phoenix_client = Arc::new(
             ProdPhoenixPredictionClient::new()
@@ -174,16 +206,6 @@ impl PhoenixCandidatePipeline {
                 .expect("Failed to create Phoenix retrieval client"),
         );
         let thunder_client = Arc::new(ThunderClient::new().await);
-        let strato_client = Arc::new(
-            ProdStratoClient::new()
-                .await
-                .expect("Failed to create Strato client"),
-        );
-        let tes_client = Arc::new(
-            ProdTESClient::new()
-                .await
-                .expect("Failed to create TES client"),
-        );
         let gizmoduck_client = Arc::new(
             ProdGizmoduckClient::new()
                 .await
@@ -193,7 +215,7 @@ impl PhoenixCandidatePipeline {
             ProdVisibilityFilteringClient::new(
                 S2S_CHAIN_PATH.clone(),
                 S2S_CRT_PATH.clone(),
-                S2S_KEY_PATH.clone()
+                S2S_KEY_PATH.clone(),
             )
             .await
             .expect("Failed to create VF client"),

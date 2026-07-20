@@ -2,6 +2,7 @@
 name = "home-mixer"
 version = "0.1.0"
 edition = "2021"
+default-run = "home-mixer"
 
 [dependencies]
 # 命令行和日志
@@ -39,6 +40,10 @@ x-algorithm-proto = { path = "../proto" }
 [[bin]]
 name = "home-mixer"
 path = "main.rs"
+
+[[bin]]
+name = "demo-client"
+path = "bin/demo_client.rs"
 
 [lib]
 path = "lib.rs"
