@@ -54,6 +54,7 @@ class CandidateTower(hk.Module):
     """
 
     emb_size: int
+    enable_linear_proj: bool = True
     name: Optional[str] = None
 
     def __call__(self, post_author_embedding: jax.Array) -> jax.Array:
@@ -67,6 +68,16 @@ class CandidateTower(hk.Module):
         返回:
             L2 归一化后的候选对象表示，用于相似度计算。
         """
+        if not self.enable_linear_proj:
+            candidate_representation = jnp.mean(post_author_embedding, axis=-2)
+            candidate_norm_sq = jnp.sum(
+                candidate_representation**2, axis=-1, keepdims=True
+            )
+            candidate_norm = jnp.sqrt(jnp.maximum(candidate_norm_sq, EPS))
+            return (candidate_representation / candidate_norm).astype(
+                post_author_embedding.dtype
+            )
+
         # 1. 调整输入形状，合并哈希维度
         if len(post_author_embedding.shape) == 4:
             B, C, _, _ = post_author_embedding.shape
@@ -123,6 +134,7 @@ class PhoenixRetrievalModelConfig:
     hash_config: HashConfig = None  # type: ignore
 
     product_surface_vocab_size: int = 16
+    enable_linear_proj: bool = True
 
     _initialized: bool = False
 
@@ -305,7 +317,10 @@ class PhoenixRetrievalModel(hk.Module):
             [candidate_post_embeddings, candidate_author_embeddings], axis=2
         )
 
-        candidate_tower = CandidateTower(emb_size=config.emb_size)
+        candidate_tower = CandidateTower(
+            emb_size=config.emb_size,
+            enable_linear_proj=config.enable_linear_proj,
+        )
         candidate_representation = candidate_tower(post_author_embedding)
 
         # 生成物品有效性掩码

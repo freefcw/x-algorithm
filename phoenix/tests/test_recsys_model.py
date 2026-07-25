@@ -16,7 +16,13 @@ import jax.numpy as jnp
 import numpy as np
 import pytest
 
-from grok import make_recsys_attn_mask
+from grok import make_recsys_attn_mask, right_anchored_rope_positions
+from recsys_model import (
+    ContinuousActionConfig,
+    NormConfig,
+    compute_post_age_bucket,
+    normalize_continuous_value,
+)
 
 
 class TestMakeRecsysAttnMask:
@@ -181,6 +187,181 @@ class TestMakeRecsysAttnMask:
         )
 
         np.testing.assert_array_equal(np.array(mask_2d), expected)
+
+
+class TestRightAnchoredRopePositions:
+    """Tests for stable positions with right-padded user history."""
+
+    def test_output_shape(self):
+        padding_mask = jnp.ones((2, 10), dtype=jnp.bool_)
+
+        positions = right_anchored_rope_positions(
+            padding_mask, history_seq_len=6, num_user_prefix_tokens=1
+        )
+
+        assert positions.shape == (2, 10)
+
+    def test_prefix_positions_are_preserved(self):
+        padding_mask = jnp.ones((1, 10), dtype=jnp.bool_)
+
+        positions = right_anchored_rope_positions(
+            padding_mask, history_seq_len=6, num_user_prefix_tokens=2
+        )
+
+        np.testing.assert_array_equal(np.array(positions[0, :2]), [0.0, 1.0])
+
+    def test_short_history_is_anchored_to_the_right(self):
+        # Layout: [user, history, history, pad, pad, candidate, candidate]
+        padding_mask = jnp.array(
+            [[True, True, True, False, False, True, True]], dtype=jnp.bool_
+        )
+
+        positions = right_anchored_rope_positions(
+            padding_mask, history_seq_len=4, num_user_prefix_tokens=1
+        )
+
+        np.testing.assert_array_equal(
+            np.array(positions[0]), [0.0, 3.0, 4.0, 0.0, 0.0, 5.0, 5.0]
+        )
+
+    def test_candidates_share_history_end_position(self):
+        padding_mask = jnp.ones((1, 8), dtype=jnp.bool_)
+
+        positions = right_anchored_rope_positions(
+            padding_mask, history_seq_len=4, num_user_prefix_tokens=1
+        )
+
+        np.testing.assert_array_equal(np.array(positions[0, 5:]), [5.0, 5.0, 5.0])
+
+    def test_padding_positions_are_zero(self):
+        padding_mask = jnp.array(
+            [[True, True, True, True, False, False, False, False]], dtype=jnp.bool_
+        )
+
+        positions = right_anchored_rope_positions(
+            padding_mask, history_seq_len=4, num_user_prefix_tokens=1
+        )
+
+        np.testing.assert_array_equal(np.array(positions[0, 4:]), np.zeros(4))
+
+
+class TestComputePostAgeBucket:
+    """Tests for converting post age into bounded model buckets."""
+
+    def test_hour_boundaries_advance_to_the_next_bucket(self):
+        impression = jnp.array([[1_000_000, 1_000_000, 1_000_000]])
+        creation = jnp.array(
+            [[1_000_000, 1_000_000 - 59 * 60, 1_000_000 - 60 * 60]]
+        )
+
+        buckets = compute_post_age_bucket(impression, creation, granularity_mins=60)
+
+        np.testing.assert_array_equal(np.array(buckets), [[1, 1, 2]])
+
+    def test_two_hour_old_post_uses_third_bucket(self):
+        impression = jnp.array([[1_000_000]])
+        creation = jnp.array([[1_000_000 - 120 * 60]])
+
+        bucket = compute_post_age_bucket(impression, creation, granularity_mins=60)
+
+        assert int(bucket[0, 0]) == 3
+
+    @pytest.mark.parametrize(
+        ("impression", "creation"),
+        [(0, 1_000_000), (1_000_000, 0)],
+    )
+    def test_missing_timestamp_uses_unknown_bucket(self, impression, creation):
+        bucket = compute_post_age_bucket(
+            jnp.array([[impression]]),
+            jnp.array([[creation]]),
+            granularity_mins=60,
+        )
+
+        assert int(bucket[0, 0]) == 0
+
+    def test_future_creation_timestamp_uses_unknown_bucket(self):
+        impression = jnp.array([[1_000_000]])
+        creation = jnp.array([[1_000_000 + 60 * 60]])
+
+        bucket = compute_post_age_bucket(impression, creation, granularity_mins=60)
+
+        assert int(bucket[0, 0]) == 0
+
+    def test_very_old_post_uses_overflow_bucket(self):
+        impression = jnp.array([[1_000_000]])
+        creation = jnp.array([[1_000_000 - 5_000 * 60]])
+
+        bucket = compute_post_age_bucket(impression, creation, granularity_mins=60)
+
+        assert int(bucket[0, 0]) == 81
+
+    def test_batch_shape_and_integer_dtype_are_preserved(self):
+        impression = jnp.full((2, 3), 1_000_000)
+        creation = jnp.array(
+            [
+                [1_000_000 - 30 * 60, 1_000_000 - 120 * 60, 0],
+                [1_000_000, 1_000_000 - 60 * 60, 1_000_000 - 5_000 * 60],
+            ]
+        )
+
+        buckets = compute_post_age_bucket(impression, creation, granularity_mins=60)
+
+        assert buckets.shape == (2, 3)
+        assert buckets.dtype == jnp.int32
+        np.testing.assert_array_equal(np.array(buckets), [[1, 3, 0], [1, 2, 81]])
+
+
+class TestNormalizeContinuousValue:
+    """Tests for bounded continuous feature normalization."""
+
+    def test_linear_normalization(self):
+        config = NormConfig(norm_scale=30.0, use_log=False)
+        values = jnp.array([0.0, 15.0, 30.0, 60.0])
+
+        result = normalize_continuous_value(values, config)
+
+        np.testing.assert_allclose(np.array(result), [0.0, 0.5, 1.0, 1.0])
+
+    def test_log_normalization(self):
+        config = NormConfig(norm_scale=30.0, use_log=True)
+        values = jnp.array([0.0, 30.0])
+
+        result = normalize_continuous_value(values, config)
+
+        np.testing.assert_allclose(np.array(result), [0.0, 1.0], atol=1e-6)
+
+    def test_values_are_clamped_to_configured_range(self):
+        config = NormConfig(norm_scale=10.0, use_log=False)
+        values = jnp.array([-5.0, 0.0, 5.0, 15.0])
+
+        result = normalize_continuous_value(values, config)
+
+        np.testing.assert_allclose(np.array(result), [0.0, 0.0, 0.5, 1.0])
+
+
+class TestContinuousActionConfig:
+    """Tests for continuous action configuration defaults."""
+
+    def test_defaults_match_published_model_contract(self):
+        config = ContinuousActionConfig()
+
+        assert config.loss_weight == 0.0
+        assert config.loss_type == "mae"
+        assert config.tweedie_power == 1.5
+        assert config.norm_config == NormConfig(norm_scale=30.0, use_log=False)
+
+    def test_default_normalization_config_is_not_shared(self):
+        first = ContinuousActionConfig()
+        second = ContinuousActionConfig()
+
+        assert first.norm_config is not second.norm_config
+
+    def test_custom_normalization_config_is_preserved(self):
+        norm_config = NormConfig(norm_scale=120.0, use_log=True)
+
+        config = ContinuousActionConfig(norm_config=norm_config)
+
+        assert config.norm_config is norm_config
 
 
 if __name__ == "__main__":

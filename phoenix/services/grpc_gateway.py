@@ -50,7 +50,6 @@ from runners import (
     RecsysRetrievalInferenceRunner,
     RetrievalModelRunner,
 )
-from services.model_registry import create_model_registry
 from services.recsys_proto import load_proto_modules
 
 logger = logging.getLogger("grpc_gateway")
@@ -122,16 +121,6 @@ class EmbeddingTables:
         )
 
 
-def _load_checkpoint_params(checkpoint_path: Optional[str]):
-    """加载模型检查点参数，None 表示随机初始化。
-
-    统一复用 `services.model_registry` 的加载逻辑（支持 .npz/.pkl/.npy），
-    避免 npz 还原代码在多处重复。
-    """
-    registry = create_model_registry(checkpoint_path, allow_random_init=True)
-    return registry.get_params()
-
-
 # ── 特征转换：proto → RecsysBatch ────────────────────────────────────────────
 
 
@@ -141,6 +130,12 @@ class HistoryFeatures:
     author_hashes: np.ndarray    # [1, S, H]
     actions: np.ndarray          # [1, S, A]
     product_surface: np.ndarray  # [1, S]
+
+
+@dataclass
+class CandidatePrediction:
+    action_probs: np.ndarray
+    continuous_values: Optional[np.ndarray] = None
 
 
 def uas_to_history(uas) -> HistoryFeatures:
@@ -250,11 +245,9 @@ class RankerEngine:
             runner=ModelRunner(model=model_config, bs_per_device=0.125),
             name="grpc_ranker",
         )
-        runner.initialize()
+        runner.initialize(checkpoint_path=checkpoint_path)
 
-        params = _load_checkpoint_params(checkpoint_path)
-        if params is not None:
-            runner.params = params
+        if checkpoint_path is not None:
             self.model_version = os.path.basename(checkpoint_path)
             logger.info("精排模型已加载检查点: %s", checkpoint_path)
         else:
@@ -265,10 +258,10 @@ class RankerEngine:
 
     def predict(
         self, user_id: int, uas, candidates: Sequence[Tuple[int, int]]
-    ) -> List[np.ndarray]:
-        """返回每个候选的概率向量（Python ACTIONS 顺序，长度 19）。"""
+    ) -> List[CandidatePrediction]:
+        """返回每个候选的离散行为概率和可选连续预测。"""
         history = uas_to_history(uas)
-        all_probs: List[np.ndarray] = []
+        predictions: List[CandidatePrediction] = []
 
         with self._lock:
             for start in range(0, len(candidates), RANK_CHUNK):
@@ -282,10 +275,23 @@ class RankerEngine:
                 )
                 embeddings = self._tables.lookup(batch)
                 output = self._runner.rank(batch, embeddings)
-                probs = np.asarray(output.scores[0], dtype=np.float64)  # [RANK_CHUNK, 19]
-                all_probs.extend(probs[: len(chunk)])
+                probs = np.asarray(output.scores[0], dtype=np.float64)
+                continuous = (
+                    None
+                    if output.continuous_preds is None
+                    else np.asarray(output.continuous_preds[0], dtype=np.float64)
+                )
+                for index in range(len(chunk)):
+                    predictions.append(
+                        CandidatePrediction(
+                            action_probs=probs[index],
+                            continuous_values=(
+                                None if continuous is None else continuous[index]
+                            ),
+                        )
+                    )
 
-        return all_probs
+        return predictions
 
 
 # ── 召回引擎 ──────────────────────────────────────────────────────────────────
@@ -320,11 +326,9 @@ class RetrievalEngine:
             runner=RetrievalModelRunner(model=model_config, bs_per_device=0.125),
             name="grpc_retrieval",
         )
-        runner.initialize()
+        runner.initialize(checkpoint_path=checkpoint_path)
 
-        params = _load_checkpoint_params(checkpoint_path)
-        if params is not None:
-            runner.params = params
+        if checkpoint_path is not None:
             self.model_version = os.path.basename(checkpoint_path)
             logger.info("召回模型已加载检查点: %s", checkpoint_path)
         else:
@@ -405,20 +409,27 @@ def create_servicers(recsys_pb2, recsys_pb2_grpc, ranker: RankerEngine, retrieva
         def PredictNextActions(self, request, context):
             start = time.time()
             candidates = [(c.tweet_id, c.author_id) for c in request.candidates]
-            probs_list = ranker.predict(
+            predictions = ranker.predict(
                 request.user_id, request.user_action_sequence, candidates
             )
 
             distributions = []
-            for (tweet_id, author_id), probs in zip(candidates, probs_list):
+            for (tweet_id, author_id), prediction in zip(candidates, predictions):
+                probs = prediction.action_probs
                 # 概率 → log 概率，并按 ActionName 枚举值排列（下标 0 为 UNSPECIFIED 占位）
                 top_log_probs = [math.log(MIN_PROB)] * LOG_PROBS_LEN
                 for py_idx, enum_val in enumerate(ACTION_IDX_TO_ENUM):
                     p = float(np.clip(probs[py_idx], MIN_PROB, 1.0))
                     top_log_probs[enum_val] = math.log(p)
 
-                # 连续值：下标 1 = DWELL_TIME（模型输出的归一化停留时长）
-                continuous = [0.0, float(probs[18])]
+                # 连续值下标 1 = DWELL_TIME；旧模型没有连续头时兼容离散占位。
+                dwell_time = float(probs[18])
+                if (
+                    prediction.continuous_values is not None
+                    and len(prediction.continuous_values) > 1
+                ):
+                    dwell_time = float(prediction.continuous_values[1])
+                continuous = [0.0, dwell_time]
 
                 distributions.append(
                     recsys_pb2.CandidateDistribution(
@@ -478,16 +489,28 @@ def serve(
     retrieval_checkpoint: Optional[str] = None,
     emb_tables_path: Optional[str] = None,
     corpus_size: int = 2000,
+    artifacts_dir: Optional[str] = None,
 ) -> None:
     import grpc
 
     recsys_pb2, recsys_pb2_grpc = load_proto_modules()
 
-    tables = EmbeddingTables(emb_tables_path)
-    logger.info("正在初始化精排模型...")
-    ranker = RankerEngine(tables, ranker_checkpoint)
-    logger.info("正在初始化召回模型...")
-    retrieval = RetrievalEngine(tables, retrieval_checkpoint, corpus_size)
+    if artifacts_dir:
+        from services.published_gateway import (
+            PublishedRankerEngine,
+            PublishedRetrievalEngine,
+        )
+
+        logger.info("正在从发布 artifact 初始化精排模型...")
+        ranker = PublishedRankerEngine(artifacts_dir)
+        logger.info("正在从发布 artifact 初始化召回模型...")
+        retrieval = PublishedRetrievalEngine(artifacts_dir)
+    else:
+        tables = EmbeddingTables(emb_tables_path)
+        logger.info("正在初始化精排模型...")
+        ranker = RankerEngine(tables, ranker_checkpoint)
+        logger.info("正在初始化召回模型...")
+        retrieval = RetrievalEngine(tables, retrieval_checkpoint, corpus_size)
 
     prediction_servicer, retrieval_servicer = create_servicers(
         recsys_pb2, recsys_pb2_grpc, ranker, retrieval

@@ -80,6 +80,28 @@ def make_recsys_attn_mask(
     return attn_mask
 
 
+def right_anchored_rope_positions(
+    padding_mask: jax.Array,
+    history_seq_len: int,
+    num_user_prefix_tokens: int,
+) -> jax.Array:
+    """Keep the newest valid history item at a stable RoPE position."""
+    history_start = num_user_prefix_tokens
+    history_end = history_start + history_seq_len
+
+    indices = jnp.arange(padding_mask.shape[1], dtype=jnp.int32)[None, :]
+    history_length = padding_mask[:, history_start:history_end].sum(
+        axis=1, dtype=jnp.int32
+    )
+    positions = jnp.where(
+        (history_start <= indices) & (indices < history_end),
+        history_end - history_length[:, None] + indices - history_start,
+        indices,
+    )
+    positions = jnp.where(indices >= history_end, history_end, positions)
+    return jnp.where(padding_mask, positions, 0).astype(jnp.float32)
+
+
 class MHAOutput(NamedTuple):
     """多头注意力（Multi-Head Attention）操作的输出容器。"""
     embeddings: jax.Array
@@ -347,6 +369,7 @@ class MultiHeadAttention(hk.Module):
         key: jax.Array,
         value: jax.Array,
         mask: jax.Array,
+        positions: Optional[jax.Array] = None,
     ) -> MHAOutput:
         projection = self._linear_projection
 
@@ -369,8 +392,8 @@ class MultiHeadAttention(hk.Module):
 
         # 2. 应用 RoPE
         rotate = RotaryEmbedding(dim=self.key_size, base_exponent=int(1e4))
-        key_heads = rotate(key_heads, seq_dim=1, offset=0)
-        query_heads = rotate(query_heads, seq_dim=1, offset=0)
+        key_heads = rotate(key_heads, seq_dim=1, offset=0, t=positions)
+        query_heads = rotate(query_heads, seq_dim=1, offset=0, t=positions)
 
         b, t, h, d = query_heads.shape
         _, _, kv_h, _ = key_heads.shape
@@ -443,6 +466,7 @@ class MHABlock(hk.Module):
         self,
         inputs: jax.Array,  # [B, T, D]
         mask: jax.Array,  # [B, 1, T, T]
+        positions: Optional[jax.Array] = None,
     ) -> MHAOutput:
         _, _, model_size = inputs.shape
         assert mask.ndim == 4
@@ -455,7 +479,7 @@ class MHABlock(hk.Module):
                 key_size=self.key_size,
                 model_size=model_size,
                 attn_output_multiplier=self.attn_output_multiplier,
-            )(query, key, value, mask)
+            )(query, key, value, mask, positions=positions)
 
         # 在当前的简化实现中，Self-Attention 的 Q, K, V 均源自输入 inputs
         attn_output = attn_block(inputs, inputs, inputs, mask)
@@ -522,6 +546,7 @@ class DecoderLayer(hk.Module):
         inputs: jax.Array,
         mask: jax.Array,
         padding_mask: Optional[jax.Array],
+        positions: Optional[jax.Array] = None,
     ) -> DecoderOutput:
         del padding_mask # 尚未使用的变量
 
@@ -536,7 +561,7 @@ class DecoderLayer(hk.Module):
             num_kv_heads=self.num_kv_heads,
             key_size=self.key_size,
             attn_output_multiplier=self.attn_output_multiplier,
-        )(layer_norm(h), mask)
+        )(layer_norm(h), mask, positions=positions)
         
         h_attn = attn_output.embeddings
         h_attn = layer_norm(h_attn)
@@ -585,6 +610,7 @@ class Transformer(hk.Module):
         embeddings: jax.Array,
         mask: jax.Array,
         candidate_start_offset: Optional[int] = None,
+        positions: Optional[jax.Array] = None,
     ) -> TransformerOutput:
         """
         参数说明:
@@ -620,7 +646,7 @@ class Transformer(hk.Module):
                 attn_output_multiplier=self.attn_output_multiplier,
                 name=f"decoder_layer_{i}",
                 layer_index=i,
-            )(h, mask, padding_mask)
+            )(h, mask, padding_mask, positions=positions)
             h = decoder_output.embeddings
 
         return TransformerOutput(embeddings=h)

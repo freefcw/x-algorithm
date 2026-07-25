@@ -37,6 +37,22 @@ from recsys_model import (
 rank_logger = logging.getLogger("rank")
 
 
+def load_model_params(checkpoint_path) -> hk.Params:
+    """Load slash-delimited NPZ entries into a Haiku parameter tree."""
+    params: dict[str, dict[str, jax.Array]] = {}
+    with np.load(checkpoint_path, allow_pickle=False) as checkpoint:
+        for key in checkpoint.files:
+            module_path, parameter_name = key.rsplit("/", 1)
+            params.setdefault(module_path, {})[parameter_name] = jnp.asarray(checkpoint[key])
+    return hk.data_structures.to_haiku_dict(params)
+
+
+def load_embedding_table(checkpoint_path) -> dict[str, np.ndarray]:
+    """Load named embedding tables from an exported NPZ checkpoint."""
+    with np.load(checkpoint_path, allow_pickle=False) as checkpoint:
+        return {name: checkpoint[name] for name in checkpoint.files}
+
+
 def create_dummy_batch_from_config(
     hash_config: Any,
     history_len: int,
@@ -183,8 +199,8 @@ class BaseInferenceRunner(ABC):
         )
 
     @abstractmethod
-    def initialize(self):
-        """初始化推理运行器。必须由具体业务逻辑实现。"""
+    def initialize(self, checkpoint_path=None):
+        """初始化推理运行器，可选加载导出的模型参数。"""
         pass
 
 
@@ -241,6 +257,7 @@ class RankingOutput(NamedTuple):
     p_mute_author_score: jax.Array
     p_report_score: jax.Array
     p_dwell_time: jax.Array
+    continuous_preds: Optional[jax.Array] = None
 
 
 @dataclass
@@ -286,11 +303,13 @@ class ModelRunner(BaseModelRunner):
         self,
         init_data: RecsysBatch,
         init_embeddings: RecsysEmbeddings,
+        checkpoint_path=None,
     ):
-        """加载或初始化模型权重。当前实现仅支持随机初始化。"""
+        """加载导出的模型参数，未提供路径时保持随机初始化。"""
+        if checkpoint_path is not None:
+            return TrainingState(params=load_model_params(checkpoint_path))
         rng = jax.random.PRNGKey(self.rng_seed)
-        state = self.init(rng, init_data, init_embeddings)
-        return state
+        return self.init(rng, init_data, init_embeddings)
 
 
 @dataclass
@@ -310,7 +329,7 @@ class RecsysInferenceRunner(BaseInferenceRunner):
     def runner(self) -> ModelRunner:
         return self._runner
 
-    def initialize(self):
+    def initialize(self, checkpoint_path=None):
         """
         初始化推理环境：
         1. 实例化 ModelRunner。
@@ -324,7 +343,11 @@ class RecsysInferenceRunner(BaseInferenceRunner):
 
         runner.initialize()
 
-        state = runner.load_or_init(dummy_batch, dummy_embeddings)
+        state = runner.load_or_init(
+            dummy_batch,
+            dummy_embeddings,
+            checkpoint_path=checkpoint_path,
+        )
         self.params = state.params
 
         # 使用 lru_cache 确保模型对象在一次应用中只被实例化一次
@@ -381,6 +404,7 @@ class RecsysInferenceRunner(BaseInferenceRunner):
                 p_mute_author_score=probs[:, :, 16],
                 p_report_score=probs[:, :, 17],
                 p_dwell_time=probs[:, :, 18],
+                continuous_preds=output.continuous_preds,
             )
 
         # 转换为无状态的前向应用函数（去掉 RNG 依赖）
@@ -567,10 +591,12 @@ class RetrievalModelRunner(BaseModelRunner):
         init_embeddings: RecsysEmbeddings,
         corpus_embeddings: jax.Array,
         top_k: int,
+        checkpoint_path=None,
     ):
+        if checkpoint_path is not None:
+            return TrainingState(params=load_model_params(checkpoint_path))
         rng = jax.random.PRNGKey(self.rng_seed)
-        state = self.init(rng, init_data, init_embeddings, corpus_embeddings, top_k)
-        return state
+        return self.init(rng, init_data, init_embeddings, corpus_embeddings, top_k)
 
 
 @dataclass
@@ -599,8 +625,8 @@ class RecsysRetrievalInferenceRunner(BaseInferenceRunner):
     def runner(self) -> RetrievalModelRunner:
         return self._runner
 
-    def initialize(self):
-        """初始化召回推理函数。"""
+    def initialize(self, checkpoint_path=None):
+        """初始化召回推理函数，可选加载导出的模型参数。"""
         runner = self.runner
 
         dummy_batch = self.create_dummy_batch(batch_size=1)
@@ -611,7 +637,13 @@ class RecsysRetrievalInferenceRunner(BaseInferenceRunner):
         runner.initialize()
 
         # 初始化参数
-        state = runner.load_or_init(dummy_batch, dummy_embeddings, dummy_corpus, dummy_top_k)
+        state = runner.load_or_init(
+            dummy_batch,
+            dummy_embeddings,
+            dummy_corpus,
+            dummy_top_k,
+            checkpoint_path=checkpoint_path,
+        )
         self.params = state.params
 
         @functools.lru_cache

@@ -89,7 +89,7 @@ class TestCandidateTower(unittest.TestCase):
         num_hashes = 4
 
         def forward(x):
-            tower = CandidateTower(emb_size=emb_size)
+            tower = CandidateTower(emb_size=emb_size, enable_linear_proj=False)
             return tower(x)
 
         forward_fn = hk.without_apply_rng(hk.transform(forward))
@@ -101,9 +101,11 @@ class TestCandidateTower(unittest.TestCase):
         output = forward_fn.apply(params, x)
 
         self.assertEqual(output.shape, (batch_size, num_candidates, emb_size))
+        self.assertEqual(params, {})
 
-        norms = jnp.sqrt(jnp.sum(output**2, axis=-1))
-        np.testing.assert_array_almost_equal(norms, jnp.ones_like(norms), decimal=5)
+        expected = jnp.mean(x, axis=-2)
+        expected /= jnp.linalg.norm(expected, axis=-1, keepdims=True)
+        np.testing.assert_array_almost_equal(output, expected, decimal=5)
 
 
 class TestPhoenixRetrievalModel(unittest.TestCase):
