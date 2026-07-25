@@ -1,0 +1,7 @@
+{
+  "id": "post-demo-1",
+  "eligibilities": ["demo_metadata"],
+  "attributes": {
+    "text": "  Standalone   Grox execution demo  "
+  }
+}
