@@ -3,8 +3,11 @@
 # 并请求一次推荐 Feed，验证端到端返回非空结果。
 #
 # 用法：
-#   ./scripts/run_demo.sh          # 跑一次演示后自动清理所有进程
-#   ./scripts/run_demo.sh --keep   # 演示后保持三个服务运行（Ctrl+C 退出）
+#   ./scripts/run_demo.sh                    # 跑一次演示后自动清理所有进程
+#   ./scripts/run_demo.sh --topic-id 10      # 验证话题推荐链路
+#   ./scripts/run_demo.sh --cached-posts 8   # 验证缓存降级链路
+#   ./scripts/run_demo.sh --final-feed       # 验证 P4 最终 Feed 服务
+#   ./scripts/run_demo.sh --keep             # 演示后保持三个服务运行（Ctrl+C 退出）
 #
 # 前置条件：
 #   - 已安装 Rust 工具链（cargo）与 uv
@@ -18,7 +21,37 @@ REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$REPO_ROOT"
 
 KEEP_RUNNING=false
-[[ "${1:-}" == "--keep" ]] && KEEP_RUNNING=true
+HAS_CLIENT_ARGS=false
+CLIENT_ARGS=()
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        --keep)
+            KEEP_RUNNING=true
+            shift
+            ;;
+        --topic-id)
+            [[ $# -ge 2 ]] || { echo "[demo] 错误：--topic-id 需要一个整数"; exit 2; }
+            CLIENT_ARGS+=("--topic-id" "$2")
+            HAS_CLIENT_ARGS=true
+            shift 2
+            ;;
+        --cached-posts)
+            [[ $# -ge 2 ]] || { echo "[demo] 错误：--cached-posts 需要一个整数"; exit 2; }
+            CLIENT_ARGS+=("--cached-posts" "$2")
+            HAS_CLIENT_ARGS=true
+            shift 2
+            ;;
+        --final-feed)
+            CLIENT_ARGS+=("--final-feed")
+            HAS_CLIENT_ARGS=true
+            shift
+            ;;
+        *)
+            echo "[demo] 错误：未知参数 $1"
+            exit 2
+            ;;
+    esac
+done
 
 PIDS=()
 
@@ -96,7 +129,11 @@ sleep 2
 
 echo "[demo] 5/5 请求推荐 Feed..."
 echo ""
-cargo run -q -p home-mixer --bin demo-client
+if $HAS_CLIENT_ARGS; then
+    cargo run -q -p home-mixer --bin demo-client -- "${CLIENT_ARGS[@]}"
+else
+    cargo run -q -p home-mixer --bin demo-client
+fi
 
 echo ""
 echo "[demo] 端到端链路验证通过。"
