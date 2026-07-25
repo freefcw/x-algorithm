@@ -27,6 +27,27 @@ message ImpressionBloomFilterEntry {
   int32 num_hash_functions = 3;
 }
 
+// 连续请求可直接复用的帖子候选；仅包含重新打分所需的稳定身份字段。
+message CachedPost {
+  uint64 tweet_id = 1;
+  uint64 author_id = 2;
+  uint64 retweeted_tweet_id = 3;
+  uint64 retweeted_user_id = 4;
+  uint64 in_reply_to_tweet_id = 5;
+  int32 served_type = 6;
+  string tweet_text = 7;
+  string quoted_tweet_text = 8;
+  repeated int64 filtered_topic_ids = 9;
+  repeated int64 unfiltered_topic_ids = 10;
+  int32 video_duration_ms = 11;
+  int32 quoted_video_duration_ms = 12;
+  bool in_network = 13;
+  double score = 14;
+  string language_code = 15;
+  // 被引用帖 ID；缓存命中时用于 ancillary 可见性检查。
+  uint64 quoted_tweet_id = 16;
+}
+
 // 评分帖子查询请求 —— 客户端发往 Home Mixer 的 Feed 获取请求
 message ScoredPostsQuery {
   // 当前查看 Feed 的用户 ID（观察者）
@@ -47,6 +68,26 @@ message ScoredPostsQuery {
   bool is_bottom_request = 8;
   // 客户端本地布隆过滤器条目
   repeated ImpressionBloomFilterEntry bloom_filter_entries = 9;
+  // 话题页或显式兴趣话题；候选需至少命中一个。
+  repeated int64 topic_ids = 10;
+  // 用户明确排除的话题。
+  repeated int64 excluded_topic_ids = 11;
+  // 新用户冷启动话题。
+  repeated int64 new_user_topic_ids = 12;
+  // 请求是否排除视频候选。
+  bool exclude_videos = 13;
+  // 主 seen 列表不可用时使用的曝光历史。
+  repeated int64 impressed_post_ids = 14;
+  // 过去请求时间戳，用于刷新节奏判断。
+  repeated int64 past_request_timestamps_ms = 15;
+  // 上一次请求缓存的候选；非空时不访问外部召回源。
+  repeated CachedPost cached_posts = 16;
+  bool is_preview = 17;
+  bool is_shadow_traffic = 18;
+  bool is_polling = 19;
+  string ip_address = 20;
+  string user_agent = 21;
+  bool enable_phoenix_moe = 22;
 }
 
 // 帖子投递类型 —— 标识帖子来自哪个召回通道
@@ -56,6 +97,17 @@ enum ServedType {
   FOR_YOU_IN_NETWORK = 1;
   // 来自 Phoenix 算法检索的全局召回帖子
   FOR_YOU_PHOENIX_RETRIEVAL = 2;
+  FOR_YOU_PHOENIX_RETRIEVAL_MOE = 3;
+  FOR_YOU_PHOENIX_TOPICS = 4;
+  FOR_YOU_TWEET_MIXER = 5;
+  FOR_YOU_CACHED_POST = 6;
+}
+
+// 帖子是否可作为广告的相邻自然内容；未补全时不得插广告。
+enum BrandSafetyVerdict {
+  BRAND_SAFETY_VERDICT_UNSPECIFIED = 0;
+  SAFE_FOR_ADJACENCY = 1;
+  AVOID_ADJACENCY = 2;
 }
 
 // 单条评分帖子 —— 已经过管道打分后的帖子
@@ -86,6 +138,7 @@ message ScoredPost {
   map<uint64, string> screen_names = 12;
   // 可见性过滤原因（如果有内容安全问题）
   optional VisibilityFilteredReason visibility_reason = 13;
+  BrandSafetyVerdict brand_safety_verdict = 14;
 }
 
 // 可见性过滤原因 —— 内容安全审核结果
@@ -102,6 +155,43 @@ message ScoredPostsResponse {
   repeated ScoredPost scored_posts = 1;
 }
 
+// 广告只携带稳定身份和期望位置；竞价与展示 payload 属于外部广告合同。
+message Advertisement {
+  string ad_id = 1;
+  uint32 requested_position = 2;
+}
+
+message WhoToFollowModule {
+  string module_id = 1;
+  repeated uint64 user_ids = 2;
+}
+
+message Prompt {
+  string prompt_id = 1;
+}
+
+message PushToHomePost {
+  string notification_id = 1;
+  ScoredPost post = 2;
+}
+
+// 最终 Feed 项。非帖子类型独立于 ScoredPost/PostCandidate。
+message FeedItem {
+  uint32 position = 1;
+  oneof item {
+    ScoredPost post = 2;
+    Advertisement advertisement = 3;
+    WhoToFollowModule who_to_follow = 4;
+    Prompt prompt = 5;
+    PushToHomePost push_to_home = 6;
+  }
+}
+
+message ForYouFeedResponse {
+  repeated FeedItem items = 1;
+  string request_id = 2;
+}
+
 // =============================================================================
 // gRPC 服务定义
 // =============================================================================
@@ -110,4 +200,9 @@ message ScoredPostsResponse {
 service ScoredPostsService {
   // 获取为特定用户排序好的推荐帖子列表
   rpc GetScoredPosts(ScoredPostsQuery) returns (ScoredPostsResponse);
+}
+
+// 最终 Feed 服务复用同一查询，但返回帖子和条件启用的非帖子项目。
+service ForYouFeedService {
+  rpc GetForYouFeed(ScoredPostsQuery) returns (ForYouFeedResponse);
 }
