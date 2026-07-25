@@ -187,6 +187,49 @@ Output: [B, num_candidates, num_actions]
 
 Install [uv](https://docs.astral.sh/uv/getting-started/installation/)
 
+### Model Run Modes
+
+Phoenix supports three distinct modes:
+
+1. **Random demo weights** for validating service wiring:
+
+   ```shell
+   uv run scripts/run_grpc_gateway.py
+   ```
+
+2. **Locally trained weights** from `scripts/train_ranker.py` and `scripts/train_retrieval.py`:
+
+   ```shell
+   uv run scripts/run_grpc_gateway.py \
+     --ranker-checkpoint checkpoints/model_params_step200.npz \
+     --retrieval-checkpoint checkpoints/retrieval_params_step200.npz \
+     --emb-tables checkpoints/embedding_tables.npz
+   ```
+
+3. **Published weights** with exported configs, split embedding tables, and retrieval corpus:
+
+   ```shell
+   git lfs pull --include="phoenix/artifacts/oss-phoenix-artifacts.zip"
+   unzip artifacts/oss-phoenix-artifacts.zip -d artifacts
+
+   uv run run_pipeline.py \
+     --artifacts_dir artifacts/oss-phoenix-artifacts \
+     --top_k_retrieval 200 \
+     --top_k_display 30
+
+   uv run scripts/run_grpc_gateway.py \
+     --artifacts-dir artifacts/oss-phoenix-artifacts
+   ```
+
+The current published LFS object is 2,903,518,802 bytes with SHA-256
+`fbc6017d00588754e22e0c7eb2f786a008a74d309c03c8085fa2fad418a83dac`.
+Its `config.json` files define the architecture: 128-dimensional embeddings,
+4 transformer layers, 4 attention heads, 127 history positions, and 64
+candidate positions. These exported configs and checkpoint shapes are the
+source of truth; do not substitute architecture values from older prose docs.
+The published gRPC mode loads both ranker and retrieval embedding tables, so
+allow several GiB of memory.
+
 ### Running the Ranker
 
 ```shell
