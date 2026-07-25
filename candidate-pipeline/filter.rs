@@ -1,5 +1,4 @@
 use std::any::{type_name_of_val, Any};
-use tonic::async_trait;
 
 use crate::util;
 
@@ -9,7 +8,6 @@ pub struct FilterResult<C> {
 }
 
 /// Filters run sequentially and partition candidates into kept and removed sets
-#[async_trait]
 pub trait Filter<Q, C>: Any + Send + Sync
 where
     Q: Clone + Send + Sync + 'static,
@@ -23,7 +21,7 @@ where
     /// Filter candidates by evaluating each against some criteria.
     /// Returns a FilterResult containing kept candidates (which continue to the next stage)
     /// and removed candidates (which are excluded from further processing).
-    async fn filter(&self, query: &Q, candidates: Vec<C>) -> Result<FilterResult<C>, String>;
+    fn filter(&self, query: &Q, candidates: Vec<C>) -> Result<FilterResult<C>, String>;
 
     /// Returns a stable name for logging/metrics.
     fn name(&self) -> &'static str {

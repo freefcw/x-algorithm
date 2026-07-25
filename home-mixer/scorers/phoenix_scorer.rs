@@ -24,7 +24,11 @@ impl Scorer<ScoredPostsQuery, PostCandidate> for PhoenixScorer {
         let prediction_request_id = request_util::generate_request_id();
         let last_scored_at_ms = Self::current_timestamp_millis();
 
-        if let Some(sequence) = &query.user_action_sequence {
+        if let Some(sequence) = query
+            .scoring_sequence
+            .as_ref()
+            .or(query.user_action_sequence.as_ref())
+        {
             let tweet_infos: Vec<x_algorithm_proto::recsys::TweetInfo> = candidates
                 .iter()
                 .map(|c| {
@@ -140,12 +144,15 @@ impl PhoenixScorer {
             dwell_score: p.get(ActionName::ClientTweetRecapDwelled),
             quote_score: p.get(ActionName::ServerTweetQuote),
             quoted_click_score: p.get(ActionName::ClientQuotedTweetClick),
+            quoted_vqv_score: None,
             follow_author_score: p.get(ActionName::ClientTweetFollowAuthor),
             not_interested_score: p.get(ActionName::ClientTweetNotInterestedIn),
             block_author_score: p.get(ActionName::ClientTweetBlockAuthor),
             mute_author_score: p.get(ActionName::ClientTweetMuteAuthor),
             report_score: p.get(ActionName::ClientTweetReport),
+            not_dwelled_score: None,
             dwell_time: p.get_continuous(ContinuousActionName::DwellTime),
+            click_dwell_time: None,
         }
     }
 

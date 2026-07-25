@@ -24,5 +24,6 @@ pub mod s2s;
 pub mod socialgraph_client;
 pub mod strato_client;
 pub mod thunder_client;
+pub mod topic_retrieval_client;
 pub mod tweet_entity_service_client;
 pub mod uas_fetcher;

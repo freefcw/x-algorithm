@@ -1,3 +1,4 @@
+use crate::candidate_pipeline::candidate::PostCandidate;
 use crate::candidate_pipeline::query_features::UserFeatures;
 use crate::util::request_util::generate_request_id;
 use crate::visibility::vf_client::{GetTwitterContextViewer, TwitterContextViewer};
@@ -16,7 +17,24 @@ pub struct ScoredPostsQuery {
     pub is_bottom_request: bool,
     pub bloom_filter_entries: Vec<ImpressionBloomFilterEntry>,
     pub user_action_sequence: Option<x_algorithm_proto::recsys::UserActionSequence>,
+    pub retrieval_sequence: Option<x_algorithm_proto::recsys::UserActionSequence>,
+    pub scoring_sequence: Option<x_algorithm_proto::recsys::UserActionSequence>,
     pub user_features: UserFeatures,
+    pub cached_posts: Vec<PostCandidate>,
+    pub has_cached_posts: bool,
+    pub topic_ids: Vec<i64>,
+    pub excluded_topic_ids: Vec<i64>,
+    pub new_user_topic_ids: Vec<i64>,
+    pub exclude_videos: bool,
+    pub enable_phoenix_moe: bool,
+    pub impressed_post_ids: Vec<i64>,
+    pub past_request_timestamps_ms: Vec<i64>,
+    pub is_preview: bool,
+    pub is_shadow_traffic: bool,
+    pub is_top_request: bool,
+    pub is_polling: bool,
+    pub ip_address: String,
+    pub user_agent: String,
     pub request_id: String,
 }
 
@@ -44,7 +62,24 @@ impl ScoredPostsQuery {
             is_bottom_request,
             bloom_filter_entries,
             user_action_sequence: None,
+            retrieval_sequence: None,
+            scoring_sequence: None,
             user_features: UserFeatures::default(),
+            cached_posts: Vec::new(),
+            has_cached_posts: false,
+            topic_ids: Vec::new(),
+            excluded_topic_ids: Vec::new(),
+            new_user_topic_ids: Vec::new(),
+            exclude_videos: false,
+            enable_phoenix_moe: false,
+            impressed_post_ids: Vec::new(),
+            past_request_timestamps_ms: Vec::new(),
+            is_preview: false,
+            is_shadow_traffic: false,
+            is_top_request: !is_bottom_request,
+            is_polling: false,
+            ip_address: String::new(),
+            user_agent: String::new(),
             request_id,
         }
     }

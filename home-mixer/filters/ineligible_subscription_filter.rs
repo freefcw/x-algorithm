@@ -9,7 +9,7 @@ pub struct IneligibleSubscriptionFilter;
 
 #[async_trait]
 impl Filter<ScoredPostsQuery, PostCandidate> for IneligibleSubscriptionFilter {
-    async fn filter(
+    fn filter(
         &self,
         query: &ScoredPostsQuery,
         candidates: Vec<PostCandidate>,

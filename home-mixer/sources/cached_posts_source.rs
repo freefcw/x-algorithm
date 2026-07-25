@@ -1,0 +1,55 @@
+use crate::candidate_pipeline::candidate::PostCandidate;
+use crate::candidate_pipeline::query::ScoredPostsQuery;
+use tonic::async_trait;
+use xai_candidate_pipeline::source::Source;
+
+pub struct CachedPostsSource;
+
+#[async_trait]
+impl Source<ScoredPostsQuery, PostCandidate> for CachedPostsSource {
+    fn enable(&self, query: &ScoredPostsQuery) -> bool {
+        query.has_cached_posts
+    }
+
+    async fn get_candidates(&self, query: &ScoredPostsQuery) -> Result<Vec<PostCandidate>, String> {
+        Ok(query.cached_posts.clone())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn returns_request_cache_without_external_lookup() {
+        let query = ScoredPostsQuery {
+            has_cached_posts: true,
+            cached_posts: vec![
+                PostCandidate {
+                    tweet_id: 11,
+                    ..Default::default()
+                },
+                PostCandidate {
+                    tweet_id: 22,
+                    ..Default::default()
+                },
+            ],
+            ..Default::default()
+        };
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .build()
+            .expect("test runtime");
+
+        let candidates = runtime
+            .block_on(CachedPostsSource.get_candidates(&query))
+            .expect("cached candidates");
+
+        assert_eq!(
+            candidates
+                .iter()
+                .map(|candidate| candidate.tweet_id)
+                .collect::<Vec<_>>(),
+            vec![11, 22]
+        );
+    }
+}

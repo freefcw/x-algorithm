@@ -17,22 +17,27 @@ use crate::clients::s2s::{S2S_CHAIN_PATH, S2S_CRT_PATH, S2S_KEY_PATH};
 use crate::clients::socialgraph_client::SocialGraphClient;
 use crate::clients::strato_client::{DemoStratoClient, ProdStratoClient, StratoClient};
 use crate::clients::thunder_client::ThunderClient;
+use crate::clients::topic_retrieval_client::{DemoTopicRetrievalClient, TopicRetrievalClient};
 use crate::clients::tweet_entity_service_client::{DemoTESClient, ProdTESClient, TESClient};
 use crate::clients::uas_fetcher::{
     DemoUserActionSequenceFetcher, UserActionSequenceFetcher, UserActionSequenceOps,
 };
 use crate::filters::age_filter::AgeFilter;
+use crate::filters::ancillary_vf_filter::AncillaryVFFilter;
 use crate::filters::author_socialgraph_filter::AuthorSocialgraphFilter;
 use crate::filters::core_data_hydration_filter::CoreDataHydrationFilter;
 use crate::filters::dedup_conversation_filter::DedupConversationFilter;
 use crate::filters::drop_duplicates_filter::DropDuplicatesFilter;
 use crate::filters::ineligible_subscription_filter::IneligibleSubscriptionFilter;
 use crate::filters::muted_keyword_filter::MutedKeywordFilter;
+use crate::filters::previously_seen_posts_backup_filter::PreviouslySeenPostsBackupFilter;
 use crate::filters::previously_seen_posts_filter::PreviouslySeenPostsFilter;
 use crate::filters::previously_served_posts_filter::PreviouslyServedPostsFilter;
 use crate::filters::retweet_deduplication_filter::RetweetDeduplicationFilter;
 use crate::filters::self_tweet_filter::SelfTweetFilter;
+use crate::filters::topic_ids_filter::TopicIdsFilter;
 use crate::filters::vf_filter::VFFilter;
+use crate::filters::video_filter::VideoFilter;
 use crate::params;
 use crate::query_hydrators::user_action_seq_query_hydrator::UserActionSeqQueryHydrator;
 use crate::query_hydrators::user_features_query_hydrator::UserFeaturesQueryHydrator;
@@ -42,7 +47,10 @@ use crate::scorers::phoenix_scorer::PhoenixScorer;
 use crate::scorers::weighted_scorer::WeightedScorer;
 use crate::selectors::TopKScoreSelector;
 use crate::side_effects::cache_request_info_side_effect::CacheRequestInfoSideEffect;
+use crate::sources::cached_posts_source::CachedPostsSource;
+use crate::sources::phoenix_moe_source::PhoenixMoeSource;
 use crate::sources::phoenix_source::PhoenixSource;
+use crate::sources::phoenix_topics_source::PhoenixTopicsSource;
 use crate::sources::thunder_source::ThunderSource;
 use crate::visibility::vf_client::{ProdVisibilityFilteringClient, VisibilityFilteringClient};
 use std::sync::Arc;
@@ -79,6 +87,8 @@ impl PhoenixCandidatePipeline {
         tes_client: Arc<dyn TESClient + Send + Sync>,
         gizmoduck_client: Arc<dyn GizmoduckClient + Send + Sync>,
         vf_client: Arc<dyn VisibilityFilteringClient + Send + Sync>,
+        topic_retrieval_client: Option<Arc<dyn TopicRetrievalClient>>,
+        moe_retrieval_client: Option<Arc<dyn PhoenixRetrievalClient + Send + Sync>>,
     ) -> PhoenixCandidatePipeline {
         // Query Hydrators
         let query_hydrators: Vec<Box<dyn QueryHydrator<ScoredPostsQuery>>> = vec![
@@ -93,8 +103,18 @@ impl PhoenixCandidatePipeline {
             phoenix_retrieval_client,
         });
         let thunder_source = Box::new(ThunderSource { thunder_client });
-        let sources: Vec<Box<dyn Source<ScoredPostsQuery, PostCandidate>>> =
-            vec![phoenix_source, thunder_source];
+        let mut sources: Vec<Box<dyn Source<ScoredPostsQuery, PostCandidate>>> =
+            vec![Box::new(CachedPostsSource)];
+        if let Some(client) = topic_retrieval_client {
+            sources.push(Box::new(PhoenixTopicsSource { client }));
+        }
+        sources.push(phoenix_source);
+        if let Some(phoenix_retrieval_client) = moe_retrieval_client {
+            sources.push(Box::new(PhoenixMoeSource {
+                phoenix_retrieval_client,
+            }));
+        }
+        sources.push(thunder_source);
 
         // Hydrators
         let hydrators: Vec<Box<dyn Hydrator<ScoredPostsQuery, PostCandidate>>> = vec![
@@ -114,9 +134,12 @@ impl PhoenixCandidatePipeline {
             Box::new(RetweetDeduplicationFilter),
             Box::new(IneligibleSubscriptionFilter),
             Box::new(PreviouslySeenPostsFilter),
+            Box::new(PreviouslySeenPostsBackupFilter),
             Box::new(PreviouslyServedPostsFilter),
             Box::new(MutedKeywordFilter::new()),
             Box::new(AuthorSocialgraphFilter),
+            Box::new(TopicIdsFilter),
+            Box::new(VideoFilter),
         ];
 
         // Scorers
@@ -139,8 +162,11 @@ impl PhoenixCandidatePipeline {
             vec![Box::new(VFCandidateHydrator::new(vf_client.clone()).await)];
 
         // Post-selection filters
-        let post_selection_filters: Vec<Box<dyn Filter<ScoredPostsQuery, PostCandidate>>> =
-            vec![Box::new(VFFilter), Box::new(DedupConversationFilter)];
+        let post_selection_filters: Vec<Box<dyn Filter<ScoredPostsQuery, PostCandidate>>> = vec![
+            Box::new(VFFilter),
+            Box::new(AncillaryVFFilter),
+            Box::new(DedupConversationFilter),
+        ];
 
         // Side Effects
         let side_effects: Arc<Vec<Box<dyn SideEffect<ScoredPostsQuery, PostCandidate>>>> =
@@ -220,6 +246,15 @@ impl PhoenixCandidatePipeline {
             .await
             .expect("Failed to create VF client"),
         );
+        let topic_retrieval_client: Option<Arc<dyn TopicRetrievalClient>> =
+            demo_mode.then(|| Arc::new(DemoTopicRetrievalClient) as Arc<dyn TopicRetrievalClient>);
+        let moe_retrieval_client = std::env::var("PHOENIX_MOE_GRPC_ADDR").ok().map(|addr| {
+            Arc::new(
+                ProdPhoenixRetrievalClient::from_addr(addr)
+                    .expect("Failed to create Phoenix MoE retrieval client"),
+            ) as Arc<dyn PhoenixRetrievalClient + Send + Sync>
+        });
+
         PhoenixCandidatePipeline::build_with_clients(
             uas_fetcher,
             phoenix_client,
@@ -229,6 +264,8 @@ impl PhoenixCandidatePipeline {
             tes_client,
             gizmoduck_client,
             vf_client,
+            topic_retrieval_client,
+            moe_retrieval_client,
         )
         .await
     }

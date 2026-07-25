@@ -15,15 +15,19 @@ pub struct PhoenixSource {
 impl Source<ScoredPostsQuery, PostCandidate> for PhoenixSource {
     fn enable(&self, query: &ScoredPostsQuery) -> bool {
         !query.in_network_only
+            && !query.has_cached_posts
+            && query.topic_ids.is_empty()
+            && query.new_user_topic_ids.is_empty()
     }
 
     async fn get_candidates(&self, query: &ScoredPostsQuery) -> Result<Vec<PostCandidate>, String> {
         let user_id = query.user_id as u64;
 
         let sequence = query
-            .user_action_sequence
+            .retrieval_sequence
             .as_ref()
-            .ok_or_else(|| "PhoenixSource: missing user_action_sequence".to_string())?;
+            .or(query.user_action_sequence.as_ref())
+            .ok_or_else(|| "PhoenixSource: missing retrieval sequence".to_string())?;
 
         let response = self
             .phoenix_retrieval_client

@@ -1,4 +1,5 @@
 pub mod candidate_pipeline;
+pub mod feature_switch;
 pub mod filter;
 pub mod hydrator;
 pub mod query_hydrator;

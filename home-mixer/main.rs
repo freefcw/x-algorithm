@@ -43,7 +43,12 @@ async fn main() -> anyhow::Result<()> {
     let mut grpc_routes = RoutesBuilder::default();
 
     grpc_routes.add_service(
-        pb::scored_posts_service_server::ScoredPostsServiceServer::new(service)
+        pb::scored_posts_service_server::ScoredPostsServiceServer::new(service.clone())
+            .max_decoding_message_size(params::MAX_GRPC_MESSAGE_SIZE)
+            .max_encoding_message_size(params::MAX_GRPC_MESSAGE_SIZE),
+    );
+    grpc_routes.add_service(
+        pb::for_you_feed_service_server::ForYouFeedServiceServer::new(service)
             .max_decoding_message_size(params::MAX_GRPC_MESSAGE_SIZE)
             .max_encoding_message_size(params::MAX_GRPC_MESSAGE_SIZE),
     );

@@ -15,6 +15,10 @@ pub struct ThunderSource {
 
 #[async_trait]
 impl Source<ScoredPostsQuery, PostCandidate> for ThunderSource {
+    fn enable(&self, query: &ScoredPostsQuery) -> bool {
+        !query.has_cached_posts
+    }
+
     async fn get_candidates(&self, query: &ScoredPostsQuery) -> Result<Vec<PostCandidate>, String> {
         let cluster = ThunderCluster::Amp;
         let channel = self

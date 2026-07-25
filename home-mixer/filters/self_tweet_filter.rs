@@ -8,7 +8,7 @@ pub struct SelfTweetFilter;
 
 #[async_trait]
 impl Filter<ScoredPostsQuery, PostCandidate> for SelfTweetFilter {
-    async fn filter(
+    fn filter(
         &self,
         query: &ScoredPostsQuery,
         candidates: Vec<PostCandidate>,

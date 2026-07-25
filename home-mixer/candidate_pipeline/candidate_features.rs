@@ -1,14 +1,23 @@
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
-#[serde(rename_all = "camelCase")]
+#[serde(default, rename_all = "camelCase")]
 pub struct PureCoreData {
     pub author_id: u64,
     pub text: String,
     pub source_tweet_id: Option<u64>,
     pub source_user_id: Option<u64>,
+    pub quoted_tweet_id: Option<u64>,
+    pub quoted_user_id: Option<u64>,
     pub in_reply_to_tweet_id: Option<u64>,
     pub in_reply_to_user_id: Option<u64>,
+    pub language_code: Option<String>,
+    pub favorite_count: Option<i64>,
+    pub reply_count: Option<i64>,
+    pub repost_count: Option<i64>,
+    pub quote_count: Option<i64>,
+    pub filtered_topic_ids: Vec<i64>,
+    pub unfiltered_topic_ids: Vec<i64>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]

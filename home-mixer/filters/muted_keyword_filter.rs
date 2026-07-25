@@ -20,7 +20,7 @@ impl MutedKeywordFilter {
 
 #[async_trait]
 impl Filter<ScoredPostsQuery, PostCandidate> for MutedKeywordFilter {
-    async fn filter(
+    fn filter(
         &self,
         query: &ScoredPostsQuery,
         candidates: Vec<PostCandidate>,
@@ -44,7 +44,10 @@ impl Filter<ScoredPostsQuery, PostCandidate> for MutedKeywordFilter {
 
         for candidate in candidates {
             let tweet_text_token_sequence = self.tokenizer.tokenize(&candidate.tweet_text);
-            if matcher.matches(&tweet_text_token_sequence) {
+            let quoted_text_token_sequence = self.tokenizer.tokenize(&candidate.quoted_tweet_text);
+            if matcher.matches(&tweet_text_token_sequence)
+                || matcher.matches(&quoted_text_token_sequence)
+            {
                 // Matches muted keywords - should be removed/filtered out
                 removed.push(candidate);
             } else {
@@ -54,5 +57,37 @@ impl Filter<ScoredPostsQuery, PostCandidate> for MutedKeywordFilter {
         }
 
         Ok(FilterResult { kept, removed })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn removes_candidate_when_quoted_text_matches_muted_keyword() {
+        let mut query = ScoredPostsQuery::default();
+        query.user_features.muted_keywords = vec!["spoiler".to_string()];
+        let candidates = vec![
+            PostCandidate {
+                tweet_id: 1,
+                tweet_text: "safe main text".to_string(),
+                quoted_tweet_text: "contains spoiler details".to_string(),
+                ..Default::default()
+            },
+            PostCandidate {
+                tweet_id: 2,
+                tweet_text: "safe".to_string(),
+                quoted_tweet_text: "also safe".to_string(),
+                ..Default::default()
+            },
+        ];
+
+        let result = MutedKeywordFilter::new()
+            .filter(&query, candidates)
+            .expect("muted keyword filter");
+
+        assert_eq!(result.kept[0].tweet_id, 2);
+        assert_eq!(result.removed[0].tweet_id, 1);
     }
 }

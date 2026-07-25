@@ -12,7 +12,7 @@ impl Filter<ScoredPostsQuery, PostCandidate> for PreviouslyServedPostsFilter {
         query.is_bottom_request
     }
 
-    async fn filter(
+    fn filter(
         &self,
         query: &ScoredPostsQuery,
         candidates: Vec<PostCandidate>,

@@ -10,7 +10,7 @@ pub struct RetweetDeduplicationFilter;
 
 #[async_trait]
 impl Filter<ScoredPostsQuery, PostCandidate> for RetweetDeduplicationFilter {
-    async fn filter(
+    fn filter(
         &self,
         _query: &ScoredPostsQuery,
         candidates: Vec<PostCandidate>,

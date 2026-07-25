@@ -5,8 +5,8 @@ use crate::visibility::vf_client::{
     GetTwitterContextViewer, SafetyLevel, SafetyLevel::TimelineHome,
     SafetyLevel::TimelineHomeRecommendations, TwitterContextViewer, VisibilityFilteringClient,
 };
-use futures::future::join;
-use std::collections::HashMap;
+use futures::future::join3;
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use tonic::async_trait;
 use xai_candidate_pipeline::hydrator::Hydrator;
@@ -75,17 +75,40 @@ impl Hydrator<ScoredPostsQuery, PostCandidate> for VFCandidateHydrator {
             context,
         );
 
-        let (in_network_result, oon_result) = join(in_network_future, oon_future).await;
+        let ancillary_ids = candidates
+            .iter()
+            .flat_map(|candidate| [candidate.retweeted_tweet_id, candidate.quoted_tweet_id])
+            .flatten()
+            .filter_map(|id| i64::try_from(id).ok())
+            .collect::<HashSet<_>>()
+            .into_iter()
+            .collect::<Vec<_>>();
+        let ancillary_future = Self::fetch_vf_results(
+            client,
+            ancillary_ids,
+            TimelineHomeRecommendations,
+            user_id,
+            query.get_viewer(),
+        );
+
+        let (in_network_result, oon_result, ancillary_result) =
+            join3(in_network_future, oon_future, ancillary_future).await;
         let mut result: HashMap<i64, Option<FilteredReason>> = HashMap::new();
         result.extend(in_network_result?);
         result.extend(oon_result?);
+        let ancillary_result = ancillary_result?;
 
         let mut hydrated_candidates = Vec::with_capacity(candidates.len());
         for candidate in candidates {
-            let visibility_reason = result.get(&candidate.tweet_id);
-            let visibility_reason = visibility_reason.unwrap_or(&None);
+            let visibility_reason = result.get(&candidate.tweet_id).cloned().unwrap_or_default();
+            let drop_ancillary_posts = [candidate.retweeted_tweet_id, candidate.quoted_tweet_id]
+                .into_iter()
+                .flatten()
+                .filter_map(|id| i64::try_from(id).ok())
+                .any(|id| ancillary_result.get(&id).is_some_and(Option::is_some));
             let hydrated = PostCandidate {
-                visibility_reason: visibility_reason.clone(),
+                visibility_reason,
+                drop_ancillary_posts: Some(drop_ancillary_posts),
                 ..Default::default()
             };
             hydrated_candidates.push(hydrated);
@@ -95,5 +118,57 @@ impl Hydrator<ScoredPostsQuery, PostCandidate> for VFCandidateHydrator {
 
     fn update(&self, candidate: &mut PostCandidate, hydrated: PostCandidate) {
         candidate.visibility_reason = hydrated.visibility_reason;
+        candidate.drop_ancillary_posts = hydrated.drop_ancillary_posts;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    struct FakeVisibilityClient;
+
+    #[async_trait]
+    impl VisibilityFilteringClient for FakeVisibilityClient {
+        async fn get_result(
+            &self,
+            tweet_ids: Vec<i64>,
+            _safety_level: SafetyLevel,
+            _for_user_id: i64,
+            _context: Option<TwitterContextViewer>,
+        ) -> Result<HashMap<i64, Option<FilteredReason>>, anyhow::Error> {
+            Ok(tweet_ids
+                .into_iter()
+                .map(|id| {
+                    let reason = (id == 2)
+                        .then(|| FilteredReason::GenericFiltered("unsafe quote".to_string()));
+                    (id, reason)
+                })
+                .collect())
+        }
+    }
+
+    #[test]
+    fn marks_candidate_when_quoted_post_is_not_visible() {
+        let hydrator = VFCandidateHydrator {
+            vf_client: Arc::new(FakeVisibilityClient),
+        };
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .build()
+            .expect("test runtime");
+
+        let hydrated = runtime
+            .block_on(hydrator.hydrate(
+                &ScoredPostsQuery::default(),
+                &[PostCandidate {
+                    tweet_id: 1,
+                    quoted_tweet_id: Some(2),
+                    ..Default::default()
+                }],
+            ))
+            .expect("visibility hydration");
+
+        assert!(hydrated[0].visibility_reason.is_none());
+        assert_eq!(hydrated[0].drop_ancillary_posts, Some(true));
     }
 }

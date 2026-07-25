@@ -57,12 +57,16 @@ pub struct ProdPhoenixRetrievalClient {
 }
 
 impl ProdPhoenixRetrievalClient {
+    pub fn from_addr(addr: String) -> Result<Self, anyhow::Error> {
+        info!("PhoenixRetrievalClient: connecting to {}", addr);
+        Ok(Self {
+            channel: Some(Channel::from_shared(addr)?.connect_lazy()),
+        })
+    }
+
     pub async fn new() -> Result<Self, anyhow::Error> {
         let channel = match std::env::var("PHOENIX_RETRIEVAL_GRPC_ADDR") {
-            Ok(addr) => {
-                info!("PhoenixRetrievalClient: connecting to {}", addr);
-                Some(Channel::from_shared(addr)?.connect_lazy())
-            }
+            Ok(addr) => return Self::from_addr(addr),
             Err(_) => {
                 warn!(
                     "PhoenixRetrievalClient: PHOENIX_RETRIEVAL_GRPC_ADDR not set, \

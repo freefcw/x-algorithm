@@ -1,18 +1,39 @@
 use crate::util;
 use std::any::type_name_of_val;
 
+#[derive(Clone, Debug, PartialEq)]
+pub struct SelectResult<C> {
+    pub selected: Vec<C>,
+    pub non_selected: Vec<C>,
+}
+
+impl<C> SelectResult<C> {
+    pub fn len(&self) -> usize {
+        self.selected.len() + self.non_selected.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.selected.is_empty() && self.non_selected.is_empty()
+    }
+}
+
 pub trait Selector<Q, C>: Send + Sync
 where
     Q: Clone + Send + Sync + 'static,
     C: Clone + Send + Sync + 'static,
 {
     /// Default selection: sort and truncate based on provided configs
-    fn select(&self, _query: &Q, candidates: Vec<C>) -> Vec<C> {
+    fn select(&self, _query: &Q, candidates: Vec<C>) -> SelectResult<C> {
         let mut sorted = self.sort(candidates);
-        if let Some(limit) = self.size() {
-            sorted.truncate(limit);
+        let non_selected = if let Some(limit) = self.size() {
+            sorted.split_off(limit.min(sorted.len()))
+        } else {
+            Vec::new()
+        };
+        SelectResult {
+            selected: sorted,
+            non_selected,
         }
-        sorted
     }
 
     /// Decide if this selector should run for the given query
@@ -41,5 +62,30 @@ where
 
     fn name(&self) -> &'static str {
         util::short_type_name(type_name_of_val(self))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    struct TopTwo;
+
+    impl Selector<(), i32> for TopTwo {
+        fn score(&self, candidate: &i32) -> f64 {
+            *candidate as f64
+        }
+
+        fn size(&self) -> Option<usize> {
+            Some(2)
+        }
+    }
+
+    #[test]
+    fn selection_preserves_candidates_below_the_limit() {
+        let result = TopTwo.select(&(), vec![1, 4, 3, 2]);
+
+        assert_eq!(result.selected, vec![4, 3]);
+        assert_eq!(result.non_selected, vec![2, 1]);
     }
 }

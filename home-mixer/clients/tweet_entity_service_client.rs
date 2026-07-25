@@ -142,8 +142,12 @@ impl TESClient for DemoTESClient {
                         text: format!("Demo post {} — placeholder text for local run", id),
                         source_tweet_id: None,
                         source_user_id: None,
+                        quoted_tweet_id: None,
+                        quoted_user_id: None,
                         in_reply_to_tweet_id: None,
                         in_reply_to_user_id: None,
+                        language_code: Some("en".to_string()),
+                        ..Default::default()
                     }),
                 )
             })

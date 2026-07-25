@@ -8,7 +8,7 @@ pub struct DropDuplicatesFilter;
 
 #[async_trait]
 impl Filter<ScoredPostsQuery, PostCandidate> for DropDuplicatesFilter {
-    async fn filter(
+    fn filter(
         &self,
         _query: &ScoredPostsQuery,
         candidates: Vec<PostCandidate>,

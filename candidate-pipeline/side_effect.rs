@@ -8,6 +8,7 @@ use tonic::async_trait;
 pub struct SideEffectInput<Q, C> {
     pub query: Arc<Q>,
     pub selected_candidates: Vec<C>,
+    pub non_selected_candidates: Vec<C>,
 }
 
 #[async_trait]

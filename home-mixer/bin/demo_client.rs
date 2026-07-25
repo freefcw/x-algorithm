@@ -8,8 +8,9 @@
 // 不依赖 grpcurl 等外部工具。
 
 use clap::Parser;
+use x_algorithm_proto::home_mixer::for_you_feed_service_client::ForYouFeedServiceClient;
 use x_algorithm_proto::home_mixer::scored_posts_service_client::ScoredPostsServiceClient;
-use x_algorithm_proto::home_mixer::{ScoredPostsQuery, ServedType};
+use x_algorithm_proto::home_mixer::{feed_item, CachedPost, ScoredPostsQuery, ServedType};
 
 #[derive(Parser, Debug)]
 #[command(about = "home-mixer 演示客户端")]
@@ -25,13 +26,38 @@ struct Args {
     /// 只要网内（关注者）帖子
     #[arg(long, default_value_t = false)]
     in_network_only: bool,
+
+    /// 显式话题 ID；可重复传入
+    #[arg(long = "topic-id")]
+    topic_ids: Vec<i64>,
+
+    /// 合成指定数量的已补全缓存候选，跳过外部召回
+    #[arg(long, default_value_t = 0)]
+    cached_posts: usize,
+
+    /// 请求 P4 最终 Feed 服务，而不是 P3 帖子打分服务
+    #[arg(long, default_value_t = false)]
+    final_feed: bool,
 }
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     let args = Args::parse();
 
-    let mut client = ScoredPostsServiceClient::connect(args.addr.clone()).await?;
+    let now_ms = x_algorithm_proto::demo::now_ms();
+    let cached_posts = (0..args.cached_posts)
+        .map(|index| CachedPost {
+            tweet_id: x_algorithm_proto::demo::snowflake_id(
+                now_ms - index as i64 * 1_000,
+                2_000_000 + index as i64,
+            ) as u64,
+            author_id: 201 + (index % 40) as u64,
+            served_type: ServedType::ForYouCachedPost as i32,
+            tweet_text: format!("Cached demo post {index}"),
+            language_code: "en".to_string(),
+            ..Default::default()
+        })
+        .collect();
     let request = ScoredPostsQuery {
         viewer_id: args.viewer_id,
         client_app_id: 0,
@@ -42,15 +68,52 @@ async fn main() -> anyhow::Result<()> {
         in_network_only: args.in_network_only,
         is_bottom_request: false,
         bloom_filter_entries: vec![],
+        topic_ids: args.topic_ids,
+        cached_posts,
+        ..Default::default()
     };
 
     println!(
         "请求 {} 的推荐 Feed（viewer_id={}）...\n",
         args.addr, args.viewer_id
     );
-    let response = client.get_scored_posts(request).await?.into_inner();
+    let scored_posts = if args.final_feed {
+        let mut client = ForYouFeedServiceClient::connect(args.addr.clone()).await?;
+        let response = client.get_for_you_feed(request).await?.into_inner();
+        let mut posts = Vec::new();
+        for item in response.items {
+            match item.item {
+                Some(feed_item::Item::Post(post)) => posts.push(post),
+                Some(feed_item::Item::Advertisement(ad)) => {
+                    println!("[FeedItem] 广告 {} @ {}", ad.ad_id, item.position)
+                }
+                Some(feed_item::Item::WhoToFollow(module)) => println!(
+                    "[FeedItem] 关注推荐 {}（{} 人） @ {}",
+                    module.module_id,
+                    module.user_ids.len(),
+                    item.position
+                ),
+                Some(feed_item::Item::Prompt(prompt)) => {
+                    println!("[FeedItem] Prompt {} @ {}", prompt.prompt_id, item.position)
+                }
+                Some(feed_item::Item::PushToHome(push)) => println!(
+                    "[FeedItem] Push-to-Home {} @ {}",
+                    push.notification_id, item.position
+                ),
+                None => {}
+            }
+        }
+        posts
+    } else {
+        let mut client = ScoredPostsServiceClient::connect(args.addr.clone()).await?;
+        client
+            .get_scored_posts(request)
+            .await?
+            .into_inner()
+            .scored_posts
+    };
 
-    if response.scored_posts.is_empty() {
+    if scored_posts.is_empty() {
         println!("返回了 0 条帖子。");
         println!("排查提示：");
         println!("  1. thunder 是否用 --demo-seed-posts 启动，端口是否为 50052？");
@@ -63,10 +126,14 @@ async fn main() -> anyhow::Result<()> {
         "{:<4} {:<20} {:<8} {:<10} {:<10} 来源",
         "#", "帖子 ID", "作者", "得分", "网内"
     );
-    for (i, post) in response.scored_posts.iter().enumerate() {
+    for (i, post) in scored_posts.iter().enumerate() {
         let source = match ServedType::try_from(post.served_type) {
             Ok(ServedType::ForYouInNetwork) => "Thunder 网内",
             Ok(ServedType::ForYouPhoenixRetrieval) => "Phoenix 网外",
+            Ok(ServedType::ForYouPhoenixRetrievalMoe) => "Phoenix MoE",
+            Ok(ServedType::ForYouPhoenixTopics) => "Phoenix 话题",
+            Ok(ServedType::ForYouTweetMixer) => "Tweet Mixer",
+            Ok(ServedType::ForYouCachedPost) => "请求缓存",
             _ => "未知",
         };
         println!(
@@ -80,17 +147,14 @@ async fn main() -> anyhow::Result<()> {
         );
     }
 
-    let in_network = response
-        .scored_posts
-        .iter()
-        .filter(|p| p.in_network)
-        .count();
-    let oon = response.scored_posts.len() - in_network;
+    let in_network = scored_posts.iter().filter(|p| p.in_network).count();
+    let oon = scored_posts.len() - in_network;
     println!(
-        "\n共 {} 条：网内 {} 条 + 网外 {} 条。链路打通。",
-        response.scored_posts.len(),
+        "\n共 {} 条：网内 {} 条 + 网外 {} 条。{}链路打通。",
+        scored_posts.len(),
         in_network,
-        oon
+        oon,
+        if args.final_feed { "最终 Feed " } else { "" }
     );
 
     Ok(())

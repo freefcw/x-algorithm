@@ -53,13 +53,17 @@ impl QueryHydrator<ScoredPostsQuery> for UserActionSeqQueryHydrator {
             self.aggregate_user_action_sequence(query.user_id, uas_thrift)?;
 
         Ok(ScoredPostsQuery {
-            user_action_sequence: Some(aggregated_uas_proto),
+            user_action_sequence: Some(aggregated_uas_proto.clone()),
+            retrieval_sequence: Some(aggregated_uas_proto.clone()),
+            scoring_sequence: Some(aggregated_uas_proto),
             ..Default::default()
         })
     }
 
     fn update(&self, query: &mut ScoredPostsQuery, hydrated: ScoredPostsQuery) {
         query.user_action_sequence = hydrated.user_action_sequence;
+        query.retrieval_sequence = hydrated.retrieval_sequence;
+        query.scoring_sequence = hydrated.scoring_sequence;
     }
 
     fn name(&self) -> &'static str {

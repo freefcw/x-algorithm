@@ -36,6 +36,9 @@ pub const THUNDER_MAX_RESULTS: u32 = 500;
 /// 典型值: 200-500，这里使用 300
 pub const PHOENIX_MAX_RESULTS: u32 = 300;
 
+/// 显式话题和新用户冷启动话题的单次候选上限。
+pub const TOPIC_MAX_RESULTS: usize = 100;
+
 // =============================================================================
 // 3. Phoenix 精排打分权重（核心排序公式）
 // =============================================================================
@@ -174,6 +177,9 @@ pub const NEGATIVE_SCORES_OFFSET: f64 = 1.0;
 /// X 在不同实验中使用 0.3-0.8 之间的值
 pub const OON_WEIGHT_FACTOR: f64 = 0.5;
 
+/// 显式话题 Feed 已由话题约束保证相关性，不额外惩罚网外作者。
+pub const TOPIC_OON_WEIGHT_FACTOR: f64 = 1.0;
+
 /// 作者多样性：连续出现同一作者时的衰减因子
 /// 每当同一作者的帖子再次出现，分数乘以 decay^n（n 为该作者已出现的次数）
 /// 值越小，同一作者的后续帖子被降权得越厉害
@@ -224,3 +230,12 @@ pub const TOP_K_CANDIDATES_TO_SELECT: usize = 100;
 /// 最终返回给客户端的帖子数量
 /// 即 ScoredPostsResponse 中 scored_posts 的最大长度
 pub const RESULT_SIZE: usize = 50;
+
+/// 本地 P5 适配器保留的最近已下发帖子数；生产持久化策略在集成阶段确定。
+pub const LOCAL_SERVED_HISTORY_LIMIT: usize = 500;
+
+/// 本地 P5 适配器保留的最近请求时间戳数。
+pub const LOCAL_REQUEST_TIMESTAMP_LIMIT: usize = 50;
+
+/// 本地 P5 适配器最多保留的用户数，避免进程内状态随 viewer 数无限增长。
+pub const LOCAL_STATE_USER_LIMIT: usize = 10_000;
