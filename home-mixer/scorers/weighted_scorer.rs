@@ -44,6 +44,7 @@ impl WeightedScorer {
         let s: &PhoenixScores = &candidate.phoenix_scores;
 
         let vqv_weight = Self::vqv_weight_eligibility(candidate);
+        let quoted_vqv_weight = Self::quoted_vqv_weight_eligibility(candidate);
 
         let combined_score = Self::apply(s.favorite_score, p::FAVORITE_WEIGHT)
             + Self::apply(s.reply_score, p::REPLY_WEIGHT)
@@ -58,12 +59,15 @@ impl WeightedScorer {
             + Self::apply(s.dwell_score, p::DWELL_WEIGHT)
             + Self::apply(s.quote_score, p::QUOTE_WEIGHT)
             + Self::apply(s.quoted_click_score, p::QUOTED_CLICK_WEIGHT)
+            + Self::apply(s.quoted_vqv_score, quoted_vqv_weight)
             + Self::apply(s.dwell_time, p::CONT_DWELL_TIME_WEIGHT)
+            + Self::apply(s.click_dwell_time, p::CONT_CLICK_DWELL_TIME_WEIGHT)
             + Self::apply(s.follow_author_score, p::FOLLOW_AUTHOR_WEIGHT)
             + Self::apply(s.not_interested_score, p::NOT_INTERESTED_WEIGHT)
             + Self::apply(s.block_author_score, p::BLOCK_AUTHOR_WEIGHT)
             + Self::apply(s.mute_author_score, p::MUTE_AUTHOR_WEIGHT)
-            + Self::apply(s.report_score, p::REPORT_WEIGHT);
+            + Self::apply(s.report_score, p::REPORT_WEIGHT)
+            + Self::apply(s.not_dwelled_score, p::NOT_DWELLED_WEIGHT);
 
         Self::offset_score(combined_score)
     }
@@ -74,6 +78,22 @@ impl WeightedScorer {
             .is_some_and(|ms| ms > p::MIN_VIDEO_DURATION_MS)
         {
             p::VQV_WEIGHT
+        } else {
+            0.0
+        }
+    }
+
+    /// 引用帖 VQV 权重：与 VQV 同理，要求引用帖视频时长超过门槛。
+    /// 可通过 ENABLE_QUOTED_VQV_DURATION_CHECK 关闭时长检查。
+    fn quoted_vqv_weight_eligibility(candidate: &PostCandidate) -> f64 {
+        if !p::ENABLE_QUOTED_VQV_DURATION_CHECK {
+            return p::QUOTED_VQV_WEIGHT;
+        }
+        if candidate
+            .quoted_video_duration_ms
+            .is_some_and(|ms| ms > p::MIN_VIDEO_DURATION_MS)
+        {
+            p::QUOTED_VQV_WEIGHT
         } else {
             0.0
         }
@@ -100,6 +120,53 @@ impl WeightedScorer {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn quoted_vqv_requires_video_duration_above_the_threshold() {
+        let at_threshold = PostCandidate {
+            quoted_video_duration_ms: Some(p::MIN_VIDEO_DURATION_MS),
+            phoenix_scores: PhoenixScores {
+                quoted_vqv_score: Some(1.0),
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        let above_threshold = PostCandidate {
+            quoted_video_duration_ms: Some(p::MIN_VIDEO_DURATION_MS + 1),
+            ..at_threshold.clone()
+        };
+
+        let ineligible_score = WeightedScorer::compute_weighted_score(&at_threshold);
+        let eligible_score = WeightedScorer::compute_weighted_score(&above_threshold);
+
+        assert_eq!(ineligible_score, p::NEGATIVE_SCORES_OFFSET);
+        assert_eq!(
+            eligible_score,
+            p::NEGATIVE_SCORES_OFFSET + p::QUOTED_VQV_WEIGHT
+        );
+    }
+
+    #[test]
+    fn not_dwelled_probability_applies_the_reserved_negative_weight() {
+        let neutral = PostCandidate::default();
+        let not_dwelled = PostCandidate {
+            phoenix_scores: PhoenixScores {
+                not_dwelled_score: Some(1.0),
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+
+        let neutral_score = WeightedScorer::compute_weighted_score(&neutral);
+        let not_dwelled_score = WeightedScorer::compute_weighted_score(&not_dwelled);
+
+        assert_eq!(neutral_score, p::NEGATIVE_SCORES_OFFSET);
+        assert_eq!(
+            not_dwelled_score,
+            WeightedScorer::offset_score(p::NOT_DWELLED_WEIGHT)
+        );
+        assert!(not_dwelled_score < neutral_score);
+    }
 
     #[test]
     fn test_offset_score_negative_maps_into_offset_band() {

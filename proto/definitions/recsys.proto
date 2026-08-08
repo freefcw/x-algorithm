@@ -44,6 +44,12 @@ enum ActionName {
   CLIENT_TWEET_BLOCK_AUTHOR = 16;       // 拉黑作者
   CLIENT_TWEET_MUTE_AUTHOR = 17;        // 静音作者
   CLIENT_TWEET_REPORT = 18;             // 举报
+
+  // 以下槽位为预留：当前发布 checkpoint 不输出这些行为，
+  // 对应权重在 WeightedScorer 中 apply(None, w) = 0，不影响排序结果。
+  // 模型升级后可直接生效，无需改 proto。
+  CLIENT_QUOTED_TWEET_VIDEO_QUALITY_VIEW = 19; // 引用帖视频有效观看
+  CLIENT_TWEET_NOT_DWELLED = 20;               // 未停留（负向）
 }
 
 // 连续动作类型（非二值分类，而是回归预测）

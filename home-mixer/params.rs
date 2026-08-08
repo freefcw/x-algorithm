@@ -143,23 +143,42 @@ pub const MUTE_AUTHOR_WEIGHT: f64 = -74.0;
 /// 用户举报帖子，最强的负信号
 pub const REPORT_WEIGHT: f64 = -369.0;
 
+/// 引用帖视频有效观看 (Quoted VQV) 权重
+/// 用户对引用帖中嵌入视频的完整观看。与 VQV_WEIGHT 对应但作用于引用帖。
+/// 当前发布 checkpoint 不输出此行为（模型 logits 仅有 0..=18），
+/// 对应 PhoenixScores.quoted_vqv_score 为 None，apply(None, w) = 0。
+pub const QUOTED_VQV_WEIGHT: f64 = 0.005;
+
+/// 是否对引用帖 VQV 做时长门槛检查
+/// 与 MIN_VIDEO_DURATION_MS 配合，时长不足的视频不计 VQV 权重。
+pub const ENABLE_QUOTED_VQV_DURATION_CHECK: bool = true;
+
+/// 未停留 (Not Dwelled) 权重 - 负权重
+/// 用户快速划过帖子未停留，轻量负向信号（远弱于 NotInterested）。
+/// 当前发布 checkpoint 不输出此行为，权重为预留。
+pub const NOT_DWELLED_WEIGHT: f64 = -0.001;
+
+/// 点击停留时长 (Click Dwell Time) 权重
+/// 与 CONT_DWELL_TIME_WEIGHT 类似，预测点击后连续停留时长（秒）。
+/// 当前模型 ContinuousActionName 仅有 DWELL_TIME，此权重为预留。
+pub const CONT_CLICK_DWELL_TIME_WEIGHT: f64 = 0.0001;
+
 // =============================================================================
 // 4. 打分归一化参数
 // =============================================================================
 
 /// 所有正向权重之和，用于 offset_score 归一化计算
-/// 计算方式：favorite + reply + retweet + photo_expand + click + profile_click + vqv
-///          + share + share_dm + share_copy + dwell + quote + quoted_click + cont_dwell
-///          + follow_author
 /// = 0.5 + 27.0 + 1.0 + 0.02 + 0.04 + 0.02 + 0.005 + 1.0 + 1.0 + 1.0 + 0.001
-///   + 1.0 + 0.02 + 0.0001 + 1.0
-/// ≈ 33.6061
-pub const WEIGHTS_SUM: f64 = 33.6061;
+///   + 1.0 + 0.02 + 0.0001 + 1.0  (已启用权重)
+///   + 0.005 + 0.0001             (quoted_vqv + cont_click_dwell_time，当前预留)
+/// ≈ 33.6112
+pub const WEIGHTS_SUM: f64 = 33.6112;
 
-/// 所有负向权重之和（绝对值）
-/// = |not_interested| + |block| + |mute| + |report|
-/// = 74.0 + 74.0 + 74.0 + 369.0 = 591.0
-pub const NEGATIVE_WEIGHTS_SUM: f64 = -591.0;
+/// 所有负向权重之和（负值）
+/// = -74.0 + -74.0 + -74.0 + -369.0 + -0.001
+///   (not_interested + block + mute + report + not_dwelled)
+/// = -591.001
+pub const NEGATIVE_WEIGHTS_SUM: f64 = -591.001;
 
 /// 负分偏移量
 /// 用于将负分候选帖子映射到 [0, NEGATIVE_SCORES_OFFSET] 区间，

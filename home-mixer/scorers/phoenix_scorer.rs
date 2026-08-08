@@ -144,13 +144,13 @@ impl PhoenixScorer {
             dwell_score: p.get(ActionName::ClientTweetRecapDwelled),
             quote_score: p.get(ActionName::ServerTweetQuote),
             quoted_click_score: p.get(ActionName::ClientQuotedTweetClick),
-            quoted_vqv_score: None,
+            quoted_vqv_score: p.get(ActionName::ClientQuotedTweetVideoQualityView),
             follow_author_score: p.get(ActionName::ClientTweetFollowAuthor),
             not_interested_score: p.get(ActionName::ClientTweetNotInterestedIn),
             block_author_score: p.get(ActionName::ClientTweetBlockAuthor),
             mute_author_score: p.get(ActionName::ClientTweetMuteAuthor),
             report_score: p.get(ActionName::ClientTweetReport),
-            not_dwelled_score: None,
+            not_dwelled_score: p.get(ActionName::ClientTweetNotDwelled),
             dwell_time: p.get_continuous(ContinuousActionName::DwellTime),
             click_dwell_time: None,
         }
@@ -178,5 +178,62 @@ impl ActionPredictions {
 
     fn get_continuous(&self, action: ContinuousActionName) -> Option<f64> {
         self.continuous_values.get(&(action as usize)).copied()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    struct UnusedPhoenixClient;
+
+    #[async_trait]
+    impl PhoenixPredictionClient for UnusedPhoenixClient {
+        async fn predict(
+            &self,
+            _user_id: u64,
+            _sequence: x_algorithm_proto::recsys::UserActionSequence,
+            _candidates: Vec<x_algorithm_proto::recsys::TweetInfo>,
+        ) -> Result<x_algorithm_proto::recsys::PredictNextActionsResponse, anyhow::Error> {
+            unreachable!("score extraction tests do not call the prediction client")
+        }
+    }
+
+    fn scorer() -> PhoenixScorer {
+        PhoenixScorer {
+            phoenix_client: Arc::new(UnusedPhoenixClient),
+        }
+    }
+
+    #[test]
+    fn reserved_discrete_slots_map_to_their_named_scores() {
+        let predictions = ActionPredictions {
+            action_probs: HashMap::from([(19, 0.25), (20, 0.75)]),
+            continuous_values: HashMap::from([(ContinuousActionName::DwellTime as usize, 3.5)]),
+        };
+
+        let scores = scorer().extract_phoenix_scores(&predictions);
+
+        assert_eq!(scores.quoted_vqv_score, Some(0.25));
+        assert_eq!(scores.not_dwelled_score, Some(0.75));
+        assert_eq!(scores.dwell_time, Some(3.5));
+        assert_eq!(scores.click_dwell_time, None);
+    }
+
+    #[test]
+    fn released_profile_without_reserved_slots_keeps_reserved_scores_empty() {
+        let predictions = ActionPredictions {
+            action_probs: (0..=ActionName::ClientTweetReport as usize)
+                .map(|index| (index, 0.5))
+                .collect(),
+            continuous_values: HashMap::new(),
+        };
+
+        let scores = scorer().extract_phoenix_scores(&predictions);
+
+        assert_eq!(scores.report_score, Some(0.5));
+        assert_eq!(scores.quoted_vqv_score, None);
+        assert_eq!(scores.not_dwelled_score, None);
+        assert_eq!(scores.click_dwell_time, None);
     }
 }
