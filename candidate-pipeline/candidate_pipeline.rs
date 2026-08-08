@@ -842,6 +842,20 @@ mod tests {
     }
 
     #[test]
+    fn one_source_failure_preserves_candidates_from_other_sources() {
+        let mut pipeline = TestPipeline::new();
+        pipeline.sources = vec![Box::new(FailingSource), Box::new(TestSource)];
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .build()
+            .expect("test runtime");
+
+        let result = runtime.block_on(pipeline.execute(TestQuery::default()));
+
+        assert_eq!(result.retrieved_candidates, vec![1, 3, 2]);
+        assert_eq!(result.selected_candidates, vec![3, 2]);
+    }
+
+    #[test]
     fn filter_failure_restores_candidates_for_later_stages() {
         let mut pipeline = TestPipeline::new();
         pipeline.filters = vec![Box::new(FailingFilter)];
