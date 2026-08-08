@@ -86,11 +86,15 @@
 
 1. `UserActionSeqQueryHydrator`
 2. `UserFeaturesQueryHydrator`
+3. `UserTopicsQueryHydrator`（条件启用：显式传入 `topic_clients` 或在 `HOME_MIXER_DEMO=1` 下自动启用）
 
 ### 4.2 Sources
 
-1. `PhoenixSource`
-2. `ThunderSource`
+1. `CachedPostsSource`
+2. `PhoenixTopicsSource`（条件启用：配置 `topic_clients` 时触发）
+3. `PhoenixSource`
+4. `PhoenixMoeSource`（条件启用：设置 `PHOENIX_MOE_GRPC_ADDR` 时触发）
+5. `ThunderSource`
 
 ### 4.3 Hydrators
 
@@ -109,9 +113,12 @@
 5. `RetweetDeduplicationFilter`
 6. `IneligibleSubscriptionFilter`
 7. `PreviouslySeenPostsFilter`
-8. `PreviouslyServedPostsFilter`
-9. `MutedKeywordFilter`
-10. `AuthorSocialgraphFilter`
+8. `PreviouslySeenPostsBackupFilter`
+9. `PreviouslyServedPostsFilter`
+10. `MutedKeywordFilter`
+11. `AuthorSocialgraphFilter`
+12. `TopicIdsFilter`
+13. `VideoFilter`
 
 ### 4.5 Scorers
 
@@ -131,7 +138,8 @@
 ### 4.8 Post-selection Filters
 
 1. `VFFilter`
-2. `DedupConversationFilter`
+2. `AncillaryVFFilter`
+3. `DedupConversationFilter`
 
 ### 4.9 Side Effects
 
@@ -143,11 +151,15 @@
 
 - UAS hydrator：为 Phoenix 召回和精排准备用户行为序列
 - User features hydrator：拿关注、屏蔽、静音、订阅、关键词等用户侧特征
+- User topics hydrator：拉取用户感兴趣的话题列表，支持个性化话题召回
 
 ### Sources
 
-- `PhoenixSource`：召回网外候选
-- `ThunderSource`：召回网内候选
+- `CachedPostsSource`：优先从本地/内存缓存中快速补充候选
+- `PhoenixTopicsSource`：根据用户话题画像进行定向话题召回
+- `PhoenixSource`：双塔模型海选全网网外候选
+- `PhoenixMoeSource`：基于 MoE 架构进行多专家多目标网外候选召回
+- `ThunderSource`：召回关注网络内的实时候选
 
 ### Hydrators
 
@@ -160,7 +172,10 @@
 ### Filters
 
 - 前几层 filter 负责去重、内容合法性、年龄限制、基础策略过滤
-- 后几层 filter 负责用户个性化去重、静音/屏蔽、关键词等
+- `PreviouslySeenPostsFilter` / `PreviouslySeenPostsBackupFilter`：结合 Bloom Filter 与备份索引过滤已看内容
+- `TopicIdsFilter`：针对话题候选的合法 Topic ID 进行校验过滤
+- `VideoFilter`：对非法或损坏视频格式的候选进行过滤
+- `AuthorSocialgraphFilter` / `MutedKeywordFilter`：针对用户屏蔽、静音作者及关键词进行强过滤
 
 ### Scorers
 
@@ -173,6 +188,7 @@
 
 - `VFCandidateHydrator`：调用可见性审核服务
 - `VFFilter`：把需要 Drop 的内容剔除
+- `AncillaryVFFilter`：辅助可见性安全审核与标记
 - `DedupConversationFilter`：对同一会话树只保留一条高分候选
 
 ## 6. 关键参数

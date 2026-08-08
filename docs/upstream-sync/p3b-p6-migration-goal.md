@@ -114,6 +114,8 @@
 - **Entry condition**: Phase 1 通过。
 - **Phase rules**:
   - 广告默认关闭；没有品牌安全 verdict 的帖子不构成可插入广告的安全间隙。
+  - `SafeGap` 与 `PartitionOrganic` 以上游 `e414c17` 的间距、分组和规避行为为基线；`PartitionOrganic` 启用时允许按安全帖子分组重排，默认关闭路径仍保持 P3 自然帖子顺序。
+  - 本地适配只负责公开 `FeedItem`、真实 `non_selected` 和 fail-closed 的缺失 verdict，不重写上游放置规则。
   - 不创建虚假的广告竞价或安全标签。
 - **Todos**:
   - [x] 实现首位、间距、最小自然帖子、末尾广告清理和安全间隙规则。
@@ -174,8 +176,10 @@
 
 ## Execution Evidence
 
-- P4/P5 定向测试：15 项通过，覆盖自然顺序、模块位置、单一 Push、两种广告策略、缺失安全判定、disabled Ads port、单用户/全局状态截断、无等待连续请求和统计失败隔离。
-- Home Mixer：50 项通过；Rust workspace 共 12 个套件、64 项通过；`ForYouFeedService` 和旧 `ScoredPostsService` 均完成一键 Demo，均返回 50 条自然帖子（12 网内 + 38 网外）。
+以下结果来自各能力完成时的阶段验收，用于保留迁移轨迹，不作为当前仓库累计测试数量；当前累计结果以 capability inventory 的 `EV-*` 和 Final Validation 为准。
+
+- 当前 P4/P5 定向测试：25 项通过，覆盖自然顺序、模块位置、单一 Push、两种上游广告策略、缺失安全判定、disabled Ads port、单用户/全局状态截断、无等待连续请求和统计失败隔离。
+- 初次 P3-P6 批次验收：Home Mixer 50 项、Rust workspace 12 个套件 64 项通过；`ForYouFeedService` 和旧 `ScoredPostsService` 均完成一键 Demo，均返回 50 条自然帖子（12 网内 + 38 网外）。
 - Phoenix：82 项通过；P4/P5 未改变发布模型和 gRPC 评分合同。
 - P6：10 项通过；`python -m grox.demo` 输出结构和文本元数据确定、运行时间戳不同的 JSON，不包含安全、embedding 或 Spam 结论。
 - 外部生产服务、广告安全提供方、Kafka/Redis、Grox 模型与 Prompt 均未标记完成，仍在 Integration Backlog。

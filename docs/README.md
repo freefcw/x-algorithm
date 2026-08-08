@@ -43,6 +43,7 @@
 | [phoenix/](./phoenix/) | `current-code` | 精排、召回、服务封装的代码导读（操作类内容以 `phoenix/docs/` 为准）。 |
 | [training/](./training/) | `design` | 数据准备、训练样本和模型产物约束。 |
 | [operations/](./operations/) | `runbook` | 持续更新、切版、故障处理和发布检查。 |
+| [upstream-sync/](./upstream-sync/) | `design` / `current-code` | 上游能力同步（P3/P3b/P6 个性化话题与 MoE 召回演进记录）。 |
 | [research/](./research/) | `research` | 双塔、冷启动等背景资料。 |
 | [archive/](./archive/) | `historical` | 迁移记录、早期缺失盘点、依赖分析快照。 |
 

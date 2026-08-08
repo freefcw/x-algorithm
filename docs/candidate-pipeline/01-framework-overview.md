@@ -25,6 +25,7 @@
 | `scorer.rs` | 打分 trait |
 | `selector.rs` | 排序/截断 trait |
 | `side_effect.rs` | 副作用 trait |
+| `feature_switch.rs` | 特性开关控制抽象与辅助扩展 |
 | `util.rs` | 通用工具，目前主要是日志展示用的类型名缩短 |
 
 ## 3. 核心数据模型

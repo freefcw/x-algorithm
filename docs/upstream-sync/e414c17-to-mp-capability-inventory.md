@@ -61,7 +61,7 @@
 - `mp` 与上游共同修改 27 个文件；三方模拟合并有 24 个内容冲突。
 - `mp` 已将右对齐位置、帖子年龄 embedding、连续行为输入/预测头接入可选模型 forward；旧模型配置默认关闭，发布模型配置按 checkpoint shape 启用。
 - `mp` 已新增统一 NPZ loader、离线 `run_pipeline.py`、发布 artifact gRPC 适配器、独立 `ScoredPostsServer`，以及 additive-compatible 的 `ForYouFeedService`。
-- P4-A 已完成独立 `FeedItem`、ScoredPosts bridge、混排规则和 disabled-first Ads port；真实广告、Who to Follow、Prompt、Push-to-Home 来源仍属于 P4-B。
+- P4-A 已完成独立 `FeedItem`、ScoredPosts bridge、disabled-first Ads port，并将 `SafeGap`、`PartitionOrganic` 的间距、分组、BSR/账号/关键词规避重新锚定到上游 `e414c17`；本地仅保留缺失 verdict fail-closed、真实 `non_selected` 和公开协议适配。真实广告、Who to Follow、Prompt、Push-to-Home 来源仍属于 P4-B。
 - P5-A 已完成有界内存 served history、request timestamps 和最终 Feed 统计；Kafka、Redis、外部事件与训练数据出口仍属于 P5-B。
 - 上游 Grox 引用多个未提交模块，例如 `grox.config`、`grox.lm`、`grox.prompts`、`monitor`，不能原样运行。P6-A 只恢复了独立任务 DAG、结果信封和 Source/Sink port，不代表模型内容理解能力已经恢复。
 
@@ -78,7 +78,7 @@
 
 P0 基线回归：`cargo test --workspace` 通过（11 个套件、24 项测试）；Phoenix 全套 72 项测试通过；`./scripts/run_demo.sh` 返回 50 条 Feed（网内 12、网外 38），三个服务正常退出并清理。
 
-### 当前执行状态（2026-07-22）
+### 当前执行状态（2026-08-08）
 
 | 阶段 | 状态 | 已交付能力 | 验收证据 |
 |---|---|---|---|
@@ -86,16 +86,17 @@ P0 基线回归：`cargo test --workspace` 通过（11 个套件、24 项测试�
 | P1 | **完成** | 正式 ranker/retrieval 语义、统一 NPZ loader、离线 pipeline、发布 artifact gRPC、Git LFS 合同 | 最新 2,903,518,802 字节对象 SHA-256 为 `fbc6017d...a83dac`；真实离线 retrieval→ranking 成功；真实 gRPC Retrieve + Predict 成功并返回连续 dwell |
 | P2 | **完成** | Query/Candidate 最小合同、dependent hydration、同步 Filter、缓存 Hydrator、selected/non-selected、失败隔离、逐组件耗时/数量、空结果短路、能力开关接口 | Candidate Pipeline 与 Home Mixer 框架/业务测试通过；Source/Filter 失败、缓存命中、过滤清空、截断均有测试 |
 | P3 | **P3-A 完成 / P3-B 暂缓** | ScoredPosts 边界、扩展 Query/Candidate、缓存/Phoenix/Phoenix MoE/话题/Thunder 来源、主要 Hydrator/Filter、组合 Ranking | 默认 Demo 恢复 12 网内 + 38 网外；话题 Demo 返回 50 条 `Phoenix 话题`；缓存 Demo 返回 8 条 `请求缓存`；生产数据面见独立 Integration Backlog |
-| P4 | **P4-A 完成 / P4-B 暂缓** | 独立 FeedItem/ForYou RPC、ScoredPosts bridge、模块混排、Safe-gap/Partition-organic 规则、disabled Ads port | P4/P5 定向 15 项通过；最终 Feed Demo 返回 12 网内 + 38 网外；没有安全 verdict 时不插广告 |
+| P4 | **P4-A 完成 / P4-B 暂缓** | 独立 FeedItem/ForYou RPC、ScoredPosts bridge、模块混排、Safe-gap/Partition-organic 规则、disabled Ads port | P4/P5 定向 25 项通过；最终 Feed Demo 返回 12 网内 + 38 网外；没有安全 verdict 时不插广告 |
 | P5 | **P5-A 完成 / P5-B 暂缓** | 全局/单用户双重有界内存状态、响应前本地一致性提交、构成/位置统计、非阻塞外部 SideEffect | 无等待连续请求、用户淘汰、状态截断、统计记录和 sink 失败隔离测试通过；Kafka/Redis 保留待集成 |
 | P6 | **P6-A 完成 / P6-B 暂缓** | 独立 eligibility-gated DAG、skip/failure 信封、环检测、Source/Sink port、本地 JSON Demo | Grox 10 项通过；CLI 输出文本元数据，不生成模型/安全/embedding 结论 |
 
-P3 已完成的默认/可运行范围：`HM-01..02`、`HM-05..07`、`SRC-01..04`、`SRC-06`、`QH-01..11` 的本地合同、`CH-01..06`、`CH-09..11`、`CH-13..14`、`CH-16`、`FLT-01..17`、`RANK-01..02`、`SEL-01`。其中 Phoenix MoE 只有在同时设置请求开关与 `PHOENIX_MOE_GRPC_ADDR` 时装配；话题生产端通过 `TopicRetrievalClient` 注入，Demo 实现已验证。
+P3 已完成的默认/可运行范围：`HM-01..02`、`HM-05..07`、`SRC-01..04`、`SRC-06`、`QH-01..13` 的本地合同、`CH-01..06`、`CH-09..11`、`CH-13..14`、`CH-16`、`FLT-01..17`、`RANK-01..02`、`SEL-01`。其中 Phoenix MoE 只有在同时设置请求开关与 `PHOENIX_MOE_GRPC_ADDR` 时装配；话题页采用严格召回，公开 `new_user_topic_ids` 保持冷启动限定语义，补充话题只有在显式注入 Topic Adapter 时采用混合召回；生产默认不装配 `UserTopicReader` 和 `TopicRetrievalClient`。
 
 P3 仍未完成且不能伪造的条件能力：
 
 - `SRC-05` TweetMixer：仓库没有公开服务合同或可运行服务。
-- `QH-12..18` 中的 Grok 关注/推断话题、starter packs、共同关注 minhash、IP 位置、人口统计和推断性别：需要明确数据来源、隐私和公平性决策；请求 IP 字段仅作为默认关闭的边界输入。
+- `QH-12..13` 的主动关注/推断话题：本地仅保留“外部 Adapter 返回最终补充话题”的窄端口和 Demo Adapter；关注、推断、年龄及资格策略不在 Home Mixer 内猜测，生产仍需明确数据来源、时效和隐私决策。
+- `QH-14..18` 中的 starter packs、共同关注 minhash、IP 位置、人口统计和推断性别：需要明确数据来源、隐私和公平性决策；请求 IP 字段仅作为默认关闭的边界输入。
 - `CH-12` following-replied users、`CH-15` mutual-follow Jaccard、`CH-17` tweet type metrics：前两项缺社交图数据端口的真实实现，后一项尚未接统计出口。
 - `RANK-03` VM Ranker：没有公开 RPC/模型合同；不把未知外部分数写入核心 Ranking。
 
@@ -120,10 +121,11 @@ P3 仍未完成且不能伪造的条件能力：
 
 | 证据 | 可复核内容 |
 |---|---|
-| `EV-CP` | `cargo test -p xai_candidate_pipeline`：11 项通过；覆盖执行包装、缓存、同步 Filter、selected/non-selected 和 SideEffect 输入。 |
+| `EV-CP` | `cargo test -p xai_candidate_pipeline`：12 项通过；覆盖执行包装、缓存、同步 Filter、selected/non-selected、单 Source 失败保留其他来源候选和 SideEffect 输入。 |
 | `EV-PHX` | Phoenix 82 项测试、真实 artifact SHA/shape、离线 retrieval→ranking 和真实 gRPC Retrieve/Predict，见 Final Validation。 |
-| `EV-P3` | 默认 ScoredPosts Demo 50 条（12 网内 + 38 网外），话题 Demo 50 条，缓存 Demo 8 条；Home Mixer/Workspace 测试见 Final Validation。 |
-| `EV-P4` | `cargo test -p home-mixer --test p4_final_feed`：15 项通过；覆盖独立 FeedItem、ScoredPosts bridge、两种广告规则、默认关闭和 ForYou RPC。 |
+| `EV-P3` | `cargo test -p home-mixer`：91 项通过；默认 ScoredPosts Demo 50 条（12 网内 + 38 网外），话题 Demo 50 条，缓存 Demo 8 条；显式话题严格召回、冷启动话题限定、条件补充召回、读取失败降级和外部服务装配合同均有测试。 |
+| `EV-RANK` | Phoenix 预留离散槽位 19/20、发布 profile 缺槽位兼容、引用帖 VQV 时长门槛和 `not_dwelled` 负权重均有 Rust 回归测试；`click_dwell_time` 因协议尚无对应连续动作而保持 `None`。 |
+| `EV-P4` | `cargo test -p home-mixer --test p4_final_feed`：25 项通过；覆盖独立 FeedItem、ScoredPosts bridge、两种上游广告规则、默认关闭和 ForYou RPC。 |
 | `EV-P5` | 同一 P4/P5 集成测试覆盖连续请求、单用户/全局状态截断、构成统计和 sink 失败隔离。 |
 | `EV-P6` | `uv run --project grox --group dev pytest -q grox/tests`：10 项通过；`p6-grox-recovery-audit.md` 明确模型能力未恢复。 |
 | `EV-REL` | `.gitattributes` LFS 规则、`phoenix/README.md` 三种运行路径和本文件 Final Validation。 |
@@ -148,13 +150,14 @@ P3 仍未完成且不能伪造的条件能力：
 | `SRC-09..11` | 部分：FeedItem、注入点和测试 Source | 关闭 | 待产品入口、内容审核和服务合同 | `EV-P4`, Integration Backlog |
 | `QH-01..09` | 完成：本地合同与空数据降级 | 按请求/适配器启用 | 用户关系、曝光和请求缓存服务待集成 | `EV-P3` |
 | `QH-10..11` | 完成 | 启用 | 生产 UAS 数据源待集成 | `EV-PHX`, `EV-P3` |
-| `QH-12..15` | 未开始 | 关闭 | 待话题/starter pack/社交图数据合同 | Integration Backlog |
-| `QH-16..18` | 部分：边界字段存在 | 关闭 | 待隐私、公平性、同意和保留策略 | Integration Backlog |
+| `QH-12..13` | 完成：本地端口、选择规则与 Demo Adapter | Demo 条件启用；生产关闭 | 待关注/推断话题真实数据合同、时效和隐私验收 | `EV-P3`, Integration Backlog |
+| `QH-14..15` | 未开始 | 关闭 | 待 starter pack/社交图数据合同 | Integration Backlog |
+| `QH-16..18` | 未开始 | 关闭 | 待隐私、公平性、同意和保留策略；本地 Query 仅有 `ip_address` 空字符串占位，`user_demographics`/`inferred_gender` 字段尚未引入 | Integration Backlog |
 | `CH-01..06`, `CH-09..11`, `CH-13..14`, `CH-16` | 完成：本地合同/实现 | 按候选数据启用 | TES、作者资料、关系和 VF 真实服务待集成 | `EV-P3` |
 | `CH-07..08` | 部分：显式安全 verdict 边界 | 关闭 | 待广告安全 Hydrator 和供应商 | `EV-P4`, Integration Backlog |
 | `CH-12`, `CH-15`, `CH-17` | 未开始 | 关闭 | 待社交图端口或统计出口 | Integration Backlog |
 | `FLT-01..17` | 完成 | 默认或按请求条件启用 | 过滤逻辑已完成；部分输入数据随 P3-B 接入 | `EV-P3` |
-| `RANK-01..02` | 完成 | 启用 | Phoenix 生产部署仍需环境验收 | `EV-PHX`, `EV-P3` |
+| `RANK-01..02` | 完成 | 启用 | Phoenix 生产部署仍需环境验收 | `EV-PHX`, `EV-P3`, `EV-RANK` |
 | `RANK-03` | 未开始 | 关闭 | 缺 VM Ranker RPC/模型合同 | Integration Backlog |
 | `SEL-01` | 完成 | 启用 | 无外部依赖 | `EV-CP`, `EV-P3` |
 | `SEL-02`, `ADS-01..03` | 完成：纯混排规则 | 非帖子来源默认关闭 | 真实广告和安全服务待接入 | `EV-P4` |
@@ -636,10 +639,19 @@ cd ..
 ./scripts/run_demo.sh
 ```
 
-本次执行结果（2026-07-22）：
+当前 Rust 验证结果（2026-08-08）：
+
+- `cargo test --workspace`：13 个套件，106 项通过。
+- `cargo test -p home-mixer`：6 个套件，91 项通过。
+- `cargo test -p xai_candidate_pipeline`：12 项通过。
+- `cargo test -p home-mixer --test p4_final_feed`：25 项通过。
+- `cargo clippy -p home-mixer --all-targets`：0 error，18 条存量 warning。
+- 本次触及的 Rust 文件通过独立 `rustfmt --check`，`git diff --check` 通过。
+- `cargo fmt --all -- --check` 仍被 `thunder/kafka/tweet_events_listener.rs` 中既有的 Rust 2024 let-chain 阻塞；该文件不属于本次改动。
+
+需要模型 artifact 或完整外部运行环境的最近一次历史验收（2026-07-22）：
 
 - `cargo build --workspace`：通过（仅 3 个既有 dead-code 警告）。
-- `cargo test --workspace`：12 个套件，64 项通过，其中 P4/P5 定向 15 项。
 - `uv run --project phoenix --group service pytest -q phoenix/tests`：82 项通过。
 - `uv run --project grox --group dev pytest -q grox/tests`：10 项通过；独立 JSON Demo 成功。
 - `uvx ruff check phoenix grox/src grox/tests`、Python `compileall`、`bash -n scripts/run_demo.sh`、`git diff --check`：全部通过。

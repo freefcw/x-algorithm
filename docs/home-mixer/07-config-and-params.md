@@ -61,6 +61,7 @@ flowchart TD
 | `THUNDER_GRPC_ADDR` | `clients/thunder_client.rs` | Thunder gRPC 地址 | 默认 `http://localhost:50052` |
 | `PHOENIX_PREDICT_GRPC_ADDR` | `clients/phoenix_prediction_client.rs` | Phoenix 精排 gRPC 地址 | 未设置时退化为 stub（空预测） |
 | `PHOENIX_RETRIEVAL_GRPC_ADDR` | `clients/phoenix_retrieval_client.rs` | Phoenix 召回 gRPC 地址 | 未设置时退化为 stub（无网外候选） |
+| `PHOENIX_MOE_GRPC_ADDR` | `candidate_pipeline/phoenix_candidate_pipeline.rs` | Phoenix MoE 专家召回 gRPC 地址 | 设置后触发 `PhoenixMoeSource` 动态装配；未设置时不启用 |
 | `HOME_MIXER_DEMO` | `demo.rs`（仅装配层 `phoenix_candidate_pipeline::prod()` 读取） | 设为 `1` 时装配层注入 `Demo*` 客户端，返回自洽的演示数据（关注列表、行为序列、帖子文本） | 未设置时注入生产 stub，返回空数据 |
 | `APP_ENV` | `side_effects/cache_request_info_side_effect.rs` | 控制是否写请求缓存 | 非 `prod` 时 side effect 不启用 |
 

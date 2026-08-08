@@ -15,12 +15,16 @@
 | --- | --- | --- | --- | --- | --- | --- |
 | `UserActionSeqQueryHydrator` | `query_hydrators/user_action_seq_query_hydrator.rs` | 默认启用 | `query.user_id` | `query.user_action_sequence` | `UserActionSequenceFetcher` | `PhoenixSource`、`PhoenixScorer` |
 | `UserFeaturesQueryHydrator` | `query_hydrators/user_features_query_hydrator.rs` | 默认启用 | `query.user_id` | `query.user_features` | `StratoClient` | `ThunderSource`、多个 Filter / Hydrator |
+| `UserTopicsQueryHydrator` | `query_hydrators/user_topics_query_hydrator.rs` | 配置 `topic_clients` 或 Demo 时启用 | `query.user_id` | `query.supplemental_topic_ids` | `UserTopicReader` | `PhoenixTopicsSource` |
 
 ## 2. Sources
 
 | 组件 | 文件 | enable | 读取 | 产出字段 | 外部依赖 | 说明 |
 | --- | --- | --- | --- | --- | --- | --- |
+| `CachedPostsSource` | `sources/cached_posts_source.rs` | 默认启用 | 本地缓存 | `tweet_id` `author_id` 等 | 无 | 优先补充预加载/缓存候选 |
+| `PhoenixTopicsSource` | `sources/phoenix_topics_source.rs` | 启用 `topic_clients` | `user_topics` | `tweet_id` `author_id` `served_type` | `TopicRetrievalClient` | 个性化话题候选召回 |
 | `PhoenixSource` | `sources/phoenix_source.rs` | `!query.in_network_only` | `user_id`、`user_action_sequence` | `tweet_id` `author_id` `in_reply_to_tweet_id` `served_type` | `PhoenixRetrievalClient` | 缺失序列直接失败 |
+| `PhoenixMoeSource` | `sources/phoenix_moe_source.rs` | 配置 `PHOENIX_MOE_GRPC_ADDR` | `user_id`、`user_action_sequence` | `tweet_id` `author_id` `served_type` | `PhoenixRetrievalClient` (MoE) | 基于 MoE 架构多专家网外召回 |
 | `ThunderSource` | `sources/thunder_source.rs` | 默认启用 | `user_id`、`followed_user_ids` | `tweet_id` `author_id` `in_reply_to_tweet_id` `ancestors` `served_type` | `ThunderClient` | 用 reply / conversation 构造 `ancestors` |
 
 ## 3. Candidate Hydrators
@@ -32,6 +36,7 @@
 | `VideoDurationCandidateHydrator` | `candidate_hydrators/video_duration_candidate_hydrator.rs` | 默认启用 | `candidate.tweet_id` | `video_duration_ms` | `TESClient.get_tweet_media_entities` | `WeightedScorer` |
 | `SubscriptionHydrator` | `candidate_hydrators/subscription_hydrator.rs` | 默认启用 | `candidate.tweet_id` | `subscription_author_id` | `TESClient.get_subscription_author_ids` | `IneligibleSubscriptionFilter` |
 | `GizmoduckCandidateHydrator` | `candidate_hydrators/gizmoduck_hydrator.rs` | 默认启用 | `author_id` `retweeted_user_id` | `author_followers_count` `author_screen_name` `retweeted_screen_name` | `GizmoduckClient` | 响应映射、未来分数归一化 |
+| `EngagementCountsHydrator` | `candidate_hydrators/engagement_counts_hydrator.rs` | 关闭（`enable=false`，未注册） | `candidate.tweet_id` | `favorite_count` `reply_count` `repost_count` `quote_count` | `TESClient` | 仅保存带进程内 TTL 缓存的 checkpoint；启用前需解决与 CoreData hydrator 的字段所有权冲突 |
 | `VFCandidateHydrator` | `candidate_hydrators/vf_candidate_hydrator.rs` | post-selection 阶段默认启用 | `query.user_id` `query.viewer_context` `candidate.in_network` `tweet_id` | `visibility_reason` | `VisibilityFilteringClient` | `VFFilter` |
 
 ## 4. Filters
@@ -47,15 +52,19 @@
 | `RetweetDeduplicationFilter` | `filters/retweet_deduplication_filter.rs` | 默认启用 | `tweet_id` `retweeted_tweet_id` | 原帖/转推去重域冲突 |
 | `IneligibleSubscriptionFilter` | `filters/ineligible_subscription_filter.rs` | 默认启用 | `subscription_author_id` `subscribed_user_ids` | 订阅内容作者不在订阅列表 |
 | `PreviouslySeenPostsFilter` | `filters/previously_seen_posts_filter.rs` | 默认启用 | `seen_ids` `bloom_filter_entries` `related_post_ids` | 见过任一相关帖子 |
+| `PreviouslySeenPostsBackupFilter` | `filters/previously_seen_posts_backup_filter.rs` | 默认启用 | `seen_ids` | 命中二级已看去重备份逻辑 |
 | `PreviouslyServedPostsFilter` | `filters/previously_served_posts_filter.rs` | `query.is_bottom_request` | `served_ids` `related_post_ids` | 下翻请求里命中已下发帖子 |
 | `MutedKeywordFilter` | `filters/muted_keyword_filter.rs` | 默认启用 | `tweet_text` `muted_keywords` | 文本命中屏蔽关键词 |
 | `AuthorSocialgraphFilter` | `filters/author_socialgraph_filter.rs` | 默认启用 | `author_id` `blocked_user_ids` `muted_user_ids` | 作者在拉黑或静音列表 |
+| `TopicIdsFilter` | `filters/topic_ids_filter.rs` | 默认启用 | `topic_id` | Topic ID 非法或不在白名单中 |
+| `VideoFilter` | `filters/video_filter.rs` | 默认启用 | `video_duration_ms` / 媒体信息 | 损坏或不合规的视频候选 |
 
 ### 4.2 Post-selection Filters
 
 | 组件 | 文件 | enable | 读取 | 移除条件 |
 | --- | --- | --- | --- | --- |
 | `VFFilter` | `filters/vf_filter.rs` | 默认启用 | `visibility_reason` | `Drop` 或 generic filtered |
+| `AncillaryVFFilter` | `filters/ancillary_vf_filter.rs` | 默认启用 | `visibility_reason` | 命中辅助安全过滤动作 |
 | `DedupConversationFilter` | `filters/dedup_conversation_filter.rs` | 默认启用 | `ancestors` `tweet_id` `score` | 同一会话树保留最高分 |
 
 ## 5. Scorers
