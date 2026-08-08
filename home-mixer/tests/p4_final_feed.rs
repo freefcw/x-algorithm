@@ -1,12 +1,15 @@
 use home_mixer::final_feed::{
-    AdsBlenderStrategy, AdvertisementSource, BlenderConfig, BlenderSelector, FeedItem,
-    FeedItemKind, FeedResponseStats, FeedStateStore, FeedStatsSink, ForYouFeedServer,
-    InMemoryFeedStateStore, InMemoryFeedStats, ScoredPostsProvider, ScoredPostsQuery,
+    AdsBlenderStrategy, Advertisement, AdvertisementSource, BlenderConfig, BlenderSelector,
+    FeedItem, FeedItemContent, FeedItemKind, FeedResponseStats, FeedStateStore, FeedStatsSink,
+    ForYouFeedServer, InMemoryFeedStateStore, InMemoryFeedStats, ScoredPostsProvider,
+    ScoredPostsQuery,
 };
 use home_mixer::scored_posts_server::ScoredPostsOutput;
 use std::sync::{Arc, Mutex};
 use tonic::async_trait;
-use x_algorithm_proto::home_mixer::{feed_item, BrandSafetyVerdict, ScoredPost};
+use x_algorithm_proto::home_mixer::{
+    feed_item, BrandSafetyRiskLevel, BrandSafetyVerdict, ScoredPost,
+};
 use xai_candidate_pipeline::source::Source;
 
 fn post(id: u64, score: f32) -> FeedItem {
@@ -194,7 +197,6 @@ fn safe_gap_blender_places_ads_only_between_explicitly_safe_posts() {
     let selector = BlenderSelector::new(BlenderConfig {
         ads_strategy: AdsBlenderStrategy::SafeGap,
         min_posts_for_ads: 5,
-        min_organic_gap: 2,
         ..Default::default()
     });
     let result = selector.blend(vec![
@@ -232,6 +234,58 @@ fn safe_gap_blender_places_ads_only_between_explicitly_safe_posts() {
 }
 
 #[test]
+fn safe_gap_blender_allows_low_risk_posts() {
+    let selector = BlenderSelector::new(BlenderConfig {
+        ads_strategy: AdsBlenderStrategy::SafeGap,
+        min_posts_for_ads: 5,
+        ..Default::default()
+    });
+    let result = selector.blend(vec![
+        ad_low_risk_post(5, 0.5),
+        ad_low_risk_post(4, 0.4),
+        ad_low_risk_post(3, 0.3),
+        ad_low_risk_post(2, 0.2),
+        ad_low_risk_post(1, 0.1),
+        FeedItem::advertisement("ad-low-risk-gap", 2),
+    ]);
+
+    assert!(result
+        .selected
+        .iter()
+        .any(|item| item.kind() == FeedItemKind::Advertisement));
+    assert!(result.non_selected.is_empty());
+}
+
+#[test]
+fn safe_gap_blender_uses_upstream_requested_and_min_spacing() {
+    let selector = BlenderSelector::new(BlenderConfig {
+        ads_strategy: AdsBlenderStrategy::SafeGap,
+        min_posts_for_ads: 5,
+        ..Default::default()
+    });
+    let mut candidates = (1..=11)
+        .rev()
+        .map(|id| ad_safe_post(id, id as f32))
+        .collect::<Vec<_>>();
+    candidates.extend([
+        FeedItem::advertisement("ad-1", 2),
+        FeedItem::advertisement("ad-2", 5),
+        FeedItem::advertisement("ad-3", 9),
+    ]);
+
+    let result = selector.blend(candidates);
+    let ad_positions = result
+        .selected
+        .iter()
+        .filter(|item| item.kind() == FeedItemKind::Advertisement)
+        .map(|item| item.position)
+        .collect::<Vec<_>>();
+
+    assert_eq!(ad_positions, vec![2, 6, 10]);
+    assert!(result.non_selected.is_empty());
+}
+
+#[test]
 fn missing_brand_safety_verdict_prevents_ad_insertion() {
     let selector = BlenderSelector::new(BlenderConfig {
         ads_strategy: AdsBlenderStrategy::SafeGap,
@@ -255,7 +309,7 @@ fn missing_brand_safety_verdict_prevents_ad_insertion() {
 }
 
 #[test]
-fn partition_organic_uses_safe_gaps_without_reordering_posts() {
+fn partition_organic_matches_upstream_grouping() {
     let selector = BlenderSelector::new(BlenderConfig {
         ads_strategy: AdsBlenderStrategy::PartitionOrganic,
         min_posts_for_ads: 5,
@@ -276,16 +330,334 @@ fn partition_organic_uses_safe_gaps_without_reordering_posts() {
         FeedItem::advertisement("ad-1", 2),
     ]);
 
-    assert_eq!(result.selected[0].post_id(), Some(9));
-    assert_eq!(result.selected[1].post_id(), Some(8));
-    assert_eq!(result.selected[2].kind(), FeedItemKind::Advertisement);
+    assert_eq!(
+        result
+            .selected
+            .iter()
+            .map(FeedItem::kind)
+            .collect::<Vec<_>>(),
+        vec![
+            FeedItemKind::Post,
+            FeedItemKind::Advertisement,
+            FeedItemKind::Post,
+            FeedItemKind::Post,
+            FeedItemKind::Post,
+            FeedItemKind::Post,
+        ]
+    );
     assert_eq!(
         result
             .selected
             .iter()
             .filter_map(FeedItem::post_id)
             .collect::<Vec<_>>(),
-        vec![9, 8, 7, 6, 5]
+        vec![8, 7, 9, 6, 5]
+    );
+    assert!(result.non_selected.is_empty());
+}
+
+/// 构造带安全属性的广告 FeedItem
+fn ad_with_safety(
+    ad_id: &str,
+    position: usize,
+    risk: BrandSafetyRiskLevel,
+    avoid_handles: Vec<i64>,
+    avoid_keywords: Vec<&str>,
+) -> FeedItem {
+    FeedItem {
+        position: 0,
+        content: FeedItemContent::Advertisement(Advertisement {
+            ad_id: ad_id.to_string(),
+            requested_position: position,
+            brand_safety_risk: risk,
+            avoid_handles,
+            avoid_keywords: avoid_keywords.into_iter().map(String::from).collect(),
+        }),
+    }
+}
+
+/// 带作者 ID 的安全帖
+fn ad_safe_post_with_author(id: u64, author_id: u64, text: &str, score: f32) -> FeedItem {
+    FeedItem::post(ScoredPost {
+        tweet_id: id,
+        author_id,
+        score,
+        tweet_text: text.to_string(),
+        brand_safety_verdict: BrandSafetyVerdict::SafeForAdjacency as i32,
+        ..Default::default()
+    })
+}
+
+fn ad_low_risk_post(id: u64, score: f32) -> FeedItem {
+    FeedItem::post(ScoredPost {
+        tweet_id: id,
+        score,
+        brand_safety_verdict: BrandSafetyVerdict::LowRisk as i32,
+        ..Default::default()
+    })
+}
+
+#[test]
+fn partition_organic_drops_bsr_low_and_ias_ads_next_to_low_risk_post() {
+    let selector = BlenderSelector::new(BlenderConfig {
+        ads_strategy: AdsBlenderStrategy::PartitionOrganic,
+        min_posts_for_ads: 5,
+        ..Default::default()
+    });
+
+    for risk in [BrandSafetyRiskLevel::BsrLow, BrandSafetyRiskLevel::BsrIas] {
+        let result = selector.blend(vec![
+            ad_low_risk_post(5, 0.5),
+            ad_safe_post(4, 0.4),
+            ad_safe_post(3, 0.3),
+            ad_safe_post(2, 0.2),
+            ad_safe_post(1, 0.1),
+            ad_with_safety("ad-low", 2, risk, vec![], vec![]),
+        ]);
+
+        assert!(result
+            .selected
+            .iter()
+            .all(|item| item.kind() != FeedItemKind::Advertisement));
+        assert_eq!(result.non_selected.len(), 1);
+        assert_eq!(result.non_selected[0].kind(), FeedItemKind::Advertisement);
+    }
+}
+
+#[test]
+fn partition_organic_limits_low_risk_rule_to_bsr_low_and_ias() {
+    let selector = BlenderSelector::new(BlenderConfig {
+        ads_strategy: AdsBlenderStrategy::PartitionOrganic,
+        min_posts_for_ads: 5,
+        ..Default::default()
+    });
+    let result = selector.blend(vec![
+        ad_low_risk_post(5, 0.5),
+        ad_safe_post(4, 0.4),
+        ad_safe_post(3, 0.3),
+        ad_safe_post(2, 0.2),
+        ad_safe_post(1, 0.1),
+        ad_with_safety("ad-high", 2, BrandSafetyRiskLevel::BsrHigh, vec![], vec![]),
+    ]);
+
+    assert!(result
+        .selected
+        .iter()
+        .any(|item| item.kind() == FeedItemKind::Advertisement));
+    assert!(result.non_selected.is_empty());
+}
+
+#[test]
+fn partition_organic_drops_ad_when_adjacent_author_in_avoid_handles() {
+    let selector = BlenderSelector::new(BlenderConfig {
+        ads_strategy: AdsBlenderStrategy::PartitionOrganic,
+        min_posts_for_ads: 5,
+        ..Default::default()
+    });
+    let posts = vec![
+        ad_safe_post_with_author(5, 100, "post 5", 0.5),
+        ad_safe_post_with_author(4, 200, "post 4", 0.4),
+        ad_safe_post_with_author(3, 300, "post 3", 0.3),
+        ad_safe_post_with_author(2, 400, "post 2", 0.2),
+        ad_safe_post_with_author(1, 500, "post 1", 0.1),
+    ];
+    let ads = vec![ad_with_safety(
+        "ad-handle",
+        2,
+        BrandSafetyRiskLevel::Unspecified,
+        vec![100, 200, 300, 400, 500], // 所有帖子作者都在规避列表
+        vec![],
+    )];
+
+    let result = selector.blend(posts.into_iter().chain(ads).collect::<Vec<_>>());
+
+    // 所有帖子作者都在规避列表，广告无法放置
+    assert!(result
+        .non_selected
+        .iter()
+        .any(|item| item.kind() == FeedItemKind::Advertisement));
+    assert!(!result
+        .selected
+        .iter()
+        .any(|item| item.kind() == FeedItemKind::Advertisement));
+}
+
+#[test]
+fn partition_organic_rejects_ad_when_assigned_group_matches_keyword() {
+    let selector = BlenderSelector::new(BlenderConfig {
+        ads_strategy: AdsBlenderStrategy::PartitionOrganic,
+        min_posts_for_ads: 5,
+        ..Default::default()
+    });
+    let posts = vec![
+        ad_safe_post_with_author(5, 100, "normal content", 0.5),
+        ad_safe_post_with_author(4, 200, "contains spoiler text", 0.4),
+        ad_safe_post_with_author(3, 300, "normal content", 0.3),
+        ad_safe_post_with_author(2, 400, "normal content", 0.2),
+        ad_safe_post_with_author(1, 500, "normal content", 0.1),
+    ];
+    let advertisement = ad_with_safety(
+        "ad-keyword",
+        2,
+        BrandSafetyRiskLevel::Unspecified,
+        vec![],
+        vec!["spoiler"],
+    );
+
+    let result = selector.blend(posts.into_iter().chain([advertisement]).collect());
+
+    assert!(result
+        .selected
+        .iter()
+        .all(|item| item.kind() != FeedItemKind::Advertisement));
+    assert_eq!(result.non_selected.len(), 1);
+    assert_eq!(result.non_selected[0].kind(), FeedItemKind::Advertisement);
+}
+
+#[test]
+fn partition_organic_rejects_ad_when_every_gap_matches_avoid_keyword() {
+    let selector = BlenderSelector::new(BlenderConfig {
+        ads_strategy: AdsBlenderStrategy::PartitionOrganic,
+        min_posts_for_ads: 5,
+        ..Default::default()
+    });
+    let posts = vec![
+        ad_safe_post_with_author(5, 100, "spoiler 5", 0.5),
+        ad_safe_post_with_author(4, 200, "spoiler 4", 0.4),
+        ad_safe_post_with_author(3, 300, "spoiler 3", 0.3),
+        ad_safe_post_with_author(2, 400, "spoiler 2", 0.2),
+        ad_safe_post_with_author(1, 500, "spoiler 1", 0.1),
+    ];
+    let advertisement = ad_with_safety(
+        "ad-keyword",
+        2,
+        BrandSafetyRiskLevel::Unspecified,
+        vec![],
+        vec!["spoiler"],
+    );
+
+    let result = selector.blend(posts.into_iter().chain([advertisement]).collect());
+
+    assert!(result
+        .selected
+        .iter()
+        .all(|item| item.kind() != FeedItemKind::Advertisement));
+    assert_eq!(result.non_selected.len(), 1);
+    assert_eq!(result.non_selected[0].kind(), FeedItemKind::Advertisement);
+}
+
+#[test]
+fn partition_organic_places_one_ad_with_two_safe_posts() {
+    let selector = BlenderSelector::new(BlenderConfig {
+        ads_strategy: AdsBlenderStrategy::PartitionOrganic,
+        min_posts_for_ads: 5,
+        ..Default::default()
+    });
+    let result = selector.blend(vec![
+        post(5, 0.5),
+        ad_safe_post(4, 0.4),
+        ad_safe_post(3, 0.3),
+        post(2, 0.2),
+        post(1, 0.1),
+        FeedItem::advertisement("ad-safe-pair", 2),
+    ]);
+
+    let ad_position = result
+        .selected
+        .iter()
+        .position(|item| item.kind() == FeedItemKind::Advertisement);
+
+    assert_eq!(ad_position, Some(1));
+    assert!(!result
+        .non_selected
+        .iter()
+        .any(|item| item.kind() == FeedItemKind::Advertisement));
+}
+
+#[test]
+fn partition_organic_limits_ad_count_using_upstream_requested_spacing() {
+    let selector = BlenderSelector::new(BlenderConfig {
+        ads_strategy: AdsBlenderStrategy::PartitionOrganic,
+        min_posts_for_ads: 5,
+        ..Default::default()
+    });
+    let result = selector.blend(vec![
+        ad_safe_post(6, 0.6),
+        ad_safe_post(5, 0.5),
+        ad_safe_post(4, 0.4),
+        ad_safe_post(3, 0.3),
+        ad_safe_post(2, 0.2),
+        ad_safe_post(1, 0.1),
+        FeedItem::advertisement("ad-1", 1),
+        FeedItem::advertisement("ad-2", 2),
+        FeedItem::advertisement("ad-3", 3),
+    ]);
+
+    assert_eq!(
+        result
+            .selected
+            .iter()
+            .filter(|item| item.kind() == FeedItemKind::Advertisement)
+            .count(),
+        1
+    );
+    assert_eq!(
+        result
+            .non_selected
+            .iter()
+            .filter(|item| item.kind() == FeedItemKind::Advertisement)
+            .count(),
+        2
+    );
+}
+
+#[test]
+fn partition_organic_reuses_group_after_rejected_ad() {
+    let selector = BlenderSelector::new(BlenderConfig {
+        ads_strategy: AdsBlenderStrategy::PartitionOrganic,
+        min_posts_for_ads: 5,
+        ..Default::default()
+    });
+    let result = selector.blend(vec![
+        ad_low_risk_post(7, 0.7),
+        ad_safe_post(6, 0.6),
+        ad_safe_post(5, 0.5),
+        ad_safe_post(4, 0.4),
+        ad_safe_post(3, 0.3),
+        ad_safe_post(2, 0.2),
+        ad_safe_post(1, 0.1),
+        ad_with_safety("ad-low", 0, BrandSafetyRiskLevel::BsrLow, vec![], vec![]),
+        FeedItem::advertisement("ad-1", 1),
+        FeedItem::advertisement("ad-2", 4),
+    ]);
+
+    let selected_ad_ids = result
+        .selected
+        .iter()
+        .filter_map(|item| match &item.content {
+            FeedItemContent::Advertisement(advertisement) => Some(advertisement.ad_id.as_str()),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    let rejected_ad_ids = result
+        .non_selected
+        .iter()
+        .filter_map(|item| match &item.content {
+            FeedItemContent::Advertisement(advertisement) => Some(advertisement.ad_id.as_str()),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+
+    assert_eq!(selected_ad_ids, vec!["ad-1", "ad-2"]);
+    assert_eq!(rejected_ad_ids, vec!["ad-low"]);
+    assert_eq!(
+        result
+            .selected
+            .iter()
+            .filter(|item| item.kind() == FeedItemKind::Advertisement)
+            .map(|item| item.position)
+            .collect::<Vec<_>>(),
+        vec![1, 5]
     );
 }
 

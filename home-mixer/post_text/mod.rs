@@ -31,6 +31,16 @@ pub struct TokenSequence {
     pub tokens: Vec<String>,
 }
 
+impl TokenSequence {
+    pub fn contains_keyword_sequence(&self, keyword: &Self) -> bool {
+        !keyword.tokens.is_empty()
+            && self
+                .tokens
+                .windows(keyword.tokens.len())
+                .any(|window| window == keyword.tokens.as_slice())
+    }
+}
+
 /// 推文分词器
 ///
 /// 将推文文本和屏蔽关键词分词为 TokenSequence。
@@ -145,5 +155,17 @@ mod tests {
 
         let clean_tweet = tokenizer.tokenize("This is good content");
         assert!(!matcher.matches(&clean_tweet));
+    }
+
+    #[test]
+    fn keyword_sequence_requires_contiguous_exact_tokens() {
+        let tokenizer = TweetTokenizer::new();
+        let tweet = tokenizer.tokenize("breaking news from the art desk");
+
+        assert!(tweet.contains_keyword_sequence(&tokenizer.tokenize("breaking news")));
+        assert!(!tweet.contains_keyword_sequence(&tokenizer.tokenize("breaking desk")));
+        assert!(!tokenizer
+            .tokenize("party time")
+            .contains_keyword_sequence(&tokenizer.tokenize("art")));
     }
 }

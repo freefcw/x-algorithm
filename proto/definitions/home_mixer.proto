@@ -103,11 +103,13 @@ enum ServedType {
   FOR_YOU_CACHED_POST = 6;
 }
 
-// 帖子是否可作为广告的相邻自然内容；未补全时不得插广告。
+// 帖子的广告邻接风险；未补全时按不可邻接处理。
+// AVOID_ADJACENCY 保留既有 wire 值，并在领域层对应上游 MediumRisk。
 enum BrandSafetyVerdict {
   BRAND_SAFETY_VERDICT_UNSPECIFIED = 0;
   SAFE_FOR_ADJACENCY = 1;
   AVOID_ADJACENCY = 2;
+  LOW_RISK = 3;
 }
 
 // 单条评分帖子 —— 已经过管道打分后的帖子
@@ -139,6 +141,8 @@ message ScoredPost {
   // 可见性过滤原因（如果有内容安全问题）
   optional VisibilityFilteredReason visibility_reason = 13;
   BrandSafetyVerdict brand_safety_verdict = 14;
+  // 帖子正文，用于广告混排时的关键词规避检查
+  string tweet_text = 15;
 }
 
 // 可见性过滤原因 —— 内容安全审核结果
@@ -155,10 +159,23 @@ message ScoredPostsResponse {
   repeated ScoredPost scored_posts = 1;
 }
 
+// 广告品牌安全风险等级 -- 用于 PartitionOrganic 混排时判断广告是否可放在某帖子旁。
+enum BrandSafetyRiskLevel {
+  BRAND_SAFETY_RISK_LEVEL_UNSPECIFIED = 0;
+  BSR_LOW = 1;   // 与 BSR_IAS 一样，需要规避相邻 LowRisk 帖子
+  BSR_IAS = 2;
+  BSR_MEDIUM = 3; // 上游 blender 不附加 LowRisk 邻接规则
+  BSR_HIGH = 4;   // 上游 blender 不附加 LowRisk 邻接规则
+}
+
 // 广告只携带稳定身份和期望位置；竞价与展示 payload 属于外部广告合同。
+// brand_safety_risk / avoid_handles / avoid_keywords 用于混排时的安全规避。
 message Advertisement {
   string ad_id = 1;
   uint32 requested_position = 2;
+  BrandSafetyRiskLevel brand_safety_risk = 3;
+  repeated int64 avoid_handles = 4;  // 广告主指定的规避账号 ID
+  repeated string avoid_keywords = 5; // 广告主指定的规避关键词
 }
 
 message WhoToFollowModule {

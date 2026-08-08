@@ -81,6 +81,44 @@ fn candidate_to_scored_post(
                 description,
             }
         }),
-        brand_safety_verdict: pb::BrandSafetyVerdict::Unspecified as i32,
+        brand_safety_verdict: candidate
+            .brand_safety_verdict
+            .map(pb::BrandSafetyVerdict::from)
+            .unwrap_or(pb::BrandSafetyVerdict::Unspecified) as i32,
+        tweet_text: candidate.tweet_text,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::candidate_pipeline::candidate::{BrandSafetyVerdict, PostCandidate};
+
+    #[test]
+    fn candidate_brand_safety_verdict_reaches_scored_post() {
+        let cases = [
+            (
+                BrandSafetyVerdict::Unspecified,
+                pb::BrandSafetyVerdict::Unspecified,
+            ),
+            (
+                BrandSafetyVerdict::Safe,
+                pb::BrandSafetyVerdict::SafeForAdjacency,
+            ),
+            (BrandSafetyVerdict::LowRisk, pb::BrandSafetyVerdict::LowRisk),
+            (
+                BrandSafetyVerdict::MediumRisk,
+                pb::BrandSafetyVerdict::AvoidAdjacency,
+            ),
+        ];
+
+        for (domain_verdict, wire_verdict) in cases {
+            let scored_post = candidate_to_scored_post(PostCandidate {
+                brand_safety_verdict: Some(domain_verdict),
+                ..Default::default()
+            });
+
+            assert_eq!(scored_post.brand_safety_verdict, wire_verdict as i32);
+        }
     }
 }

@@ -14,6 +14,9 @@ pub enum FeedItemKind {
 pub struct Advertisement {
     pub ad_id: String,
     pub requested_position: usize,
+    pub brand_safety_risk: x_algorithm_proto::home_mixer::BrandSafetyRiskLevel,
+    pub avoid_handles: Vec<i64>,
+    pub avoid_keywords: Vec<String>,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -62,6 +65,9 @@ impl FeedItem {
             content: FeedItemContent::Advertisement(Advertisement {
                 ad_id: ad_id.into(),
                 requested_position,
+                brand_safety_risk: pb::BrandSafetyRiskLevel::Unspecified,
+                avoid_handles: Vec::new(),
+                avoid_keywords: Vec::new(),
             }),
         }
     }
@@ -127,6 +133,9 @@ impl FeedItem {
                 pb::feed_item::Item::Advertisement(pb::Advertisement {
                     ad_id: advertisement.ad_id,
                     requested_position: as_proto_position(advertisement.requested_position),
+                    brand_safety_risk: advertisement.brand_safety_risk.into(),
+                    avoid_handles: advertisement.avoid_handles,
+                    avoid_keywords: advertisement.avoid_keywords,
                 })
             }
             FeedItemContent::WhoToFollow(module) => {

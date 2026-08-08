@@ -1,3 +1,4 @@
+mod ads;
 mod advertisement_source;
 mod blender_selector;
 mod feed_item;
