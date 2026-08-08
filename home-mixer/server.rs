@@ -16,7 +16,10 @@ pub struct HomeMixerServer {
 
 impl HomeMixerServer {
     pub async fn new() -> Self {
-        let scored_posts_server = Arc::new(ScoredPostsServer::new().await);
+        Self::with_scored_posts_server(Arc::new(ScoredPostsServer::new().await))
+    }
+
+    pub fn with_scored_posts_server(scored_posts_server: Arc<ScoredPostsServer>) -> Self {
         let for_you_feed_server = Arc::new(ForYouFeedServer::new(Arc::clone(&scored_posts_server)));
         HomeMixerServer {
             scored_posts_server,
@@ -161,6 +164,7 @@ fn query_from_proto(proto_query: pb::ScoredPostsQuery) -> Result<ScoredPostsQuer
 mod tests {
     use super::*;
     use crate::candidate_hydrators::vf_candidate_hydrator::VFCandidateHydrator;
+    use crate::candidate_pipeline::query::TopicRecallMode;
     use crate::filters::ancillary_vf_filter::AncillaryVFFilter;
     use crate::visibility::models::FilteredReason;
     use crate::visibility::vf_client::{
@@ -225,6 +229,7 @@ mod tests {
         assert_eq!(query.topic_ids, vec![10]);
         assert_eq!(query.excluded_topic_ids, vec![99]);
         assert_eq!(query.new_user_topic_ids, vec![20]);
+        assert_eq!(query.topic_recall_mode(), TopicRecallMode::Strict);
         assert!(query.exclude_videos);
         assert!(query.enable_phoenix_moe);
         assert_eq!(query.impressed_post_ids, vec![7]);
@@ -242,6 +247,19 @@ mod tests {
         assert!(query.is_preview && query.is_shadow_traffic && query.is_polling);
         assert_eq!(query.ip_address, "203.0.113.1");
         assert_eq!(query.user_agent, "test-client");
+    }
+
+    #[test]
+    fn maps_new_user_topics_to_cold_start_mode() {
+        let query = query_from_proto(pb::ScoredPostsQuery {
+            viewer_id: 42,
+            new_user_topic_ids: vec![20],
+            ..Default::default()
+        })
+        .expect("valid query");
+
+        assert_eq!(query.new_user_topic_ids, vec![20]);
+        assert_eq!(query.topic_recall_mode(), TopicRecallMode::ColdStart);
     }
 
     #[test]

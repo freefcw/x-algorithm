@@ -22,6 +22,7 @@ use crate::clients::tweet_entity_service_client::{DemoTESClient, ProdTESClient, 
 use crate::clients::uas_fetcher::{
     DemoUserActionSequenceFetcher, UserActionSequenceFetcher, UserActionSequenceOps,
 };
+use crate::clients::user_topic_reader::{DemoUserTopicReader, UserTopicReader};
 use crate::filters::age_filter::AgeFilter;
 use crate::filters::ancillary_vf_filter::AncillaryVFFilter;
 use crate::filters::author_socialgraph_filter::AuthorSocialgraphFilter;
@@ -41,6 +42,7 @@ use crate::filters::video_filter::VideoFilter;
 use crate::params;
 use crate::query_hydrators::user_action_seq_query_hydrator::UserActionSeqQueryHydrator;
 use crate::query_hydrators::user_features_query_hydrator::UserFeaturesQueryHydrator;
+use crate::query_hydrators::user_topics_query_hydrator::UserTopicsQueryHydrator;
 use crate::scorers::author_diversity_scorer::AuthorDiversityScorer;
 use crate::scorers::oon_scorer::OONScorer;
 use crate::scorers::phoenix_scorer::PhoenixScorer;
@@ -77,6 +79,19 @@ pub struct PhoenixCandidatePipeline {
     side_effects: Arc<Vec<Box<dyn SideEffect<ScoredPostsQuery, PostCandidate>>>>,
 }
 
+/// 显式启用补充话题能力所需的原子依赖。
+/// Reader 负责资格和话题选择，Home Mixer 只执行召回编排。
+pub struct TopicPersonalizationClients {
+    reader: Arc<dyn UserTopicReader>,
+    retriever: Arc<dyn TopicRetrievalClient>,
+}
+
+impl TopicPersonalizationClients {
+    pub fn new(reader: Arc<dyn UserTopicReader>, retriever: Arc<dyn TopicRetrievalClient>) -> Self {
+        Self { reader, retriever }
+    }
+}
+
 impl PhoenixCandidatePipeline {
     async fn build_with_clients(
         uas_fetcher: Arc<dyn UserActionSequenceOps>,
@@ -87,16 +102,22 @@ impl PhoenixCandidatePipeline {
         tes_client: Arc<dyn TESClient + Send + Sync>,
         gizmoduck_client: Arc<dyn GizmoduckClient + Send + Sync>,
         vf_client: Arc<dyn VisibilityFilteringClient + Send + Sync>,
-        topic_retrieval_client: Option<Arc<dyn TopicRetrievalClient>>,
+        topic_clients: Option<TopicPersonalizationClients>,
         moe_retrieval_client: Option<Arc<dyn PhoenixRetrievalClient + Send + Sync>>,
     ) -> PhoenixCandidatePipeline {
         // Query Hydrators
-        let query_hydrators: Vec<Box<dyn QueryHydrator<ScoredPostsQuery>>> = vec![
+        let mut query_hydrators: Vec<Box<dyn QueryHydrator<ScoredPostsQuery>>> = vec![
             Box::new(UserActionSeqQueryHydrator::new(uas_fetcher)),
             Box::new(UserFeaturesQueryHydrator {
                 strato_client: strato_client.clone(),
             }),
         ];
+        let topic_retrieval_client = topic_clients.map(|clients| {
+            query_hydrators.push(Box::new(UserTopicsQueryHydrator {
+                reader: clients.reader,
+            }));
+            clients.retriever
+        });
 
         // Sources
         let phoenix_source = Box::new(PhoenixSource {
@@ -191,6 +212,25 @@ impl PhoenixCandidatePipeline {
     /// 三个数据依赖换成 Demo 实现，其余装配完全一致。
     /// 生产实现内部不包含任何演示分支，替换 stub 时无需关心演示逻辑。
     pub async fn prod() -> PhoenixCandidatePipeline {
+        let topic_clients = crate::demo::is_demo_mode().then(|| {
+            TopicPersonalizationClients::new(
+                Arc::new(DemoUserTopicReader),
+                Arc::new(DemoTopicRetrievalClient),
+            )
+        });
+        Self::prod_with_optional_topic_clients(topic_clients).await
+    }
+
+    /// 构建显式启用补充话题能力的生产 Pipeline。
+    pub async fn prod_with_topic_clients(
+        topic_clients: TopicPersonalizationClients,
+    ) -> PhoenixCandidatePipeline {
+        Self::prod_with_optional_topic_clients(Some(topic_clients)).await
+    }
+
+    async fn prod_with_optional_topic_clients(
+        topic_clients: Option<TopicPersonalizationClients>,
+    ) -> PhoenixCandidatePipeline {
         let demo_mode = crate::demo::is_demo_mode();
         if demo_mode {
             log::info!("HOME_MIXER_DEMO=1: injecting demo UAS / Strato / TES clients");
@@ -246,8 +286,6 @@ impl PhoenixCandidatePipeline {
             .await
             .expect("Failed to create VF client"),
         );
-        let topic_retrieval_client: Option<Arc<dyn TopicRetrievalClient>> =
-            demo_mode.then(|| Arc::new(DemoTopicRetrievalClient) as Arc<dyn TopicRetrievalClient>);
         let moe_retrieval_client = std::env::var("PHOENIX_MOE_GRPC_ADDR").ok().map(|addr| {
             Arc::new(
                 ProdPhoenixRetrievalClient::from_addr(addr)
@@ -264,7 +302,7 @@ impl PhoenixCandidatePipeline {
             tes_client,
             gizmoduck_client,
             vf_client,
-            topic_retrieval_client,
+            topic_clients,
             moe_retrieval_client,
         )
         .await

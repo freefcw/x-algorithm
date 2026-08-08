@@ -1,5 +1,5 @@
 use crate::candidate_pipeline::candidate::PostCandidate;
-use crate::candidate_pipeline::query::ScoredPostsQuery;
+use crate::candidate_pipeline::query::{ScoredPostsQuery, TopicRecallMode};
 use crate::clients::phoenix_retrieval_client::PhoenixRetrievalClient;
 use crate::params;
 use std::sync::Arc;
@@ -15,8 +15,10 @@ pub struct PhoenixMoeSource {
 impl Source<ScoredPostsQuery, PostCandidate> for PhoenixMoeSource {
     fn enable(&self, query: &ScoredPostsQuery) -> bool {
         query.enable_phoenix_moe
-            && query.topic_ids.is_empty()
-            && query.new_user_topic_ids.is_empty()
+            && !matches!(
+                query.topic_recall_mode(),
+                TopicRecallMode::Strict | TopicRecallMode::ColdStart
+            )
             && !query.in_network_only
             && !query.has_cached_posts
     }
@@ -107,5 +109,19 @@ mod tests {
             candidates[0].served_type,
             Some(pb::ServedType::ForYouPhoenixRetrievalMoe)
         );
+    }
+
+    #[test]
+    fn new_user_topics_disable_moe_retrieval() {
+        let source = PhoenixMoeSource {
+            phoenix_retrieval_client: Arc::new(FakeRetrievalClient),
+        };
+        let query = ScoredPostsQuery {
+            enable_phoenix_moe: true,
+            new_user_topic_ids: vec![10],
+            ..Default::default()
+        };
+
+        assert!(!source.enable(&query));
     }
 }

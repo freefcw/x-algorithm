@@ -28,4 +28,7 @@ pub mod recsys_compat;
 pub mod uas_compat;
 pub mod visibility;
 
+pub use candidate_pipeline::phoenix_candidate_pipeline::{
+    PhoenixCandidatePipeline, TopicPersonalizationClients,
+};
 pub use server::HomeMixerServer;

@@ -27,3 +27,4 @@ pub mod thunder_client;
 pub mod topic_retrieval_client;
 pub mod tweet_entity_service_client;
 pub mod uas_fetcher;
+pub mod user_topic_reader;

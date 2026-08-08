@@ -19,7 +19,11 @@ pub struct ScoredPostsServer {
 
 impl ScoredPostsServer {
     pub async fn new() -> Self {
-        let pipeline = Arc::new(PhoenixCandidatePipeline::prod().await);
+        Self::with_pipeline(PhoenixCandidatePipeline::prod().await)
+    }
+
+    pub fn with_pipeline(pipeline: PhoenixCandidatePipeline) -> Self {
+        let pipeline = Arc::new(pipeline);
         for stage in pipeline.components() {
             info!(
                 "Scored Posts components - stage={:?} components=[{}]",

@@ -1,5 +1,5 @@
 use crate::candidate_pipeline::candidate::PostCandidate;
-use crate::candidate_pipeline::query::ScoredPostsQuery;
+use crate::candidate_pipeline::query::{ScoredPostsQuery, TopicRecallMode};
 use crate::clients::phoenix_retrieval_client::PhoenixRetrievalClient;
 use crate::params as p;
 use std::sync::Arc;
@@ -16,8 +16,10 @@ impl Source<ScoredPostsQuery, PostCandidate> for PhoenixSource {
     fn enable(&self, query: &ScoredPostsQuery) -> bool {
         !query.in_network_only
             && !query.has_cached_posts
-            && query.topic_ids.is_empty()
-            && query.new_user_topic_ids.is_empty()
+            && !matches!(
+                query.topic_recall_mode(),
+                TopicRecallMode::Strict | TopicRecallMode::ColdStart
+            )
     }
 
     async fn get_candidates(&self, query: &ScoredPostsQuery) -> Result<Vec<PostCandidate>, String> {
@@ -50,5 +52,61 @@ impl Source<ScoredPostsQuery, PostCandidate> for PhoenixSource {
             .collect();
 
         Ok(candidates)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use x_algorithm_proto::recsys;
+
+    struct UnusedRetrievalClient;
+
+    #[async_trait]
+    impl PhoenixRetrievalClient for UnusedRetrievalClient {
+        async fn retrieve(
+            &self,
+            _user_id: u64,
+            _sequence: recsys::UserActionSequence,
+            _max_results: u32,
+        ) -> Result<recsys::RetrieveResponse, anyhow::Error> {
+            unreachable!("enablement tests do not retrieve candidates")
+        }
+    }
+
+    fn source() -> PhoenixSource {
+        PhoenixSource {
+            phoenix_retrieval_client: Arc::new(UnusedRetrievalClient),
+        }
+    }
+
+    #[test]
+    fn supplemental_topics_keep_standard_retrieval_enabled() {
+        let query = ScoredPostsQuery {
+            supplemental_topic_ids: vec![10],
+            ..Default::default()
+        };
+
+        assert!(source().enable(&query));
+    }
+
+    #[test]
+    fn new_user_topics_disable_standard_retrieval() {
+        let query = ScoredPostsQuery {
+            new_user_topic_ids: vec![10],
+            ..Default::default()
+        };
+
+        assert!(!source().enable(&query));
+    }
+
+    #[test]
+    fn requested_topic_page_disables_standard_retrieval() {
+        let query = ScoredPostsQuery {
+            topic_ids: vec![10],
+            ..Default::default()
+        };
+
+        assert!(!source().enable(&query));
     }
 }

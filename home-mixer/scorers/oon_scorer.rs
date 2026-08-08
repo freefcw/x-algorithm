@@ -1,5 +1,5 @@
 use crate::candidate_pipeline::candidate::PostCandidate;
-use crate::candidate_pipeline::query::ScoredPostsQuery;
+use crate::candidate_pipeline::query::{ScoredPostsQuery, TopicRecallMode};
 use crate::params as p;
 use tonic::async_trait;
 use xai_candidate_pipeline::scorer::Scorer;
@@ -14,10 +14,10 @@ impl Scorer<ScoredPostsQuery, PostCandidate> for OONScorer {
         query: &ScoredPostsQuery,
         candidates: &[PostCandidate],
     ) -> Result<Vec<PostCandidate>, String> {
-        let oon_weight = if query.topic_ids.is_empty() && query.new_user_topic_ids.is_empty() {
-            p::OON_WEIGHT_FACTOR
-        } else {
+        let oon_weight = if query.topic_recall_mode() == TopicRecallMode::Strict {
             p::TOPIC_OON_WEIGHT_FACTOR
+        } else {
+            p::OON_WEIGHT_FACTOR
         };
         let scored = candidates
             .iter()
@@ -72,5 +72,25 @@ mod tests {
 
         assert_eq!(score(ScoredPostsQuery::default()), 1.0);
         assert_eq!(score(topic_query), 2.0);
+    }
+
+    #[test]
+    fn supplemental_topics_keep_generic_oon_penalty() {
+        let query = ScoredPostsQuery {
+            supplemental_topic_ids: vec![10],
+            ..Default::default()
+        };
+
+        assert_eq!(score(query), 1.0);
+    }
+
+    #[test]
+    fn new_user_topics_keep_generic_oon_penalty_without_eligibility_data() {
+        let query = ScoredPostsQuery {
+            new_user_topic_ids: vec![10],
+            ..Default::default()
+        };
+
+        assert_eq!(score(query), 1.0);
     }
 }
