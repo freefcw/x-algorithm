@@ -2,7 +2,7 @@
 
 > Status: current-code / design rule
 > Upstream common base: `aaa167b3de8a674587c53545a43c90eaad360010`
-> Current upstream anchor: `e414c171ed68266341193330bc4864bf3f3534e3`
+> Current upstream anchor: `0bfc2795d308f90032544322747caacd535f75ae` (equals `e414c17` plus the published-artifact LFS replacement; both are absorbed, see PHX-11)
 
 ## Objective
 
@@ -60,7 +60,7 @@ For each later upstream snapshot, compare upstream changes before comparing fina
 
 ```bash
 # What upstream changed after the currently anchored snapshot.
-git diff --find-renames e414c171ed68266341193330bc4864bf3f3534e3..<new-upstream> -- <module>
+git diff --find-renames 0bfc2795d308f90032544322747caacd535f75ae..<new-upstream> -- <module>
 
 # How the local implementation intentionally differs from the new anchor.
 git diff --find-renames <new-upstream> -- <module>

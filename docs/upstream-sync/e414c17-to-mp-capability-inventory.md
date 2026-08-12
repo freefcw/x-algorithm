@@ -4,6 +4,7 @@
 > 上游共同基线：`aaa167b3de8a674587c53545a43c90eaad360010`
 > 上游功能提交：`e414c171ed68266341193330bc4864bf3f3534e3`
 > 上游模型产物提交：`0bfc2795d308f90032544322747caacd535f75ae`
+> 当前同步锚点：`0bfc279`（功能与模型产物均已吸收；工作树 LFS 指针即 `0bfc279` 版本，见 PHX-11）
 > 本地目标分支：`mp`（`3e492095613b2a008de5d9f8295d5b6e0c07c777`）
 > 后续同步规则：[`upstream-first-maintenance.md`](./upstream-first-maintenance.md)
 > 入口执行顺序：[`entrypoint-migration-map.md`](./entrypoint-migration-map.md)
