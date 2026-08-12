@@ -17,9 +17,10 @@
 // 连接方式：
 //   - 设置环境变量 PHOENIX_RETRIEVAL_GRPC_ADDR（如 http://localhost:50053）
 //     时，走真实 gRPC 调用 PhoenixRetrievalService.Retrieve；
-//   - 未设置时退化为 stub，返回空候选列表（Feed 中只有网内帖子）。
+//   - 未设置时返回显式不可用错误，由 Source 隔离并保留其他召回路。
 
 use log::{info, warn};
+use std::time::Duration;
 use tonic::async_trait;
 use tonic::transport::Channel;
 use x_algorithm_proto::recsys;
@@ -48,10 +49,27 @@ pub trait PhoenixRetrievalClient: Send + Sync {
     ) -> Result<recsys::RetrieveResponse, anyhow::Error>;
 }
 
+pub async fn retrieve_with_timeout(
+    client: &(dyn PhoenixRetrievalClient + Send + Sync),
+    user_id: u64,
+    sequence: recsys::UserActionSequence,
+    max_results: u32,
+    timeout: Duration,
+) -> Result<recsys::RetrieveResponse, anyhow::Error> {
+    tokio::time::timeout(timeout, client.retrieve(user_id, sequence, max_results))
+        .await
+        .map_err(|_| {
+            anyhow::anyhow!(
+                "Phoenix retrieval timed out after {}ms",
+                timeout.as_millis()
+            )
+        })?
+}
+
 /// 生产环境 Phoenix 召回客户端
 ///
 /// 设置 `PHOENIX_RETRIEVAL_GRPC_ADDR` 后调用真实的 Phoenix Retrieval gRPC 服务；
-/// 未设置时退化为 stub（返回空候选，Feed 中只有 Thunder 网内帖子）。
+/// 未设置时返回显式不可用错误，由 Source 记录并跳过该召回路。
 pub struct ProdPhoenixRetrievalClient {
     channel: Option<Channel>,
 }
@@ -69,8 +87,7 @@ impl ProdPhoenixRetrievalClient {
             Ok(addr) => return Self::from_addr(addr),
             Err(_) => {
                 warn!(
-                    "PhoenixRetrievalClient: PHOENIX_RETRIEVAL_GRPC_ADDR not set, \
-                     using stub (no out-of-network candidates)"
+                    "PhoenixRetrievalClient: PHOENIX_RETRIEVAL_GRPC_ADDR not set; retrieval is unavailable"
                 );
                 None
             }
@@ -88,9 +105,7 @@ impl PhoenixRetrievalClient for ProdPhoenixRetrievalClient {
         max_results: u32,
     ) -> Result<recsys::RetrieveResponse, anyhow::Error> {
         let Some(channel) = &self.channel else {
-            return Ok(recsys::RetrieveResponse {
-                top_k_candidates: vec![],
-            });
+            anyhow::bail!("PHOENIX_RETRIEVAL_GRPC_ADDR is not configured");
         };
 
         let mut client = PhoenixRetrievalServiceClient::new(channel.clone());
@@ -101,5 +116,50 @@ impl PhoenixRetrievalClient for ProdPhoenixRetrievalClient {
         };
         let response = client.retrieve(request).await?;
         Ok(response.into_inner())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    struct SlowRetrievalClient;
+
+    #[async_trait]
+    impl PhoenixRetrievalClient for SlowRetrievalClient {
+        async fn retrieve(
+            &self,
+            _user_id: u64,
+            _sequence: recsys::UserActionSequence,
+            _max_results: u32,
+        ) -> Result<recsys::RetrieveResponse, anyhow::Error> {
+            tokio::time::sleep(Duration::from_millis(20)).await;
+            Ok(Default::default())
+        }
+    }
+
+    #[tokio::test]
+    async fn missing_retrieval_endpoint_is_explicitly_unavailable() {
+        let error = ProdPhoenixRetrievalClient { channel: None }
+            .retrieve(1, Default::default(), 10)
+            .await
+            .expect_err("missing endpoint must not report successful retrieval");
+
+        assert!(error.to_string().contains("not configured"));
+    }
+
+    #[tokio::test]
+    async fn retrieval_deadline_bounds_slow_adapter() {
+        let error = retrieve_with_timeout(
+            &SlowRetrievalClient,
+            1,
+            Default::default(),
+            10,
+            Duration::from_millis(1),
+        )
+        .await
+        .expect_err("slow retrieval must time out");
+
+        assert!(error.to_string().contains("timed out"));
     }
 }

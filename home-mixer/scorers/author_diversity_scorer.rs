@@ -1,5 +1,5 @@
-use crate::candidate_pipeline::candidate::PostCandidate;
-use crate::candidate_pipeline::query::ScoredPostsQuery;
+use crate::models::candidate::PostCandidate;
+use crate::models::query::ScoredPostsQuery;
 use crate::params as p;
 use std::cmp::Ordering;
 use std::collections::HashMap;
@@ -37,9 +37,9 @@ impl Scorer<ScoredPostsQuery, PostCandidate> for AuthorDiversityScorer {
         &self,
         _query: &ScoredPostsQuery,
         candidates: &[PostCandidate],
-    ) -> Result<Vec<PostCandidate>, String> {
+    ) -> Vec<Result<PostCandidate, String>> {
         let mut author_counts: HashMap<u64, usize> = HashMap::new();
-        let mut scored = vec![PostCandidate::default(); candidates.len()];
+        let mut scored = vec![Ok(PostCandidate::default()); candidates.len()];
 
         let mut ordered: Vec<(usize, &PostCandidate)> = candidates.iter().enumerate().collect();
         ordered.sort_by(|(_, a), (_, b)| {
@@ -60,10 +60,10 @@ impl Scorer<ScoredPostsQuery, PostCandidate> for AuthorDiversityScorer {
                 score: adjusted_score,
                 ..Default::default()
             };
-            scored[original_idx] = updated;
+            scored[original_idx] = Ok(updated);
         }
 
-        Ok(scored)
+        scored
     }
 
     fn update(&self, candidate: &mut PostCandidate, scored: PostCandidate) {

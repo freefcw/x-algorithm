@@ -1,35 +1,32 @@
-use crate::candidate_pipeline::query::ScoredPostsQuery;
 use std::collections::{HashMap, VecDeque};
-use std::sync::{Arc, Mutex};
-use tonic::async_trait;
-use xai_candidate_pipeline::query_hydrator::QueryHydrator;
+use std::sync::Mutex;
 
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct FeedStateSnapshot {
-    pub served_post_ids: Vec<i64>,
+    pub served_post_ids: Vec<u64>,
     pub request_timestamps_ms: Vec<i64>,
 }
 
 pub trait FeedStateStore: Send + Sync {
-    fn load(&self, user_id: i64) -> Result<FeedStateSnapshot, String>;
+    fn load(&self, user_id: u64) -> Result<FeedStateSnapshot, String>;
     fn record(
         &self,
-        user_id: i64,
-        served_post_ids: Vec<i64>,
+        user_id: u64,
+        served_post_ids: Vec<u64>,
         request_timestamp_ms: i64,
     ) -> Result<(), String>;
 }
 
 #[derive(Default)]
 struct UserFeedState {
-    served_post_ids: VecDeque<i64>,
+    served_post_ids: VecDeque<u64>,
     request_timestamps_ms: VecDeque<i64>,
 }
 
 #[derive(Default)]
 struct FeedStateCache {
-    users: HashMap<i64, UserFeedState>,
-    least_to_most_recent: VecDeque<i64>,
+    users: HashMap<u64, UserFeedState>,
+    least_to_most_recent: VecDeque<u64>,
 }
 
 pub struct InMemoryFeedStateStore {
@@ -63,7 +60,7 @@ impl InMemoryFeedStateStore {
 }
 
 impl FeedStateStore for InMemoryFeedStateStore {
-    fn load(&self, user_id: i64) -> Result<FeedStateSnapshot, String> {
+    fn load(&self, user_id: u64) -> Result<FeedStateSnapshot, String> {
         let mut cache = self
             .cache
             .lock()
@@ -80,8 +77,8 @@ impl FeedStateStore for InMemoryFeedStateStore {
 
     fn record(
         &self,
-        user_id: i64,
-        served_post_ids: Vec<i64>,
+        user_id: u64,
+        served_post_ids: Vec<u64>,
         request_timestamp_ms: i64,
     ) -> Result<(), String> {
         if self.max_users == 0 {
@@ -113,7 +110,7 @@ impl FeedStateStore for InMemoryFeedStateStore {
     }
 }
 
-fn touch_user(users: &mut VecDeque<i64>, user_id: i64) {
+fn touch_user(users: &mut VecDeque<u64>, user_id: u64) {
     users.retain(|existing| *existing != user_id);
     users.push_back(user_id);
 }
@@ -129,42 +126,5 @@ fn evict_oldest_user(cache: &mut FeedStateCache) {
 fn truncate_front<T>(values: &mut VecDeque<T>, limit: usize) {
     while values.len() > limit {
         values.pop_front();
-    }
-}
-
-pub struct LocalFeedStateQueryHydrator {
-    store: Arc<dyn FeedStateStore>,
-}
-
-impl LocalFeedStateQueryHydrator {
-    pub fn new(store: Arc<dyn FeedStateStore>) -> Self {
-        Self { store }
-    }
-}
-
-#[async_trait]
-impl QueryHydrator<ScoredPostsQuery> for LocalFeedStateQueryHydrator {
-    async fn hydrate(&self, query: &ScoredPostsQuery) -> Result<ScoredPostsQuery, String> {
-        let snapshot = self.store.load(query.user_id)?;
-        let mut hydrated = query.clone();
-        append_unique(&mut hydrated.served_ids, snapshot.served_post_ids);
-        append_unique(
-            &mut hydrated.past_request_timestamps_ms,
-            snapshot.request_timestamps_ms,
-        );
-        Ok(hydrated)
-    }
-
-    fn update(&self, query: &mut ScoredPostsQuery, hydrated: ScoredPostsQuery) {
-        query.served_ids = hydrated.served_ids;
-        query.past_request_timestamps_ms = hydrated.past_request_timestamps_ms;
-    }
-}
-
-fn append_unique<T: PartialEq>(target: &mut Vec<T>, values: Vec<T>) {
-    for value in values {
-        if !target.contains(&value) {
-            target.push(value);
-        }
     }
 }

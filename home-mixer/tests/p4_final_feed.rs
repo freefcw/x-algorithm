@@ -167,7 +167,7 @@ async fn disabled_advertisement_source_never_emits_candidates() {
     let source = AdvertisementSource::disabled();
 
     let candidates = source
-        .get_candidates(&ScoredPostsQuery::default())
+        .source(&ScoredPostsQuery::default())
         .await
         .expect("disabled source");
 
@@ -694,7 +694,7 @@ struct StaticPromptSource;
 
 #[async_trait]
 impl Source<ScoredPostsQuery, FeedItem> for StaticPromptSource {
-    async fn get_candidates(&self, _query: &ScoredPostsQuery) -> Result<Vec<FeedItem>, String> {
+    async fn source(&self, _query: &ScoredPostsQuery) -> Result<Vec<FeedItem>, String> {
         Ok(vec![FeedItem::prompt("local-prompt")])
     }
 }
@@ -727,7 +727,7 @@ async fn supplemental_sources_are_injected_without_changing_the_scored_posts_por
 }
 
 struct ServedAwareScoredPostsProvider {
-    seen_served_ids: Mutex<Vec<Vec<i64>>>,
+    seen_served_ids: Mutex<Vec<Vec<u64>>>,
 }
 
 #[async_trait]
@@ -739,7 +739,7 @@ impl ScoredPostsProvider for ServedAwareScoredPostsProvider {
             .push(query.served_ids.clone());
         let posts = [30_u64, 20_u64]
             .into_iter()
-            .filter(|id| !query.served_ids.contains(&(*id as i64)))
+            .filter(|id| !query.served_ids.contains(id))
             .map(|tweet_id| ScoredPost {
                 tweet_id,
                 score: tweet_id as f32,
@@ -865,7 +865,7 @@ async fn local_state_hydrates_the_next_request_and_records_feed_stats() {
             .lock()
             .expect("served request log")
             .as_slice(),
-        [Vec::<i64>::new(), vec![30, 20]]
+        [Vec::<u64>::new(), vec![30, 20]]
     );
     let records = stats.records();
     assert_eq!(records[0].request_id, "state-1");

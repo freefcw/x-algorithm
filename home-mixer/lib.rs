@@ -6,18 +6,25 @@
 //   3. 对候选帖子进行过滤、打分聚合
 //   4. 返回最终排序后的 Feed 流
 
+pub mod ads;
 mod candidate_hydrators;
-mod candidate_pipeline;
+pub mod candidate_pipeline;
 pub mod clients;
+mod debug_access;
 pub mod demo;
+pub mod feature_policy;
 mod filters;
 pub mod final_feed;
+pub mod for_you_server;
+pub mod models;
 pub mod params;
+pub mod query_builder;
 mod query_hydrators;
+pub mod runtime_config;
 pub mod scored_posts_server;
 pub mod scorers;
 mod selectors;
-mod server;
+pub mod server;
 mod side_effects;
 mod sources;
 pub mod util;
@@ -31,4 +38,5 @@ pub mod visibility;
 pub use candidate_pipeline::phoenix_candidate_pipeline::{
     PhoenixCandidatePipeline, TopicPersonalizationClients,
 };
-pub use server::HomeMixerServer;
+pub use feature_policy::HomeMixerFeatures;
+pub use server::{HomeMixerConfig, HomeMixerServer};

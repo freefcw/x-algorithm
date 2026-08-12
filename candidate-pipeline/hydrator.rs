@@ -1,13 +1,16 @@
+use crate::candidate_pipeline::{PipelineCandidate, PipelineQuery};
 use crate::util;
+use log::warn;
 use std::any::{type_name_of_val, Any};
+use std::hash::Hash;
 use tonic::async_trait;
 
 // Hydrators run in parallel and update candidate fields
 #[async_trait]
 pub trait Hydrator<Q, C>: Any + Send + Sync
 where
-    Q: Clone + Send + Sync + 'static,
-    C: Clone + Send + Sync + 'static,
+    Q: PipelineQuery,
+    C: PipelineCandidate,
 {
     /// Decide if this hydrator should run for the given query
     fn enable(&self, _query: &Q) -> bool {
@@ -15,21 +18,38 @@ where
     }
 
     /// Hydrate candidates by performing async operations.
-    /// Returns candidates with this hydrator's fields populated.
+    /// Returns one result per input candidate in the same order.
     ///
-    /// IMPORTANT: The returned vector must have the same candidates in the same order as the input.
     /// Dropping candidates in a hydrator is not allowed - use a filter stage instead.
-    async fn hydrate(&self, query: &Q, candidates: &[C]) -> Result<Vec<C>, String>;
+    async fn hydrate(&self, query: &Q, candidates: &[C]) -> Vec<Result<C, String>>;
+
+    /// Validate the cardinality contract before the pipeline applies updates.
+    async fn run(&self, query: &Q, candidates: &[C]) -> Vec<Result<C, String>> {
+        let hydrated = self.hydrate(query, candidates).await;
+        let expected_len = candidates.len();
+        if hydrated.len() == expected_len {
+            hydrated
+        } else {
+            let message = format!(
+                "Hydrator length_mismatch expected={} got={}",
+                expected_len,
+                hydrated.len()
+            );
+            warn!("{}", message);
+            vec![Err(message); expected_len]
+        }
+    }
 
     /// Update a single candidate with the hydrated fields.
     /// Only the fields this hydrator is responsible for should be copied.
     fn update(&self, candidate: &mut C, hydrated: C);
 
-    /// Update all candidates with the hydrated fields from `hydrated`.
-    /// Default implementation iterates and calls `update` for each pair.
-    fn update_all(&self, candidates: &mut [C], hydrated: Vec<C>) {
-        for (c, h) in candidates.iter_mut().zip(hydrated) {
-            self.update(c, h);
+    /// Update only candidates that hydrated successfully.
+    fn update_all(&self, candidates: &mut [C], hydrated: Vec<Result<C, String>>) {
+        for (candidate, hydrated) in candidates.iter_mut().zip(hydrated) {
+            if let Ok(hydrated) = hydrated {
+                self.update(candidate, hydrated);
+            }
         }
     }
 
@@ -47,10 +67,10 @@ pub trait CacheStore<K, V>: Send + Sync {
 #[async_trait]
 pub trait CachedHydrator<Q, C>: Any + Send + Sync
 where
-    Q: Clone + Send + Sync + 'static,
-    C: Clone + Send + Sync + 'static,
+    Q: PipelineQuery,
+    C: PipelineCandidate,
 {
-    type CacheKey: Clone + Send + Sync + 'static;
+    type CacheKey: Eq + Hash + Send + Sync + 'static;
     type CacheValue: Clone + Send + Sync + 'static;
 
     fn enable(&self, _query: &Q) -> bool {
@@ -61,23 +81,27 @@ where
     fn cache_key(&self, candidate: &C) -> Self::CacheKey;
     fn cache_value(&self, hydrated: &C) -> Self::CacheValue;
     fn hydrate_from_cache(&self, value: Self::CacheValue) -> C;
-    async fn hydrate_from_client(&self, query: &Q, candidates: &[C]) -> Result<Vec<C>, String>;
+    async fn hydrate_from_client(&self, query: &Q, candidates: &[C]) -> Vec<Result<C, String>>;
     fn update(&self, candidate: &mut C, hydrated: C);
+
+    fn name(&self) -> &'static str {
+        util::short_type_name(type_name_of_val(self))
+    }
 }
 
 #[async_trait]
 impl<Q, C, T> Hydrator<Q, C> for T
 where
-    Q: Clone + Send + Sync + 'static,
-    C: Clone + Send + Sync + 'static,
-    T: CachedHydrator<Q, C>,
+    Q: PipelineQuery,
+    C: PipelineCandidate,
+    T: CachedHydrator<Q, C> + ?Sized,
 {
     fn enable(&self, query: &Q) -> bool {
         CachedHydrator::enable(self, query)
     }
 
-    async fn hydrate(&self, query: &Q, candidates: &[C]) -> Result<Vec<C>, String> {
-        let mut hydrated: Vec<Option<C>> = vec![None; candidates.len()];
+    async fn hydrate(&self, query: &Q, candidates: &[C]) -> Vec<Result<C, String>> {
+        let mut hydrated: Vec<Option<Result<C, String>>> = vec![None; candidates.len()];
         let mut missing_indices = Vec::new();
         let mut missing_keys = Vec::new();
         let mut missing_candidates = Vec::new();
@@ -85,7 +109,7 @@ where
         for (index, candidate) in candidates.iter().enumerate() {
             let key = self.cache_key(candidate);
             if let Some(value) = self.cache_store().get(&key).await {
-                hydrated[index] = Some(self.hydrate_from_cache(value));
+                hydrated[index] = Some(Ok(self.hydrate_from_cache(value)));
             } else {
                 missing_indices.push(index);
                 missing_keys.push(key);
@@ -94,13 +118,14 @@ where
         }
 
         if !missing_candidates.is_empty() {
-            let client_values = self.hydrate_from_client(query, &missing_candidates).await?;
+            let client_values = self.hydrate_from_client(query, &missing_candidates).await;
             if client_values.len() != missing_candidates.len() {
-                return Err(format!(
-                    "cached hydrator returned {} values for {} misses",
-                    client_values.len(),
-                    missing_candidates.len()
-                ));
+                let message = format!(
+                    "CachedHydrator length_mismatch expected={} got={}",
+                    missing_candidates.len(),
+                    client_values.len()
+                );
+                return vec![Err(message); candidates.len()];
             }
 
             for ((index, key), value) in missing_indices
@@ -108,18 +133,19 @@ where
                 .zip(missing_keys)
                 .zip(client_values)
             {
-                self.cache_store()
-                    .insert(key, self.cache_value(&value))
-                    .await;
+                if let Ok(ref hydrated_candidate) = value {
+                    self.cache_store()
+                        .insert(key, self.cache_value(hydrated_candidate))
+                        .await;
+                }
                 hydrated[index] = Some(value);
             }
         }
 
         hydrated
             .into_iter()
-            .enumerate()
-            .map(|(index, value)| {
-                value.ok_or_else(|| format!("missing hydrated value at index {index}"))
+            .map(|value| {
+                value.unwrap_or_else(|| Err("Missing hydration result for candidate".to_string()))
             })
             .collect()
     }
@@ -132,6 +158,7 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::candidate_pipeline::HasRequestId;
     use std::collections::HashMap;
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::{Arc, Mutex};
@@ -152,13 +179,22 @@ mod tests {
         }
     }
 
+    #[derive(Clone)]
+    struct TestQuery;
+
+    impl HasRequestId for TestQuery {
+        fn request_id(&self) -> &str {
+            "test-request"
+        }
+    }
+
     struct TestCachedHydrator {
         cache: Arc<MemoryStore>,
         client_calls: Arc<AtomicUsize>,
     }
 
     #[async_trait]
-    impl CachedHydrator<(), i32> for TestCachedHydrator {
+    impl CachedHydrator<TestQuery, i32> for TestCachedHydrator {
         type CacheKey = i32;
         type CacheValue = i32;
 
@@ -180,11 +216,14 @@ mod tests {
 
         async fn hydrate_from_client(
             &self,
-            _query: &(),
+            _query: &TestQuery,
             candidates: &[i32],
-        ) -> Result<Vec<i32>, String> {
+        ) -> Vec<Result<i32, String>> {
             self.client_calls.fetch_add(1, Ordering::SeqCst);
-            Ok(candidates.iter().map(|candidate| candidate * 10).collect())
+            candidates
+                .iter()
+                .map(|candidate| Ok(candidate * 10))
+                .collect()
         }
 
         fn update(&self, candidate: &mut i32, hydrated: i32) {
@@ -205,14 +244,132 @@ mod tests {
         };
 
         let first = runtime
-            .block_on(hydrator.hydrate(&(), &[1, 2, 3]))
+            .block_on(hydrator.hydrate(&TestQuery, &[1, 2, 3]))
+            .into_iter()
+            .collect::<Result<Vec<_>, _>>()
             .expect("first hydration");
         let second = runtime
-            .block_on(hydrator.hydrate(&(), &[3, 2, 1]))
+            .block_on(hydrator.hydrate(&TestQuery, &[3, 2, 1]))
+            .into_iter()
+            .collect::<Result<Vec<_>, _>>()
             .expect("cached hydration");
 
         assert_eq!(first, vec![10, 20, 30]);
         assert_eq!(second, vec![30, 20, 10]);
         assert_eq!(client_calls.load(Ordering::SeqCst), 1);
+    }
+
+    struct ShortHydrator;
+
+    #[async_trait]
+    impl Hydrator<TestQuery, i32> for ShortHydrator {
+        async fn hydrate(
+            &self,
+            _query: &TestQuery,
+            _candidates: &[i32],
+        ) -> Vec<Result<i32, String>> {
+            vec![Ok(10)]
+        }
+
+        fn update(&self, candidate: &mut i32, hydrated: i32) {
+            *candidate = hydrated;
+        }
+    }
+
+    #[test]
+    fn partial_failure_updates_only_successful_candidates() {
+        let hydrator = ShortHydrator;
+        let mut candidates = vec![1, 2, 3];
+
+        hydrator.update_all(
+            &mut candidates,
+            vec![Ok(10), Err("candidate unavailable".to_string()), Ok(30)],
+        );
+
+        assert_eq!(candidates, vec![10, 2, 30]);
+    }
+
+    #[test]
+    fn length_mismatch_becomes_one_error_per_input_candidate() {
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .build()
+            .expect("test runtime");
+        let results = runtime.block_on(ShortHydrator.run(&TestQuery, &[1, 2, 3]));
+
+        assert_eq!(results.len(), 3);
+        assert!(results.iter().all(Result::is_err));
+    }
+
+    struct PartiallyFailingCachedHydrator {
+        cache: Arc<MemoryStore>,
+        client_calls: Arc<AtomicUsize>,
+    }
+
+    #[async_trait]
+    impl CachedHydrator<TestQuery, i32> for PartiallyFailingCachedHydrator {
+        type CacheKey = i32;
+        type CacheValue = i32;
+
+        fn cache_store(&self) -> &dyn CacheStore<Self::CacheKey, Self::CacheValue> {
+            self.cache.as_ref()
+        }
+
+        fn cache_key(&self, candidate: &i32) -> Self::CacheKey {
+            *candidate
+        }
+
+        fn cache_value(&self, hydrated: &i32) -> Self::CacheValue {
+            *hydrated
+        }
+
+        fn hydrate_from_cache(&self, value: Self::CacheValue) -> i32 {
+            value
+        }
+
+        async fn hydrate_from_client(
+            &self,
+            _query: &TestQuery,
+            candidates: &[i32],
+        ) -> Vec<Result<i32, String>> {
+            self.client_calls.fetch_add(1, Ordering::SeqCst);
+            candidates
+                .iter()
+                .map(|candidate| {
+                    if *candidate == 2 {
+                        Err("candidate unavailable".to_string())
+                    } else {
+                        Ok(candidate * 10)
+                    }
+                })
+                .collect()
+        }
+
+        fn update(&self, candidate: &mut i32, hydrated: i32) {
+            *candidate = hydrated;
+        }
+    }
+
+    #[test]
+    fn cached_hydrator_caches_only_successful_results() {
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .build()
+            .expect("test runtime");
+        let cache = Arc::new(MemoryStore::default());
+        let client_calls = Arc::new(AtomicUsize::new(0));
+        let hydrator = PartiallyFailingCachedHydrator {
+            cache: Arc::clone(&cache),
+            client_calls: Arc::clone(&client_calls),
+        };
+
+        let first = runtime.block_on(hydrator.hydrate(&TestQuery, &[1, 2]));
+        let second = runtime.block_on(hydrator.hydrate(&TestQuery, &[1, 2]));
+
+        assert_eq!(first[0].as_ref(), Ok(&10));
+        assert!(first[1].is_err());
+        assert_eq!(second[0].as_ref(), Ok(&10));
+        assert!(second[1].is_err());
+        assert_eq!(client_calls.load(Ordering::SeqCst), 2);
+        assert_eq!(runtime.block_on(cache.get(&1)), Some(10));
+        assert_eq!(runtime.block_on(cache.get(&2)), None);
     }
 }

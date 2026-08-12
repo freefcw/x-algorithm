@@ -25,13 +25,13 @@ const TWITTER_EPOCH_MS: u64 = 1288834974657;
 /// # Returns
 /// Some(duration) 如果能成功解析创建时间
 /// None 如果 ID 无效或时间戳解析失败
-pub fn duration_since_creation_opt(tweet_id: i64) -> Option<Duration> {
-    if tweet_id <= 0 {
+pub fn duration_since_creation_opt(tweet_id: u64) -> Option<Duration> {
+    if tweet_id == 0 {
         return None;
     }
 
     // 提取高 41 位中的毫秒时间戳
-    let timestamp_ms = ((tweet_id as u64) >> 22) + TWITTER_EPOCH_MS;
+    let timestamp_ms = (tweet_id >> 22) + TWITTER_EPOCH_MS;
 
     let creation_time = UNIX_EPOCH + Duration::from_millis(timestamp_ms);
     SystemTime::now().duration_since(creation_time).ok()
@@ -44,7 +44,6 @@ mod tests {
     #[test]
     fn test_invalid_id() {
         assert!(duration_since_creation_opt(0).is_none());
-        assert!(duration_since_creation_opt(-1).is_none());
     }
 
     #[test]

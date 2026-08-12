@@ -16,7 +16,7 @@
 // 替换建议：对接你平台的帖子/内容微服务 API
 // 当前为 stub 实现。
 
-use crate::candidate_pipeline::candidate_features::{MediaEntities, PureCoreData};
+use crate::models::candidate_features::{MediaEntities, PureCoreData};
 use std::collections::HashMap;
 use tonic::async_trait;
 
@@ -38,8 +38,8 @@ pub trait TESClient: Send + Sync {
     /// Map<tweet_id -> Option<PureCoreData>>
     async fn get_tweet_core_datas(
         &self,
-        tweet_ids: Vec<i64>,
-    ) -> Result<HashMap<i64, Option<PureCoreData>>, anyhow::Error>;
+        tweet_ids: Vec<u64>,
+    ) -> Result<HashMap<u64, Option<PureCoreData>>, anyhow::Error>;
 
     /// 批量获取帖子媒体实体
     ///
@@ -53,8 +53,8 @@ pub trait TESClient: Send + Sync {
     /// Map<tweet_id -> Option<MediaEntities>>
     async fn get_tweet_media_entities(
         &self,
-        tweet_ids: Vec<i64>,
-    ) -> Result<HashMap<i64, Option<MediaEntities>>, anyhow::Error>;
+        tweet_ids: Vec<u64>,
+    ) -> Result<HashMap<u64, Option<MediaEntities>>, anyhow::Error>;
 
     /// 批量获取帖子的付费订阅作者 ID
     ///
@@ -68,50 +68,49 @@ pub trait TESClient: Send + Sync {
     /// Map<tweet_id -> Option<u64>>
     async fn get_subscription_author_ids(
         &self,
-        tweet_ids: Vec<i64>,
-    ) -> Result<HashMap<i64, Option<u64>>, anyhow::Error>;
+        tweet_ids: Vec<u64>,
+    ) -> Result<HashMap<u64, Option<u64>>, anyhow::Error>;
 }
 
-/// 生产环境 TES 客户端（Stub 实现）
+/// 禁用的 TES 集成占位实现。
 ///
-/// 返回空的帖子元数据。
-/// TODO: 替换为你平台的帖子微服务客户端
-pub struct ProdTESClient;
+/// 返回空的帖子元数据；生产模式在真实适配器接入前拒绝启动。
+pub struct DisabledTESClient;
 
-impl ProdTESClient {
+impl DisabledTESClient {
     pub async fn new() -> Result<Self, anyhow::Error> {
         Ok(Self)
     }
 }
 
 #[async_trait]
-impl TESClient for ProdTESClient {
+impl TESClient for DisabledTESClient {
     async fn get_tweet_core_datas(
         &self,
-        tweet_ids: Vec<i64>,
-    ) -> Result<HashMap<i64, Option<PureCoreData>>, anyhow::Error> {
+        tweet_ids: Vec<u64>,
+    ) -> Result<HashMap<u64, Option<PureCoreData>>, anyhow::Error> {
         // Stub: 所有帖子无核心数据
-        let results: HashMap<i64, Option<PureCoreData>> =
+        let results: HashMap<u64, Option<PureCoreData>> =
             tweet_ids.into_iter().map(|id| (id, None)).collect();
         Ok(results)
     }
 
     async fn get_tweet_media_entities(
         &self,
-        tweet_ids: Vec<i64>,
-    ) -> Result<HashMap<i64, Option<MediaEntities>>, anyhow::Error> {
+        tweet_ids: Vec<u64>,
+    ) -> Result<HashMap<u64, Option<MediaEntities>>, anyhow::Error> {
         // Stub: 所有帖子无媒体实体
-        let results: HashMap<i64, Option<MediaEntities>> =
+        let results: HashMap<u64, Option<MediaEntities>> =
             tweet_ids.into_iter().map(|id| (id, None)).collect();
         Ok(results)
     }
 
     async fn get_subscription_author_ids(
         &self,
-        tweet_ids: Vec<i64>,
-    ) -> Result<HashMap<i64, Option<u64>>, anyhow::Error> {
+        tweet_ids: Vec<u64>,
+    ) -> Result<HashMap<u64, Option<u64>>, anyhow::Error> {
         // Stub: 所有帖子非订阅内容
-        let results: HashMap<i64, Option<u64>> =
+        let results: HashMap<u64, Option<u64>> =
             tweet_ids.into_iter().map(|id| (id, None)).collect();
         Ok(results)
     }
@@ -121,18 +120,18 @@ impl TESClient for ProdTESClient {
 ///
 /// 为每条帖子编造占位文本，让候选能通过 CoreDataHydrationFilter
 /// （该过滤器要求非空文本，否则候选会被全部清空）。
-/// 由装配层在 HOME_MIXER_DEMO=1 时注入。
+/// 由装配层在 `HOME_MIXER_MODE=demo` 时注入。
 pub struct DemoTESClient;
 
 #[async_trait]
 impl TESClient for DemoTESClient {
     async fn get_tweet_core_datas(
         &self,
-        tweet_ids: Vec<i64>,
-    ) -> Result<HashMap<i64, Option<PureCoreData>>, anyhow::Error> {
+        tweet_ids: Vec<u64>,
+    ) -> Result<HashMap<u64, Option<PureCoreData>>, anyhow::Error> {
         // CoreDataCandidateHydrator 的 update 不会覆盖候选的 author_id，
         // 所以这里 author_id 填 0 即可，候选保留来自召回源的真实作者。
-        let results: HashMap<i64, Option<PureCoreData>> = tweet_ids
+        let results: HashMap<u64, Option<PureCoreData>> = tweet_ids
             .into_iter()
             .map(|id| {
                 (
@@ -157,18 +156,18 @@ impl TESClient for DemoTESClient {
 
     async fn get_tweet_media_entities(
         &self,
-        tweet_ids: Vec<i64>,
-    ) -> Result<HashMap<i64, Option<MediaEntities>>, anyhow::Error> {
-        let results: HashMap<i64, Option<MediaEntities>> =
+        tweet_ids: Vec<u64>,
+    ) -> Result<HashMap<u64, Option<MediaEntities>>, anyhow::Error> {
+        let results: HashMap<u64, Option<MediaEntities>> =
             tweet_ids.into_iter().map(|id| (id, None)).collect();
         Ok(results)
     }
 
     async fn get_subscription_author_ids(
         &self,
-        tweet_ids: Vec<i64>,
-    ) -> Result<HashMap<i64, Option<u64>>, anyhow::Error> {
-        let results: HashMap<i64, Option<u64>> =
+        tweet_ids: Vec<u64>,
+    ) -> Result<HashMap<u64, Option<u64>>, anyhow::Error> {
+        let results: HashMap<u64, Option<u64>> =
             tweet_ids.into_iter().map(|id| (id, None)).collect();
         Ok(results)
     }

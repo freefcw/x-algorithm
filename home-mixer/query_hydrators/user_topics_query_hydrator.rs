@@ -1,7 +1,9 @@
-use crate::candidate_pipeline::query::{ScoredPostsQuery, TopicRecallMode};
 use crate::clients::user_topic_reader::UserTopicReader;
+use crate::models::query::{ScoredPostsQuery, TopicRecallMode};
+use crate::params;
 use std::collections::HashSet;
 use std::sync::Arc;
+use std::time::Duration;
 use tonic::async_trait;
 use xai_candidate_pipeline::query_hydrator::QueryHydrator;
 
@@ -18,11 +20,12 @@ impl QueryHydrator<ScoredPostsQuery> for UserTopicsQueryHydrator {
     }
 
     async fn hydrate(&self, query: &ScoredPostsQuery) -> Result<ScoredPostsQuery, String> {
-        let topic_ids = self
-            .reader
-            .get_supplemental_topic_ids(query.user_id)
-            .await
-            .map_err(|error| format!("failed to read supplemental topics: {error}"))?;
+        let topic_ids = read_topics_with_timeout(
+            self.reader.as_ref(),
+            query.user_id,
+            Duration::from_millis(params::USER_TOPIC_READ_TIMEOUT_MS),
+        )
+        .await?;
         let excluded: HashSet<i64> = query.excluded_topic_ids.iter().copied().collect();
         let supplemental_topic_ids = eligible_topics(topic_ids, &excluded);
 
@@ -41,6 +44,22 @@ impl QueryHydrator<ScoredPostsQuery> for UserTopicsQueryHydrator {
     }
 }
 
+async fn read_topics_with_timeout(
+    reader: &dyn UserTopicReader,
+    user_id: u64,
+    timeout: Duration,
+) -> Result<Vec<i64>, String> {
+    tokio::time::timeout(timeout, reader.get_supplemental_topic_ids(user_id))
+        .await
+        .map_err(|_| {
+            format!(
+                "supplemental topic read timed out after {}ms",
+                timeout.as_millis()
+            )
+        })?
+        .map_err(|error| format!("failed to read supplemental topics: {error}"))
+}
+
 fn eligible_topics(topic_ids: Vec<i64>, excluded: &HashSet<i64>) -> Vec<i64> {
     let mut seen = HashSet::new();
     topic_ids
@@ -52,8 +71,8 @@ fn eligible_topics(topic_ids: Vec<i64>, excluded: &HashSet<i64>) -> Vec<i64> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::candidate_pipeline::query::ScoredPostsQuery;
     use crate::clients::user_topic_reader::UserTopicReader;
+    use crate::models::query::ScoredPostsQuery;
     use std::sync::Arc;
     use tonic::async_trait;
     use xai_candidate_pipeline::query_hydrator::QueryHydrator;
@@ -61,6 +80,7 @@ mod tests {
     enum StubResult {
         Topics(Vec<i64>),
         Failure,
+        Slow,
     }
 
     struct StubUserTopicReader {
@@ -71,11 +91,15 @@ mod tests {
     impl UserTopicReader for StubUserTopicReader {
         async fn get_supplemental_topic_ids(
             &self,
-            _user_id: i64,
+            _user_id: u64,
         ) -> Result<Vec<i64>, anyhow::Error> {
             match &self.result {
                 StubResult::Topics(topic_ids) => Ok(topic_ids.clone()),
                 StubResult::Failure => Err(anyhow::anyhow!("topic profile unavailable")),
+                StubResult::Slow => {
+                    tokio::time::sleep(Duration::from_millis(20)).await;
+                    Ok(vec![10])
+                }
             }
         }
     }
@@ -90,11 +114,25 @@ mod tests {
             }),
         };
         let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_time()
             .build()
             .expect("test runtime");
         let hydrated = runtime.block_on(hydrator.hydrate(&query))?;
         hydrator.update(&mut query, hydrated);
         Ok(query)
+    }
+
+    #[tokio::test]
+    async fn slow_topic_profile_read_is_bounded() {
+        let reader = StubUserTopicReader {
+            result: StubResult::Slow,
+        };
+
+        let error = read_topics_with_timeout(&reader, 42, Duration::from_millis(1))
+            .await
+            .expect_err("slow topic profile must time out");
+
+        assert!(error.contains("timed out"));
     }
 
     #[test]
@@ -148,6 +186,7 @@ mod tests {
             }),
         };
         let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_time()
             .build()
             .expect("test runtime");
 

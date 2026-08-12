@@ -1,7 +1,12 @@
 pub mod core_data_candidate_hydrator;
 pub mod engagement_counts_hydrator;
+pub mod filtered_topics_hydrator;
 pub mod gizmoduck_hydrator;
+pub mod has_media_hydrator;
 pub mod in_network_candidate_hydrator;
+pub mod language_code_hydrator;
+pub mod quote_hydrator;
 pub mod subscription_hydrator;
+pub mod tes_hydration_provider;
 pub mod vf_candidate_hydrator;
 pub mod video_duration_candidate_hydrator;

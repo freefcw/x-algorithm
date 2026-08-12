@@ -1,14 +1,14 @@
 use clap::Parser;
 use log::info;
 use std::net::SocketAddr;
+use std::sync::Arc;
 
 use tonic::service::RoutesBuilder;
 use tonic_reflection::server::Builder;
 
 use x_algorithm_proto::home_mixer as pb;
 
-use home_mixer::params;
-use home_mixer::HomeMixerServer;
+use home_mixer::{HomeMixerConfig, HomeMixerServer};
 
 #[derive(Parser, Debug)]
 #[command(about = "HomeMixer gRPC Server")]
@@ -33,26 +33,16 @@ async fn main() -> anyhow::Result<()> {
         args.grpc_port, args.metrics_port, args.reload_interval_minutes, args.chunk_size,
     );
 
-    // Create the service implementation
-    let service = HomeMixerServer::new().await;
+    // Build the application services through the upstream-shaped assembly entry.
+    let config = HomeMixerConfig::from_env()?;
+    let service = Arc::new(HomeMixerServer::build(config).await?);
     // Build gRPC reflection service
     let reflection_service = Builder::configure()
         .register_encoded_file_descriptor_set(pb::FILE_DESCRIPTOR_SET)
         .build_v1()?;
 
     let mut grpc_routes = RoutesBuilder::default();
-
-    grpc_routes.add_service(
-        pb::scored_posts_service_server::ScoredPostsServiceServer::new(service.clone())
-            .max_decoding_message_size(params::MAX_GRPC_MESSAGE_SIZE)
-            .max_encoding_message_size(params::MAX_GRPC_MESSAGE_SIZE),
-    );
-    grpc_routes.add_service(
-        pb::for_you_feed_service_server::ForYouFeedServiceServer::new(service)
-            .max_decoding_message_size(params::MAX_GRPC_MESSAGE_SIZE)
-            .max_encoding_message_size(params::MAX_GRPC_MESSAGE_SIZE),
-    );
-
+    service.register(&mut grpc_routes);
     grpc_routes.add_service(reflection_service);
 
     // Start gRPC server

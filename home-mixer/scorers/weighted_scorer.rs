@@ -1,5 +1,5 @@
-use crate::candidate_pipeline::candidate::{PhoenixScores, PostCandidate};
-use crate::candidate_pipeline::query::ScoredPostsQuery;
+use crate::models::candidate::{PhoenixScores, PostCandidate};
+use crate::models::query::ScoredPostsQuery;
 use crate::params as p;
 use crate::util::score_normalizer::normalize_score;
 use tonic::async_trait;
@@ -13,21 +13,21 @@ impl Scorer<ScoredPostsQuery, PostCandidate> for WeightedScorer {
         &self,
         _query: &ScoredPostsQuery,
         candidates: &[PostCandidate],
-    ) -> Result<Vec<PostCandidate>, String> {
+    ) -> Vec<Result<PostCandidate, String>> {
         let scored = candidates
             .iter()
             .map(|c| {
                 let weighted_score = Self::compute_weighted_score(c);
                 let normalized_weighted_score = normalize_score(c, weighted_score);
 
-                PostCandidate {
+                Ok(PostCandidate {
                     weighted_score: Some(normalized_weighted_score),
                     ..Default::default()
-                }
+                })
             })
             .collect();
 
-        Ok(scored)
+        scored
     }
 
     fn update(&self, candidate: &mut PostCandidate, scored: PostCandidate) {
@@ -100,8 +100,10 @@ impl WeightedScorer {
     }
 
     /// 把加权分数映射为非负值，保持排序语义：
-    ///   - 负分（负向行为占优）归一化进 [0, NEGATIVE_SCORES_OFFSET)；
-    ///   - 正分整体抬高 NEGATIVE_SCORES_OFFSET，始终高于任何负分。
+    ///
+    /// - 负分（负向行为占优）归一化进 [0, NEGATIVE_SCORES_OFFSET)；
+    /// - 正分整体抬高 NEGATIVE_SCORES_OFFSET，始终高于任何负分。
+    ///
     /// 负分理论下界是 NEGATIVE_WEIGHTS_SUM（所有负向行为概率均为 1），
     /// 以它为分母做线性归一。分数非负也是后续乘法调整
     /// （作者多样性衰减、网外降权）语义成立的前提。

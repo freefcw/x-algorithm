@@ -9,8 +9,8 @@ struct ExternalUserTopicReader;
 
 #[async_trait]
 impl UserTopicReader for ExternalUserTopicReader {
-    async fn get_supplemental_topic_ids(&self, user_id: i64) -> Result<Vec<i64>, anyhow::Error> {
-        Ok(vec![user_id])
+    async fn get_supplemental_topic_ids(&self, user_id: u64) -> Result<Vec<i64>, anyhow::Error> {
+        Ok(vec![i64::try_from(user_id)?])
     }
 }
 
@@ -20,7 +20,7 @@ struct ExternalTopicRetrievalClient;
 impl TopicRetrievalClient for ExternalTopicRetrievalClient {
     async fn retrieve(
         &self,
-        _user_id: i64,
+        _user_id: u64,
         _topic_ids: &[i64],
         _max_results: usize,
     ) -> Result<Vec<TopicPost>, String> {

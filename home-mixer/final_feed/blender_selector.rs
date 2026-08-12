@@ -1,6 +1,6 @@
-use super::ads::{AdBlendResult, AdsBlender, PartitionOrganicAdsBlender, SafeGapAdsBlender};
 use super::feed_item::{FeedItem, FeedItemContent, FeedItemKind};
-use crate::candidate_pipeline::query::ScoredPostsQuery;
+use crate::ads::{AdBlendResult, AdsBlender, PartitionOrganicAdsBlender, SafeGapAdsBlender};
+use crate::models::query::ScoredPostsQuery;
 use xai_candidate_pipeline::selector::{SelectResult, Selector};
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]

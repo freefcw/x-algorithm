@@ -1,5 +1,5 @@
-use crate::candidate_pipeline::candidate::PostCandidate;
-use crate::candidate_pipeline::query::{ScoredPostsQuery, TopicRecallMode};
+use crate::models::candidate::PostCandidate;
+use crate::models::query::{ScoredPostsQuery, TopicRecallMode};
 use crate::params as p;
 use tonic::async_trait;
 use xai_candidate_pipeline::scorer::Scorer;
@@ -13,7 +13,7 @@ impl Scorer<ScoredPostsQuery, PostCandidate> for OONScorer {
         &self,
         query: &ScoredPostsQuery,
         candidates: &[PostCandidate],
-    ) -> Result<Vec<PostCandidate>, String> {
+    ) -> Vec<Result<PostCandidate, String>> {
         let oon_weight = if query.topic_recall_mode() == TopicRecallMode::Strict {
             p::TOPIC_OON_WEIGHT_FACTOR
         } else {
@@ -27,14 +27,14 @@ impl Scorer<ScoredPostsQuery, PostCandidate> for OONScorer {
                     _ => base_score,
                 });
 
-                PostCandidate {
+                Ok(PostCandidate {
                     score: updated_score,
                     ..Default::default()
-                }
+                })
             })
             .collect();
 
-        Ok(scored)
+        scored
     }
 
     fn update(&self, candidate: &mut PostCandidate, scored: PostCandidate) {
@@ -50,17 +50,15 @@ mod tests {
         let runtime = tokio::runtime::Builder::new_current_thread()
             .build()
             .expect("test runtime");
-        let scored = runtime
-            .block_on(OONScorer.score(
-                &query,
-                &[PostCandidate {
-                    score: Some(2.0),
-                    in_network: Some(false),
-                    ..Default::default()
-                }],
-            ))
-            .expect("OON score");
-        scored[0].score.expect("score")
+        let scored = runtime.block_on(OONScorer.score(
+            &query,
+            &[PostCandidate {
+                score: Some(2.0),
+                in_network: Some(false),
+                ..Default::default()
+            }],
+        ));
+        scored[0].as_ref().expect("OON score").score.expect("score")
     }
 
     #[test]

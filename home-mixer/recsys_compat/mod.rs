@@ -120,6 +120,7 @@ pub trait UserActionFilter: Send + Sync {
 ///   1. 丢弃来自已知机器人账号的行为
 ///   2. 只保留"原始"行为（用户主动发起的，而非程序化的）
 ///   3. 去除 24 小时内对同一帖子的重复行为
+#[derive(Default)]
 pub struct KeepOriginalUserActionFilter;
 
 impl KeepOriginalUserActionFilter {
@@ -156,6 +157,7 @@ pub trait AggregatedActionFilter: Send + Sync {
 /// 原始 X 实现中，此过滤器检查 action_mask 中是否有至少一个
 /// true 值（即用户对该帖子有过至少一次真实互动），
 /// 如果没有则视为"仅曝光"记录，被过滤掉以减少噪音。
+#[derive(Default)]
 pub struct DenseAggregatedActionFilter;
 
 impl DenseAggregatedActionFilter {

@@ -1,11 +1,9 @@
-use crate::candidate_pipeline::candidate::PostCandidate;
-use crate::candidate_pipeline::query::ScoredPostsQuery;
-use tonic::async_trait;
+use crate::models::candidate::PostCandidate;
+use crate::models::query::ScoredPostsQuery;
 use xai_candidate_pipeline::filter::{Filter, FilterResult};
 
 pub struct VideoFilter;
 
-#[async_trait]
 impl Filter<ScoredPostsQuery, PostCandidate> for VideoFilter {
     fn enable(&self, query: &ScoredPostsQuery) -> bool {
         query.exclude_videos
@@ -15,11 +13,11 @@ impl Filter<ScoredPostsQuery, PostCandidate> for VideoFilter {
         &self,
         _query: &ScoredPostsQuery,
         candidates: Vec<PostCandidate>,
-    ) -> Result<FilterResult<PostCandidate>, String> {
+    ) -> FilterResult<PostCandidate> {
         let (removed, kept): (Vec<_>, Vec<_>) = candidates
             .into_iter()
             .partition(|candidate| candidate.video_duration_ms.is_some());
-        Ok(FilterResult { kept, removed })
+        FilterResult { kept, removed }
     }
 }
 
@@ -44,9 +42,7 @@ mod tests {
                 ..Default::default()
             },
         ];
-        let result = VideoFilter
-            .filter(&query, candidates)
-            .expect("video filter");
+        let result = VideoFilter.filter(&query, candidates);
 
         assert_eq!(result.kept[0].tweet_id, 2);
         assert_eq!(result.removed[0].tweet_id, 1);

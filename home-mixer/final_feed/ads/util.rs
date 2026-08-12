@@ -115,9 +115,9 @@ pub(super) fn should_drop_handle(
         let FeedItemContent::Post(post) = &item.content else {
             return false;
         };
-        advertisement
-            .avoid_handles
-            .contains(&(post.author_id as i64))
+        i64::try_from(post.author_id)
+            .ok()
+            .is_some_and(|author_id| advertisement.avoid_handles.contains(&author_id))
     };
 
     above.is_some_and(has_avoided_author) || below.is_some_and(has_avoided_author)

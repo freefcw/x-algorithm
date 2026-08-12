@@ -1,5 +1,5 @@
 use super::feed_item::FeedItem;
-use crate::candidate_pipeline::query::ScoredPostsQuery;
+use crate::models::query::ScoredPostsQuery;
 use crate::scored_posts_server::{ScoredPostsOutput, ScoredPostsServer};
 use std::sync::Arc;
 use tonic::async_trait;
@@ -29,7 +29,7 @@ impl ScoredPostsSource {
 
 #[async_trait]
 impl Source<ScoredPostsQuery, FeedItem> for ScoredPostsSource {
-    async fn get_candidates(&self, query: &ScoredPostsQuery) -> Result<Vec<FeedItem>, String> {
+    async fn source(&self, query: &ScoredPostsQuery) -> Result<Vec<FeedItem>, String> {
         let output = self.provider.score_posts(query.clone()).await?;
         Ok(output.posts.into_iter().map(FeedItem::post).collect())
     }

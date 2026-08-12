@@ -53,6 +53,7 @@ impl TokenSequence {
 ///   - 连续标点/空白 → 折叠
 ///
 /// 当前简化版使用空格分词 + 小写化。
+#[derive(Default)]
 pub struct TweetTokenizer;
 
 impl TweetTokenizer {

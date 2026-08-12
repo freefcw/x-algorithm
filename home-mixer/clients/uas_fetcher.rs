@@ -37,17 +37,16 @@ pub trait UserActionSequenceOps: Send + Sync {
     /// Thrift 格式的用户行为序列
     async fn get_by_user_id(
         &self,
-        user_id: i64,
+        user_id: u64,
     ) -> Result<uas_compat::UserActionSequence, anyhow::Error>;
 }
 
-/// 用户行为序列获取器
+/// 禁用的 UAS 集成占位实现。
 ///
-/// 封装了从外部存储获取 UAS 数据的逻辑。
-/// 在 PhoenixCandidatePipeline 中被 UserActionSeqQueryHydrator 使用。
-pub struct UserActionSequenceFetcher;
+/// 返回空行为序列；生产模式在真实适配器接入前拒绝启动。
+pub struct DisabledUserActionSequenceFetcher;
 
-impl UserActionSequenceFetcher {
+impl DisabledUserActionSequenceFetcher {
     /// 创建 UAS Fetcher
     ///
     /// 原始实现在此处初始化到 UAS 存储服务的连接
@@ -58,10 +57,10 @@ impl UserActionSequenceFetcher {
 }
 
 #[async_trait]
-impl UserActionSequenceOps for UserActionSequenceFetcher {
+impl UserActionSequenceOps for DisabledUserActionSequenceFetcher {
     async fn get_by_user_id(
         &self,
-        _user_id: i64,
+        _user_id: u64,
     ) -> Result<uas_compat::UserActionSequence, anyhow::Error> {
         // Stub: 返回空的行为序列
         // 这意味着 Phoenix 模型将无法使用个性化行为特征，
@@ -81,14 +80,14 @@ impl UserActionSequenceOps for UserActionSequenceFetcher {
 /// 返回一段合成的行为序列：过去 6 小时内浏览/互动过 32 条帖子，
 /// 帖子 ID 用 Snowflake 格式合成，作者在演示账号集合中轮转。
 /// 没有行为序列时 Phoenix 召回/精排会被整体跳过，
-/// 所以这是打通模型链路的必要输入。由装配层在 HOME_MIXER_DEMO=1 时注入。
+/// 所以这是打通模型链路的必要输入。由装配层在 `HOME_MIXER_MODE=demo` 时注入。
 pub struct DemoUserActionSequenceFetcher;
 
 #[async_trait]
 impl UserActionSequenceOps for DemoUserActionSequenceFetcher {
     async fn get_by_user_id(
         &self,
-        _user_id: i64,
+        _user_id: u64,
     ) -> Result<uas_compat::UserActionSequence, anyhow::Error> {
         let now_ms = x_algorithm_proto::demo::now_ms();
         let count = 32;

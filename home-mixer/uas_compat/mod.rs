@@ -99,12 +99,66 @@ pub mod convert {
     pub fn thrift_to_proto_aggregated_user_action(
         thrift_action: AggregatedUserAction,
     ) -> Result<recsys::AggregatedUserAction, String> {
+        let tweet_id = required_id(thrift_action.tweet_id, "tweet_id")?;
+        let author_id = required_id(thrift_action.author_id, "author_id")?;
+        let impressed_time_ms = thrift_action
+            .impressed_time_ms
+            .and_then(|value| u64::try_from(value).ok())
+            .unwrap_or(0);
         Ok(recsys::AggregatedUserAction {
-            tweet_id: thrift_action.tweet_id.unwrap_or(0) as u64,
-            author_id: thrift_action.author_id.unwrap_or(0) as u64,
-            impressed_time_ms: thrift_action.impressed_time_ms.unwrap_or(0) as u64,
+            tweet_id,
+            author_id,
+            impressed_time_ms,
             action_mask: thrift_action.action_mask,
             product_surface: thrift_action.product_surface.unwrap_or(0),
         })
+    }
+
+    fn required_id(value: Option<i64>, field: &str) -> Result<u64, String> {
+        value
+            .and_then(|value| u64::try_from(value).ok())
+            .filter(|value| *value != 0)
+            .ok_or_else(|| format!("AggregatedUserAction.{field} must be a positive ID"))
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+
+        #[test]
+        fn rejects_missing_nonpositive_or_negative_identity_fields() {
+            for action in [
+                AggregatedUserAction {
+                    tweet_id: Some(-1),
+                    author_id: Some(1),
+                    ..Default::default()
+                },
+                AggregatedUserAction {
+                    tweet_id: Some(1),
+                    author_id: Some(-1),
+                    ..Default::default()
+                },
+                AggregatedUserAction {
+                    tweet_id: Some(0),
+                    author_id: Some(1),
+                    ..Default::default()
+                },
+            ] {
+                assert!(thrift_to_proto_aggregated_user_action(action).is_err());
+            }
+        }
+
+        #[test]
+        fn negative_impression_time_degrades_to_zero_without_wrapping() {
+            let converted = thrift_to_proto_aggregated_user_action(AggregatedUserAction {
+                tweet_id: Some(1),
+                author_id: Some(2),
+                impressed_time_ms: Some(-1),
+                ..Default::default()
+            })
+            .expect("valid identity fields");
+
+            assert_eq!(converted.impressed_time_ms, 0);
+        }
     }
 }

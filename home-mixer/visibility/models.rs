@@ -10,7 +10,19 @@
 // 在 Home Mixer 管道中的使用位置：
 //   - VFCandidateHydrator: 调用 VF 客户端获取每条帖子的安全结果
 //   - VFFilter: 根据安全结果决定是否丢弃帖子
-//   - PostCandidate.visibility_reason: 存储帖子的可见性过滤原因
+//   - PostCandidate.visibility_decision: 存储帖子审核的明确状态
+
+/// A missing response and an explicit allow are different business outcomes.
+/// Filters use this state to apply the configured in-network/out-of-network
+/// degradation policy without guessing from an Option value.
+#[derive(Clone, Debug, Default)]
+pub enum VisibilityDecision {
+    #[default]
+    Unchecked,
+    Allowed,
+    Restricted(FilteredReason),
+    Unavailable(String),
+}
 
 /// 帖子被过滤的原因
 ///

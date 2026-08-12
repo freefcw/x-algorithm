@@ -1,8 +1,9 @@
-use crate::candidate_pipeline::candidate::PostCandidate;
-use crate::candidate_pipeline::query::{ScoredPostsQuery, TopicRecallMode};
-use crate::clients::phoenix_retrieval_client::PhoenixRetrievalClient;
+use crate::clients::phoenix_retrieval_client::{retrieve_with_timeout, PhoenixRetrievalClient};
+use crate::models::candidate::PostCandidate;
+use crate::models::query::{ScoredPostsQuery, TopicRecallMode};
 use crate::params;
 use std::sync::Arc;
+use std::time::Duration;
 use tonic::async_trait;
 use x_algorithm_proto::home_mixer as pb;
 use xai_candidate_pipeline::source::Source;
@@ -23,21 +24,21 @@ impl Source<ScoredPostsQuery, PostCandidate> for PhoenixMoeSource {
             && !query.has_cached_posts
     }
 
-    async fn get_candidates(&self, query: &ScoredPostsQuery) -> Result<Vec<PostCandidate>, String> {
+    async fn source(&self, query: &ScoredPostsQuery) -> Result<Vec<PostCandidate>, String> {
         let sequence = query
             .retrieval_sequence
             .as_ref()
             .or(query.user_action_sequence.as_ref())
             .ok_or_else(|| "PhoenixMoeSource: missing retrieval sequence".to_string())?;
-        let response = self
-            .phoenix_retrieval_client
-            .retrieve(
-                query.user_id as u64,
-                sequence.clone(),
-                params::PHOENIX_MAX_RESULTS,
-            )
-            .await
-            .map_err(|error| format!("PhoenixMoeSource: {error}"))?;
+        let response = retrieve_with_timeout(
+            self.phoenix_retrieval_client.as_ref(),
+            query.user_id,
+            sequence.clone(),
+            params::PHOENIX_MAX_RESULTS,
+            Duration::from_millis(params::PHOENIX_RETRIEVAL_TIMEOUT_MS),
+        )
+        .await
+        .map_err(|error| format!("PhoenixMoeSource: {error}"))?;
 
         Ok(response
             .top_k_candidates
@@ -45,7 +46,7 @@ impl Source<ScoredPostsQuery, PostCandidate> for PhoenixMoeSource {
             .flat_map(|group| group.candidates)
             .filter_map(|candidate| candidate.candidate)
             .map(|tweet| PostCandidate {
-                tweet_id: tweet.tweet_id as i64,
+                tweet_id: tweet.tweet_id,
                 author_id: tweet.author_id,
                 in_reply_to_tweet_id: Some(tweet.in_reply_to_tweet_id),
                 served_type: Some(pb::ServedType::ForYouPhoenixRetrievalMoe),
@@ -96,11 +97,12 @@ mod tests {
             ..Default::default()
         };
         let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_time()
             .build()
             .expect("test runtime");
 
         let candidates = runtime
-            .block_on(source.get_candidates(&query))
+            .block_on(source.source(&query))
             .expect("MoE candidates");
 
         assert!(source.enable(&query));

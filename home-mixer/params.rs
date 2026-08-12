@@ -30,14 +30,25 @@ pub const MAX_GRPC_MESSAGE_SIZE: usize = 16 * 1024 * 1024; // 16 MB
 /// Thunder 从用户关注列表中的内存缓存检索最新帖子，该值控制上限
 /// 典型值: 500-1000，这里使用 500 作为合理默认值
 pub const THUNDER_MAX_RESULTS: u32 = 500;
+pub const THUNDER_REQUEST_TIMEOUT_MS: u64 = 500;
+pub const UAS_FETCH_TIMEOUT_MS: u64 = 500;
+pub const USER_FEATURES_FETCH_TIMEOUT_MS: u64 = 500;
+pub const USER_TOPIC_READ_TIMEOUT_MS: u64 = 500;
+pub const STRATO_WRITE_TIMEOUT_MS: u64 = 500;
+pub const TES_REQUEST_TIMEOUT_MS: u64 = 500;
+pub const GIZMODOUCK_REQUEST_TIMEOUT_MS: u64 = 500;
 
 /// Phoenix（全局召回 / 双塔检索）单次请求最大返回帖子数
 /// Phoenix 使用双塔模型从全局帖子池中检索与用户兴趣匹配的帖子
 /// 典型值: 200-500，这里使用 300
 pub const PHOENIX_MAX_RESULTS: u32 = 300;
+pub const PHOENIX_RETRIEVAL_TIMEOUT_MS: u64 = 3_000;
+pub const PHOENIX_PREDICTION_TIMEOUT_MS: u64 = 5_000;
+pub const VF_REQUEST_TIMEOUT_MS: u64 = 500;
 
 /// 显式话题和新用户冷启动话题的单次候选上限。
 pub const TOPIC_MAX_RESULTS: usize = 100;
+pub const TOPIC_RETRIEVAL_TIMEOUT_MS: u64 = 500;
 
 // =============================================================================
 // 3. Phoenix 精排打分权重（核心排序公式）
@@ -168,13 +179,16 @@ pub const CONT_CLICK_DWELL_TIME_WEIGHT: f64 = 0.0001;
 // =============================================================================
 
 /// 所有正向权重之和，用于 offset_score 归一化计算
+///
 /// = 0.5 + 27.0 + 1.0 + 0.02 + 0.04 + 0.02 + 0.005 + 1.0 + 1.0 + 1.0 + 0.001
 ///   + 1.0 + 0.02 + 0.0001 + 1.0  (已启用权重)
 ///   + 0.005 + 0.0001             (quoted_vqv + cont_click_dwell_time，当前预留)
+///
 /// ≈ 33.6112
 pub const WEIGHTS_SUM: f64 = 33.6112;
 
 /// 所有负向权重之和（负值）
+///
 /// = -74.0 + -74.0 + -74.0 + -369.0 + -0.001
 ///   (not_interested + block + mute + report + not_dwelled)
 /// = -591.001

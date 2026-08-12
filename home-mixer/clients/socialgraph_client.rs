@@ -22,6 +22,7 @@
 /// 管理到社交关系图谱服务的连接。
 /// 当前管道中的社交关系数据主要通过 Strato 获取，
 /// 此客户端作为未来扩展预留。
+#[derive(Default)]
 pub struct SocialGraphClient;
 
 impl SocialGraphClient {

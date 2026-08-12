@@ -20,16 +20,22 @@ static COUNTER: AtomicU64 = AtomicU64::new(0);
 /// # Returns
 /// 一个 u64 请求标识符
 pub fn generate_request_id() -> u64 {
-    let now_ms = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_millis() as u64;
+    let now_ms = u64::try_from(current_time_ms()).unwrap_or(0);
 
     let seq = COUNTER.fetch_add(1, Ordering::Relaxed);
 
     // 高 42 位: 毫秒时间戳（可用约 139 年）
     // 低 22 位: 序列号（每毫秒约 400 万个不同 ID）
     (now_ms << 22) | (seq & 0x3F_FFFF)
+}
+
+pub fn current_time_ms() -> i64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis()
+        .try_into()
+        .unwrap_or(i64::MAX)
 }
 
 #[cfg(test)]

@@ -101,6 +101,7 @@ enum ServedType {
   FOR_YOU_PHOENIX_TOPICS = 4;
   FOR_YOU_TWEET_MIXER = 5;
   FOR_YOU_CACHED_POST = 6;
+  RANKED_FOLLOWING = 7;
 }
 
 // 帖子的广告邻接风险；未补全时按不可邻接处理。
@@ -209,6 +210,29 @@ message ForYouFeedResponse {
   string request_id = 2;
 }
 
+// Additive wrapper for For You-specific request growth. The existing RPC keeps
+// accepting ScoredPostsQuery for source and wire compatibility.
+message ForYouFeedQuery {
+  ScoredPostsQuery query = 1;
+}
+
+message PipelineStageDebug {
+  uint32 count = 1;
+  repeated uint64 tweet_ids = 2;
+}
+
+message PipelineDebugInfo {
+  string request_id = 1;
+  PipelineStageDebug retrieved = 2;
+  PipelineStageDebug filtered = 3;
+  PipelineStageDebug selected = 4;
+}
+
+message DebugScoredPostsResponse {
+  ScoredPostsResponse response = 1;
+  PipelineDebugInfo debug = 2;
+}
+
 // =============================================================================
 // gRPC 服务定义
 // =============================================================================
@@ -217,9 +241,13 @@ message ForYouFeedResponse {
 service ScoredPostsService {
   // 获取为特定用户排序好的推荐帖子列表
   rpc GetScoredPosts(ScoredPostsQuery) returns (ScoredPostsResponse);
+  // Additive debug surface using the same request policy and one pipeline run.
+  rpc DebugScoredPosts(ScoredPostsQuery) returns (DebugScoredPostsResponse);
 }
 
 // 最终 Feed 服务复用同一查询，但返回帖子和条件启用的非帖子项目。
 service ForYouFeedService {
   rpc GetForYouFeed(ScoredPostsQuery) returns (ForYouFeedResponse);
+  // Wrapper-based additive method; the original RPC remains unchanged.
+  rpc GetForYouFeedV2(ForYouFeedQuery) returns (ForYouFeedResponse);
 }

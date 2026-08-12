@@ -46,16 +46,20 @@ async fn main() -> anyhow::Result<()> {
 
     let now_ms = x_algorithm_proto::demo::now_ms();
     let cached_posts = (0..args.cached_posts)
-        .map(|index| CachedPost {
-            tweet_id: x_algorithm_proto::demo::snowflake_id(
-                now_ms - index as i64 * 1_000,
-                2_000_000 + index as i64,
-            ) as u64,
-            author_id: 201 + (index % 40) as u64,
-            served_type: ServedType::ForYouCachedPost as i32,
-            tweet_text: format!("Cached demo post {index}"),
-            language_code: "en".to_string(),
-            ..Default::default()
+        .map(|index| {
+            let index_i64 = i64::try_from(index).expect("demo index fits i64");
+            CachedPost {
+                tweet_id: u64::try_from(x_algorithm_proto::demo::snowflake_id(
+                    now_ms - index_i64 * 1_000,
+                    2_000_000 + index_i64,
+                ))
+                .expect("demo Snowflake ID is positive"),
+                author_id: 201 + u64::try_from(index % 40).expect("demo author index fits u64"),
+                served_type: ServedType::ForYouCachedPost as i32,
+                tweet_text: format!("Cached demo post {index}"),
+                language_code: "en".to_string(),
+                ..Default::default()
+            }
         })
         .collect();
     let request = ScoredPostsQuery {
@@ -117,7 +121,7 @@ async fn main() -> anyhow::Result<()> {
         println!("返回了 0 条帖子。");
         println!("排查提示：");
         println!("  1. thunder 是否用 --demo-seed-posts 启动，端口是否为 50052？");
-        println!("  2. home-mixer 是否设置了 HOME_MIXER_DEMO=1？");
+        println!("  2. home-mixer 是否设置了 HOME_MIXER_MODE=demo？");
         println!("  3. Phoenix gRPC 网关是否在运行（影响网外召回与打分）？");
         std::process::exit(1);
     }
@@ -129,6 +133,7 @@ async fn main() -> anyhow::Result<()> {
     for (i, post) in scored_posts.iter().enumerate() {
         let source = match ServedType::try_from(post.served_type) {
             Ok(ServedType::ForYouInNetwork) => "Thunder 网内",
+            Ok(ServedType::RankedFollowing) => "Thunder 关注流",
             Ok(ServedType::ForYouPhoenixRetrieval) => "Phoenix 网外",
             Ok(ServedType::ForYouPhoenixRetrievalMoe) => "Phoenix MoE",
             Ok(ServedType::ForYouPhoenixTopics) => "Phoenix 话题",

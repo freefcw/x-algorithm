@@ -31,7 +31,7 @@ impl BloomFilter {
     pub fn from_entry(entry: &ImpressionBloomFilterEntry) -> Self {
         Self {
             filter: entry.data.clone(),
-            hash_count: entry.num_hash_functions as u32,
+            hash_count: u32::try_from(entry.num_hash_functions).unwrap_or(0),
         }
     }
 
@@ -43,19 +43,21 @@ impl BloomFilter {
     /// # Returns
     /// true 如果帖子可能已被看过（可能有 false positive）
     /// false 如果帖子一定没被看过
-    pub fn may_contain(&self, post_id: i64) -> bool {
+    pub fn may_contain(&self, post_id: u64) -> bool {
         if self.filter.is_empty() || self.hash_count == 0 {
             return false;
         }
 
         let bit_count = self.filter.len() * 8;
+        let bit_count_u64 = u64::try_from(bit_count).unwrap_or(u64::MAX);
 
         // 使用 double hashing: h(i) = h1 + i * h2
-        let h1 = murmur_hash(post_id, 0) as usize;
-        let h2 = murmur_hash(post_id, h1 as i64) as usize;
+        let h1 = murmur_hash(post_id, 0);
+        let h2 = murmur_hash(post_id, h1);
 
-        for i in 0..self.hash_count as usize {
-            let bit_index = (h1.wrapping_add(i.wrapping_mul(h2))) % bit_count;
+        for i in 0..u64::from(self.hash_count) {
+            let bit_index_u64 = h1.wrapping_add(i.wrapping_mul(h2)) % bit_count_u64;
+            let bit_index = usize::try_from(bit_index_u64).expect("index is below bit_count");
             let byte_index = bit_index / 8;
             let bit_offset = bit_index % 8;
 
@@ -68,9 +70,9 @@ impl BloomFilter {
 }
 
 /// 简化的 Murmur 哈希
-fn murmur_hash(key: i64, seed: i64) -> u64 {
-    let mut h = seed as u64;
-    let k = key as u64;
+fn murmur_hash(key: u64, seed: u64) -> u64 {
+    let mut h = seed;
+    let k = key;
 
     let k = k.wrapping_mul(0xcc9e2d51);
     let k = k.rotate_left(15);

@@ -1,8 +1,9 @@
-use crate::candidate_pipeline::candidate::PostCandidate;
-use crate::candidate_pipeline::query::{ScoredPostsQuery, TopicRecallMode};
-use crate::clients::phoenix_retrieval_client::PhoenixRetrievalClient;
+use crate::clients::phoenix_retrieval_client::{retrieve_with_timeout, PhoenixRetrievalClient};
+use crate::models::candidate::PostCandidate;
+use crate::models::query::{ScoredPostsQuery, TopicRecallMode};
 use crate::params as p;
 use std::sync::Arc;
+use std::time::Duration;
 use tonic::async_trait;
 use x_algorithm_proto::home_mixer as pb;
 use xai_candidate_pipeline::source::Source;
@@ -22,8 +23,8 @@ impl Source<ScoredPostsQuery, PostCandidate> for PhoenixSource {
             )
     }
 
-    async fn get_candidates(&self, query: &ScoredPostsQuery) -> Result<Vec<PostCandidate>, String> {
-        let user_id = query.user_id as u64;
+    async fn source(&self, query: &ScoredPostsQuery) -> Result<Vec<PostCandidate>, String> {
+        let user_id = query.user_id;
 
         let sequence = query
             .retrieval_sequence
@@ -31,11 +32,15 @@ impl Source<ScoredPostsQuery, PostCandidate> for PhoenixSource {
             .or(query.user_action_sequence.as_ref())
             .ok_or_else(|| "PhoenixSource: missing retrieval sequence".to_string())?;
 
-        let response = self
-            .phoenix_retrieval_client
-            .retrieve(user_id, sequence.clone(), p::PHOENIX_MAX_RESULTS)
-            .await
-            .map_err(|e| format!("PhoenixSource: {}", e))?;
+        let response = retrieve_with_timeout(
+            self.phoenix_retrieval_client.as_ref(),
+            user_id,
+            sequence.clone(),
+            p::PHOENIX_MAX_RESULTS,
+            Duration::from_millis(p::PHOENIX_RETRIEVAL_TIMEOUT_MS),
+        )
+        .await
+        .map_err(|e| format!("PhoenixSource: {e}"))?;
 
         let candidates: Vec<PostCandidate> = response
             .top_k_candidates
@@ -43,7 +48,7 @@ impl Source<ScoredPostsQuery, PostCandidate> for PhoenixSource {
             .flat_map(|scored_candidates| scored_candidates.candidates)
             .filter_map(|scored_candidate| scored_candidate.candidate)
             .map(|tweet_info| PostCandidate {
-                tweet_id: tweet_info.tweet_id as i64,
+                tweet_id: tweet_info.tweet_id,
                 author_id: tweet_info.author_id,
                 in_reply_to_tweet_id: Some(tweet_info.in_reply_to_tweet_id),
                 served_type: Some(pb::ServedType::ForYouPhoenixRetrieval),

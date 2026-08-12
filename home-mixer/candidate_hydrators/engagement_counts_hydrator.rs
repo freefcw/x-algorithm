@@ -10,9 +10,9 @@
 
 #![allow(dead_code)]
 
-use crate::candidate_pipeline::candidate::PostCandidate;
-use crate::candidate_pipeline::query::ScoredPostsQuery;
 use crate::clients::tweet_entity_service_client::TESClient;
+use crate::models::candidate::PostCandidate;
+use crate::models::query::ScoredPostsQuery;
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -86,9 +86,7 @@ impl EngagementCountsHydrator {
     }
 
     fn original_tweet_id(candidate: &PostCandidate) -> u64 {
-        candidate
-            .retweeted_tweet_id
-            .unwrap_or(candidate.tweet_id as u64)
+        candidate.retweeted_tweet_id.unwrap_or(candidate.tweet_id)
     }
 }
 
@@ -132,31 +130,31 @@ impl CachedHydrator<ScoredPostsQuery, PostCandidate> for EngagementCountsHydrato
         &self,
         _query: &ScoredPostsQuery,
         candidates: &[PostCandidate],
-    ) -> Result<Vec<PostCandidate>, String> {
-        let tweet_ids: Vec<i64> = candidates
-            .iter()
-            .map(|c| Self::original_tweet_id(c) as i64)
-            .collect();
+    ) -> Vec<Result<PostCandidate, String>> {
+        let tweet_ids: Vec<u64> = candidates.iter().map(Self::original_tweet_id).collect();
 
-        let core_by_tweet = self
+        let core_by_tweet = match self
             .tes_client
             .get_tweet_core_datas(tweet_ids.clone())
             .await
-            .map_err(|e| e.to_string())?;
+        {
+            Ok(core_by_tweet) => core_by_tweet,
+            Err(error) => return vec![Err(error.to_string()); candidates.len()],
+        };
 
-        Ok(tweet_ids
+        tweet_ids
             .into_iter()
             .map(|tweet_id| {
                 let counts = core_by_tweet.get(&tweet_id).and_then(Option::as_ref);
-                PostCandidate {
+                Ok(PostCandidate {
                     favorite_count: counts.and_then(|c| c.favorite_count),
                     reply_count: counts.and_then(|c| c.reply_count),
                     repost_count: counts.and_then(|c| c.repost_count),
                     quote_count: counts.and_then(|c| c.quote_count),
                     ..Default::default()
-                }
+                })
             })
-            .collect())
+            .collect()
     }
 
     fn update(&self, candidate: &mut PostCandidate, hydrated: PostCandidate) {
@@ -170,19 +168,19 @@ impl CachedHydrator<ScoredPostsQuery, PostCandidate> for EngagementCountsHydrato
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::candidate_pipeline::candidate_features::{MediaEntities, PureCoreData};
-    use crate::candidate_pipeline::query::ScoredPostsQuery;
+    use crate::models::candidate_features::{MediaEntities, PureCoreData};
+    use crate::models::query::ScoredPostsQuery;
 
     struct FakeTES {
-        counts: HashMap<i64, PureCoreData>,
+        counts: HashMap<u64, PureCoreData>,
     }
 
     #[async_trait]
     impl TESClient for FakeTES {
         async fn get_tweet_core_datas(
             &self,
-            tweet_ids: Vec<i64>,
-        ) -> Result<HashMap<i64, Option<PureCoreData>>, anyhow::Error> {
+            tweet_ids: Vec<u64>,
+        ) -> Result<HashMap<u64, Option<PureCoreData>>, anyhow::Error> {
             Ok(tweet_ids
                 .into_iter()
                 .map(|id| (id, self.counts.get(&id).cloned()))
@@ -191,20 +189,20 @@ mod tests {
 
         async fn get_tweet_media_entities(
             &self,
-            _tweet_ids: Vec<i64>,
-        ) -> Result<HashMap<i64, Option<MediaEntities>>, anyhow::Error> {
+            _tweet_ids: Vec<u64>,
+        ) -> Result<HashMap<u64, Option<MediaEntities>>, anyhow::Error> {
             Ok(HashMap::new())
         }
 
         async fn get_subscription_author_ids(
             &self,
-            _tweet_ids: Vec<i64>,
-        ) -> Result<HashMap<i64, Option<u64>>, anyhow::Error> {
+            _tweet_ids: Vec<u64>,
+        ) -> Result<HashMap<u64, Option<u64>>, anyhow::Error> {
             Ok(HashMap::new())
         }
     }
 
-    fn make_candidate(tweet_id: i64) -> PostCandidate {
+    fn make_candidate(tweet_id: u64) -> PostCandidate {
         PostCandidate {
             tweet_id,
             ..Default::default()
@@ -230,14 +228,14 @@ mod tests {
         // 第一次 hydrate：缓存未命中，调 TES
         let first = hydrator
             .hydrate_from_client(&ScoredPostsQuery::default(), &[make_candidate(100)])
-            .await
-            .expect("first hydration");
-        assert_eq!(first[0].favorite_count, Some(42));
+            .await;
+        let first = first[0].as_ref().expect("first hydration");
+        assert_eq!(first.favorite_count, Some(42));
 
         // 写入缓存
         hydrator
             .cache_store()
-            .insert(100, hydrator.cache_value(&first[0]))
+            .insert(100, hydrator.cache_value(first))
             .await;
 
         // 第二次从缓存读

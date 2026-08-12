@@ -1,3 +1,4 @@
+use crate::candidate_pipeline::{PipelineCandidate, PipelineQuery};
 use crate::util;
 use std::any::type_name_of_val;
 
@@ -9,7 +10,7 @@ pub struct SelectResult<C> {
 
 impl<C> SelectResult<C> {
     pub fn len(&self) -> usize {
-        self.selected.len() + self.non_selected.len()
+        self.selected.len()
     }
 
     pub fn is_empty(&self) -> bool {
@@ -19,8 +20,8 @@ impl<C> SelectResult<C> {
 
 pub trait Selector<Q, C>: Send + Sync
 where
-    Q: Clone + Send + Sync + 'static,
-    C: Clone + Send + Sync + 'static,
+    Q: PipelineQuery,
+    C: PipelineCandidate,
 {
     /// Default selection: sort and truncate based on provided configs
     fn select(&self, _query: &Q, candidates: Vec<C>) -> SelectResult<C> {
@@ -39,6 +40,12 @@ where
     /// Decide if this selector should run for the given query
     fn enable(&self, _query: &Q) -> bool {
         true
+    }
+
+    /// Keep the wrapper separate from the implementation so instrumentation can
+    /// be added without changing every selector.
+    fn run(&self, query: &Q, candidates: Vec<C>) -> SelectResult<C> {
+        self.select(query, candidates)
     }
 
     /// Extract the score from a candidate to use for sorting.
@@ -68,10 +75,20 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::candidate_pipeline::HasRequestId;
+
+    #[derive(Clone)]
+    struct TestQuery;
+
+    impl HasRequestId for TestQuery {
+        fn request_id(&self) -> &str {
+            "test-request"
+        }
+    }
 
     struct TopTwo;
 
-    impl Selector<(), i32> for TopTwo {
+    impl Selector<TestQuery, i32> for TopTwo {
         fn score(&self, candidate: &i32) -> f64 {
             *candidate as f64
         }
@@ -83,7 +100,7 @@ mod tests {
 
     #[test]
     fn selection_preserves_candidates_below_the_limit() {
-        let result = TopTwo.select(&(), vec![1, 4, 3, 2]);
+        let result = TopTwo.run(&TestQuery, vec![1, 4, 3, 2]);
 
         assert_eq!(result.selected, vec![4, 3]);
         assert_eq!(result.non_selected, vec![2, 1]);

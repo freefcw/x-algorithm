@@ -1,8 +1,7 @@
-use crate::candidate_pipeline::candidate::PostCandidate;
-use crate::candidate_pipeline::query::ScoredPostsQuery;
+use crate::models::candidate::PostCandidate;
+use crate::models::query::ScoredPostsQuery;
 use crate::post_text::{MatchTweetGroup, TokenSequence, TweetTokenizer, UserMutes};
 use std::sync::Arc;
-use tonic::async_trait;
 use xai_candidate_pipeline::filter::{Filter, FilterResult};
 
 pub struct MutedKeywordFilter {
@@ -18,20 +17,19 @@ impl MutedKeywordFilter {
     }
 }
 
-#[async_trait]
 impl Filter<ScoredPostsQuery, PostCandidate> for MutedKeywordFilter {
     fn filter(
         &self,
         query: &ScoredPostsQuery,
         candidates: Vec<PostCandidate>,
-    ) -> Result<FilterResult<PostCandidate>, String> {
+    ) -> FilterResult<PostCandidate> {
         let muted_keywords = query.user_features.muted_keywords.clone();
 
         if muted_keywords.is_empty() {
-            return Ok(FilterResult {
+            return FilterResult {
                 kept: candidates,
                 removed: vec![],
-            });
+            };
         }
 
         let tokenized = muted_keywords.iter().map(|k| self.tokenizer.tokenize(k));
@@ -56,7 +54,7 @@ impl Filter<ScoredPostsQuery, PostCandidate> for MutedKeywordFilter {
             }
         }
 
-        Ok(FilterResult { kept, removed })
+        FilterResult { kept, removed }
     }
 }
 
@@ -83,9 +81,7 @@ mod tests {
             },
         ];
 
-        let result = MutedKeywordFilter::new()
-            .filter(&query, candidates)
-            .expect("muted keyword filter");
+        let result = MutedKeywordFilter::new().filter(&query, candidates);
 
         assert_eq!(result.kept[0].tweet_id, 2);
         assert_eq!(result.removed[0].tweet_id, 1);

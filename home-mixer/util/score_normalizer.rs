@@ -10,7 +10,7 @@
 // 当前使用简化版 stub 实现，直接返回原始分数。
 // TODO: 根据你平台特征实现更精细的归一化策略
 
-use crate::candidate_pipeline::candidate::PostCandidate;
+use crate::models::candidate::PostCandidate;
 
 /// 对候选帖子的加权分数进行归一化
 ///

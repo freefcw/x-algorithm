@@ -1,7 +1,6 @@
-use crate::candidate_pipeline::candidate::PostCandidate;
-use crate::candidate_pipeline::query::{ScoredPostsQuery, TopicRecallMode};
+use crate::models::candidate::PostCandidate;
+use crate::models::query::{ScoredPostsQuery, TopicRecallMode};
 use std::collections::{HashMap, HashSet};
-use tonic::async_trait;
 use xai_candidate_pipeline::filter::{Filter, FilterResult};
 
 /// 话题过滤实验维度。
@@ -13,20 +12,15 @@ use xai_candidate_pipeline::filter::{Filter, FilterResult};
 /// Unfiltered 取 unfiltered_topic_ids，其余维度暂取 filtered_topic_ids。
 /// 接入完整实验数据后，可扩展 Candidate 字段以区分各维度列表。
 #[allow(dead_code)]
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
 pub enum TopicFilteringExperiment {
+    #[default]
     Unfiltered,
     CuratedV0,
     CuratedV0V1,
     PostBased90Pct,
     PostBased75Pct,
     PostBased50Pct,
-}
-
-impl Default for TopicFilteringExperiment {
-    fn default() -> Self {
-        Self::Unfiltered
-    }
 }
 
 #[allow(dead_code)]
@@ -114,23 +108,24 @@ impl TopicIdExpansion {
 
 pub struct TopicIdsFilter;
 
-#[async_trait]
 impl Filter<ScoredPostsQuery, PostCandidate> for TopicIdsFilter {
     fn enable(&self, query: &ScoredPostsQuery) -> bool {
-        query.topic_recall_mode() != TopicRecallMode::None || !query.excluded_topic_ids.is_empty()
+        query.topic_recall_mode() == TopicRecallMode::Strict || !query.excluded_topic_ids.is_empty()
     }
 
     fn filter(
         &self,
         query: &ScoredPostsQuery,
         candidates: Vec<PostCandidate>,
-    ) -> Result<FilterResult<PostCandidate>, String> {
+    ) -> FilterResult<PostCandidate> {
         let recall_mode = query.topic_recall_mode();
         let included: HashSet<i64> = match recall_mode {
-            TopicRecallMode::Strict | TopicRecallMode::ColdStart => {
+            TopicRecallMode::Strict => {
                 TopicIdExpansion::expand(&query.selected_topic_ids().iter().copied().collect())
             }
-            TopicRecallMode::None | TopicRecallMode::Blend => HashSet::new(),
+            TopicRecallMode::None | TopicRecallMode::Blend | TopicRecallMode::ColdStart => {
+                HashSet::new()
+            }
         };
         let excluded: HashSet<i64> = query.excluded_topic_ids.iter().copied().collect();
 
@@ -146,23 +141,16 @@ impl Filter<ScoredPostsQuery, PostCandidate> for TopicIdsFilter {
             let matches_included = candidate_topics
                 .iter()
                 .any(|topic| included.contains(topic));
-            let matches_filtered = candidate
-                .filtered_topic_ids
-                .iter()
-                .any(|topic| included.contains(topic));
             let includes_requested = match recall_mode {
                 TopicRecallMode::Strict => matches_included,
-                TopicRecallMode::ColdStart => {
-                    candidate.in_network == Some(true) || matches_filtered
-                }
-                TopicRecallMode::None | TopicRecallMode::Blend => true,
+                TopicRecallMode::None | TopicRecallMode::Blend | TopicRecallMode::ColdStart => true,
             };
             let includes_excluded = candidate_topics
                 .iter()
                 .any(|topic| excluded.contains(topic));
             includes_requested && !includes_excluded
         });
-        Ok(FilterResult { kept, removed })
+        FilterResult { kept, removed }
     }
 }
 
@@ -203,9 +191,7 @@ mod tests {
                 ..Default::default()
             },
         ];
-        let result = TopicIdsFilter
-            .filter(&query, candidates)
-            .expect("topic filter");
+        let result = TopicIdsFilter.filter(&query, candidates);
 
         assert_eq!(
             result
@@ -243,9 +229,7 @@ mod tests {
             },
         ];
 
-        let result = TopicIdsFilter
-            .filter(&query, candidates)
-            .expect("topic filter");
+        let result = TopicIdsFilter.filter(&query, candidates);
 
         assert_eq!(
             result
@@ -259,51 +243,13 @@ mod tests {
     }
 
     #[test]
-    fn new_user_topics_keep_in_network_or_matching_candidates() {
+    fn new_user_topics_are_owned_by_the_dedicated_filter() {
         let query = ScoredPostsQuery {
             new_user_topic_ids: vec![10],
             ..Default::default()
         };
-        let candidates = vec![
-            PostCandidate {
-                tweet_id: 1,
-                in_network: Some(true),
-                filtered_topic_ids: vec![30],
-                ..Default::default()
-            },
-            PostCandidate {
-                tweet_id: 2,
-                in_network: Some(false),
-                filtered_topic_ids: vec![10],
-                ..Default::default()
-            },
-            PostCandidate {
-                tweet_id: 3,
-                in_network: Some(false),
-                filtered_topic_ids: vec![30],
-                ..Default::default()
-            },
-            PostCandidate {
-                tweet_id: 4,
-                in_network: Some(false),
-                retrieval_topic_ids: vec![10],
-                ..Default::default()
-            },
-        ];
 
-        let result = TopicIdsFilter
-            .filter(&query, candidates)
-            .expect("topic filter");
-
-        assert_eq!(
-            result
-                .kept
-                .iter()
-                .map(|candidate| candidate.tweet_id)
-                .collect::<Vec<_>>(),
-            vec![1, 2]
-        );
-        assert_eq!(result.removed.len(), 2);
+        assert!(!TopicIdsFilter.enable(&query));
     }
 
     #[test]

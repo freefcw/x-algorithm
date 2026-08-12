@@ -2,7 +2,7 @@ use tonic::async_trait;
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct TopicPost {
-    pub tweet_id: i64,
+    pub tweet_id: u64,
     pub author_id: u64,
     pub matched_topic_ids: Vec<i64>,
 }
@@ -11,7 +11,7 @@ pub struct TopicPost {
 pub trait TopicRetrievalClient: Send + Sync {
     async fn retrieve(
         &self,
-        user_id: i64,
+        user_id: u64,
         topic_ids: &[i64],
         max_results: usize,
     ) -> Result<Vec<TopicPost>, String>;
@@ -23,7 +23,7 @@ pub struct DemoTopicRetrievalClient;
 impl TopicRetrievalClient for DemoTopicRetrievalClient {
     async fn retrieve(
         &self,
-        _user_id: i64,
+        _user_id: u64,
         topic_ids: &[i64],
         max_results: usize,
     ) -> Result<Vec<TopicPost>, String> {
@@ -33,16 +33,20 @@ impl TopicRetrievalClient for DemoTopicRetrievalClient {
 
         let now_ms = x_algorithm_proto::demo::now_ms();
         Ok((0..max_results)
-            .map(|index| {
+            .filter_map(|index| {
                 let topic_id = topic_ids[index % topic_ids.len()];
-                TopicPost {
-                    tweet_id: x_algorithm_proto::demo::snowflake_id(
-                        now_ms - (index as i64 * 1_000),
-                        1_000_000 + index as i64,
-                    ),
-                    author_id: 201 + (index % 40) as u64,
+                let index_i64 = i64::try_from(index).ok()?;
+                let tweet_id = u64::try_from(x_algorithm_proto::demo::snowflake_id(
+                    now_ms - index_i64 * 1_000,
+                    1_000_000 + index_i64,
+                ))
+                .ok()?;
+                let author_id = 201 + u64::try_from(index % 40).ok()?;
+                Some(TopicPost {
+                    tweet_id,
+                    author_id,
                     matched_topic_ids: vec![topic_id],
-                }
+                })
             })
             .collect())
     }

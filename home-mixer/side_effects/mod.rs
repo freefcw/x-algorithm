@@ -1,1 +1,3 @@
 pub mod cache_request_info_side_effect;
+pub mod for_you_response_stats_side_effect;
+pub mod phoenix_request_cache_side_effect;

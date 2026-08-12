@@ -1,5 +1,5 @@
-use crate::candidate_pipeline::candidate::PostCandidate;
-use crate::candidate_pipeline::query::ScoredPostsQuery;
+use crate::models::candidate::PostCandidate;
+use crate::models::query::ScoredPostsQuery;
 use tonic::async_trait;
 use xai_candidate_pipeline::source::Source;
 
@@ -11,7 +11,7 @@ impl Source<ScoredPostsQuery, PostCandidate> for CachedPostsSource {
         query.has_cached_posts
     }
 
-    async fn get_candidates(&self, query: &ScoredPostsQuery) -> Result<Vec<PostCandidate>, String> {
+    async fn source(&self, query: &ScoredPostsQuery) -> Result<Vec<PostCandidate>, String> {
         Ok(query.cached_posts.clone())
     }
 }
@@ -41,7 +41,7 @@ mod tests {
             .expect("test runtime");
 
         let candidates = runtime
-            .block_on(CachedPostsSource.get_candidates(&query))
+            .block_on(CachedPostsSource.source(&query))
             .expect("cached candidates");
 
         assert_eq!(

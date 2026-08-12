@@ -20,9 +20,33 @@
 // 替换建议：对接你平台的用户微服务 API
 // 当前为 stub 实现。
 
-use crate::candidate_pipeline::candidate_features::GizmoduckUserResult;
+use crate::models::candidate_features::GizmoduckUserResult;
 use std::collections::HashMap;
 use tonic::async_trait;
+
+/// Request-level viewer policy used by `QueryBuilder`.
+///
+/// The public replacement currently knows only whether For You recommendations
+/// are allowed. Additional upstream fields must be added only with a verified
+/// user-service contract and an owning query field.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum ViewerEligibility {
+    Allowed,
+    Denied,
+    #[default]
+    Unknown,
+}
+
+impl ViewerEligibility {
+    pub fn allows_for_you(self) -> bool {
+        self == Self::Allowed
+    }
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct ViewerData {
+    pub for_you_eligibility: ViewerEligibility,
+}
 
 /// Gizmoduck 用户资料客户端 trait
 ///
@@ -30,6 +54,14 @@ use tonic::async_trait;
 /// 生产实现应连接你平台的用户微服务。
 #[async_trait]
 pub trait GizmoduckClient: Send + Sync {
+    /// Fetch request-level viewer policy.
+    ///
+    /// The neutral default keeps the main recommendation path running until a
+    /// public user-service adapter is supplied and manually verified.
+    async fn get_viewer_data(&self, _viewer_id: u64) -> Result<ViewerData, anyhow::Error> {
+        Ok(ViewerData::default())
+    }
+
     /// 批量获取用户资料
     ///
     /// # Arguments
@@ -41,31 +73,49 @@ pub trait GizmoduckClient: Send + Sync {
     /// - None: 用户不存在或被停用
     async fn get_users(
         &self,
-        user_ids: Vec<i64>,
-    ) -> Result<HashMap<i64, Option<GizmoduckUserResult>>, anyhow::Error>;
+        user_ids: Vec<u64>,
+    ) -> Result<HashMap<u64, Option<GizmoduckUserResult>>, anyhow::Error>;
 }
 
-/// 生产环境 Gizmoduck 客户端（Stub 实现）
-///
-/// 当前返回空的用户资料（所有字段为默认值）。
-/// TODO: 替换为你平台的用户微服务客户端
-pub struct ProdGizmoduckClient;
+/// Demo viewer and profile adapter. Demo users explicitly permit For You
+/// recommendations so local end-to-end runs exercise both network sources.
+pub struct DemoGizmoduckClient;
 
-impl ProdGizmoduckClient {
+#[async_trait]
+impl GizmoduckClient for DemoGizmoduckClient {
+    async fn get_viewer_data(&self, _viewer_id: u64) -> Result<ViewerData, anyhow::Error> {
+        Ok(ViewerData {
+            for_you_eligibility: ViewerEligibility::Allowed,
+        })
+    }
+
+    async fn get_users(
+        &self,
+        user_ids: Vec<u64>,
+    ) -> Result<HashMap<u64, Option<GizmoduckUserResult>>, anyhow::Error> {
+        Ok(user_ids.into_iter().map(|id| (id, None)).collect())
+    }
+}
+
+/// Disabled integration placeholder. It deliberately reports viewer policy
+/// as unknown; the application boundary degrades unknown policy to in-network.
+pub struct DisabledGizmoduckClient;
+
+impl DisabledGizmoduckClient {
     pub async fn new() -> Result<Self, anyhow::Error> {
         Ok(Self)
     }
 }
 
 #[async_trait]
-impl GizmoduckClient for ProdGizmoduckClient {
+impl GizmoduckClient for DisabledGizmoduckClient {
     async fn get_users(
         &self,
-        user_ids: Vec<i64>,
-    ) -> Result<HashMap<i64, Option<GizmoduckUserResult>>, anyhow::Error> {
+        user_ids: Vec<u64>,
+    ) -> Result<HashMap<u64, Option<GizmoduckUserResult>>, anyhow::Error> {
         // Stub: 返回所有用户为 None（未找到）
         // 这意味着 author_screen_name 和 author_followers_count 将为 None
-        let results: HashMap<i64, Option<GizmoduckUserResult>> =
+        let results: HashMap<u64, Option<GizmoduckUserResult>> =
             user_ids.into_iter().map(|id| (id, None)).collect();
         Ok(results)
     }

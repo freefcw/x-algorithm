@@ -5,8 +5,10 @@ use crate::scorer::Scorer;
 use crate::selector::{SelectResult, Selector};
 use crate::side_effect::{SideEffect, SideEffectInput};
 use crate::source::Source;
+use crate::util;
 use futures::future::join_all;
 use log::{error, info, warn};
+use std::any::type_name_of_val;
 use std::sync::Arc;
 use std::time::Instant;
 use tonic::async_trait;
@@ -84,84 +86,57 @@ where
     fn finalize(&self, _query: &Q, _candidates: &mut Vec<C>) {}
 
     fn components(&self) -> Vec<PipelineComponents> {
-        let side_effects = self.side_effects();
+        fn stage<T: ?Sized>(
+            stage: PipelineStage,
+            items: &[Box<T>],
+            name: impl Fn(&T) -> &str,
+        ) -> PipelineComponents {
+            PipelineComponents {
+                stage,
+                components: items
+                    .iter()
+                    .map(|item| name(item.as_ref()).to_string())
+                    .collect(),
+            }
+        }
+
         vec![
-            PipelineComponents {
-                stage: PipelineStage::QueryHydrator,
-                components: self
-                    .query_hydrators()
-                    .iter()
-                    .map(|component| component.name().to_string())
-                    .collect(),
-            },
-            PipelineComponents {
-                stage: PipelineStage::DependentQueryHydrator,
-                components: self
-                    .dependent_query_hydrators()
-                    .iter()
-                    .map(|component| component.name().to_string())
-                    .collect(),
-            },
-            PipelineComponents {
-                stage: PipelineStage::Source,
-                components: self
-                    .sources()
-                    .iter()
-                    .map(|component| component.name().to_string())
-                    .collect(),
-            },
-            PipelineComponents {
-                stage: PipelineStage::Hydrator,
-                components: self
-                    .hydrators()
-                    .iter()
-                    .map(|component| component.name().to_string())
-                    .collect(),
-            },
-            PipelineComponents {
-                stage: PipelineStage::Filter,
-                components: self
-                    .filters()
-                    .iter()
-                    .map(|component| component.name().to_string())
-                    .collect(),
-            },
-            PipelineComponents {
-                stage: PipelineStage::Scorer,
-                components: self
-                    .scorers()
-                    .iter()
-                    .map(|component| component.name().to_string())
-                    .collect(),
-            },
+            stage(PipelineStage::QueryHydrator, self.query_hydrators(), |h| {
+                h.name()
+            }),
+            stage(
+                PipelineStage::DependentQueryHydrator,
+                self.dependent_query_hydrators(),
+                |h| h.name(),
+            ),
+            stage(PipelineStage::Source, self.sources(), |s| s.name()),
+            stage(PipelineStage::Hydrator, self.hydrators(), |h| h.name()),
+            stage(PipelineStage::Filter, self.filters(), |f| f.name()),
+            stage(PipelineStage::Scorer, self.scorers(), |s| s.name()),
             PipelineComponents {
                 stage: PipelineStage::Selector,
                 components: vec![self.selector().name().to_string()],
             },
-            PipelineComponents {
-                stage: PipelineStage::PostSelectionHydrator,
-                components: self
-                    .post_selection_hydrators()
-                    .iter()
-                    .map(|component| component.name().to_string())
-                    .collect(),
-            },
-            PipelineComponents {
-                stage: PipelineStage::PostSelectionFilter,
-                components: self
-                    .post_selection_filters()
-                    .iter()
-                    .map(|component| component.name().to_string())
-                    .collect(),
-            },
-            PipelineComponents {
-                stage: PipelineStage::SideEffect,
-                components: side_effects
-                    .iter()
-                    .map(|component| component.name().to_string())
-                    .collect(),
-            },
+            stage(
+                PipelineStage::PostSelectionHydrator,
+                self.post_selection_hydrators(),
+                |h| h.name(),
+            ),
+            stage(
+                PipelineStage::PostSelectionFilter,
+                self.post_selection_filters(),
+                |f| f.name(),
+            ),
+            stage(
+                PipelineStage::SideEffect,
+                self.side_effects().as_ref(),
+                |s| s.name(),
+            ),
         ]
+    }
+
+    fn name(&self) -> &'static str {
+        util::short_type_name(type_name_of_val(self))
     }
 
     async fn execute(&self, query: Q) -> PipelineResult<Q, C> {
@@ -169,25 +144,6 @@ where
         let hydrated_query = self.hydrate_dependent_query(hydrated_query).await;
 
         let candidates = self.fetch_candidates(&hydrated_query).await;
-        if candidates.is_empty() {
-            let request_id = hydrated_query.request_id().to_string();
-            info!(
-                "request_id={} pipeline short-circuited: no candidates",
-                request_id
-            );
-            let query = Arc::new(hydrated_query);
-            self.run_side_effects(Arc::new(SideEffectInput {
-                query: Arc::clone(&query),
-                selected_candidates: Vec::new(),
-                non_selected_candidates: Vec::new(),
-            }));
-            return PipelineResult {
-                retrieved_candidates: Vec::new(),
-                filtered_candidates: Vec::new(),
-                selected_candidates: Vec::new(),
-                query,
-            };
-        }
 
         let hydrated_candidates = self.hydrate(&hydrated_query, candidates).await;
 
@@ -201,16 +157,31 @@ where
             non_selected: mut non_selected_candidates,
         } = self.select(&hydrated_query, scored_candidates);
 
+        let selected_for_post_selection = selected_candidates.len();
         let post_selection_hydrated_candidates = self
             .hydrate_post_selection(&hydrated_query, selected_candidates)
             .await;
 
         let (mut final_candidates, post_selection_filtered_candidates) =
             self.filter_post_selection(&hydrated_query, post_selection_hydrated_candidates);
+        let post_selection_removed = post_selection_filtered_candidates.len();
         filtered_candidates.extend(post_selection_filtered_candidates);
 
+        let target_result_size = self.result_size();
         let truncated_candidates =
-            final_candidates.split_off(self.result_size().min(final_candidates.len()));
+            final_candidates.split_off(target_result_size.min(final_candidates.len()));
+        if final_candidates.len() < target_result_size {
+            warn!(
+                "request_id={} pipeline={} result_underfilled target={} actual={} selected_for_post_selection={} post_selection_removed={} non_selected={}",
+                hydrated_query.request_id(),
+                self.name(),
+                target_result_size,
+                final_candidates.len(),
+                selected_for_post_selection,
+                post_selection_removed,
+                non_selected_candidates.len()
+            );
+        }
         non_selected_candidates.extend(truncated_candidates);
         self.finalize(&hydrated_query, &mut final_candidates);
 
@@ -241,7 +212,7 @@ where
         let query_ref = &query;
         let results = join_all(hydrators.iter().map(|hydrator| async move {
             let started = Instant::now();
-            (hydrator, started, hydrator.hydrate(query_ref).await)
+            (hydrator, started, hydrator.run(query_ref).await)
         }))
         .await;
 
@@ -284,7 +255,7 @@ where
         let query_ref = &query;
         let results = join_all(hydrators.iter().map(|hydrator| async move {
             let started = Instant::now();
-            (hydrator, started, hydrator.hydrate(query_ref).await)
+            (hydrator, started, hydrator.run(query_ref).await)
         }))
         .await;
 
@@ -320,7 +291,7 @@ where
         let sources: Vec<_> = self.sources().iter().filter(|s| s.enable(query)).collect();
         let results = join_all(sources.iter().map(|source| async move {
             let started = Instant::now();
-            (source, started, source.get_candidates(query).await)
+            (source, started, source.run(query).await)
         }))
         .await;
 
@@ -384,49 +355,31 @@ where
         let candidates_ref = &candidates;
         let results = join_all(hydrators.iter().map(|hydrator| async move {
             let started = Instant::now();
-            (
-                hydrator,
-                started,
-                hydrator.hydrate(query, candidates_ref).await,
-            )
+            (hydrator, started, hydrator.run(query, candidates_ref).await)
         }))
         .await;
-        for (hydrator, started, result) in results {
-            match result {
-                Ok(hydrated) => {
-                    if hydrated.len() == expected_len {
-                        hydrator.update_all(&mut candidates, hydrated);
-                        info!(
-                            "request_id={} stage={:?} component={} candidates={} elapsed_ms={}",
-                            request_id,
-                            stage,
-                            hydrator.name(),
-                            expected_len,
-                            started.elapsed().as_millis()
-                        );
-                    } else {
-                        warn!(
-                            "request_id={} stage={:?} component={} skipped: length_mismatch expected={} got={} elapsed_ms={}",
-                            request_id,
-                            stage,
-                            hydrator.name(),
-                            expected_len,
-                            hydrated.len(),
-                            started.elapsed().as_millis()
-                        );
-                    }
-                }
-                Err(err) => {
-                    error!(
-                        "request_id={} stage={:?} component={} failed: {} elapsed_ms={}",
-                        request_id,
-                        stage,
-                        hydrator.name(),
-                        err,
-                        started.elapsed().as_millis()
-                    );
-                }
+        for (hydrator, started, hydrated) in results {
+            let failed = hydrated.iter().filter(|result| result.is_err()).count();
+            if failed > 0 {
+                warn!(
+                    "request_id={} stage={:?} component={} failed_candidates={} candidates={} elapsed_ms={}",
+                    request_id,
+                    stage,
+                    hydrator.name(),
+                    failed,
+                    expected_len,
+                    started.elapsed().as_millis()
+                );
             }
+            hydrator.update_all(&mut candidates, hydrated);
+            info!(
+                "request_id={} stage={:?} component={} candidates={} elapsed_ms={}",
+                request_id,
+                stage,
+                hydrator.name(),
+                expected_len,
+                started.elapsed().as_millis()
+            );
         }
         candidates
     }
@@ -460,7 +413,7 @@ where
             let started = Instant::now();
             let input_count = candidates.len();
             let backup = candidates.clone();
-            match filter.filter(query, candidates) {
+            match filter.try_run(query, candidates) {
                 Ok(result) => {
                     let removed_count = result.removed.len();
                     candidates = result.kept;
@@ -505,41 +458,28 @@ where
         let expected_len = candidates.len();
         for scorer in self.scorers().iter().filter(|s| s.enable(query)) {
             let started = Instant::now();
-            match scorer.score(query, &candidates).await {
-                Ok(scored) => {
-                    if scored.len() == expected_len {
-                        scorer.update_all(&mut candidates, scored);
-                        info!(
-                            "request_id={} stage={:?} component={} candidates={} elapsed_ms={}",
-                            request_id,
-                            PipelineStage::Scorer,
-                            scorer.name(),
-                            expected_len,
-                            started.elapsed().as_millis()
-                        );
-                    } else {
-                        warn!(
-                            "request_id={} stage={:?} component={} skipped: length_mismatch expected={} got={} elapsed_ms={}",
-                            request_id,
-                            PipelineStage::Scorer,
-                            scorer.name(),
-                            expected_len,
-                            scored.len(),
-                            started.elapsed().as_millis()
-                        );
-                    }
-                }
-                Err(err) => {
-                    error!(
-                        "request_id={} stage={:?} component={} failed: {} elapsed_ms={}",
-                        request_id,
-                        PipelineStage::Scorer,
-                        scorer.name(),
-                        err,
-                        started.elapsed().as_millis()
-                    );
-                }
+            let scored = scorer.run(query, &candidates).await;
+            let failed = scored.iter().filter(|result| result.is_err()).count();
+            if failed > 0 {
+                warn!(
+                    "request_id={} stage={:?} component={} failed_candidates={} candidates={} elapsed_ms={}",
+                    request_id,
+                    PipelineStage::Scorer,
+                    scorer.name(),
+                    failed,
+                    expected_len,
+                    started.elapsed().as_millis()
+                );
             }
+            scorer.update_all(&mut candidates, scored);
+            info!(
+                "request_id={} stage={:?} component={} candidates={} elapsed_ms={}",
+                request_id,
+                PipelineStage::Scorer,
+                scorer.name(),
+                expected_len,
+                started.elapsed().as_millis()
+            );
         }
         candidates
     }
@@ -549,7 +489,7 @@ where
         let started = Instant::now();
         let input_count = candidates.len();
         let result = if self.selector().enable(query) {
-            self.selector().select(query, candidates)
+            self.selector().run(query, candidates)
         } else {
             SelectResult {
                 selected: candidates,
@@ -665,7 +605,7 @@ mod tests {
 
     #[async_trait]
     impl Source<TestQuery, i32> for TestSource {
-        async fn get_candidates(&self, _query: &TestQuery) -> Result<Vec<i32>, String> {
+        async fn source(&self, _query: &TestQuery) -> Result<Vec<i32>, String> {
             Ok(vec![1, 3, 2])
         }
     }
@@ -674,7 +614,7 @@ mod tests {
 
     #[async_trait]
     impl Source<TestQuery, i32> for FailingSource {
-        async fn get_candidates(&self, _query: &TestQuery) -> Result<Vec<i32>, String> {
+        async fn source(&self, _query: &TestQuery) -> Result<Vec<i32>, String> {
             Err("source unavailable".to_string())
         }
     }
@@ -683,6 +623,14 @@ mod tests {
 
     impl Filter<TestQuery, i32> for FailingFilter {
         fn filter(
+            &self,
+            _query: &TestQuery,
+            _candidates: Vec<i32>,
+        ) -> crate::filter::FilterResult<i32> {
+            unreachable!("try_run supplies the test failure")
+        }
+
+        fn try_run(
             &self,
             _query: &TestQuery,
             _candidates: Vec<i32>,
@@ -698,11 +646,26 @@ mod tests {
             &self,
             _query: &TestQuery,
             candidates: Vec<i32>,
-        ) -> Result<crate::filter::FilterResult<i32>, String> {
-            Ok(crate::filter::FilterResult {
+        ) -> crate::filter::FilterResult<i32> {
+            crate::filter::FilterResult {
                 kept: Vec::new(),
                 removed: candidates,
-            })
+            }
+        }
+    }
+
+    struct RemoveHighestPostFilter;
+
+    impl Filter<TestQuery, i32> for RemoveHighestPostFilter {
+        fn filter(
+            &self,
+            _query: &TestQuery,
+            candidates: Vec<i32>,
+        ) -> crate::filter::FilterResult<i32> {
+            let (removed, kept) = candidates
+                .into_iter()
+                .partition(|candidate| *candidate == 3);
+            crate::filter::FilterResult { kept, removed }
         }
     }
 
@@ -723,6 +686,7 @@ mod tests {
         dependent: Vec<Box<dyn QueryHydrator<TestQuery>>>,
         sources: Vec<Box<dyn Source<TestQuery, i32>>>,
         filters: Vec<Box<dyn Filter<TestQuery, i32>>>,
+        post_filters: Vec<Box<dyn Filter<TestQuery, i32>>>,
         side_effects: Arc<Vec<Box<dyn SideEffect<TestQuery, i32>>>>,
         selector: TestSelector,
     }
@@ -734,6 +698,7 @@ mod tests {
                 dependent: vec![Box::new(DependentHydrator)],
                 sources: vec![Box::new(TestSource)],
                 filters: Vec::new(),
+                post_filters: Vec::new(),
                 side_effects: Arc::new(Vec::new()),
                 selector: TestSelector,
             }
@@ -775,7 +740,7 @@ mod tests {
         }
 
         fn post_selection_filters(&self) -> &[Box<dyn Filter<TestQuery, i32>>] {
-            &[]
+            &self.post_filters
         }
 
         fn side_effects(&self) -> Arc<Vec<Box<dyn SideEffect<TestQuery, i32>>>> {
@@ -826,7 +791,7 @@ mod tests {
     }
 
     #[test]
-    fn source_failure_short_circuits_with_hydrated_query() {
+    fn source_failure_returns_hydrated_query() {
         let mut pipeline = TestPipeline::new();
         pipeline.sources = vec![Box::new(FailingSource)];
         let runtime = tokio::runtime::Builder::new_current_thread()
@@ -868,6 +833,21 @@ mod tests {
         assert_eq!(result.retrieved_candidates, vec![1, 3, 2]);
         assert!(result.filtered_candidates.is_empty());
         assert_eq!(result.selected_candidates, vec![3, 2]);
+    }
+
+    #[test]
+    fn post_selection_underfill_does_not_bypass_filters_with_reserve_candidates() {
+        let mut pipeline = TestPipeline::new();
+        pipeline.post_filters = vec![Box::new(RemoveHighestPostFilter)];
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .build()
+            .expect("test runtime");
+
+        let result = runtime.block_on(pipeline.execute(TestQuery::default()));
+
+        assert_eq!(result.selected_candidates, vec![2]);
+        assert_eq!(result.filtered_candidates, vec![3]);
+        assert!(!result.selected_candidates.contains(&1));
     }
 
     #[test]

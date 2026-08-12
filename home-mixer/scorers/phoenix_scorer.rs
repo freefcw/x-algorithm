@@ -1,10 +1,10 @@
-use crate::candidate_pipeline::candidate::{PhoenixScores, PostCandidate};
-use crate::candidate_pipeline::query::ScoredPostsQuery;
-use crate::clients::phoenix_prediction_client::PhoenixPredictionClient;
-use crate::util::request_util;
+use crate::clients::phoenix_prediction_client::{predict_with_timeout, PhoenixPredictionClient};
+use crate::models::candidate::{PhoenixScores, PostCandidate};
+use crate::models::query::ScoredPostsQuery;
+use crate::params;
 use std::collections::HashMap;
 use std::sync::Arc;
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use tonic::async_trait;
 use x_algorithm_proto::recsys::{ActionName, ContinuousActionName};
 use xai_candidate_pipeline::scorer::Scorer;
@@ -19,9 +19,9 @@ impl Scorer<ScoredPostsQuery, PostCandidate> for PhoenixScorer {
         &self,
         query: &ScoredPostsQuery,
         candidates: &[PostCandidate],
-    ) -> Result<Vec<PostCandidate>, String> {
-        let user_id = query.user_id as u64;
-        let prediction_request_id = request_util::generate_request_id();
+    ) -> Vec<Result<PostCandidate, String>> {
+        let user_id = query.user_id;
+        let prediction_request_id = query.prediction_id;
         let last_scored_at_ms = Self::current_timestamp_millis();
 
         if let Some(sequence) = query
@@ -32,7 +32,7 @@ impl Scorer<ScoredPostsQuery, PostCandidate> for PhoenixScorer {
             let tweet_infos: Vec<x_algorithm_proto::recsys::TweetInfo> = candidates
                 .iter()
                 .map(|c| {
-                    let tweet_id = c.retweeted_tweet_id.unwrap_or(c.tweet_id as u64);
+                    let tweet_id = c.retweeted_tweet_id.unwrap_or(c.tweet_id);
                     let author_id = c.retweeted_user_id.unwrap_or(c.author_id);
                     x_algorithm_proto::recsys::TweetInfo {
                         tweet_id,
@@ -42,40 +42,47 @@ impl Scorer<ScoredPostsQuery, PostCandidate> for PhoenixScorer {
                 })
                 .collect();
 
-            let result = self
-                .phoenix_client
-                .predict(user_id, sequence.clone(), tweet_infos)
-                .await;
+            match predict_with_timeout(
+                self.phoenix_client.as_ref(),
+                user_id,
+                sequence.clone(),
+                tweet_infos,
+                Duration::from_millis(params::PHOENIX_PREDICTION_TIMEOUT_MS),
+            )
+            .await
+            {
+                Ok(response) => {
+                    let predictions_map = self.build_predictions_map(&response);
 
-            if let Ok(response) = result {
-                let predictions_map = self.build_predictions_map(&response);
+                    return candidates
+                        .iter()
+                        .map(|candidate| {
+                            let lookup_tweet_id =
+                                candidate.retweeted_tweet_id.unwrap_or(candidate.tweet_id);
+                            let phoenix_scores = predictions_map
+                                .get(&lookup_tweet_id)
+                                .map(|predictions| self.extract_phoenix_scores(predictions))
+                                .unwrap_or_default();
 
-                let scored_candidates = candidates
-                    .iter()
-                    .map(|c| {
-                        // For retweets, look up predictions using the original tweet id
-                        let lookup_tweet_id = c.retweeted_tweet_id.unwrap_or(c.tweet_id as u64);
-
-                        let phoenix_scores = predictions_map
-                            .get(&lookup_tweet_id)
-                            .map(|preds| self.extract_phoenix_scores(preds))
-                            .unwrap_or_default();
-
-                        PostCandidate {
-                            phoenix_scores,
-                            prediction_request_id: Some(prediction_request_id),
-                            last_scored_at_ms,
-                            ..Default::default()
-                        }
-                    })
-                    .collect();
-
-                return Ok(scored_candidates);
+                            Ok(PostCandidate {
+                                phoenix_scores,
+                                prediction_request_id: Some(prediction_request_id),
+                                last_scored_at_ms,
+                                ..Default::default()
+                            })
+                        })
+                        .collect();
+                }
+                Err(error) => {
+                    return vec![
+                        Err(format!("Phoenix prediction failed: {error}"));
+                        candidates.len()
+                    ];
+                }
             }
         }
 
-        // Return candidates unchanged if no scoring could be done
-        Ok(candidates.to_vec())
+        vec![Ok(PostCandidate::default()); candidates.len()]
     }
 
     fn update(&self, candidate: &mut PostCandidate, scored: PostCandidate) {
@@ -160,7 +167,7 @@ impl PhoenixScorer {
         SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .ok()
-            .map(|duration| duration.as_millis() as u64)
+            .and_then(|duration| u64::try_from(duration.as_millis()).ok())
     }
 }
 
@@ -195,7 +202,21 @@ mod tests {
             _sequence: x_algorithm_proto::recsys::UserActionSequence,
             _candidates: Vec<x_algorithm_proto::recsys::TweetInfo>,
         ) -> Result<x_algorithm_proto::recsys::PredictNextActionsResponse, anyhow::Error> {
-            unreachable!("score extraction tests do not call the prediction client")
+            Ok(Default::default())
+        }
+    }
+
+    struct FailingPhoenixClient;
+
+    #[async_trait]
+    impl PhoenixPredictionClient for FailingPhoenixClient {
+        async fn predict(
+            &self,
+            _user_id: u64,
+            _sequence: x_algorithm_proto::recsys::UserActionSequence,
+            _candidates: Vec<x_algorithm_proto::recsys::TweetInfo>,
+        ) -> Result<x_algorithm_proto::recsys::PredictNextActionsResponse, anyhow::Error> {
+            anyhow::bail!("prediction unavailable")
         }
     }
 
@@ -203,6 +224,56 @@ mod tests {
         PhoenixScorer {
             phoenix_client: Arc::new(UnusedPhoenixClient),
         }
+    }
+
+    #[tokio::test]
+    async fn scorer_propagates_query_prediction_id() {
+        let query = ScoredPostsQuery {
+            prediction_id: 123,
+            scoring_sequence: Some(Default::default()),
+            ..Default::default()
+        };
+        let scored = scorer()
+            .score(
+                &query,
+                &[PostCandidate {
+                    tweet_id: 10,
+                    ..Default::default()
+                }],
+            )
+            .await;
+
+        assert_eq!(
+            scored[0]
+                .as_ref()
+                .expect("candidate score")
+                .prediction_request_id,
+            Some(123)
+        );
+    }
+
+    #[tokio::test]
+    async fn unavailable_prediction_does_not_produce_scored_candidate_metadata() {
+        let query = ScoredPostsQuery {
+            prediction_id: 123,
+            scoring_sequence: Some(Default::default()),
+            ..Default::default()
+        };
+        let scorer = PhoenixScorer {
+            phoenix_client: Arc::new(FailingPhoenixClient),
+        };
+
+        let scored = scorer
+            .score(
+                &query,
+                &[PostCandidate {
+                    tweet_id: 10,
+                    ..Default::default()
+                }],
+            )
+            .await;
+
+        assert!(scored[0].is_err());
     }
 
     #[test]

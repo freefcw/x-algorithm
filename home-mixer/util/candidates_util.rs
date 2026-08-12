@@ -2,7 +2,7 @@
 //
 // 提供与候选帖子相关的通用辅助函数。
 
-use crate::candidate_pipeline::candidate::PostCandidate;
+use crate::models::candidate::PostCandidate;
 
 /// 获取帖子及其关联帖子的 ID 列表
 ///
@@ -19,13 +19,13 @@ use crate::candidate_pipeline::candidate::PostCandidate;
 ///
 /// # Returns
 /// 帖子本身及其关联帖子的 ID 列表
-pub fn get_related_post_ids(candidate: &PostCandidate) -> Vec<i64> {
+pub fn get_related_post_ids(candidate: &PostCandidate) -> Vec<u64> {
     let mut ids = vec![candidate.tweet_id];
     if let Some(retweeted_id) = candidate.retweeted_tweet_id {
-        ids.push(retweeted_id as i64);
+        ids.push(retweeted_id);
     }
     if let Some(reply_to_id) = candidate.in_reply_to_tweet_id {
-        ids.push(reply_to_id as i64);
+        ids.push(reply_to_id);
     }
     ids
 }

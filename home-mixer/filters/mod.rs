@@ -7,6 +7,7 @@ pub mod drop_duplicates_filter;
 
 pub mod ineligible_subscription_filter;
 pub mod muted_keyword_filter;
+pub mod new_user_topic_ids_filter;
 pub mod previously_seen_posts_backup_filter;
 pub mod previously_seen_posts_filter;
 pub mod previously_served_posts_filter;

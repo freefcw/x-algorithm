@@ -14,8 +14,8 @@
 // - TimelineHomeRecommendations: 用于算法推荐的帖子，审核标准更严格
 //   （因为用户没有主动选择关注这些作者）
 //
-// 当前为 stub 实现，所有帖子默认通过审核。
-// TODO: 替换为你平台的内容安全审核 API
+// 当前提供 Demo 显式 Allow 和 Disabled 显式 Unavailable 两种实现。
+// Disabled 结果由 Home Mixer 策略层保守降级，不会被解释为审核通过。
 
 use super::models::FilteredReason;
 use std::collections::HashMap;
@@ -50,7 +50,7 @@ pub enum SafetyLevel {
 #[derive(Clone, Debug, Default)]
 pub struct TwitterContextViewer {
     /// 查看者的用户 ID
-    pub user_id: i64,
+    pub user_id: u64,
     /// 客户端应用 ID（iOS/Android/Web 等）
     pub client_application_id: i64,
     /// 请求发起国家代码 (ISO 3166-1 alpha-2)
@@ -87,20 +87,36 @@ pub trait VisibilityFilteringClient: Send + Sync {
     /// - Some(reason) 表示帖子被标记，附带原因
     async fn get_result(
         &self,
-        tweet_ids: Vec<i64>,
+        tweet_ids: Vec<u64>,
         safety_level: SafetyLevel,
-        for_user_id: i64,
+        for_user_id: u64,
         context: Option<TwitterContextViewer>,
-    ) -> Result<HashMap<i64, Option<FilteredReason>>, anyhow::Error>;
+    ) -> Result<HashMap<u64, Option<FilteredReason>>, anyhow::Error>;
 }
 
-/// 生产环境可见性过滤客户端（Stub 实现）
-///
-/// 当前所有帖子默认通过审核。
-/// TODO: 接入你平台的内容安全审核系统，替换为实际的 gRPC 客户端
-pub struct ProdVisibilityFilteringClient;
+/// Demo visibility adapter. It produces an explicit allow decision for every
+/// requested post so the local mixed-source flow remains testable.
+pub struct DemoVisibilityFilteringClient;
 
-impl ProdVisibilityFilteringClient {
+#[async_trait]
+impl VisibilityFilteringClient for DemoVisibilityFilteringClient {
+    async fn get_result(
+        &self,
+        tweet_ids: Vec<u64>,
+        _safety_level: SafetyLevel,
+        _for_user_id: u64,
+        _context: Option<TwitterContextViewer>,
+    ) -> Result<HashMap<u64, Option<FilteredReason>>, anyhow::Error> {
+        Ok(tweet_ids.into_iter().map(|id| (id, None)).collect())
+    }
+}
+
+/// Disabled production integration. Returning an error keeps "not checked"
+/// distinct from an explicit allow; the application policy then retains only
+/// in-network candidates.
+pub struct DisabledVisibilityFilteringClient;
+
+impl DisabledVisibilityFilteringClient {
     /// 创建 VF 客户端
     ///
     /// 原始实现使用 S2S (Service-to-Service) 双向 TLS 证书认证。
@@ -120,17 +136,15 @@ impl ProdVisibilityFilteringClient {
 }
 
 #[async_trait]
-impl VisibilityFilteringClient for ProdVisibilityFilteringClient {
+impl VisibilityFilteringClient for DisabledVisibilityFilteringClient {
     async fn get_result(
         &self,
-        tweet_ids: Vec<i64>,
+        tweet_ids: Vec<u64>,
         _safety_level: SafetyLevel,
-        _for_user_id: i64,
+        _for_user_id: u64,
         _context: Option<TwitterContextViewer>,
-    ) -> Result<HashMap<i64, Option<FilteredReason>>, anyhow::Error> {
-        // Stub: 所有帖子通过安全检查
-        let results: HashMap<i64, Option<FilteredReason>> =
-            tweet_ids.into_iter().map(|id| (id, None)).collect();
-        Ok(results)
+    ) -> Result<HashMap<u64, Option<FilteredReason>>, anyhow::Error> {
+        let _ = tweet_ids;
+        anyhow::bail!("production visibility adapter is not configured")
     }
 }

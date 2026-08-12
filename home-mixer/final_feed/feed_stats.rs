@@ -1,5 +1,5 @@
 use super::feed_item::{FeedItem, FeedItemKind};
-use crate::candidate_pipeline::query::ScoredPostsQuery;
+use crate::models::query::ScoredPostsQuery;
 use log::info;
 use std::collections::BTreeMap;
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -106,7 +106,7 @@ impl FeedResponseStatsSideEffect {
 
 #[async_trait]
 impl SideEffect<ScoredPostsQuery, FeedItem> for FeedResponseStatsSideEffect {
-    async fn run(
+    async fn side_effect(
         &self,
         input: Arc<SideEffectInput<ScoredPostsQuery, FeedItem>>,
     ) -> Result<(), String> {

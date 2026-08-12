@@ -1,178 +1,258 @@
-use crate::candidate_pipeline::candidate::PostCandidate;
-use crate::candidate_pipeline::query::ScoredPostsQuery;
-use crate::final_feed::ForYouFeedServer;
+use crate::clients::gizmoduck_client::{
+    DemoGizmoduckClient, DisabledGizmoduckClient, GizmoduckClient,
+};
+#[cfg(test)]
+use crate::clients::gizmoduck_client::{ViewerData, ViewerEligibility};
+#[cfg(test)]
+use crate::feature_policy::HomeMixerFeatures;
+use crate::for_you_server::ForYouFeedServer;
+#[cfg(test)]
+use crate::models::query::ScoredPostsQuery;
 use crate::scored_posts_server::ScoredPostsServer;
 use log::info;
 use std::sync::Arc;
+use tonic::codec::CompressionEncoding;
+use tonic::service::RoutesBuilder;
 use tonic::{Request, Response, Status};
 use x_algorithm_proto::home_mixer as pb;
 use x_algorithm_proto::home_mixer::ScoredPostsResponse;
 
-#[derive(Clone)]
+use crate::debug_access::DebugAccessError;
+pub use crate::debug_access::DebugAccessPolicy;
+pub use crate::query_builder::{QueryBuilder, RequestContext};
+pub use crate::runtime_config::{HomeMixerConfig, HomeMixerMode};
+
 pub struct HomeMixerServer {
     scored_posts_server: Arc<ScoredPostsServer>,
     for_you_feed_server: Arc<ForYouFeedServer>,
 }
 
 impl HomeMixerServer {
-    pub async fn new() -> Self {
-        Self::with_scored_posts_server(Arc::new(ScoredPostsServer::new().await))
+    pub async fn build(config: HomeMixerConfig) -> anyhow::Result<Self> {
+        config.validate()?;
+        if config.mode == HomeMixerMode::Degraded {
+            log::warn!(
+                "HOME_MIXER_MODE=degraded: mandatory production caller identity, Viewer, UAS, Strato, TES, Gizmoduck, VF, Phoenix, and Thunder contracts are unavailable"
+            );
+        }
+        let viewer_client: Arc<dyn GizmoduckClient + Send + Sync> = match config.mode {
+            HomeMixerMode::Demo => Arc::new(DemoGizmoduckClient),
+            HomeMixerMode::Degraded | HomeMixerMode::ProductionReady => {
+                Arc::new(DisabledGizmoduckClient)
+            }
+        };
+        let query_builder = QueryBuilder::new(config.features, viewer_client);
+        let pipeline = Arc::new(
+            crate::candidate_pipeline::phoenix_candidate_pipeline::PhoenixCandidatePipeline::
+                assemble_for_mode(config.mode, config.features)
+                .await,
+        );
+        let debug_access = DebugAccessPolicy::new(config.features.debug_rpc, config.debug_token);
+        let scored_posts_server = Arc::new(
+            ScoredPostsServer::new(query_builder, pipeline).with_debug_access(debug_access),
+        );
+        Ok(Self::with_scored_posts_server(scored_posts_server))
+    }
+
+    pub async fn new() -> anyhow::Result<Self> {
+        Self::build(HomeMixerConfig::from_env()?).await
     }
 
     pub fn with_scored_posts_server(scored_posts_server: Arc<ScoredPostsServer>) -> Self {
-        let for_you_feed_server = Arc::new(ForYouFeedServer::new(Arc::clone(&scored_posts_server)));
+        let query_builder = scored_posts_server.query_builder();
+        let for_you_feed_server = Arc::new(ForYouFeedServer::new(
+            query_builder,
+            Arc::clone(&scored_posts_server),
+        ));
         HomeMixerServer {
             scored_posts_server,
             for_you_feed_server,
         }
     }
+
+    pub fn register(self: Arc<Self>, routes: &mut RoutesBuilder) {
+        routes.add_service(
+            pb::scored_posts_service_server::ScoredPostsServiceServer::from_arc(Arc::clone(
+                &self.scored_posts_server,
+            ))
+            .max_decoding_message_size(crate::params::MAX_GRPC_MESSAGE_SIZE)
+            .max_encoding_message_size(crate::params::MAX_GRPC_MESSAGE_SIZE)
+            .accept_compressed(CompressionEncoding::Gzip)
+            .accept_compressed(CompressionEncoding::Zstd)
+            .send_compressed(CompressionEncoding::Gzip)
+            .send_compressed(CompressionEncoding::Zstd),
+        );
+        routes.add_service(
+            pb::for_you_feed_service_server::ForYouFeedServiceServer::from_arc(Arc::clone(
+                &self.for_you_feed_server,
+            ))
+            .max_decoding_message_size(crate::params::MAX_GRPC_MESSAGE_SIZE)
+            .max_encoding_message_size(crate::params::MAX_GRPC_MESSAGE_SIZE)
+            .accept_compressed(CompressionEncoding::Gzip)
+            .accept_compressed(CompressionEncoding::Zstd)
+            .send_compressed(CompressionEncoding::Gzip)
+            .send_compressed(CompressionEncoding::Zstd),
+        );
+    }
 }
 
 #[tonic::async_trait]
-impl pb::for_you_feed_service_server::ForYouFeedService for HomeMixerServer {
+impl pb::for_you_feed_service_server::ForYouFeedService for ForYouFeedServer {
     async fn get_for_you_feed(
         &self,
         request: Request<pb::ScoredPostsQuery>,
     ) -> Result<Response<pb::ForYouFeedResponse>, Status> {
-        let query = query_from_proto(request.into_inner())?;
-        info!("For You request - request_id {}", query.request_id);
-        let output = self.for_you_feed_server.get_for_you_feed(query).await;
-        Ok(Response::new(pb::ForYouFeedResponse {
-            items: output
-                .items
-                .into_iter()
-                .map(|item| item.into_proto())
-                .collect(),
-            request_id: output.request_id,
-        }))
+        run_for_you_rpc(self, request.into_inner()).await
+    }
+
+    async fn get_for_you_feed_v2(
+        &self,
+        request: Request<pb::ForYouFeedQuery>,
+    ) -> Result<Response<pb::ForYouFeedResponse>, Status> {
+        let query = for_you_query_from_wrapper(request.into_inner())
+            .ok_or_else(|| Status::invalid_argument("ForYouFeedQuery.query is required"))?;
+        run_for_you_rpc(self, query).await
     }
 }
 
+fn for_you_query_from_wrapper(wrapper: pb::ForYouFeedQuery) -> Option<pb::ScoredPostsQuery> {
+    wrapper.query
+}
+
+async fn run_for_you_rpc(
+    server: &ForYouFeedServer,
+    proto_query: pb::ScoredPostsQuery,
+) -> Result<Response<pb::ForYouFeedResponse>, Status> {
+    let context = server.query_builder().build(proto_query).await?;
+    let query = context.query;
+    info!("For You request - request_id {}", query.request_id);
+    let output = server.get_for_you_feed(query).await;
+    Ok(Response::new(pb::ForYouFeedResponse {
+        items: output
+            .items
+            .into_iter()
+            .map(|item| item.into_proto())
+            .collect(),
+        request_id: output.request_id,
+    }))
+}
+
 #[tonic::async_trait]
-impl pb::scored_posts_service_server::ScoredPostsService for HomeMixerServer {
+impl pb::scored_posts_service_server::ScoredPostsService for ScoredPostsServer {
     async fn get_scored_posts(
         &self,
         request: Request<pb::ScoredPostsQuery>,
     ) -> Result<Response<ScoredPostsResponse>, Status> {
-        let query = query_from_proto(request.into_inner())?;
+        let context = self.query_builder().build(request.into_inner()).await?;
+        let query = context.query;
         info!("Scored Posts request - request_id {}", query.request_id);
-        let output = self.scored_posts_server.score(query).await;
+        let output = self.score(query).await;
         Ok(Response::new(ScoredPostsResponse {
             scored_posts: output.posts,
         }))
     }
-}
 
-fn query_from_proto(proto_query: pb::ScoredPostsQuery) -> Result<ScoredPostsQuery, Status> {
-    if proto_query.viewer_id == 0 {
-        return Err(Status::invalid_argument("viewer_id must be specified"));
+    async fn debug_scored_posts(
+        &self,
+        request: Request<pb::ScoredPostsQuery>,
+    ) -> Result<Response<pb::DebugScoredPostsResponse>, Status> {
+        self.authorize_debug(request.metadata())
+            .map_err(DebugAccessError::into_status)?;
+        let context = self.query_builder().build(request.into_inner()).await?;
+        let query = context.query;
+        info!(
+            "Debug Scored Posts request - request_id {}",
+            query.request_id
+        );
+        let (output, debug) = self.score_with_debug(query).await;
+        Ok(Response::new(pb::DebugScoredPostsResponse {
+            response: Some(ScoredPostsResponse {
+                scored_posts: output.posts,
+            }),
+            debug: Some(debug),
+        }))
     }
-
-    let pb::ScoredPostsQuery {
-        viewer_id,
-        client_app_id,
-        country_code,
-        language_code,
-        seen_ids,
-        served_ids,
-        in_network_only,
-        is_bottom_request,
-        bloom_filter_entries,
-        topic_ids,
-        excluded_topic_ids,
-        new_user_topic_ids,
-        exclude_videos,
-        impressed_post_ids,
-        past_request_timestamps_ms,
-        cached_posts,
-        is_preview,
-        is_shadow_traffic,
-        is_polling,
-        ip_address,
-        user_agent,
-        enable_phoenix_moe,
-    } = proto_query;
-    let cached_posts = cached_posts
-        .into_iter()
-        .filter_map(|cached| {
-            let tweet_id = i64::try_from(cached.tweet_id).ok()?;
-            (tweet_id != 0).then(|| PostCandidate {
-                tweet_id,
-                author_id: cached.author_id,
-                tweet_text: cached.tweet_text,
-                quoted_tweet_text: cached.quoted_tweet_text,
-                quoted_tweet_id: (cached.quoted_tweet_id != 0).then_some(cached.quoted_tweet_id),
-                retweeted_tweet_id: (cached.retweeted_tweet_id != 0)
-                    .then_some(cached.retweeted_tweet_id),
-                retweeted_user_id: (cached.retweeted_user_id != 0)
-                    .then_some(cached.retweeted_user_id),
-                in_reply_to_tweet_id: (cached.in_reply_to_tweet_id != 0)
-                    .then_some(cached.in_reply_to_tweet_id),
-                served_type: Some(
-                    pb::ServedType::try_from(cached.served_type)
-                        .ok()
-                        .filter(|served_type| *served_type != pb::ServedType::Unspecified)
-                        .unwrap_or(pb::ServedType::ForYouCachedPost),
-                ),
-                filtered_topic_ids: cached.filtered_topic_ids,
-                unfiltered_topic_ids: cached.unfiltered_topic_ids,
-                video_duration_ms: (cached.video_duration_ms > 0)
-                    .then_some(cached.video_duration_ms),
-                quoted_video_duration_ms: (cached.quoted_video_duration_ms > 0)
-                    .then_some(cached.quoted_video_duration_ms),
-                has_media: Some(
-                    cached.video_duration_ms > 0 || cached.quoted_video_duration_ms > 0,
-                ),
-                in_network: Some(cached.in_network),
-                score: Some(cached.score),
-                language_code: (!cached.language_code.is_empty()).then_some(cached.language_code),
-                ..Default::default()
-            })
-        })
-        .collect::<Vec<_>>();
-    let has_cached_posts = !cached_posts.is_empty();
-
-    let mut query = ScoredPostsQuery::new(
-        viewer_id,
-        client_app_id,
-        country_code,
-        language_code,
-        seen_ids,
-        served_ids,
-        in_network_only,
-        is_bottom_request,
-        bloom_filter_entries,
-    );
-    query.topic_ids = topic_ids;
-    query.excluded_topic_ids = excluded_topic_ids;
-    query.new_user_topic_ids = new_user_topic_ids;
-    query.exclude_videos = exclude_videos;
-    query.enable_phoenix_moe = enable_phoenix_moe;
-    query.impressed_post_ids = impressed_post_ids;
-    query.past_request_timestamps_ms = past_request_timestamps_ms;
-    query.cached_posts = cached_posts;
-    query.has_cached_posts = has_cached_posts;
-    query.is_preview = is_preview;
-    query.is_shadow_traffic = is_shadow_traffic;
-    query.is_polling = is_polling;
-    query.ip_address = ip_address;
-    query.user_agent = user_agent;
-    Ok(query)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::candidate_hydrators::vf_candidate_hydrator::VFCandidateHydrator;
-    use crate::candidate_pipeline::query::TopicRecallMode;
     use crate::filters::ancillary_vf_filter::AncillaryVFFilter;
+    use crate::models::candidate_features::GizmoduckUserResult;
+    use crate::models::query::TopicRecallMode;
     use crate::visibility::models::FilteredReason;
     use crate::visibility::vf_client::{
         SafetyLevel, TwitterContextViewer, VisibilityFilteringClient,
     };
     use std::collections::HashMap;
+    use std::time::Duration;
     use xai_candidate_pipeline::filter::Filter;
     use xai_candidate_pipeline::hydrator::Hydrator;
+
+    #[test]
+    fn for_you_wrapper_requires_and_preserves_inner_query() {
+        assert!(for_you_query_from_wrapper(pb::ForYouFeedQuery { query: None }).is_none());
+
+        let inner = pb::ScoredPostsQuery {
+            viewer_id: 42,
+            ..Default::default()
+        };
+        let extracted = for_you_query_from_wrapper(pb::ForYouFeedQuery { query: Some(inner) })
+            .expect("wrapped query");
+        assert_eq!(extracted.viewer_id, 42);
+    }
+
+    #[test]
+    fn application_servers_own_their_rpc_interfaces() {
+        fn assert_scored<T: pb::scored_posts_service_server::ScoredPostsService>() {}
+        fn assert_for_you<T: pb::for_you_feed_service_server::ForYouFeedService>() {}
+
+        assert_scored::<ScoredPostsServer>();
+        assert_for_you::<ForYouFeedServer>();
+    }
+
+    enum ViewerResponse {
+        Data(ViewerData),
+        Error,
+        Slow(ViewerData),
+    }
+
+    struct TestGizmoduckClient {
+        response: ViewerResponse,
+    }
+
+    #[tonic::async_trait]
+    impl GizmoduckClient for TestGizmoduckClient {
+        async fn get_viewer_data(&self, _viewer_id: u64) -> Result<ViewerData, anyhow::Error> {
+            match &self.response {
+                ViewerResponse::Data(data) => Ok(data.clone()),
+                ViewerResponse::Error => anyhow::bail!("viewer service unavailable"),
+                ViewerResponse::Slow(data) => {
+                    tokio::time::sleep(Duration::from_millis(20)).await;
+                    Ok(data.clone())
+                }
+            }
+        }
+
+        async fn get_users(
+            &self,
+            _user_ids: Vec<u64>,
+        ) -> Result<HashMap<u64, Option<GizmoduckUserResult>>, anyhow::Error> {
+            Ok(HashMap::new())
+        }
+    }
+
+    async fn build_query(
+        proto_query: pb::ScoredPostsQuery,
+        features: HomeMixerFeatures,
+    ) -> ScoredPostsQuery {
+        QueryBuilder::new(features, Arc::new(DisabledGizmoduckClient))
+            .build(proto_query)
+            .await
+            .expect("valid query")
+            .query
+    }
 
     struct QuoteRejectingVisibilityClient;
 
@@ -180,11 +260,11 @@ mod tests {
     impl VisibilityFilteringClient for QuoteRejectingVisibilityClient {
         async fn get_result(
             &self,
-            tweet_ids: Vec<i64>,
+            tweet_ids: Vec<u64>,
             _safety_level: SafetyLevel,
-            _for_user_id: i64,
+            _for_user_id: u64,
             _context: Option<TwitterContextViewer>,
-        ) -> Result<HashMap<i64, Option<FilteredReason>>, anyhow::Error> {
+        ) -> Result<HashMap<u64, Option<FilteredReason>>, anyhow::Error> {
             Ok(tweet_ids
                 .into_iter()
                 .map(|id| {
@@ -196,36 +276,65 @@ mod tests {
         }
     }
 
-    #[test]
-    fn maps_p3_request_context_and_cached_candidates() {
-        let query = query_from_proto(pb::ScoredPostsQuery {
-            viewer_id: 42,
-            topic_ids: vec![10],
-            excluded_topic_ids: vec![99],
-            new_user_topic_ids: vec![20],
-            exclude_videos: true,
-            enable_phoenix_moe: true,
-            impressed_post_ids: vec![7],
-            past_request_timestamps_ms: vec![1_700_000_000_000],
-            cached_posts: vec![pb::CachedPost {
-                tweet_id: 100,
-                author_id: 200,
-                tweet_text: "cached text".to_string(),
-                quoted_tweet_id: 300,
-                filtered_topic_ids: vec![10],
-                video_duration_ms: 5_000,
+    #[tokio::test]
+    async fn maps_p3_request_context_and_cached_candidates() {
+        let query = build_query(
+            pb::ScoredPostsQuery {
+                viewer_id: 42,
+                client_app_id: 7,
+                country_code: "US".to_string(),
                 language_code: "en".to_string(),
+                seen_ids: vec![1, -1],
+                served_ids: vec![2, -2],
+                in_network_only: true,
+                is_bottom_request: true,
+                bloom_filter_entries: vec![pb::ImpressionBloomFilterEntry {
+                    data: vec![1],
+                    num_bits: 8,
+                    num_hash_functions: 2,
+                }],
+                topic_ids: vec![10],
+                excluded_topic_ids: vec![99],
+                new_user_topic_ids: vec![20],
+                exclude_videos: true,
+                enable_phoenix_moe: true,
+                impressed_post_ids: vec![7, -7],
+                past_request_timestamps_ms: vec![1_700_000_000_000],
+                cached_posts: vec![pb::CachedPost {
+                    tweet_id: 100,
+                    author_id: 200,
+                    tweet_text: "cached text".to_string(),
+                    quoted_tweet_id: 300,
+                    filtered_topic_ids: vec![10],
+                    video_duration_ms: 5_000,
+                    language_code: "en".to_string(),
+                    ..Default::default()
+                }],
+                is_preview: true,
+                is_shadow_traffic: true,
+                is_polling: true,
+                ip_address: "203.0.113.1".to_string(),
+                user_agent: "test-client".to_string(),
+            },
+            HomeMixerFeatures {
+                phoenix_moe: true,
+                unsigned_cached_posts: true,
                 ..Default::default()
-            }],
-            is_preview: true,
-            is_shadow_traffic: true,
-            is_polling: true,
-            ip_address: "203.0.113.1".to_string(),
-            user_agent: "test-client".to_string(),
-            ..Default::default()
-        })
-        .expect("valid query");
+            },
+        )
+        .await;
 
+        assert_eq!(query.user_id, 42);
+        assert_eq!(query.client_app_id, 7);
+        assert_eq!(query.country_code, "US");
+        assert_eq!(query.language_code, "en");
+        assert_eq!(query.seen_ids, vec![1]);
+        assert_eq!(query.served_ids, vec![2]);
+        assert!(query.in_network_only && query.is_bottom_request);
+        assert_eq!(query.bloom_filter_entries.len(), 1);
+        assert!(query.request_id.ends_with("-42"));
+        assert!(query.prediction_id > 0);
+        assert!(query.request_time_ms > 0);
         assert_eq!(query.topic_ids, vec![10]);
         assert_eq!(query.excluded_topic_ids, vec![99]);
         assert_eq!(query.new_user_topic_ids, vec![20]);
@@ -249,56 +358,176 @@ mod tests {
         assert_eq!(query.user_agent, "test-client");
     }
 
-    #[test]
-    fn maps_new_user_topics_to_cold_start_mode() {
-        let query = query_from_proto(pb::ScoredPostsQuery {
-            viewer_id: 42,
-            new_user_topic_ids: vec![20],
-            ..Default::default()
-        })
-        .expect("valid query");
+    #[tokio::test]
+    async fn maps_new_user_topics_to_cold_start_mode() {
+        let query = build_query(
+            pb::ScoredPostsQuery {
+                viewer_id: 42,
+                new_user_topic_ids: vec![20],
+                ..Default::default()
+            },
+            HomeMixerFeatures::default(),
+        )
+        .await;
 
         assert_eq!(query.new_user_topic_ids, vec![20]);
         assert_eq!(query.topic_recall_mode(), TopicRecallMode::ColdStart);
     }
 
-    #[test]
-    fn removes_cached_candidate_when_quoted_post_is_not_visible() {
-        let query = query_from_proto(pb::ScoredPostsQuery {
-            viewer_id: 42,
-            cached_posts: vec![pb::CachedPost {
-                tweet_id: 100,
-                author_id: 200,
-                quoted_tweet_id: 300,
+    #[tokio::test]
+    async fn removes_cached_candidate_when_quoted_post_is_not_visible() {
+        let query = build_query(
+            pb::ScoredPostsQuery {
+                viewer_id: 42,
+                cached_posts: vec![pb::CachedPost {
+                    tweet_id: 100,
+                    author_id: 200,
+                    quoted_tweet_id: 300,
+                    ..Default::default()
+                }],
                 ..Default::default()
-            }],
-            ..Default::default()
-        })
-        .expect("valid query");
+            },
+            HomeMixerFeatures {
+                unsigned_cached_posts: true,
+                ..Default::default()
+            },
+        )
+        .await;
         let hydrator = VFCandidateHydrator {
             vf_client: Arc::new(QuoteRejectingVisibilityClient),
         };
-        let runtime = tokio::runtime::Builder::new_current_thread()
-            .build()
-            .expect("test runtime");
-        let hydrated = runtime
-            .block_on(hydrator.hydrate(&query, &query.cached_posts))
-            .expect("visibility hydration");
+        let hydrated = hydrator.hydrate(&query, &query.cached_posts).await;
+        let hydrated = hydrated[0].as_ref().expect("visibility hydration");
         let mut candidate = query.cached_posts[0].clone();
-        hydrator.update(&mut candidate, hydrated[0].clone());
+        hydrator.update(&mut candidate, hydrated.clone());
 
-        let result = AncillaryVFFilter
-            .filter(&query, vec![candidate])
-            .expect("ancillary filter");
+        let result = AncillaryVFFilter.filter(&query, vec![candidate]);
 
         assert!(result.kept.is_empty());
         assert_eq!(result.removed.len(), 1);
     }
 
-    #[test]
-    fn rejects_missing_viewer_id() {
-        let error = query_from_proto(pb::ScoredPostsQuery::default()).unwrap_err();
+    #[tokio::test]
+    async fn viewer_policy_can_force_in_network_only() {
+        let client = Arc::new(TestGizmoduckClient {
+            response: ViewerResponse::Data(ViewerData {
+                for_you_eligibility: ViewerEligibility::Denied,
+            }),
+        });
+        let query = QueryBuilder::new(HomeMixerFeatures::default(), client)
+            .build(pb::ScoredPostsQuery {
+                viewer_id: 42,
+                ..Default::default()
+            })
+            .await
+            .expect("valid query")
+            .query;
+
+        assert!(query.in_network_only);
+    }
+
+    #[tokio::test]
+    async fn unavailable_viewer_policy_restricts_to_in_network() {
+        let client = Arc::new(TestGizmoduckClient {
+            response: ViewerResponse::Error,
+        });
+        let query = QueryBuilder::new(HomeMixerFeatures::default(), client)
+            .build(pb::ScoredPostsQuery {
+                viewer_id: 42,
+                ..Default::default()
+            })
+            .await
+            .expect("viewer failure must not fail the request")
+            .query;
+
+        assert!(query.in_network_only);
+    }
+
+    #[tokio::test]
+    async fn viewer_policy_timeout_restricts_to_in_network() {
+        let client = Arc::new(TestGizmoduckClient {
+            response: ViewerResponse::Slow(ViewerData {
+                for_you_eligibility: ViewerEligibility::Allowed,
+            }),
+        });
+        let query = QueryBuilder::new(HomeMixerFeatures::default(), client)
+            .with_viewer_data_timeout(Duration::from_millis(1))
+            .build(pb::ScoredPostsQuery {
+                viewer_id: 42,
+                ..Default::default()
+            })
+            .await
+            .expect("viewer timeout must not fail the request")
+            .query;
+
+        assert!(query.in_network_only);
+    }
+
+    #[tokio::test]
+    async fn explicit_viewer_permission_allows_out_of_network() {
+        let client = Arc::new(TestGizmoduckClient {
+            response: ViewerResponse::Data(ViewerData {
+                for_you_eligibility: ViewerEligibility::Allowed,
+            }),
+        });
+        let query = QueryBuilder::new(HomeMixerFeatures::default(), client)
+            .build(pb::ScoredPostsQuery {
+                viewer_id: 42,
+                ..Default::default()
+            })
+            .await
+            .expect("known viewer permission")
+            .query;
+
+        assert!(!query.in_network_only);
+    }
+
+    #[tokio::test]
+    async fn unsigned_cached_posts_are_rejected_by_default() {
+        let error = QueryBuilder::default()
+            .build(pb::ScoredPostsQuery {
+                viewer_id: 42,
+                cached_posts: vec![pb::CachedPost {
+                    tweet_id: 100,
+                    ..Default::default()
+                }],
+                ..Default::default()
+            })
+            .await
+            .err()
+            .expect("untrusted cached posts must be rejected");
 
         assert_eq!(error.code(), tonic::Code::InvalidArgument);
+    }
+
+    #[tokio::test]
+    async fn request_cannot_enable_moe_when_global_switch_is_off() {
+        let query = build_query(
+            pb::ScoredPostsQuery {
+                viewer_id: 42,
+                enable_phoenix_moe: true,
+                ..Default::default()
+            },
+            HomeMixerFeatures::default(),
+        )
+        .await;
+
+        assert!(!query.enable_phoenix_moe);
+    }
+
+    #[tokio::test]
+    async fn query_builder_rejects_non_positive_viewer_id() {
+        for viewer_id in [0, -1] {
+            let error = QueryBuilder::default()
+                .build(pb::ScoredPostsQuery {
+                    viewer_id,
+                    ..Default::default()
+                })
+                .await
+                .err()
+                .expect("non-positive viewer_id must fail");
+
+            assert_eq!(error.code(), tonic::Code::InvalidArgument);
+        }
     }
 }

@@ -1,5 +1,5 @@
 use super::feed_item::{Advertisement, FeedItem, FeedItemContent};
-use crate::candidate_pipeline::query::ScoredPostsQuery;
+use crate::models::query::ScoredPostsQuery;
 use std::sync::Arc;
 use tonic::async_trait;
 use xai_candidate_pipeline::source::Source;
@@ -34,7 +34,7 @@ impl AdvertisementSource {
 
 #[async_trait]
 impl Source<ScoredPostsQuery, FeedItem> for AdvertisementSource {
-    async fn get_candidates(&self, query: &ScoredPostsQuery) -> Result<Vec<FeedItem>, String> {
+    async fn source(&self, query: &ScoredPostsQuery) -> Result<Vec<FeedItem>, String> {
         Ok(self
             .provider
             .fetch(query)

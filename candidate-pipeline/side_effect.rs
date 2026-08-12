@@ -1,3 +1,4 @@
+use crate::candidate_pipeline::{PipelineCandidate, PipelineQuery};
 use crate::util;
 use std::any::type_name_of_val;
 use std::sync::Arc;
@@ -14,15 +15,21 @@ pub struct SideEffectInput<Q, C> {
 #[async_trait]
 pub trait SideEffect<Q, C>: Send + Sync
 where
-    Q: Clone + Send + Sync + 'static,
-    C: Clone + Send + Sync + 'static,
+    Q: PipelineQuery,
+    C: PipelineCandidate,
 {
     /// Decide if this side-effect should be run
     fn enable(&self, _query: Arc<Q>) -> bool {
         true
     }
 
-    async fn run(&self, input: Arc<SideEffectInput<Q, C>>) -> Result<(), String>;
+    /// Keep the wrapper separate from the implementation so instrumentation can
+    /// be added without changing every side effect.
+    async fn run(&self, input: Arc<SideEffectInput<Q, C>>) -> Result<(), String> {
+        self.side_effect(input).await
+    }
+
+    async fn side_effect(&self, input: Arc<SideEffectInput<Q, C>>) -> Result<(), String>;
 
     fn name(&self) -> &'static str {
         util::short_type_name(type_name_of_val(self))
