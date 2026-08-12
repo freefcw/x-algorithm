@@ -165,6 +165,26 @@ def test_published_model_profile_enables_new_model_semantics():
     assert any("post_age_embedding_table" in name for name in parameter_names)
 
 
+def test_inference_runner_accepts_preloaded_published_params():
+    config = _tiny_model_config()
+    batch, embeddings = _tiny_model_inputs()
+    _, expected_params = _run_tiny_model(config, batch, embeddings)
+    runner = RecsysInferenceRunner(
+        runner=ModelRunner(model=config, bs_per_device=0.125),
+        name="preloaded-params-test",
+    )
+
+    runner.initialize(params=expected_params)
+
+    assert _parameter_names(runner.params) == _parameter_names(expected_params)
+    for module_name, module_params in expected_params.items():
+        for parameter_name, expected in module_params.items():
+            np.testing.assert_array_equal(
+                np.asarray(runner.params[module_name][parameter_name]),
+                np.asarray(expected),
+            )
+
+
 def test_inference_runner_loads_published_checkpoint_directly(tmp_path):
     config = _tiny_model_config(
         enable_post_age=True,

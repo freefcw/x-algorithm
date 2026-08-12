@@ -34,7 +34,6 @@ import os
 import threading
 import time
 from concurrent import futures
-from dataclasses import dataclass
 from typing import List, Optional, Sequence, Tuple
 
 import numpy as np
@@ -49,6 +48,11 @@ from runners import (
     RecsysInferenceRunner,
     RecsysRetrievalInferenceRunner,
     RetrievalModelRunner,
+)
+from services.inference_types import (
+    ACTION_IDX_TO_ENUM,
+    CandidatePrediction,
+    HistoryFeatures,
 )
 from services.recsys_proto import load_proto_modules
 
@@ -65,7 +69,6 @@ RANK_CHUNK = 32  # 单次前向最多处理的候选数，超出部分分批
 
 # Python ACTIONS 下标 → proto ActionName 枚举值。
 # 注意两边顺序不同：例如 quote 在 Python 里是下标 11，在 proto 里是枚举值 4。
-ACTION_IDX_TO_ENUM = [1, 2, 3, 5, 6, 7, 8, 9, 10, 11, 12, 4, 13, 14, 15, 16, 17, 18]
 LOG_PROBS_LEN = 19        # ActionName 枚举 0..=18
 CONTINUOUS_LEN = 2        # ContinuousActionName 枚举 0..=1（1 = DWELL_TIME）
 MIN_PROB = 1e-9
@@ -122,20 +125,6 @@ class EmbeddingTables:
 
 
 # ── 特征转换：proto → RecsysBatch ────────────────────────────────────────────
-
-
-@dataclass
-class HistoryFeatures:
-    post_hashes: np.ndarray      # [1, S, H]
-    author_hashes: np.ndarray    # [1, S, H]
-    actions: np.ndarray          # [1, S, A]
-    product_surface: np.ndarray  # [1, S]
-
-
-@dataclass
-class CandidatePrediction:
-    action_probs: np.ndarray
-    continuous_values: Optional[np.ndarray] = None
 
 
 def uas_to_history(uas) -> HistoryFeatures:
@@ -496,15 +485,12 @@ def serve(
     recsys_pb2, recsys_pb2_grpc = load_proto_modules()
 
     if artifacts_dir:
-        from services.published_gateway import (
-            PublishedRankerEngine,
-            PublishedRetrievalEngine,
-        )
+        from services.published_pipeline import PublishedPipeline
 
-        logger.info("正在从发布 artifact 初始化精排模型...")
-        ranker = PublishedRankerEngine(artifacts_dir)
-        logger.info("正在从发布 artifact 初始化召回模型...")
-        retrieval = PublishedRetrievalEngine(artifacts_dir)
+        logger.info("正在从发布 artifact 初始化共享推理核心...")
+        published_pipeline = PublishedPipeline(artifacts_dir)
+        ranker = published_pipeline.ranker
+        retrieval = published_pipeline.retrieval
     else:
         tables = EmbeddingTables(emb_tables_path)
         logger.info("正在初始化精排模型...")

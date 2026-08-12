@@ -39,6 +39,7 @@ def _write_tiny_artifact(path):
     }
     path.mkdir()
     (path / "config.json").write_text(json.dumps(config), encoding="utf-8")
+    np.savez(path / "model_params.npz", **{})
     np.savez(
         path / "embedding_tables.npz",
         user_embeddings=np.ones((5, 4), dtype=np.float32),
@@ -64,6 +65,59 @@ def _make_uas():
                 ]
             )
         ),
+    )
+
+
+def test_offline_json_and_online_proto_share_published_history_tensors(tmp_path):
+    artifact = tmp_path / "ranker"
+    _write_tiny_artifact(artifact)
+    adapter = PublishedFeatureAdapter(artifact)
+    uas = _make_uas()
+    sequence = {
+        "user_id": 42,
+        "history": [
+            {
+                "post_id": 100,
+                "author_id": 200,
+                "actions": {"0": 1.0},
+                "product_surface": 1,
+            }
+        ],
+    }
+
+    online = adapter.history_from_uas(uas)
+    offline = adapter.history_from_json(sequence)
+
+    np.testing.assert_array_equal(offline.post_hashes, online.post_hashes)
+    np.testing.assert_array_equal(offline.author_hashes, online.author_hashes)
+    np.testing.assert_array_equal(offline.actions, online.actions)
+    np.testing.assert_array_equal(offline.product_surface, online.product_surface)
+
+
+def test_fixed_impression_timestamp_is_shared_by_published_batch_adapter(tmp_path):
+    artifact = tmp_path / "ranker"
+    _write_tiny_artifact(artifact)
+    adapter = PublishedFeatureAdapter(artifact)
+    history = adapter.history_from_uas(_make_uas())
+    snapshot_seconds = 1_800_000_000
+    post_id = snowflake_id((snapshot_seconds - 300) * 1000, 1)
+
+    batch = adapter.build_batch(
+        42,
+        history,
+        [post_id],
+        [300],
+        ranker_features=True,
+        impression_timestamp=snapshot_seconds,
+    )
+
+    np.testing.assert_array_equal(
+        batch.candidate_impr_ts,
+        [[snapshot_seconds, snapshot_seconds]],
+    )
+    np.testing.assert_array_equal(
+        batch.candidate_post_creation_ts,
+        [[snapshot_seconds - 300, 0]],
     )
 
 

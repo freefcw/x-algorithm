@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import json
 import threading
 import time
 from pathlib import Path
@@ -12,19 +11,23 @@ import numpy as np
 
 from recsys_model import PhoenixModelConfig, RecsysBatch, RecsysEmbeddings
 from recsys_retrieval_model import PhoenixRetrievalModelConfig
-from run_pipeline import build_hash_functions, build_model_config, build_unified_emb_table
 from runners import (
     ModelRunner,
     RecsysInferenceRunner,
     RecsysRetrievalInferenceRunner,
     RetrievalModelRunner,
-    load_embedding_table,
 )
-from services.grpc_gateway import (
+from services.published_artifacts import (
+    PublishedArtifact,
+    TWITTER_EPOCH_MS,
+    build_candidate_post_age_timestamps,
+    build_hash_functions,
+    build_model_config,
+)
+from services.inference_types import (
     ACTION_IDX_TO_ENUM,
     CandidatePrediction,
     HistoryFeatures,
-    TWITTER_EPOCH_MS,
 )
 
 
@@ -32,8 +35,9 @@ class PublishedFeatureAdapter:
     """Converts public proto inputs into the exact published checkpoint tensors."""
 
     def __init__(self, artifact_dir: Path):
-        with (artifact_dir / "config.json").open(encoding="utf-8") as config_file:
-            self.config = json.load(config_file)
+        artifact = PublishedArtifact(artifact_dir)
+        self.config = artifact.config
+        self.params = artifact.params
 
         self.history_len = int(self.config["history_seq_len"])
         self.candidate_len = int(self.config["candidate_seq_len"])
@@ -43,10 +47,7 @@ class PublishedFeatureAdapter:
         self.hash_user, self.hash_item, self.hash_author = build_hash_functions(
             self.config
         )
-        self.embedding_table = build_unified_emb_table(
-            load_embedding_table(artifact_dir / "embedding_tables.npz"),
-            self.config,
-        )
+        self.embedding_table = artifact.embedding_table
 
     def history_from_uas(self, uas) -> HistoryFeatures:
         post_ids = np.zeros(self.history_len, dtype=np.uint64)
@@ -87,6 +88,34 @@ class PublishedFeatureAdapter:
             product_surface=surface,
         )
 
+    def history_from_json(self, sequence) -> HistoryFeatures:
+        """Convert the upstream offline JSON fixture into published tensors."""
+        post_ids = np.zeros(self.history_len, dtype=np.uint64)
+        author_ids = np.zeros(self.history_len, dtype=np.uint64)
+        actions = np.zeros(
+            (1, self.history_len, self.num_actions), dtype=np.float32
+        )
+        surface = np.zeros((1, self.history_len), dtype=np.int32)
+        records = list(sequence.get("history", []))[-self.history_len :]
+
+        for index, record in enumerate(records):
+            post_ids[index] = int(record["post_id"])
+            author_ids[index] = int(record["author_id"])
+            surface[0, index] = int(record.get("product_surface", 0)) % self.surface_vocab
+            for action_index, action_value in record.get("actions", {}).items():
+                model_index = int(action_index)
+                if model_index < self.num_actions:
+                    actions[0, index, model_index] = float(action_value)
+
+        return HistoryFeatures(
+            post_hashes=self.hash_item(post_ids).reshape(1, self.history_len, -1),
+            author_hashes=self.hash_author(author_ids).reshape(
+                1, self.history_len, -1
+            ),
+            actions=actions,
+            product_surface=surface,
+        )
+
     def build_batch(
         self,
         user_id: int,
@@ -95,6 +124,7 @@ class PublishedFeatureAdapter:
         candidate_author_ids: Sequence[int],
         *,
         ranker_features: bool,
+        impression_timestamp: int | None = None,
     ) -> RecsysBatch:
         post_ids = np.zeros(self.candidate_len, dtype=np.uint64)
         author_ids = np.zeros(self.candidate_len, dtype=np.uint64)
@@ -123,24 +153,18 @@ class PublishedFeatureAdapter:
         if not ranker_features:
             return batch
 
-        now_seconds = int(time.time())
-        creation_seconds = np.zeros(self.candidate_len, dtype=np.int64)
-        for index, post_id in enumerate(post_ids[:candidate_count]):
-            timestamp_ms = (int(post_id) >> 22) + TWITTER_EPOCH_MS
-            if timestamp_ms > TWITTER_EPOCH_MS:
-                creation_seconds[index] = timestamp_ms // 1000
+        now_seconds = int(time.time()) if impression_timestamp is None else impression_timestamp
+        candidate_impr_ts, candidate_post_creation_ts = build_candidate_post_age_timestamps(
+            post_ids[:candidate_count], self.candidate_len, now_seconds
+        )
 
         return batch._replace(
             history_continuous_actions=np.zeros(
                 (1, self.history_len, self.num_continuous_actions),
                 dtype=np.float32,
             ),
-            candidate_impr_ts=np.full(
-                (1, self.candidate_len), now_seconds, dtype=np.int64
-            ),
-            candidate_post_creation_ts=creation_seconds.reshape(
-                1, self.candidate_len
-            ),
+            candidate_impr_ts=candidate_impr_ts,
+            candidate_post_creation_ts=candidate_post_creation_ts,
         )
 
     def lookup(self, batch: RecsysBatch) -> RecsysEmbeddings:
@@ -174,8 +198,7 @@ class PublishedRankerEngine:
             runner=ModelRunner(model=model_config, bs_per_device=0.125),
             name="grpc_published_ranker",
         )
-        checkpoint = artifact_dir / "model_params.npz"
-        runner.initialize(checkpoint_path=checkpoint)
+        runner.initialize(params=self._features.params)
         self._runner = runner
         self._lock = threading.Lock()
         self.model_version = root.name
@@ -183,7 +206,35 @@ class PublishedRankerEngine:
     def predict(
         self, user_id: int, uas, candidates: Sequence[Tuple[int, int]]
     ) -> List[CandidatePrediction]:
-        history = self._features.history_from_uas(uas)
+        return self.predict_from_history(
+            user_id,
+            self._features.history_from_uas(uas),
+            candidates,
+        )
+
+    def predict_from_json(
+        self,
+        user_id: int,
+        sequence,
+        candidates: Sequence[Tuple[int, int]],
+        *,
+        impression_timestamp: int,
+    ) -> List[CandidatePrediction]:
+        return self.predict_from_history(
+            user_id,
+            self._features.history_from_json(sequence),
+            candidates,
+            impression_timestamp=impression_timestamp,
+        )
+
+    def predict_from_history(
+        self,
+        user_id: int,
+        history: HistoryFeatures,
+        candidates: Sequence[Tuple[int, int]],
+        *,
+        impression_timestamp: int | None = None,
+    ) -> List[CandidatePrediction]:
         predictions: List[CandidatePrediction] = []
         chunk_size = self._features.candidate_len
 
@@ -196,6 +247,7 @@ class PublishedRankerEngine:
                     [candidate[0] for candidate in chunk],
                     [candidate[1] for candidate in chunk],
                     ranker_features=True,
+                    impression_timestamp=impression_timestamp,
                 )
                 output = self._runner.rank(batch, self._features.lookup(batch))
                 action_probs = np.asarray(output.scores[0], dtype=np.float64)
@@ -218,7 +270,7 @@ class PublishedRankerEngine:
 
 
 class PublishedRetrievalEngine:
-    def __init__(self, artifacts_dir: str):
+    def __init__(self, artifacts_dir: str, corpus_file: str | None = None):
         root = Path(artifacts_dir)
         artifact_dir = root / "retrieval"
         self._features = PublishedFeatureAdapter(artifact_dir)
@@ -229,11 +281,19 @@ class PublishedRetrievalEngine:
             runner=RetrievalModelRunner(model=model_config, bs_per_device=0.125),
             name="grpc_published_retrieval",
         )
-        runner.initialize(checkpoint_path=artifact_dir / "model_params.npz")
+        runner.initialize(params=self._features.params)
 
-        with np.load(root / "sports_corpus.npz", allow_pickle=False) as corpus:
+        corpus_path = Path(corpus_file) if corpus_file else root / "sports_corpus.npz"
+        with np.load(corpus_path, allow_pickle=True) as corpus:
             self._post_ids = np.asarray(corpus["post_ids"], dtype=np.int64)
             self._author_ids = np.asarray(corpus["author_ids"], dtype=np.int64)
+            self._topics = np.asarray(
+                corpus.get("topics", np.array([""] * len(self._post_ids)))
+            )
+            self._topic_by_post = {
+                int(post_id): str(topic)
+                for post_id, topic in zip(self._post_ids, self._topics)
+            }
             corpus_representations = np.asarray(
                 corpus["candidate_representations"], dtype=np.float32
             )
@@ -243,10 +303,44 @@ class PublishedRetrievalEngine:
         self._lock = threading.Lock()
         self.model_version = root.name
 
+    @property
+    def post_ids(self) -> np.ndarray:
+        return self._post_ids
+
+    @property
+    def corpus_size(self) -> int:
+        return len(self._post_ids)
+
+    def topic_for_post(self, post_id: int) -> str:
+        return self._topic_by_post.get(int(post_id), "")
+
     def retrieve(
         self, user_id: int, uas, max_results: int
     ) -> List[Tuple[int, int, float]]:
-        history = self._features.history_from_uas(uas)
+        return self.retrieve_from_history(
+            user_id,
+            self._features.history_from_uas(uas),
+            max_results,
+        )
+
+    def retrieve_from_json(
+        self,
+        user_id: int,
+        sequence,
+        max_results: int,
+    ) -> List[Tuple[int, int, float]]:
+        return self.retrieve_from_history(
+            user_id,
+            self._features.history_from_json(sequence),
+            max_results,
+        )
+
+    def retrieve_from_history(
+        self,
+        user_id: int,
+        history: HistoryFeatures,
+        max_results: int,
+    ) -> List[Tuple[int, int, float]]:
         batch = self._features.build_batch(
             user_id, history, [], [], ranker_features=False
         )

@@ -221,6 +221,8 @@ Phoenix supports three distinct modes:
      --artifacts-dir artifacts/oss-phoenix-artifacts
    ```
 
+The published offline CLI and gRPC mode both construct `services.published_pipeline.PublishedPipeline`; config/NPZ loading, hashing, preprocessing, model runners, and output mapping are shared. For reproducible post-age features, the offline entry also accepts the additive `--impression_timestamp <unix-seconds>` option; without it, the corpus end timestamp is used.
+
 The current published LFS object is 2,903,518,802 bytes with SHA-256
 `fbc6017d00588754e22e0c7eb2f786a008a74d309c03c8085fa2fad418a83dac`.
 Its `config.json` files define the architecture: 128-dimensional embeddings,

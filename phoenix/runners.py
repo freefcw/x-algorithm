@@ -329,7 +329,7 @@ class RecsysInferenceRunner(BaseInferenceRunner):
     def runner(self) -> ModelRunner:
         return self._runner
 
-    def initialize(self, checkpoint_path=None):
+    def initialize(self, checkpoint_path=None, params=None):
         """
         初始化推理环境：
         1. 实例化 ModelRunner。
@@ -343,10 +343,14 @@ class RecsysInferenceRunner(BaseInferenceRunner):
 
         runner.initialize()
 
-        state = runner.load_or_init(
-            dummy_batch,
-            dummy_embeddings,
-            checkpoint_path=checkpoint_path,
+        state = (
+            TrainingState(params=params)
+            if params is not None
+            else runner.load_or_init(
+                dummy_batch,
+                dummy_embeddings,
+                checkpoint_path=checkpoint_path,
+            )
         )
         self.params = state.params
 
@@ -625,8 +629,8 @@ class RecsysRetrievalInferenceRunner(BaseInferenceRunner):
     def runner(self) -> RetrievalModelRunner:
         return self._runner
 
-    def initialize(self, checkpoint_path=None):
-        """初始化召回推理函数，可选加载导出的模型参数。"""
+    def initialize(self, checkpoint_path=None, params=None):
+        """初始化召回推理函数，可选注入参数或加载导出的模型参数。"""
         runner = self.runner
 
         dummy_batch = self.create_dummy_batch(batch_size=1)
@@ -636,13 +640,16 @@ class RecsysRetrievalInferenceRunner(BaseInferenceRunner):
 
         runner.initialize()
 
-        # 初始化参数
-        state = runner.load_or_init(
-            dummy_batch,
-            dummy_embeddings,
-            dummy_corpus,
-            dummy_top_k,
-            checkpoint_path=checkpoint_path,
+        state = (
+            TrainingState(params=params)
+            if params is not None
+            else runner.load_or_init(
+                dummy_batch,
+                dummy_embeddings,
+                dummy_corpus,
+                dummy_top_k,
+                checkpoint_path=checkpoint_path,
+            )
         )
         self.params = state.params
 
