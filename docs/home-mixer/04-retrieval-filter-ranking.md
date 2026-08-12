@@ -60,7 +60,7 @@ flowchart LR
 
 | Hydrator | 作用 | 下游影响 |
 | --- | --- | --- |
-| `InNetworkCandidateHydrator` | 判断作者是否在关注网络内 | `OONScorer`、`VFCandidateHydrator` |
+| `InNetworkCandidateHydrator` | 判断作者是否在关注网络内 | `RankingScorer` 内部 OON 阶段、`VFCandidateHydrator` |
 | `CoreDataCandidateHydrator` | 补文本、转推关系、回复关系 | 多个 filter 和 scorer 依赖 |
 | `VideoDurationCandidateHydrator` | 补视频时长 | VQV 权重判断 |
 | `SubscriptionHydrator` | 补订阅作者信息 | 订阅过滤 |
@@ -112,12 +112,12 @@ flowchart TD
 
 ```mermaid
 flowchart LR
-    A["候选 + user_action_sequence"] --> P["PhoenixScorer<br/>预测多种互动概率"]
-    P --> W["WeightedScorer<br/>加权合成 weighted_score"]
-    W --> D["AuthorDiversityScorer<br/>多样性衰减 -> score"]
-    D --> O["OONScorer<br/>网外降权 -> score"]
-    O --> S["TopKScoreSelector"]
+    A["候选 + scoring_sequence"] --> P["PhoenixScorer<br/>预测多种互动概率"]
+    P --> R["RankingScorer<br/>内部组合加权 / 多样性 / OON"]
+    R --> S["TopKScoreSelector"]
 ```
+
+`WeightedScorer`、`AuthorDiversityScorer` 和 `OONScorer` 仍保留为可测试的本地行为实现，但生产 pipeline 只注册同名上游边界 `RankingScorer`，由它按原顺序组合三段逻辑。
 
 ### 4.1 `PhoenixScorer`
 

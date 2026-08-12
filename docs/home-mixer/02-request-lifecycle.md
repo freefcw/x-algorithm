@@ -4,15 +4,15 @@
 
 ## 1. 启动期：服务是怎样被组起来的
 
-启动入口在 `home-mixer/main.rs`，流程如下：
+启动入口在 `home-mixer/main.rs`。运行模式与启动不变量位于 `runtime_config.rs`，协议映射位于 `query_builder.rs`，gRPC 装配 facade 位于 `server.rs`。流程如下：
 
-1. 解析命令行参数
+1. 解析 `HomeMixerConfig`
 2. 初始化日志
-3. `HomeMixerServer::new().await`
-4. 在 `new()` 里创建 `PhoenixCandidatePipeline::prod().await`
-5. `prod()` 初始化所有客户端并装配 pipeline
-6. 注册 gRPC 服务与 reflection
-7. 启动一个空的 HTTP 端口用于 health/metrics 占位
+3. `HomeMixerServer::build(config).await`
+4. 构造共享 `QueryBuilder`、内层 `PhoenixCandidatePipeline`、`ScoredPostsServer`
+5. 构造外层 `ForYouCandidatePipeline` 与 `ForYouFeedServer`
+6. 通过 `HomeMixerServer::register` 注册两个 gRPC 服务、reflection、压缩和消息限制
+7. 启动 gRPC 与 health/metrics HTTP 监听
 
 ```mermaid
 sequenceDiagram
@@ -21,27 +21,30 @@ sequenceDiagram
     participant Pipeline as PhoenixCandidatePipeline
     participant Clients as 外部客户端
 
-    Main->>Server: HomeMixerServer::new()
-    Server->>Pipeline: PhoenixCandidatePipeline::prod()
+    Main->>Server: HomeMixerServer::build(config)
+    Server->>Pipeline: PhoenixCandidatePipeline::assemble_for_mode(config.mode, features)
     Pipeline->>Clients: 初始化 UAS / Phoenix / Thunder / Strato / TES / VF 等
     Clients-->>Pipeline: 返回客户端实例
-    Pipeline-->>Server: 装配完成的 pipeline
+    Pipeline-->>Server: 内层 pipeline
+    Server->>Server: ScoredPosts + ForYou pipeline/server 装配
     Server-->>Main: 服务实例
+    Main->>Server: register(routes)
     Main->>Main: 启动 gRPC 与 HTTP 监听
 ```
 
 ## 2. 请求入口：`get_scored_posts`
 
-真正处理请求的是 `server.rs` 里的 `get_scored_posts()`。
+真正处理请求的是各自 application server 的 tonic trait 实现，`HomeMixerServer` 只负责构建和注册。所有入口先经过共享 `QueryBuilder`：
 
-它做四件事：
+1. 校验 `viewer_id > 0`
+2. 做 signed proto 到 unsigned domain ID 的 checked conversion
+3. 合并 viewer/feature policy
+4. 生成 request ID、prediction ID 和 request time
+5. 调用对应内层或外层 pipeline
 
-1. 解包 proto 请求
-2. 校验 `viewer_id != 0`
-3. 构造内部 `ScoredPostsQuery`
-4. 调用 `self.phx_candidate_pipeline.execute(query).await`
+`DebugScoredPosts` 与普通 ScoredPosts 共享一次 pipeline 执行，但默认返回 `Unavailable`；只有显式启用并通过 `x-home-mixer-debug-token` 校验才会执行和返回过滤前/后的 ID。`GetForYouFeedV2` 只增加 `ForYouFeedQuery` wrapper，原 RPC 保持不变。
 
-然后把最终候选映射回 proto `ScoredPost`。
+Viewer policy 只有明确 Allow 才启用网外推荐；错误、超时和未知字段降级为仅网内。请求携带未签名 `cached_posts` 默认被拒绝，只有显式 Demo fixture 开关可使用。
 
 ## 3. 一次请求的完整时序
 
@@ -49,6 +52,7 @@ sequenceDiagram
 sequenceDiagram
     participant Client as 客户端
     participant HM as HomeMixerServer
+    participant QB as QueryBuilder
     participant CP as CandidatePipeline
     participant QH as QueryHydrators
     participant SRC as Sources
@@ -60,12 +64,12 @@ sequenceDiagram
     participant SE as SideEffects
 
     Client->>HM: GetScoredPosts(ScoredPostsQuery)
-    HM->>HM: 校验 viewer_id
-    HM->>HM: 构造内部 ScoredPostsQuery
+    HM->>QB: build(proto query)
+    QB-->>HM: 校验后的 ScoredPostsQuery + 请求身份
     HM->>CP: execute(query)
 
     CP->>QH: 并行 hydrate_query
-    QH-->>CP: user_action_sequence / user_features
+    QH-->>CP: scoring/retrieval sequences + 分字段 user features
 
     CP->>SRC: 并行 fetch_candidates
     SRC-->>CP: Thunder + Phoenix 候选
@@ -97,11 +101,11 @@ sequenceDiagram
 
 ```mermaid
 flowchart TD
-    A["hydrate_query"] -->|"并行"| A1["UserActionSeqQueryHydrator"]
-    A -->|"并行"| A2["UserFeaturesQueryHydrator"]
+    A["hydrate_query"] -->|"并行"| A1["Scoring / Retrieval Sequence Hydrators"]
+    A -->|"并行"| A2["Blocked / Muted / Followed / Subscribed owners"]
+    A -->|"并行"| A3["Local safety / optional topic owners"]
     A --> B["fetch_candidates"]
-    B -->|"并行"| B1["PhoenixSource"]
-    B -->|"并行"| B2["ThunderSource"]
+    B -->|"并行"| B1["Thunder / Phoenix / optional Topic / MoE / Cached"]
     B --> C["hydrate"]
     C -->|"并行"| C1["所有 candidate hydrators"]
     C --> D["filter"]
@@ -112,9 +116,9 @@ flowchart TD
     F --> G["post-selection hydrate"]
     G -->|"并行"| G1["VFCandidateHydrator"]
     G --> H["post-selection filters"]
-    H -->|"串行"| H1["VFFilter -> DedupConversationFilter"]
+    H -->|"串行"| H1["VFFilter -> AncillaryVFFilter -> DedupConversationFilter"]
     H --> I["run_side_effects"]
-    I -->|"异步 fire-and-forget"| I1["CacheRequestInfoSideEffect"]
+    I -->|"异步 fire-and-forget"| I1["PhoenixRequestCacheSideEffect (default off)"]
 ```
 
 ### 4.1 并行阶段
@@ -167,7 +171,7 @@ flowchart TD
 这里有两个要点：
 
 1. 返回的是 pipeline 最终保留下来的 `selected_candidates`，不是召回原始结果。
-2. `visibility_reason` 会被带回响应，但真正会被 `VFFilter` 删除的内容通常已经不在结果里了。
+2. 只有 `Restricted` 且候选最终仍保留时才映射 `visibility_reason`；`Unchecked/Unavailable` 的网外候选会被删除，网内候选按降级策略保留但不伪造审核原因。
 
 ## 7. 一个容易忽略的事实
 

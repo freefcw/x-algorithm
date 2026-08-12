@@ -9,7 +9,7 @@
 
 ## 1. `ScoredPostsQuery`：请求上下文容器
 
-内部请求结构定义在 `home-mixer/candidate_pipeline/query.rs`。
+内部请求结构定义在 `home-mixer/models/query.rs`。
 
 ### 1.1 字段分层
 
@@ -18,28 +18,30 @@
 | 原始请求字段 | `user_id` `client_app_id` `country_code` `language_code` | 来自 gRPC 请求 |
 | 去重与分页字段 | `seen_ids` `served_ids` `bloom_filter_entries` `is_bottom_request` | 来自 gRPC 请求 |
 | 召回控制字段 | `in_network_only` | 来自 gRPC 请求 |
-| QueryHydrator 补全字段 | `user_action_sequence` | `UserActionSeqQueryHydrator` |
-| QueryHydrator 补全字段 | `user_features` | `UserFeaturesQueryHydrator` |
-| 追踪字段 | `request_id` | 本地生成 |
+| QueryHydrator 补全字段 | `scoring_sequence` `retrieval_sequence` | `ScoringSequenceQueryHydrator` / `RetrievalSequenceQueryHydrator` |
+| QueryHydrator 补全字段 | `user_features` | 四个上游 user-id owner + 本地 safety owner |
+| 追踪字段 | `request_id` `prediction_id` `request_time_ms` | `QueryBuilder` |
 
 ### 1.2 查询对象的演化
 
 ```mermaid
 flowchart LR
     A["proto ScoredPostsQuery"] --> B["内部 ScoredPostsQuery<br/>原始字段 + request_id"]
-    B --> C["UserActionSeqQueryHydrator<br/>补 user_action_sequence"]
-    B --> D["UserFeaturesQueryHydrator<br/>补 user_features"]
+    B --> C["ScoringSequenceQueryHydrator<br/>补 scoring_sequence"]
+    B --> D["RetrievalSequenceQueryHydrator<br/>补 retrieval_sequence"]
+    B --> F["User feature owners<br/>分字段补 user_features"]
     C --> E["hydrated query"]
     D --> E
+    F --> E
 ```
 
 ### 1.3 `request_id` 的作用
 
-`request_id` 由本地生成的唯一 ID 与 `user_id` 拼接，贯穿所有阶段日志。因为 pipeline 大量采用“失败但不中断”的降级策略，没有稳定的 request_id 就很难排查到底是哪一阶段退化了。
+`request_id`、`prediction_id` 和 `request_time_ms` 由 `QueryBuilder` 一次生成，贯穿阶段日志和模型打分结果。因为 pipeline 大量采用“失败但不中断”的降级策略，没有稳定的请求身份就很难定位是哪一阶段退化。
 
 ## 2. `PostCandidate`：流水线共享状态对象
 
-`PostCandidate` 定义在 `home-mixer/candidate_pipeline/candidate.rs`。它不是一个“固定结构体”，而是一份被逐阶段补齐的共享状态。
+`PostCandidate` 定义在 `home-mixer/models/candidate.rs`。它不是一个“固定结构体”，而是一份被逐阶段补齐的共享状态。
 
 ### 2.1 字段按作用划分
 
@@ -52,7 +54,7 @@ flowchart LR
 | 用户侧派生 | `in_network` `subscription_author_id` | InNetwork / Subscription Hydrator |
 | 排序相关 | `phoenix_scores` `weighted_score` `score` | 各类 Scorer |
 | 追踪 | `prediction_request_id` `last_scored_at_ms` | PhoenixScorer |
-| 安全 | `visibility_reason` | VFCandidateHydrator |
+| 安全 | `visibility_decision` | VFCandidateHydrator |
 | 来源 | `served_type` | Source |
 
 ### 2.2 候选对象在各阶段的变化
@@ -72,11 +74,9 @@ flowchart TD
     H5 --> F
 
     F --> P["PhoenixScorer<br/>补 phoenix_scores"]
-    P --> W["WeightedScorer<br/>补 weighted_score"]
-    W --> D["AuthorDiversityScorer<br/>补 score"]
-    D --> O["OONScorer<br/>调整 score"]
-    O --> SEL["TopKSelector"]
-    SEL --> VFH["VFCandidateHydrator<br/>补 visibility_reason"]
+    P --> R["RankingScorer<br/>组合 weighted / diversity / OON"]
+    R --> SEL["TopKSelector"]
+    SEL --> VFH["VFCandidateHydrator<br/>补 visibility_decision"]
     VFH --> PSEL["Post-selection Filters"]
 ```
 
@@ -86,21 +86,33 @@ flowchart TD
 
 ### 3.1 Query Hydrators
 
-1. `UserActionSeqQueryHydrator`
-2. `UserFeaturesQueryHydrator`
+1. `ScoringSequenceQueryHydrator`
+2. `RetrievalSequenceQueryHydrator`
+3. `BlockedUserIdsQueryHydrator`
+4. `MutedUserIdsQueryHydrator`
+5. `FollowedUserIdsQueryHydrator`
+6. `SubscribedUserIdsQueryHydrator`
+7. `UserSafetyFeaturesQueryHydrator`（本地 additive owner）
+8. `UserTopicsQueryHydrator`（显式注入 Topic adapter 时）
 
 ### 3.2 Sources
 
-1. `PhoenixSource`
-2. `ThunderSource`
+1. `ThunderSource`
+2. `PhoenixSource`
+3. `PhoenixTopicsSource`（可选）
+4. `PhoenixMoeSource`（可选）
+5. `CachedPostsSource`
 
 ### 3.3 Pre-selection Hydrators
 
 1. `InNetworkCandidateHydrator`
 2. `CoreDataCandidateHydrator`
-3. `VideoDurationCandidateHydrator`
-4. `SubscriptionHydrator`
-5. `GizmoduckCandidateHydrator`
+3. `QuoteHydrator`
+4. `VideoDurationCandidateHydrator`
+5. `HasMediaHydrator`
+6. `SubscriptionHydrator`
+7. `FilteredTopicsHydrator`（topic request / excluded topics）
+8. `LanguageCodeHydrator`
 
 ### 3.4 Pre-selection Filters
 
@@ -111,16 +123,18 @@ flowchart TD
 5. `RetweetDeduplicationFilter`
 6. `IneligibleSubscriptionFilter`
 7. `PreviouslySeenPostsFilter`
-8. `PreviouslyServedPostsFilter`
-9. `MutedKeywordFilter`
-10. `AuthorSocialgraphFilter`
+8. `PreviouslySeenPostsBackupFilter`
+9. `PreviouslyServedPostsFilter`
+10. `MutedKeywordFilter`
+11. `AuthorSocialgraphFilter`
+12. `VideoFilter`
+13. `TopicIdsFilter`
+14. `NewUserTopicIdsFilter`
 
 ### 3.5 Scorers
 
 1. `PhoenixScorer`
-2. `WeightedScorer`
-3. `AuthorDiversityScorer`
-4. `OONScorer`
+2. `RankingScorer`（内部保留 Weighted / AuthorDiversity / OON 行为）
 
 ### 3.6 Selector
 
@@ -128,43 +142,38 @@ flowchart TD
 
 ### 3.7 Post-selection
 
-- Hydrator: `VFCandidateHydrator`
-- Filters: `VFFilter`, `DedupConversationFilter`
+- Hydrators: `GizmoduckCandidateHydrator`, `VFCandidateHydrator`
+- Filters: `VFFilter`, `AncillaryVFFilter`, `DedupConversationFilter`
 
 ### 3.8 Side Effect
 
-- `CacheRequestInfoSideEffect`
+- `PhoenixRequestCacheSideEffect`（默认关闭）
 
 ## 4. 一个最重要的语义：同 stage 的 hydrator 彼此看不到新字段
 
-这是当前实现的关键事实。
+同一 stage 的 hydrator 基于同一份旧候选快照并行执行，字段依赖必须跨 stage。当前装配已将 `GizmoduckCandidateHydrator` 从 pre-selection 移到 post-selection，因此它能看到 `CoreDataCandidateHydrator` 已写回的 `retweeted_user_id`，并且只批量查询 Selector 保留的候选。
 
 ```mermaid
 graph LR
-    C["同一份旧候选快照"] --> H1["CoreDataHydrator"]
-    C --> H2["GizmoduckHydrator"]
-    H1 --> M["框架顺序 merge"]
-    H2 --> M
+    C["Pre-selection 候选"] --> H1["CoreDataHydrator"]
+    H1 --> F["Filter / Score / Selector"]
+    F --> H2["Post-selection GizmoduckHydrator"]
+    H2 --> M["响应 screen_names"]
 ```
 
-因为同一 stage 的 hydrator 是并行跑的：
-
-- `GizmoduckCandidateHydrator` 读到的仍是 stage 开始前的候选
-- 它看不到 `CoreDataCandidateHydrator` 在这一轮刚补出的 `retweeted_user_id`
-
-所以候选模型虽然看起来很完整，但字段依赖是否成立，还要结合执行语义一起看。
+新增 Hydrator 时仍不能依赖同 stage 的执行顺序；需要使用后续 stage 或共享 provider 明确表达字段依赖。
 
 ## 5. 关键依赖链
 
 | 上游写入 | 下游依赖 |
 | --- | --- |
-| `user_action_sequence` | `PhoenixSource`、`PhoenixScorer` |
+| `scoring_sequence` / `retrieval_sequence` | `PhoenixScorer` / `PhoenixSource` |
 | `user_features.followed_user_ids` | `ThunderSource`、`InNetworkCandidateHydrator` |
 | `tweet_text` | `CoreDataHydrationFilter`、`MutedKeywordFilter` |
 | `retweeted_tweet_id` | `RetweetDeduplicationFilter`、`PhoenixScorer` |
-| `video_duration_ms` | `WeightedScorer` 的 VQV 权重 |
-| `in_network` | `OONScorer`、`VFCandidateHydrator` |
-| `visibility_reason` | `VFFilter` |
+| `video_duration_ms` | `RankingScorer` 内部 VQV 权重 |
+| `in_network` | `RankingScorer` 内部 OON 调整、`VFCandidateHydrator` |
+| `visibility_decision` | `VFFilter`（未知时网外拒绝、网内保留） |
 | `score` | `TopKScoreSelector`、`DedupConversationFilter` |
 
 ## 6. 这个数据模型的优点和代价

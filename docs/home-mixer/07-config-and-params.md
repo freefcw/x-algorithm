@@ -26,8 +26,9 @@ flowchart TD
     B --> B4["chunk_size"]
 
     C --> C1["THUNDER_GRPC_ADDR"]
-    C --> C2["APP_ENV"]
-    C --> C3["其余 Phoenix 地址目前只存在注释占位"]
+    C --> C2["Phoenix gRPC 地址"]
+    C --> C3["HOME_MIXER_DEMO"]
+    C --> C4["HOME_MIXER_ENABLE_*<br/>可选集成，默认关闭"]
 
     D --> D1["召回上限"]
     D --> D2["打分权重"]
@@ -59,15 +60,39 @@ flowchart TD
 | 变量 | 读取位置 | 作用 | 默认行为 |
 | --- | --- | --- | --- |
 | `THUNDER_GRPC_ADDR` | `clients/thunder_client.rs` | Thunder gRPC 地址 | 默认 `http://localhost:50052` |
-| `PHOENIX_PREDICT_GRPC_ADDR` | `clients/phoenix_prediction_client.rs` | Phoenix 精排 gRPC 地址 | 未设置时退化为 stub（空预测） |
-| `PHOENIX_RETRIEVAL_GRPC_ADDR` | `clients/phoenix_retrieval_client.rs` | Phoenix 召回 gRPC 地址 | 未设置时退化为 stub（无网外候选） |
-| `PHOENIX_MOE_GRPC_ADDR` | `candidate_pipeline/phoenix_candidate_pipeline.rs` | Phoenix MoE 专家召回 gRPC 地址 | 设置后触发 `PhoenixMoeSource` 动态装配；未设置时不启用 |
-| `HOME_MIXER_DEMO` | `demo.rs`（仅装配层 `phoenix_candidate_pipeline::prod()` 读取） | 设为 `1` 时装配层注入 `Demo*` 客户端，返回自洽的演示数据（关注列表、行为序列、帖子文本） | 未设置时注入生产 stub，返回空数据 |
-| `APP_ENV` | `side_effects/cache_request_info_side_effect.rs` | 控制是否写请求缓存 | 非 `prod` 时 side effect 不启用 |
+| `PHOENIX_PREDICT_GRPC_ADDR` | `clients/phoenix_prediction_client.rs` | Phoenix 精排 gRPC 地址 | 未设置时显式 Unavailable，Scorer 保留候选并走规则 fallback |
+| `PHOENIX_RETRIEVAL_GRPC_ADDR` | `clients/phoenix_retrieval_client.rs` | Phoenix 召回 gRPC 地址 | 未设置时显式 Unavailable，Source 跳过网外召回路 |
+| `PHOENIX_MOE_GRPC_ADDR` | `candidate_pipeline/phoenix_candidate_pipeline.rs` | Phoenix MoE 专家召回地址；只提供地址，不会自动启用 | 未设置时不装配 MoE Source |
+| `HOME_MIXER_MODE` | `runtime_config.rs` | 运行意图：`demo` / `degraded` / `production_ready` | 默认 `degraded`；调用方身份、Viewer、UAS、Strato、TES、Gizmoduck、VF、Phoenix、Thunder 合同未全部闭合前，`production_ready` 拒绝启动 |
+| `HOME_MIXER_ENABLE_PHOENIX_MOE` | `feature_policy.rs` | 显式启用 Phoenix MoE 旁路召回 | 默认关闭；启用但缺少 `PHOENIX_MOE_GRPC_ADDR` 时记录告警并跳过，主链继续 |
+| `HOME_MIXER_ENABLE_REQUEST_CACHE_SIDE_EFFECT` | `feature_policy.rs` | 显式启用请求缓存 SideEffect | 默认关闭；启用前必须人工确认真实 Strato adapter、schema、认证和保留策略 |
+| `HOME_MIXER_ENABLE_DEBUG_RPC` | `feature_policy.rs` / `debug_access.rs` | 启用 `DebugScoredPosts` | 默认关闭；开启时必须同时提供 `HOME_MIXER_DEBUG_TOKEN`，调用方通过 `x-home-mixer-debug-token` metadata 传入 |
+| `HOME_MIXER_ENABLE_UNSIGNED_CACHED_POSTS` | `feature_policy.rs` / `runtime_config.rs` / `server.rs` | 允许请求直接携带未签名 `cached_posts` fixture | 默认关闭且只允许 `demo`；生产缓存必须使用服务端状态或签名/opaque 合同 |
+| `HOME_MIXER_DEMO` | `demo.rs` | `HOME_MIXER_MODE=demo` 的旧兼容别名 | 仅兼容已有脚本；新配置使用 `HOME_MIXER_MODE` |
 
-Phoenix 两个地址通常同时指向 `phoenix/scripts/run_grpc_gateway.py` 启动的网关（默认 `http://localhost:50053`）。完整启动组合见 [getting-started 第四步](../getting-started/05-第四步-跑通完整推荐链路.md)。
+Phoenix 两个主服务地址通常同时指向 `phoenix/scripts/run_grpc_gateway.py` 启动的网关（默认 `http://localhost:50053`）。完整启动组合见 [getting-started 第四步](../getting-started/05-第四步-跑通完整推荐链路.md)。
 
-### 3.3 证书路径
+### 3.2 可选集成启用规则
+
+`HomeMixerConfig::from_env()` 在进程装配时一次性生成 `HomeMixerFeatures`。Source、SideEffect 和其他业务组件不直接读取环境变量。
+
+可选集成遵循以下规则：
+
+1. 默认关闭；主推荐链不能依赖旁路功能才能启动或返回结果。
+2. 开关只代表操作员批准启用，不代表外部服务已经完成接入。
+3. 启用前必须人工确认服务 owner、公开 schema、认证、超时、错误语义、降级、测试环境和数据保留策略。
+4. 开关开启但必要地址缺失时，装配层记录告警并跳过组件，不能阻断主链启动。
+5. 当前没有公开 adapter 的 Ads、Prompt、WhoToFollow、PushToHome、Kafka/Redis 和 Grox 模型能力不提供伪开关；它们保持不装配，完成合同和实现后再增加 typed flag。
+
+请求缓存 SideEffect 即使显式开启，当前 `DisabledStratoClient` 和 `DemoStratoClient` 也会明确拒绝持久化写入。必须完成人工接入和持久化验收后，才能把它视为生产数据闭环。
+
+### 3.3 QueryBuilder 外部策略
+
+两个 RPC 共用同一个 `QueryBuilder`。它负责 viewer ID 校验、公共 proto 映射、请求 ID、全局/请求级 MoE 开关合并，以及 viewer policy 查询。
+
+`GizmoduckClient::get_viewer_data` 的超时预算固定为 200 ms。只有明确返回 `ViewerEligibility::Allowed` 才允许网外推荐；`Denied`、`Unknown`、错误或超时都记录告警并强制 `in_network_only=true`，保留 Thunder 网内降级链而不绕过用户偏好。
+
+### 3.4 证书路径
 
 `clients/s2s.rs` 里固定了三条路径：
 
@@ -79,9 +104,9 @@ Phoenix 两个地址通常同时指向 `phoenix/scripts/run_grpc_gateway.py` 启
 
 但要注意：
 
-- 当前只有 VF 客户端构造函数接收这些路径
-- VF 客户端仍是 stub
-- 所以这些路径现在主要代表“未来生产版接口形状”，不是当前主链必需项
+- 当前只有 disabled VF 边界的构造函数接收这些路径
+- `demo` 注入显式 Allow adapter；`degraded` 注入返回 Unavailable 的 disabled adapter
+- VF 未知时网外候选拒绝、网内候选保留；`production_ready` 在真实 VF 合同缺失时拒绝启动
 
 ## 4. 服务级参数
 
@@ -90,6 +115,17 @@ Phoenix 两个地址通常同时指向 `phoenix/scripts/run_grpc_gateway.py` 启
 | 常量 | 值 | 使用点 |
 | --- | --- | --- |
 | `MAX_GRPC_MESSAGE_SIZE` | `16 * 1024 * 1024` | gRPC server 的编码/解码消息大小限制 |
+| `THUNDER_REQUEST_TIMEOUT_MS` | `500` | Thunder 网内召回上限 |
+| `UAS_FETCH_TIMEOUT_MS` | `500` | request-scoped UAS 读取上限 |
+| `USER_FEATURES_FETCH_TIMEOUT_MS` | `500` | request-scoped Strato 用户特征读取上限 |
+| `USER_TOPIC_READ_TIMEOUT_MS` | `500` | 补充话题 profile 读取上限 |
+| `STRATO_WRITE_TIMEOUT_MS` | `500` | 异步请求信息写回上限 |
+| `TES_REQUEST_TIMEOUT_MS` | `500` | TES core/media/subscription 单批调用上限 |
+| `GIZMODOUCK_REQUEST_TIMEOUT_MS` | `500` | post-selection 作者资料批次上限 |
+| `PHOENIX_RETRIEVAL_TIMEOUT_MS` | `3000` | Phoenix 标准/MoE 召回上限 |
+| `PHOENIX_PREDICTION_TIMEOUT_MS` | `5000` | Phoenix 精排上限 |
+| `TOPIC_RETRIEVAL_TIMEOUT_MS` | `500` | Topic 召回上限 |
+| `VF_REQUEST_TIMEOUT_MS` | `500` | 单组可见性检查上限 |
 
 ### 4.2 对外监听结构
 
@@ -99,6 +135,7 @@ flowchart LR
     Client2["HTTP/探活方"] --> H["0.0.0.0:metrics_port"]
 
     G --> S["ScoredPostsService"]
+    G --> F["ForYouFeedService"]
     H --> R["空 axum Router"]
 ```
 
@@ -156,8 +193,8 @@ flowchart LR
 
 | 常量 | 值 | 当前作用 |
 | --- | --- | --- |
-| `WEIGHTS_SUM` | `33.6061` | `WeightedScorer::offset_score()` |
-| `NEGATIVE_WEIGHTS_SUM` | `-591.0` | `WeightedScorer::offset_score()` |
+| `WEIGHTS_SUM` | `33.6112` | `WeightedScorer::offset_score()` |
+| `NEGATIVE_WEIGHTS_SUM` | `-591.001` | `WeightedScorer::offset_score()` |
 | `NEGATIVE_SCORES_OFFSET` | `1.0` | `WeightedScorer::offset_score()` |
 
 注意：

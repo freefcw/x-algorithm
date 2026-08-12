@@ -128,9 +128,10 @@ flowchart LR
 
 - 总是显式把 `query.user_features.followed_user_ids` 传给 Thunder
 - `debug=false`
-- `exclude_tweet_ids=[]`
+- `exclude_tweet_ids=query.seen_ids`
 - `is_video_request=false`
 - `algorithm="default"`
+- Home Mixer 对 RPC 设置 500 ms timeout；超时/Status 错误作为 Source 错误记录，由 Candidate Pipeline 保留其他来源候选
 
 ```mermaid
 sequenceDiagram
@@ -139,7 +140,7 @@ sequenceDiagram
     participant Client as ThunderClient
     participant Thunder as Thunder gRPC
 
-    Pipeline->>Source: get_candidates(query)
+    Pipeline->>Source: run(source, query)
     Source->>Client: get_random_channel(Amp)
     Source->>Thunder: GetInNetworkPosts(user_id, following_user_ids, ...)
     Thunder-->>Source: Vec<LightPost>
@@ -152,21 +153,19 @@ ThunderSource 从响应里只提取了几类结构化信息：
 - `tweet_id`
 - `author_id`
 - `in_reply_to_tweet_id`
+- `retweeted_tweet_id` / `retweeted_user_id`
 - `ancestors`
-- `served_type=ForYouInNetwork`
+- `served_type=ForYouInNetwork`；`in_network_only` 请求使用 `RankedFollowing`
+
+Thunder wire 的 `LightPost` ID 仍为 signed `int64`。Home Mixer adapter 使用 checked conversion，并丢弃 post/author ID 为负数或 0 的记录；可选 reply/conversation/retweet ID 非法时只忽略对应关系字段，不会把负数静默转成大整数。
 
 也就是说，Thunder 在整个推荐链路里承担的是“候选提供者”，不是“最终排序者”。
 
-## 9. 一个必须单独指出的集成问题
+## 9. 默认端口与 readiness
 
-默认端口目前不一致：
+Thunder CLI 和 Home Mixer `ThunderClient` 的默认 gRPC 端口现在统一为 `50052`；仍可分别用 `--grpc-port` 和 `THUNDER_GRPC_ADDR` 显式覆盖。
 
-| 位置 | 默认值 |
-|---|---|
-| `thunder/args.rs` 中 `grpc_port` | `50051` |
-| `home-mixer/clients/thunder_client.rs` 默认地址 | `http://localhost:50052` |
-
-如果不通过环境变量 `THUNDER_GRPC_ADDR` 显式覆盖，两个模块默认情况下是对不上的。
+监听端口只说明 transport 已绑定。Demo 脚本还会等待 Thunder 日志中的 `Server ready`，确保 demo seed 已写入并完成 `PostStore::finalize_init()` 后才启动 Home Mixer 请求。
 
 ## 10. 当前响应语义
 
@@ -181,4 +180,4 @@ Thunder 返回的 `LightPost` 有几个很重要的边界：
 
 - Thunder 查询路径的本质是“容量保护 + 输入整理 + PostStore 读取 + 时间倒排”。
 - 它是一个快、轻、偏保守的召回接口，不是一个智能排序接口。
-- 当前最需要警惕的不是 RPC 复杂度，而是 fallback 语义、默认端口和“部分结果但不报错”的行为边界。
+- 当前最需要警惕的是 fallback 语义和“部分结果但不报错”的行为边界；Home Mixer 端另有 500 ms 总调用上限。

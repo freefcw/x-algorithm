@@ -21,4 +21,4 @@
 ## 两个容易踩的实现事实
 
 - `CoreDataCandidateHydrator` 的 `update()` 不会写回 `candidate.author_id`，作者 ID 始终以 Source 阶段填充的为准。
-- `GizmoduckCandidateHydrator` 与 `CoreDataCandidateHydrator` 同 stage 并行，它读到的是 stage 开始前的候选快照，因此拿不到后者刚补出的 `retweeted_user_id`——这会影响 `retweeted_screen_name` 的补全，详见 [06-risks-tests-and-roadmap](./06-risks-tests-and-roadmap.md)。
+- 同 stage Hydrator 仍不能依赖彼此写回。当前 `GizmoduckCandidateHydrator` 已移到 post-selection，所以能读取 pre-selection CoreData 写入的 `retweeted_user_id`；后续字段依赖也必须用跨 stage 或共享 provider 表达。

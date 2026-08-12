@@ -13,31 +13,39 @@
 
 | 组件 | 文件 | enable | 读取 | 写回 | 外部依赖 | 下游依赖 |
 | --- | --- | --- | --- | --- | --- | --- |
-| `UserActionSeqQueryHydrator` | `query_hydrators/user_action_seq_query_hydrator.rs` | 默认启用 | `query.user_id` | `query.user_action_sequence` | `UserActionSequenceFetcher` | `PhoenixSource`、`PhoenixScorer` |
-| `UserFeaturesQueryHydrator` | `query_hydrators/user_features_query_hydrator.rs` | 默认启用 | `query.user_id` | `query.user_features` | `StratoClient` | `ThunderSource`、多个 Filter / Hydrator |
-| `UserTopicsQueryHydrator` | `query_hydrators/user_topics_query_hydrator.rs` | 配置 `topic_clients` 或 Demo 时启用 | `query.user_id` | `query.supplemental_topic_ids` | `UserTopicReader` | `PhoenixTopicsSource` |
+| `ScoringSequenceQueryHydrator` | `query_hydrators/scoring_sequence_query_hydrator.rs` | 默认启用 | `user_id` `request_id` | `user_action_sequence` `scoring_sequence` | 共享 `UserActionSequenceOps` provider | `PhoenixScorer` |
+| `RetrievalSequenceQueryHydrator` | `query_hydrators/retrieval_sequence_query_hydrator.rs` | 默认启用 | `user_id` `request_id` | `retrieval_sequence` | 同一共享 provider | `PhoenixSource` / MoE |
+| `BlockedUserIdsQueryHydrator` | `query_hydrators/blocked_user_ids_query_hydrator.rs` | 默认启用 | `user_id` | `blocked_user_ids` | 共享 `StratoClient` provider | `AuthorSocialgraphFilter` |
+| `MutedUserIdsQueryHydrator` | `query_hydrators/muted_user_ids_query_hydrator.rs` | 默认启用 | `user_id` | `muted_user_ids` | 同一共享 provider | `AuthorSocialgraphFilter` |
+| `FollowedUserIdsQueryHydrator` | `query_hydrators/followed_user_ids_query_hydrator.rs` | 默认启用 | `user_id` | `followed_user_ids` | 同一共享 provider | `ThunderSource` / InNetwork |
+| `SubscribedUserIdsQueryHydrator` | `query_hydrators/subscribed_user_ids_query_hydrator.rs` | 默认启用 | `user_id` | `subscribed_user_ids` | 同一共享 provider | subscription filter |
+| `UserSafetyFeaturesQueryHydrator` | `query_hydrators/user_safety_features_query_hydrator.rs` | 默认启用 (`U2`) | `user_id` | `muted_keywords` `blocked_by_user_ids` | 同一共享 provider | safety filters |
+| `UserTopicsQueryHydrator` | `query_hydrators/user_topics_query_hydrator.rs` | 显式注入 `topic_clients` 或 Demo 时启用 | `user_id` | `supplemental_topic_ids` | `UserTopicReader` | `PhoenixTopicsSource` |
 
 ## 2. Sources
 
 | 组件 | 文件 | enable | 读取 | 产出字段 | 外部依赖 | 说明 |
 | --- | --- | --- | --- | --- | --- | --- |
-| `CachedPostsSource` | `sources/cached_posts_source.rs` | 默认启用 | 本地缓存 | `tweet_id` `author_id` 等 | 无 | 优先补充预加载/缓存候选 |
-| `PhoenixTopicsSource` | `sources/phoenix_topics_source.rs` | 启用 `topic_clients` | `user_topics` | `tweet_id` `author_id` `served_type` | `TopicRetrievalClient` | 个性化话题候选召回 |
-| `PhoenixSource` | `sources/phoenix_source.rs` | `!query.in_network_only` | `user_id`、`user_action_sequence` | `tweet_id` `author_id` `in_reply_to_tweet_id` `served_type` | `PhoenixRetrievalClient` | 缺失序列直接失败 |
-| `PhoenixMoeSource` | `sources/phoenix_moe_source.rs` | 配置 `PHOENIX_MOE_GRPC_ADDR` | `user_id`、`user_action_sequence` | `tweet_id` `author_id` `served_type` | `PhoenixRetrievalClient` (MoE) | 基于 MoE 架构多专家网外召回 |
-| `ThunderSource` | `sources/thunder_source.rs` | 默认启用 | `user_id`、`followed_user_ids` | `tweet_id` `author_id` `in_reply_to_tweet_id` `ancestors` `served_type` | `ThunderClient` | 用 reply / conversation 构造 `ancestors` |
+| `ThunderSource` | `sources/thunder_source.rs` | 默认启用 | `user_id`、`followed_user_ids` | `tweet_id` `author_id` `in_reply_to_tweet_id` `ancestors` `served_type` | `ThunderClient` | 上游顺序第一；用 reply / conversation 构造 `ancestors` |
+| `PhoenixSource` | `sources/phoenix_source.rs` | 非网内限定、非 strict/cold-start topic、无 cached posts | `user_id`、`retrieval_sequence` | `tweet_id` `author_id` `in_reply_to_tweet_id` `served_type` | `PhoenixRetrievalClient` | 缺失序列直接失败 |
+| `PhoenixTopicsSource` | `sources/phoenix_topics_source.rs` | 注入 topic adapter 且有 topic recall | selected topics | `tweet_id` `author_id` `served_type` | `TopicRetrievalClient` | 可选话题候选召回 |
+| `PhoenixMoeSource` | `sources/phoenix_moe_source.rs` | typed switch + endpoint + 请求允许 | `user_id`、`retrieval_sequence` | `tweet_id` `author_id` `served_type` | `PhoenixRetrievalClient` (MoE) | 默认关闭 |
+| `CachedPostsSource` | `sources/cached_posts_source.rs` | QueryBuilder 已接受显式 Demo unsigned fixture | 本地请求缓存 | `tweet_id` `author_id` 等 | 无 | 默认请求拒绝未签名缓存；启用时其他主要来源关闭 |
 
 ## 3. Candidate Hydrators
 
 | 组件 | 文件 | enable | 读取 | 写回 | 外部依赖 | 下游依赖 |
 | --- | --- | --- | --- | --- | --- | --- |
-| `InNetworkCandidateHydrator` | `candidate_hydrators/in_network_candidate_hydrator.rs` | 默认启用 | `query.user_id` `followed_user_ids` `candidate.author_id` | `in_network` | 无 | `OONScorer`、`VFCandidateHydrator` |
-| `CoreDataCandidateHydrator` | `candidate_hydrators/core_data_candidate_hydrator.rs` | 默认启用 | `candidate.tweet_id` | `retweeted_user_id` `retweeted_tweet_id` `in_reply_to_tweet_id` `tweet_text` | `TESClient.get_tweet_core_datas` | `CoreDataHydrationFilter`、`RetweetDeduplicationFilter`、`MutedKeywordFilter`、`PhoenixScorer` |
-| `VideoDurationCandidateHydrator` | `candidate_hydrators/video_duration_candidate_hydrator.rs` | 默认启用 | `candidate.tweet_id` | `video_duration_ms` | `TESClient.get_tweet_media_entities` | `WeightedScorer` |
+| `InNetworkCandidateHydrator` | `candidate_hydrators/in_network_candidate_hydrator.rs` | 默认启用 | `query.user_id` `followed_user_ids` `candidate.author_id` | `in_network` | 无 | `RankingScorer`、`VFCandidateHydrator` |
+| `CoreDataCandidateHydrator` | `candidate_hydrators/core_data_candidate_hydrator.rs` | 默认启用 | `candidate.tweet_id` | `retweeted_user_id` `retweeted_tweet_id` `in_reply_to_tweet_id` `tweet_text` counts | `TESClient.get_tweet_core_datas` via shared provider | `CoreDataHydrationFilter`、`RetweetDeduplicationFilter`、`MutedKeywordFilter`、`PhoenixScorer` |
+| `QuoteHydrator` | `candidate_hydrators/quote_hydrator.rs` | 默认启用 | shared core batch | `quoted_tweet_id` `quoted_user_id` `quoted_tweet_text` `quoted_video_duration_ms` | shared TES core/media batches | quote-aware filters / Ranking |
+| `HasMediaHydrator` | `candidate_hydrators/has_media_hydrator.rs` | 默认启用 | shared media batch | `has_media` | `TESClient.get_tweet_media_entities` via shared provider | `VideoFilter` / response |
+| `VideoDurationCandidateHydrator` | `candidate_hydrators/video_duration_candidate_hydrator.rs` | 默认启用 | `candidate.tweet_id` | `video_duration_ms` | shared `TESClient` media batch | `RankingScorer` |
 | `SubscriptionHydrator` | `candidate_hydrators/subscription_hydrator.rs` | 默认启用 | `candidate.tweet_id` | `subscription_author_id` | `TESClient.get_subscription_author_ids` | `IneligibleSubscriptionFilter` |
-| `GizmoduckCandidateHydrator` | `candidate_hydrators/gizmoduck_hydrator.rs` | 默认启用 | `author_id` `retweeted_user_id` | `author_followers_count` `author_screen_name` `retweeted_screen_name` | `GizmoduckClient` | 响应映射、未来分数归一化 |
-| `EngagementCountsHydrator` | `candidate_hydrators/engagement_counts_hydrator.rs` | 关闭（`enable=false`，未注册） | `candidate.tweet_id` | `favorite_count` `reply_count` `repost_count` `quote_count` | `TESClient` | 仅保存带进程内 TTL 缓存的 checkpoint；启用前需解决与 CoreData hydrator 的字段所有权冲突 |
-| `VFCandidateHydrator` | `candidate_hydrators/vf_candidate_hydrator.rs` | post-selection 阶段默认启用 | `query.user_id` `query.viewer_context` `candidate.in_network` `tweet_id` | `visibility_reason` | `VisibilityFilteringClient` | `VFFilter` |
+| `GizmoduckCandidateHydrator` | `candidate_hydrators/gizmoduck_hydrator.rs` | post-selection 默认启用 | `author_id` `retweeted_user_id` | `author_followers_count` `author_screen_name` `retweeted_screen_name` | `GizmoduckClient`（去重批量读取） | 响应映射；能读取 pre-selection CoreData 已补出的 retweet author |
+| `FilteredTopicsHydrator` | `candidate_hydrators/filtered_topics_hydrator.rs` | topic recall / excluded topics | shared core batch | `filtered_topic_ids` `unfiltered_topic_ids` | shared `TESClient` core batch | `TopicIdsFilter` / `NewUserTopicIdsFilter` |
+| `LanguageCodeHydrator` | `candidate_hydrators/language_code_hydrator.rs` | 默认启用 | shared core batch | `language_code` | shared `TESClient` core batch | language / response consumers |
+| `VFCandidateHydrator` | `candidate_hydrators/vf_candidate_hydrator.rs` | post-selection 阶段默认启用 | `query.user_id` `query.viewer_context` `candidate.in_network` `tweet_id` | `visibility_decision` `drop_ancillary_posts` | `VisibilityFilteringClient`（500 ms） | `VFFilter` / `AncillaryVFFilter` |
 
 ## 4. Filters
 
@@ -56,25 +64,24 @@
 | `PreviouslyServedPostsFilter` | `filters/previously_served_posts_filter.rs` | `query.is_bottom_request` | `served_ids` `related_post_ids` | 下翻请求里命中已下发帖子 |
 | `MutedKeywordFilter` | `filters/muted_keyword_filter.rs` | 默认启用 | `tweet_text` `muted_keywords` | 文本命中屏蔽关键词 |
 | `AuthorSocialgraphFilter` | `filters/author_socialgraph_filter.rs` | 默认启用 | `author_id` `blocked_user_ids` `muted_user_ids` | 作者在拉黑或静音列表 |
-| `TopicIdsFilter` | `filters/topic_ids_filter.rs` | 默认启用 | `topic_id` | Topic ID 非法或不在白名单中 |
+| `TopicIdsFilter` | `filters/topic_ids_filter.rs` | strict topic 或 excluded topics | topic fields | strict topic 不匹配或命中排除项 |
+| `NewUserTopicIdsFilter` | `filters/new_user_topic_ids_filter.rs` | cold-start topics | `new_user_topic_ids` `filtered_topic_ids` `in_network` | 网外且不匹配 cold-start topic |
 | `VideoFilter` | `filters/video_filter.rs` | 默认启用 | `video_duration_ms` / 媒体信息 | 损坏或不合规的视频候选 |
 
 ### 4.2 Post-selection Filters
 
 | 组件 | 文件 | enable | 读取 | 移除条件 |
 | --- | --- | --- | --- | --- |
-| `VFFilter` | `filters/vf_filter.rs` | 默认启用 | `visibility_reason` | `Drop` 或 generic filtered |
-| `AncillaryVFFilter` | `filters/ancillary_vf_filter.rs` | 默认启用 | `visibility_reason` | 命中辅助安全过滤动作 |
+| `VFFilter` | `filters/vf_filter.rs` | 默认启用 | `visibility_decision` `in_network` | Restricted Drop/generic；Unchecked/Unavailable 时移除网外、保留网内 |
+| `AncillaryVFFilter` | `filters/ancillary_vf_filter.rs` | 默认启用 | `drop_ancillary_posts` | 引用/转发附属帖受限、漏结果或 VF 不可用 |
 | `DedupConversationFilter` | `filters/dedup_conversation_filter.rs` | 默认启用 | `ancestors` `tweet_id` `score` | 同一会话树保留最高分 |
 
 ## 5. Scorers
 
 | 组件 | 文件 | enable | 读取 | 写回 | 外部依赖 | 说明 |
 | --- | --- | --- | --- | --- | --- | --- |
-| `PhoenixScorer` | `scorers/phoenix_scorer.rs` | 默认启用 | `user_action_sequence` 候选 tweet/author 关系 | `phoenix_scores` `prediction_request_id` `last_scored_at_ms` | `PhoenixPredictionClient` | 转推优先按原始 tweet 做 lookup |
-| `WeightedScorer` | `scorers/weighted_scorer.rs` | 默认启用 | `phoenix_scores` `video_duration_ms` | `weighted_score` | 无 | 聚合多种行为分数 |
-| `AuthorDiversityScorer` | `scorers/author_diversity_scorer.rs` | 默认启用 | `weighted_score` `author_id` | `score` | 无 | 先内部排序后做作者衰减 |
-| `OONScorer` | `scorers/oon_scorer.rs` | 默认启用 | `score` `in_network` | `score` | 无 | 仅网外内容乘降权系数 |
+| `PhoenixScorer` | `scorers/phoenix_scorer.rs` | 默认启用 | `scoring_sequence` 候选 tweet/author 关系 | `phoenix_scores` `prediction_request_id` `last_scored_at_ms` | `PhoenixPredictionClient`（5 s） | 超时保留候选并进入 fallback ranking；传播 QueryBuilder 的 prediction ID |
+| `RankingScorer` | `scorers/ranking_scorer.rs` | 默认启用 | `phoenix_scores` `video_duration_ms` `author_id` `in_network` | `weighted_score` `score` | 无 | 上游 facade；内部复用 Weighted / AuthorDiversity / OON 实现 |
 
 ## 6. Selector
 
@@ -86,13 +93,16 @@
 
 | 组件 | 文件 | enable | 输入 | 外部依赖 | 说明 |
 | --- | --- | --- | --- | --- | --- |
-| `CacheRequestInfoSideEffect` | `side_effects/cache_request_info_side_effect.rs` | `APP_ENV == "prod"` 且 `!query.in_network_only` | `user_id` + 最终候选 tweet ids | `StratoClient.store_request_info` | fire-and-forget，不阻塞响应 |
+| `PhoenixRequestCacheSideEffect` | `side_effects/phoenix_request_cache_side_effect.rs` | `HOME_MIXER_ENABLE_REQUEST_CACHE_SIDE_EFFECT=true` 且请求允许 | `user_id` + 最终候选 tweet ids | `StratoClient.store_request_info` | 默认关闭；fire-and-forget，不阻塞响应 |
 
 ## 8. 支撑性工具模块
 
 | 模块 | 文件 | 作用 |
 | --- | --- | --- |
-| `request_util` | `util/request_util.rs` | 生成 `request_id` 和 `prediction_request_id` |
+| `runtime_config` | `runtime_config.rs` | 解析 Demo/Degraded/ProductionReady 意图并校验启动不变量 |
+| `query_builder` | `query_builder.rs` | 校验公共 proto、读取 viewer policy、生成请求身份并以具名字段构造 domain query |
+| `debug_access` | `debug_access.rs` | 默认关闭的 Debug RPC token 授权策略 |
+| `request_util` | `util/request_util.rs` | 为 `QueryBuilder` 生成请求/预测 ID 和 request time |
 | `snowflake` | `util/snowflake.rs` | 从 tweet id 推导创建时间 |
 | `bloom_filter` | `util/bloom_filter.rs` | 支持已看过内容去重 |
 | `candidates_util` | `util/candidates_util.rs` | 生成 related post ids |
@@ -104,19 +114,19 @@
 
 ```mermaid
 flowchart TD
-    Q1["UserActionSeqQueryHydrator"] --> S1["PhoenixSource"]
-    Q1 --> SC1["PhoenixScorer"]
-    Q2["UserFeaturesQueryHydrator"] --> S2["ThunderSource"]
-    Q2 --> H1["InNetworkHydrator"]
-    Q2 --> F8["MutedKeyword / Socialgraph / Subscription 等过滤"]
+    Q1["ScoringSequenceQueryHydrator"] --> SC1["PhoenixScorer"]
+    Q2["RetrievalSequenceQueryHydrator"] --> S1["Phoenix / MoE Sources"]
+    Q3["FollowedUserIdsQueryHydrator"] --> S2["ThunderSource"]
+    Q3 --> H1["InNetworkHydrator"]
+    Q4["Blocked / Muted / Subscribed / Safety owners"] --> F8["Keyword / Socialgraph / Subscription filters"]
 
     H2["CoreDataHydrator"] --> F1["CoreDataHydrationFilter"]
     H2 --> F2["RetweetDeduplicationFilter"]
     H2 --> F3["MutedKeywordFilter"]
     H2 --> SC1
 
-    H3["VideoDurationHydrator"] --> SC2["WeightedScorer"]
-    H1 --> SC4["OONScorer"]
+    H3["VideoDurationHydrator"] --> SC2["RankingScorer"]
+    H1 --> SC2
     H1 --> H6["VFCandidateHydrator"]
     H6 --> PF1["VFFilter"]
 ```
@@ -136,7 +146,7 @@ flowchart TD
 
 `in_network` 不仅影响返回字段，还会直接影响：
 
-- `OONScorer` 的降权
+- `RankingScorer` 内部 OON 阶段的降权
 - `VFCandidateHydrator` 的 `SafetyLevel` 选择
 
 所以它其实是排序和安全策略的共同分叉点。

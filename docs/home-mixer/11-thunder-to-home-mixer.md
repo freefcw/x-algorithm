@@ -235,7 +235,7 @@ Thunder 在返回前做的“score”其实只是：
 
 比如：
 
-- `OONScorer` 要对非网内内容降权
+- `RankingScorer` 内部 OON 阶段要对非网内内容降权
 - `VFCandidateHydrator` 要按 `SafetyLevel` 区分网内和网外
 
 所以 `in_network` 是一个统一的候选属性，不只是 Thunder 的来源标签。

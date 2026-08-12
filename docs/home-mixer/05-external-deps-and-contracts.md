@@ -122,14 +122,15 @@ sequenceDiagram
 
 | 客户端 trait | 调用方 | 作用 |
 | --- | --- | --- |
-| `UserActionSequenceOps` | `UserActionSeqQueryHydrator` | 取用户行为序列 |
-| `StratoClient` | `UserFeaturesQueryHydrator` / `CacheRequestInfoSideEffect` | 取用户特征、写请求缓存 |
+| `UserActionSequenceOps` | `ScoringSequenceQueryHydrator` / `RetrievalSequenceQueryHydrator`（共享 request-scoped provider） | 取用户行为序列；500 ms 上限 |
+| `StratoClient` | 四个 user-id owner / `UserSafetyFeaturesQueryHydrator`（共享 provider）/ `CacheRequestInfoSideEffect` | 取用户特征和写请求缓存均为 500 ms 上限 |
 | `PhoenixRetrievalClient` | `PhoenixSource` | 网外召回 |
 | `ThunderClient` | `ThunderSource` | 网内召回 |
-| `TESClient` | 多个 candidate hydrator | 补帖子文本、媒体、订阅信息 |
-| `GizmoduckClient` | `GizmoduckCandidateHydrator` | 补作者资料 |
-| `PhoenixPredictionClient` | `PhoenixScorer` | 精排预测 |
-| `VisibilityFilteringClient` | `VFCandidateHydrator` | 可见性审核 |
+| `TESClient` | 多个 candidate hydrator | 补帖子文本、媒体、订阅信息；每个批次 500 ms 上限 |
+| `GizmoduckClient` | `QueryBuilder` / `GizmoduckCandidateHydrator` | viewer policy 200 ms；post-selection 作者资料批次 500 ms |
+| `UserTopicReader` / `TopicRetrievalClient` | `UserTopicsQueryHydrator` / `PhoenixTopicsSource` | profile 读取和 Topic 召回各 500 ms 上限 |
+| `PhoenixPredictionClient` | `PhoenixScorer` | 精排预测；总调用上限 5 s，超时保留候选并走 fallback 排序 |
+| `VisibilityFilteringClient` | `VFCandidateHydrator` | 可见性审核；500 ms 上限，未知时拒绝网外、保留网内 |
 
 ## 6. 当前仓库里的实现成熟度
 
@@ -137,25 +138,40 @@ sequenceDiagram
 
 | 依赖 | 当前实现状态 | 说明 |
 | --- | --- | --- |
-| `ThunderClient` | 简化版真实客户端 | 会连 gRPC Thunder 服务（`THUNDER_GRPC_ADDR`） |
-| `PhoenixRetrievalClient` | 真实 gRPC 客户端（可选） | 设置 `PHOENIX_RETRIEVAL_GRPC_ADDR` 后调用 Phoenix 网关；未设置退化为 stub（无网外候选） |
-| `PhoenixPredictionClient` | 真实 gRPC 客户端（可选） | 设置 `PHOENIX_PREDICT_GRPC_ADDR` 后调用 Phoenix 网关；未设置退化为 stub（空预测） |
-| `UserActionSequenceFetcher` | stub | 返回空行为序列；`HOME_MIXER_DEMO=1` 时装配层改为注入 `DemoUserActionSequenceFetcher`（合成序列） |
-| `StratoClient` | stub | 返回空用户特征；演示模式注入 `DemoStratoClient`（固定关注列表）；写缓存静默成功 |
-| `TESClient` | stub | 所有帖子无 core data；演示模式注入 `DemoTESClient`（占位文本） |
-| `GizmoduckClient` | stub | 默认所有用户资料为空 |
-| `VisibilityFilteringClient` | stub | 默认全部通过审核 |
+| `ThunderClient` | 简化版真实客户端 | 连接 `THUNDER_GRPC_ADDR`（默认 `http://localhost:50052`）；Source 总调用上限 500 ms，seen IDs 下推，signed LightPost IDs 在 adapter checked conversion |
+| `PhoenixRetrievalClient` | 真实 gRPC 客户端（可选） | 设置 `PHOENIX_RETRIEVAL_GRPC_ADDR` 后调用 Phoenix 网关；标准/MoE 召回上限 3 s，未设置时显式 Unavailable，由 Source 跳过该召回路 |
+| `PhoenixPredictionClient` | 真实 gRPC 客户端（可选） | 设置 `PHOENIX_PREDICT_GRPC_ADDR` 后调用 Phoenix 网关；精排上限 5 s，未设置时显式 Unavailable，由 Scorer 保留候选并走规则 fallback |
+| `DisabledUserActionSequenceFetcher` | disabled adapter | 返回空行为序列；`HOME_MIXER_MODE=demo` 时装配层改为注入 `DemoUserActionSequenceFetcher`（合成序列） |
+| `DisabledStratoClient` | disabled adapter | 返回空用户特征；演示模式注入 `DemoStratoClient`（固定关注列表）；两者都明确拒绝未配置的持久化写入，因此写回开关默认关闭 |
+| `DisabledTESClient` | disabled adapter | 所有帖子无 core data；演示模式注入 `DemoTESClient`（占位文本） |
+| `GizmoduckClient` | disabled + Demo adapter | `degraded` 返回未知 viewer policy，QueryBuilder 限制为仅网内；`demo` 明确允许网外并保留空作者资料；真实接入需要确认用户偏好授权语义 |
+| `VisibilityFilteringClient` | disabled + Demo adapter | `demo` 显式返回 Allow；`degraded` 返回 Unavailable，Pipeline 拒绝网外、保留网内；真实合同缺失时 `production_ready` 拒绝启动 |
 
-演示实现是独立的 `Demo*` 类型，由 `phoenix_candidate_pipeline::prod()` 在装配时按 `HOME_MIXER_DEMO` 选择注入；生产 stub 内部没有任何演示分支，替换 stub 时不需要关心演示逻辑。演示数据的共享契约（账号集合、Snowflake 工具）在 `proto/src/demo.rs`，thunder 与 home-mixer 共用一份。
+### 6.1 可选集成与人工接入
+
+以下能力不是主链启动条件，代码通过 `HomeMixerFeatures` 在装配层默认关闭：
+
+| 能力 | 显式开关 | 还需人工提供/确认 | 缺失时行为 |
+| --- | --- | --- | --- |
+| Phoenix MoE 召回 | `HOME_MIXER_ENABLE_PHOENIX_MOE=1` | `PHOENIX_MOE_GRPC_ADDR`、模型/协议兼容、容量、超时和降级 | 不装配 `PhoenixMoeSource`；Phoenix/Thunder 主召回继续 |
+| 请求缓存写回 | `HOME_MIXER_ENABLE_REQUEST_CACHE_SIDE_EFFECT=1` | 真实 Strato adapter、写入 schema、认证、幂等、保留期、隐私和恢复责任方 | SideEffect 不执行；响应路径不受影响 |
+| Debug RPC | `HOME_MIXER_ENABLE_DEBUG_RPC=1` | `HOME_MIXER_DEBUG_TOKEN`、受控调用方和日志/数据保留策略 | 默认返回 `Unavailable`；启用后 token 不匹配返回 `PermissionDenied` |
+| 未签名 cached posts | `HOME_MIXER_ENABLE_UNSIGNED_CACHED_POSTS=1` | 仅本地 fixture，不构成生产缓存合同 | 只允许 `HOME_MIXER_MODE=demo`；其他模式拒绝启动或拒绝请求 |
+
+禁止仅设置开关就把能力标为“已接入”。开关是人工批准入口，真实完成状态仍以能力台账中的合同和环境验收证据为准。尚无公开服务信息的 Ads、Prompt、WhoToFollow、PushToHome、Kafka/Redis 和 Grox 模型组件不会进入默认装配。
+
+Viewer policy 属于请求主边界，不作为可选旁路开关。只有 `ViewerEligibility::Allowed` 才允许网外候选；`Denied`、`Unknown`、真实服务错误或超过 200 ms 时都强制仅网内。VF 结果使用 `Allowed / Restricted / Unchecked / Unavailable` 明确区分；未知结果不再等价于审核通过。
+
+演示实现是独立的 `Demo*` 类型，由装配层按 `HOME_MIXER_MODE=demo` 选择注入；`HOME_MIXER_DEMO=1` 仅作为旧脚本兼容别名。默认 `degraded` 明确记录关键合同缺失；调用方身份、Viewer、UAS、Strato、TES、Gizmoduck、VF、Phoenix、Thunder 合同未全部闭合前，`production_ready` 拒绝启动。
 
 ```mermaid
 flowchart TD
     A["home-mixer"] --> B["ThunderClient<br/>真连 gRPC"]
     A --> P["Phoenix Predict / Retrieval<br/>设环境变量后真连 gRPC 网关"]
-    A --> C["Strato / TES / UAS / Gizmoduck / VF<br/>stub（部分支持演示模式）"]
+    A --> C["Strato / TES / UAS / Gizmoduck / VF<br/>degraded disabled adapter 或 Demo adapter"]
     B --> D["网内候选"]
     P --> E["网外候选 + 行为概率"]
-    C --> F["默认空数据会导致链路退化；<br/>HOME_MIXER_DEMO=1 可自洽跑通"]
+    C --> F["degraded 保守退化；<br/>HOME_MIXER_MODE=demo 可自洽跑通"]
 ```
 
 接真实平台时的替换顺序和每个 stub 对应的改造点，见 [getting-started：从演示到真实系统](../getting-started/06-从演示到真实系统.md)。

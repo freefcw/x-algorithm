@@ -18,16 +18,16 @@ flowchart LR
     F --> S["打分"]
     S --> K["TopK 选择"]
     K --> P["后处理<br/>VF + 会话去重"]
-    P --> Resp["ScoredPostsResponse"]
+    P --> Resp["ScoredPostsResponse / ForYouFeedResponse"]
 ```
 
 ## 2. 系统边界
 
 ### 2.1 `home-mixer` 负责什么
 
-- 接收 `ScoredPostsService.GetScoredPosts`
-- 构造内部 `ScoredPostsQuery`
-- 获取 `user_action_sequence` 和 `user_features`
+- 接收 `ScoredPostsService` 的 Get/Debug 请求和 `ForYouFeedService` 的 legacy/V2 请求
+- 由 `QueryBuilder` 构造内部 `ScoredPostsQuery` 与请求/预测身份
+- 通过上游命名 Query Hydrator owners 获取 scoring/retrieval sequence 和 user feature fields
 - 从 Thunder / Phoenix 取候选
 - 对候选做补全、过滤、打分、选择
 - 将结果映射为 `ScoredPost`
@@ -43,11 +43,10 @@ flowchart LR
 
 请求入口在 `home-mixer/server.rs`，核心流程固定：
 
-1. 解包 proto 请求
-2. 校验 `viewer_id`
-3. 构造内部 `ScoredPostsQuery`
-4. 调用 `PhoenixCandidatePipeline::execute()`
-5. 将最终 `selected_candidates` 映射为 `ScoredPost`
+1. `QueryBuilder` 校验并映射 proto 请求
+2. 调用内层 `PhoenixCandidatePipeline::execute()`
+3. 将 scored candidates 映射为 `ScoredPost`
+4. ForYou 请求再进入外层 `ForYouCandidatePipeline`；Debug 请求从同一次内层执行返回 typed stage data
 
 ```mermaid
 sequenceDiagram
@@ -112,7 +111,7 @@ flowchart TD
 - 标识与关系：`tweet_id`、`author_id`、reply/retweet 关系、`ancestors`
 - 内容与展示：`tweet_text`、`video_duration_ms`、screen name
 - 排序：`phoenix_scores`、`weighted_score`、`score`
-- 来源与安全：`served_type`、`in_network`、`visibility_reason`
+- 来源与安全：`served_type`、`in_network`、`visibility_decision`
 
 ## 6. 召回策略
 
@@ -142,7 +141,7 @@ flowchart TD
 - `video_duration_ms`
 - `subscription_author_id`
 - `author_screen_name`
-- `visibility_reason`（后补全）
+- `visibility_decision`（后补全，区分 Allowed / Restricted / Unchecked / Unavailable）
 
 ### 7.2 Filters
 
@@ -165,9 +164,7 @@ flowchart TD
 排序链为：
 
 1. `PhoenixScorer`
-2. `WeightedScorer`
-3. `AuthorDiversityScorer`
-4. `OONScorer`
+2. `RankingScorer`（内部依次组合 Weighted、AuthorDiversity、OON 行为）
 
 含义是：
 
@@ -200,13 +197,13 @@ Thunder 对 `home-mixer` 的价值不是“直接返回排好序的网内 Feed�
 | 依赖 | 当前状态 |
 | --- | --- |
 | ThunderClient | 相对可用（`THUNDER_GRPC_ADDR`） |
-| PhoenixRetrievalClient | 设 `PHOENIX_RETRIEVAL_GRPC_ADDR` 后真连 gRPC 网关，否则 stub |
-| PhoenixPredictionClient | 设 `PHOENIX_PREDICT_GRPC_ADDR` 后真连 gRPC 网关，否则 stub |
-| StratoClient | stub；`HOME_MIXER_DEMO=1` 时装配层注入 `DemoStratoClient`（演示关注列表） |
-| TESClient | stub；演示模式注入 `DemoTESClient`（演示文本） |
-| UserActionSequenceFetcher | stub；演示模式注入 `DemoUserActionSequenceFetcher`（合成行为序列） |
-| GizmoduckClient | stub |
-| VisibilityFilteringClient | stub |
+| PhoenixRetrievalClient | 设 `PHOENIX_RETRIEVAL_GRPC_ADDR` 后真连 gRPC 网关；缺失时显式 Unavailable 并跳过该召回路 |
+| PhoenixPredictionClient | 设 `PHOENIX_PREDICT_GRPC_ADDR` 后真连 gRPC 网关；缺失时显式 Unavailable 并走规则排序 |
+| StratoClient | `DisabledStratoClient`；`HOME_MIXER_MODE=demo` 时装配层注入 `DemoStratoClient`（演示关注列表） |
+| TESClient | `DisabledTESClient`；演示模式注入 `DemoTESClient`（演示文本） |
+| UserActionSequenceOps | `DisabledUserActionSequenceFetcher`；演示模式注入 `DemoUserActionSequenceFetcher`（合成行为序列） |
+| GizmoduckClient | disabled + Demo adapter；未知 viewer policy 只允许网内 |
+| VisibilityFilteringClient | disabled + Demo adapter；不可用时拒绝网外、保留网内 |
 
 这意味着：
 
@@ -215,7 +212,7 @@ Thunder 对 `home-mixer` 的价值不是“直接返回排好序的网内 Feed�
 
 ## 10. 当前默认运行行为
 
-默认（不设任何环境变量的）stub 组合下，最常见的不是“排序不理想”，而是“候选很容易被清空”。
+默认 `degraded` 的 disabled adapter 组合下，最常见的不是“排序不理想”，而是“候选很容易被清空”。
 
 核心原因通常是三条：
 
@@ -233,7 +230,7 @@ flowchart TD
     F --> G
 ```
 
-`HOME_MIXER_DEMO=1` 正是针对这三条缺口注入演示数据，让链路不依赖外部平台也能出结果。
+`HOME_MIXER_MODE=demo` 正是针对这三条缺口注入演示数据，让链路不依赖外部平台也能出结果。
 
 ## 11. 当前最值得关注的风险
 

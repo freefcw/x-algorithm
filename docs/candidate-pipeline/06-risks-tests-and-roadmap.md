@@ -1,169 +1,51 @@
 # 风险、测试缺口与改进路线
 
-本篇不重复讲组件职责，只聚焦当前实现里最值得优先关注的问题。
+本篇只记录 candidate-pipeline 框架层面仍然可达的风险。Home Mixer 的 Viewer、VF、运行模式和外部合同见 [Home Mixer 风险文档](../home-mixer/06-current-behavior-risks-roadmap.md)。
 
-## 1. 高优先级问题
+## 1. 已解决的框架级问题
 
-### 1.1 同 stage Hydrator 的依赖关系当前不成立
+- 同 stage Hydrator 的快照语义已被明确记录；Home Mixer 将依赖 CoreData 的 Gizmoduck profile hydration 移到 post-selection，避免读取未写回的 retweet author。
+- Pipeline 对每个 stage 输出 request-scoped component、耗时、输入/输出规模和错误日志；SideEffect 失败不会静默丢失。
+- Selector 后的 underfill 会输出 `result_underfilled` 告警，包含 target、actual、post-selection 删除数量和未选候选数量，但不会绕过安全过滤进行补量。
+- Query Hydrator、Source 和 Candidate Hydrator 的长度保护与逐候选错误隔离由框架统一处理。
 
-问题来源：
+## 2. 仍然可达的风险
 
-- 框架的 `run_hydrators()` 会把同一个 stage 的所有 hydrator 基于同一份旧候选快照并发执行
-- `GizmoduckCandidateHydrator` 读取 `candidate.retweeted_user_id`
-- `retweeted_user_id` 又是 `CoreDataCandidateHydrator` 才会补出来的字段
+### 2.1 Post-selection 删除后不回补
 
-结果：
+Selector 当前保留 Top 100，post-selection 过滤后再截到 50。如果 VF、附属内容安全或会话去重删除较多候选，最终响应可能少于目标数量。当前只告警，不从未选候选回补，因为回补必须重新执行完整 VF、附属内容检查和会话去重，且会增加外部调用与延迟。
 
-- 即使 `CoreDataCandidateHydrator` 成功拿到了转推原作者
-- `GizmoduckCandidateHydrator` 也看不到这次补全结果
-- `retweeted_screen_name` 实际上很难在当前装配里被正确写入
+要实现回补，需要先确定请求总预算、最大补回批次、VF 缓存策略、排序稳定性和安全责任，不能只把 `non_selected_candidates` 直接拼入响应。
 
-这不是单个组件的小 bug，而是“装配顺序与框架语义不匹配”。
+### 2.2 Filtered candidates 没有统一来源码
 
-### 1.2 默认 stub 组合下，流水线几乎必然返回空结果
+`PipelineResult.filtered_candidates` 保留被删除的候选，但公共结果目前没有统一的 filter name/reason 结构。日志包含组件名，Debug RPC 也有阶段计数和 ID，但长期观测仍需要稳定的内部 reason code、采样策略和隐私保留期。
 
-> 现状更新：这个问题已经有了标准解法——`HOME_MIXER_DEMO=1` 让 Strato/UAS/TES stub 返回自洽演示数据，配合 Phoenix gRPC 网关和 thunder 演示模式即可端到端出结果（见 [getting-started 第四步](../getting-started/05-第四步-跑通完整推荐链路.md)）。以下退化链描述的是**不设环境变量**的默认状态，细节以 [home-mixer 风险文档](../home-mixer/06-current-behavior-risks-roadmap.md) 为权威。
+### 2.3 Fire-and-forget SideEffect 的生命周期
 
-关键链路如下：
+SideEffect 失败会记录日志，但 `tokio::spawn` 任务在进程关闭或 runtime 被回收时可能未完成。生产缓存写回必须有 durable queue、重试/幂等、超时、停机 drain 和恢复责任，不能把日志视为持久化成功证据。
 
-1. UAS fetcher 返回空序列
-2. `UserActionSeqQueryHydrator` 失败，`user_action_sequence` 为空
-3. `PhoenixSource` 因缺少 `user_action_sequence` 失效
-4. `StratoClient` 返回空用户特征
-5. `TESClient` 返回空 core data
-6. `CoreDataHydrationFilter` 过滤掉所有 `tweet_text` 为空的候选
+### 2.4 框架泛型合同仍允许过宽的降级
 
-### 1.3 `WeightedScorer` 的负分 offset 公式（已修复）
+Candidate Pipeline 对单个 hydrator/scorer/filter 错误采取逐组件隔离，这是 portable migration 需要的默认语义；内容安全、viewer eligibility 和身份认证因此不能只依赖通用 fallback，必须在对应领域 filter 或 RPC 边界显式定义 fail-safe 状态。当前 VF 和 Viewer 已采用该方式，新增安全组件需要遵循同一约束。
 
-> 现状更新：原实现 `(combined_score + NEGATIVE_WEIGHTS_SUM) / WEIGHTS_SUM * OFFSET` 会把负分推得更负、与注释语义相反。当前代码已改为以负权重和的绝对值做线性归一：
->
-> ```rust
-> (combined_score - p::NEGATIVE_WEIGHTS_SUM) / -p::NEGATIVE_WEIGHTS_SUM * p::NEGATIVE_SCORES_OFFSET
-> ```
->
-> 负分被映射进 `[0, NEGATIVE_SCORES_OFFSET)`，正分整体抬高 `NEGATIVE_SCORES_OFFSET`，排序语义与注释一致。保留本节作为"公式与注释必须同改"的提醒。
+## 3. 测试重点
 
-### 1.4 Post-selection 过滤后没有回填机制
+当前已有：
 
-当前流程是：
+- workspace/Home Mixer 全链路测试
+- Selector 结果顺序和 underfill 相关框架行为测试
+- UAS、Strato、TES 跨用户/跨请求隔离测试
+- Viewer policy、VF 缺失/错误/超时、Debug token、unsigned cache 和 mode validation 测试
+- Demo ScoredPosts、ForYou、Debug wire 验收
 
-1. selector 先选 Top 100
-2. `VFFilter` 和 `DedupConversationFilter` 再删
-3. 直接 truncate 到 50
+下一步应优先补：
 
-如果 post-selection 阶段删掉很多候选：
+1. post-selection underfill 的可观测性回归，确认过滤数量和最终条数一致。
+2. Gizmoduck profile 在 post-selection 读取 CoreData retweet author 的装配合同测试。
+3. SideEffect shutdown drain、重试和幂等的 adapter 集成测试。
+4. 生产持久化状态与多实例一致性的端到端测试。
 
-- 框架不会从 selector 之前的“第 101 名以后”回填
-- 最终返回条数可能远小于 50
+## 4. 修改原则
 
-这在有严格供给要求的首页 Feed 中会成为稳定性问题。
-
-### 1.5 SideEffect 结果被完全丢弃
-
-`run_side_effects()` 的当前行为是：
-
-- `tokio::spawn`
-- `join_all`
-- 结果赋给 `_`
-
-这意味着：
-
-- SideEffect 失败不会影响主链路，这本身没问题
-- 但默认也没有统一日志或 metrics
-- 如果缓存写回持续失败，框架层不会给出明显信号
-
-## 2. 中优先级问题
-
-### 2.1 Selector 不在统一 stage 观测模型里
-
-`PipelineStage` 没有 `Selector` 和 `SideEffect`。后果是：
-
-- 阶段日志不完整
-- 无法在统一 stage 维度下统计“selector 前后规模变化”
-- 排查“为什么只剩 17 条结果”时要跨业务代码找日志
-
-### 2.2 `PipelineResult.filtered_candidates` 缺乏来源信息
-
-当前 `filtered_candidates` 只是一个合并列表，不记录：
-
-- 是哪一个 filter 移除的
-- 是 pre-selection 还是 post-selection 阶段移除的
-
-这会降低调试效率，也不利于离线分析各个 filter 的影响。
-
-### 2.3 `normalize_score()` 仍是 stub
-
-当前 `WeightedScorer` 调了 `normalize_score()`，但实现只是原样返回。后果是：
-
-- `author_followers_count` 目前没有进入归一化逻辑
-- 新鲜度衰减也没做
-- 这让 Gizmoduck 补的粉丝数还没有真正进入排序闭环
-
-## 3. 测试覆盖缺口
-
-当前与 candidate-pipeline 相关的测试覆盖非常薄：
-
-- 框架 crate 里只有 `short_type_name()` 的单测
-- `home-mixer` 里只有少量工具函数和个别 filter/scorer 的单测
-- 没有针对 `CandidatePipeline::execute()` 主路径的集成测试
-
-最值得补的测试不是更多工具函数测试，而是以下几类：
-
-### 3.1 框架级行为测试
-
-- `Hydrator` 长度不匹配时会被跳过
-- `Filter` 失败时会回滚
-- `Source` 失败时不会影响其他 source
-- `post_selection_filters` 删除候选后不会回填
-
-### 3.2 装配级集成测试
-
-- 给 `PhoenixCandidatePipeline` 注入 fake clients，验证完整结果规模
-- 验证 `PreviouslySeenPostsFilter` / `PreviouslyServedPostsFilter` 对 related post ids 的语义
-- 验证 `VFCandidateHydrator` 按 `in_network` 分 safety level
-
-### 3.3 排序语义测试
-
-- `WeightedScorer` 负分公式是否符合预期
-- `AuthorDiversityScorer` 在不同作者分布下的衰减行为
-- `OONScorer` 只影响网外内容
-
-## 4. 建议的改造路线
-
-如果目标是把这条链路从“骨架”推进到“可用”，建议按下面顺序处理。
-
-### 第一阶段：先让链路稳定产出非空结果
-
-1. 替换或 mock `TESClient`，保证能拿到 `tweet_text`
-2. 替换或 mock `StratoClient`，保证能拿到基础用户特征
-3. 替换或 mock `UserActionSequenceFetcher`，让 `PhoenixSource` 和 `PhoenixScorer` 可以拿到序列
-4. 为 `PhoenixCandidatePipeline` 写一条完整集成测试
-
-### 第二阶段：修语义错误和观测缺口
-
-1. 修正 `WeightedScorer::offset_score()` 的负分公式，或者同步修改注释和参数定义
-2. 给 side effect 增加错误日志和 metrics
-3. 给 selector 增加统一观测点
-4. 为 `filtered_candidates` 增加过滤来源信息
-
-### 第三阶段：解决框架结构限制
-
-1. 处理 hydrator 之间的依赖问题
-2. 评估是否需要把 `Hydrator` 拆成多个有顺序的子阶段
-3. 评估 post-selection 删除后的回填机制
-
-## 5. 一个更务实的判断标准
-
-判断这条流水线是不是“已经可用”，不要只看：
-
-- 是否能编译
-- 是否有完整的阶段列表
-
-更应该看下面四个问题：
-
-1. 能否稳定返回非空结果？
-2. 关键外部依赖是否已摆脱 stub？
-3. 排序分数是否与参数注释和产品预期一致？
-4. 出现候选被清空时，能否在日志和 metrics 中快速定位是哪个阶段导致？
-
-按这个标准看，当前仓库已经具备很好的框架骨架，但距离真正可运营的候选流系统仍有明确的工程补齐工作要做。
+框架层继续保持上游公共执行语义；安全和身份策略放在 Home Mixer application boundary；外部 adapter 用显式类型表示 `Demo`、`Disabled` 或真实集成状态。任何回补、写回或放宽降级的改动，都必须同时给出延迟预算、认证、隐私保留、恢复 owner 和回归测试。

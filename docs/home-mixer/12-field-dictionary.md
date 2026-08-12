@@ -30,32 +30,35 @@
 | `is_bottom_request` | `bool` | 是否为翻页请求 | `is_bottom_request` | `PreviouslyServedPostsFilter.enable()` |
 | `bloom_filter_entries` | `repeated ImpressionBloomFilterEntry` | 已读布隆过滤器 | `bloom_filter_entries` | `PreviouslySeenPostsFilter` |
 
-## 2. 内部查询字段：`candidate_pipeline::query::ScoredPostsQuery`
+## 2. 内部查询字段：`models::query::ScoredPostsQuery`
 
 来源文件：
 
-- `home-mixer/candidate_pipeline/query.rs`
+- `home-mixer/models/query.rs`
 
 | 字段 | 类型 | 来源 | 谁写入 | 谁读取 |
 | --- | --- | --- | --- | --- |
-| `user_id` | `i64` | proto `viewer_id` | 请求入口 | 几乎所有组件 |
+| `user_id` | `u64` | proto `viewer_id` | `QueryBuilder` checked conversion | 几乎所有组件 |
 | `client_app_id` | `i32` | proto | 请求入口 | `get_viewer()` |
 | `country_code` | `String` | proto | 请求入口 | `get_viewer()` |
 | `language_code` | `String` | proto | 请求入口 | `get_viewer()` |
-| `seen_ids` | `Vec<i64>` | proto | 请求入口 | `PreviouslySeenPostsFilter` |
-| `served_ids` | `Vec<i64>` | proto | 请求入口 | `PreviouslyServedPostsFilter` |
+| `seen_ids` | `Vec<u64>` | proto | `QueryBuilder` 过滤负值 | `PreviouslySeenPostsFilter` |
+| `served_ids` | `Vec<u64>` | proto | `QueryBuilder` 过滤负值 | `PreviouslyServedPostsFilter` |
 | `in_network_only` | `bool` | proto | 请求入口 | `PhoenixSource`、side effect enable |
 | `is_bottom_request` | `bool` | proto | 请求入口 | `PreviouslyServedPostsFilter` |
 | `bloom_filter_entries` | `Vec<ImpressionBloomFilterEntry>` | proto | 请求入口 | `PreviouslySeenPostsFilter` |
-| `user_action_sequence` | `Option<UserActionSequence>` | hydrated | `UserActionSeqQueryHydrator` | `PhoenixSource`、`PhoenixScorer` |
-| `user_features` | `UserFeatures` | hydrated | `UserFeaturesQueryHydrator` | `ThunderSource`、多个 Filter/Hydrator |
-| `request_id` | `String` | 本地生成 | `ScoredPostsQuery::new()` | pipeline 日志追踪 |
+| `scoring_sequence` | `Option<UserActionSequence>` | hydrated | `ScoringSequenceQueryHydrator` | `PhoenixScorer` |
+| `retrieval_sequence` | `Option<UserActionSequence>` | hydrated | `RetrievalSequenceQueryHydrator` | `PhoenixSource` / MoE |
+| `user_features` | `UserFeatures` | hydrated | upstream-named field owners + local safety owner | `ThunderSource`、多个 Filter/Hydrator |
+| `request_id` | `String` | 本地生成 | `QueryBuilder` | pipeline 日志追踪 |
+| `prediction_id` | `u64` | 本地生成 | `QueryBuilder` | `PhoenixScorer` / 响应候选 |
+| `request_time_ms` | `i64` | 本地生成 | `QueryBuilder` | 请求时序上下文 |
 
 ## 3. `UserFeatures`
 
 来源文件：
 
-- `home-mixer/candidate_pipeline/query_features.rs`
+- `home-mixer/models/user_features.rs`
 
 | 字段 | 类型 | 含义 | 主要影响组件 |
 | --- | --- | --- | --- |
@@ -69,13 +72,13 @@
 
 来源文件：
 
-- `home-mixer/candidate_pipeline/candidate.rs`
+- `home-mixer/models/candidate.rs`
 
 ### 4.1 标识与关系字段
 
 | 字段 | 类型 | 初始来源 | 后续作用 |
 | --- | --- | --- | --- |
-| `tweet_id` | `i64` | Source | 唯一标识、去重、响应输出 |
+| `tweet_id` | `u64` | Source | 唯一标识、去重、响应输出；signed 协议在 adapter 边界 checked conversion |
 | `author_id` | `u64` | Source | 过滤、`in_network` 判定、响应输出 |
 | `tweet_text` | `String` | `CoreDataCandidateHydrator` | 文本过滤、内容完整性检查 |
 | `in_reply_to_tweet_id` | `Option<u64>` | Source / CoreDataHydrator | related ids、响应输出 |
@@ -87,19 +90,19 @@
 
 | 字段 | 类型 | 谁写 | 谁读 |
 | --- | --- | --- | --- |
-| `phoenix_scores` | `PhoenixScores` | `PhoenixScorer` | `WeightedScorer` |
-| `prediction_request_id` | `Option<u64>` | `PhoenixScorer` | 响应输出 |
+| `phoenix_scores` | `PhoenixScores` | `PhoenixScorer` | `RankingScorer` |
+| `prediction_request_id` | `Option<u64>` | `PhoenixScorer` 传播 query prediction ID | 响应输出 |
 | `last_scored_at_ms` | `Option<u64>` | `PhoenixScorer` | 响应输出 |
-| `weighted_score` | `Option<f64>` | `WeightedScorer` | `AuthorDiversityScorer` |
-| `score` | `Option<f64>` | `AuthorDiversityScorer` / `OONScorer` | selector、会话去重、响应输出 |
+| `weighted_score` | `Option<f64>` | `RankingScorer` | debug / 响应内部排序解释 |
+| `score` | `Option<f64>` | `RankingScorer` | selector、会话去重、响应输出 |
 
 ### 4.3 来源、网络与展示字段
 
 | 字段 | 类型 | 谁写 | 谁读 |
 | --- | --- | --- | --- |
 | `served_type` | `Option<ServedType>` | Source | 响应输出 |
-| `in_network` | `Option<bool>` | `InNetworkCandidateHydrator` | `OONScorer`、VF、响应输出 |
-| `video_duration_ms` | `Option<i32>` | `VideoDurationCandidateHydrator` | `WeightedScorer` |
+| `in_network` | `Option<bool>` | `InNetworkCandidateHydrator` | `RankingScorer` 内部 OON 阶段、VF、响应输出 |
+| `video_duration_ms` | `Option<i32>` | `VideoDurationCandidateHydrator` | `RankingScorer` 内部 Weighted 阶段 |
 | `author_followers_count` | `Option<i32>` | `GizmoduckCandidateHydrator` | 当前主链几乎未使用 |
 | `author_screen_name` | `Option<String>` | `GizmoduckCandidateHydrator` | `get_screen_names()`、响应输出 |
 | `retweeted_screen_name` | `Option<String>` | `GizmoduckCandidateHydrator` | `get_screen_names()`、响应输出 |
@@ -108,7 +111,7 @@
 
 | 字段 | 类型 | 谁写 | 谁读 |
 | --- | --- | --- | --- |
-| `visibility_reason` | `Option<FilteredReason>` | `VFCandidateHydrator` | `VFFilter`、响应输出 |
+| `visibility_decision` | `VisibilityDecision` | `VFCandidateHydrator` | `VFFilter`、响应映射 |
 | `subscription_author_id` | `Option<u64>` | `SubscriptionHydrator` | `IneligibleSubscriptionFilter` |
 
 ## 5. `PhoenixScores`
@@ -162,7 +165,7 @@
 | `prediction_request_id` | `candidate.prediction_request_id` | `0` |
 | `ancestors` | `candidate.ancestors` | `[]` |
 | `screen_names` | `candidate.get_screen_names()` | 空 map |
-| `visibility_reason` | `candidate.visibility_reason.into_proto()` | `None` |
+| `visibility_reason` | `candidate.visibility_decision` 中的 `Restricted(reason)` | 其他状态为 `None` |
 
 ## 7. Thunder `LightPost`
 
@@ -223,7 +226,7 @@ flowchart LR
 - `tweet_text`
 - `retweeted_user_id`
 - `author_screen_name`
-- `visibility_reason`
+- `visibility_decision`
 
 这些字段在结构上都存在，但当前默认依赖多为 stub，所以运行时常常为空。
 

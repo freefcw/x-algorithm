@@ -80,39 +80,39 @@
 `run_hydrators()` 的行为和 query hydrator 类似：
 
 1. 所有启用的 hydrator 都基于同一份候选快照 `&candidates` 运行
-2. 每个 hydrator 必须返回与输入相同长度、相同顺序的 `Vec<C>`
-3. 框架再按 hydrator 列表顺序调用 `update_all()`
+2. 每个 hydrator 必须返回与输入相同长度、相同顺序的 `Vec<Result<C, String>>`
+3. 框架再按 hydrator 列表顺序调用 `update_all()`，只合并成功候选
 
 关键结论：
 
 - 同 stage 的 hydrator 之间不能依赖彼此新增字段
-- 任一 hydrator 返回长度不一致时，整份结果会被跳过并打 warning
+- 单候选错误只保留该候选原值；返回长度不一致时，整份结果会转成错误并打 warning
 
 ### 3.4 Filter
 
 `run_filters()` 对每个 filter 都会：
 
 1. 先保存一份 `backup = candidates.clone()`
-2. 执行 `filter(query, candidates)`
+2. 通过本地 `try_run(query, candidates)` 执行 Filter；默认实现调用上游兼容的同步 `run -> filter`
 3. 成功时用 `result.kept` 覆盖当前候选，并把 `result.removed` 追加到总 removed 列表
-4. 失败时记录错误，并回滚到 `backup`
+4. 只有覆盖了 `try_run` 的可失败适配器返回错误时，才记录错误并回滚到 `backup`
 
 关键结论：
 
-- filter 是 fail-open
-- 某个 filter 失败不会丢失前面 filter 已经成功移除的候选
+- 标准 Filter 是同步、不可失败的上游合同
+- `try_run` 是 additive fail-open 扩展；其失败不会丢失前面 Filter 已经成功移除的候选
 
 ### 3.5 Scorer
 
 `score()` 和 hydrator 类似，但按 scorer 列表串行执行：
 
-1. scorer 基于当前候选切片返回等长结果
-2. 框架调用 `update_all()` 合并
+1. scorer 基于当前候选切片返回等长同序的 `Vec<Result<C, String>>`
+2. 框架调用 `update_all()`，只合并成功候选
 
 关键结论：
 
 - scorer 可以显式依赖前一个 scorer 写入的字段
-- scorer 返回长度不一致时会被跳过，不会中断整条链路
+- 单候选错误保留该候选当前字段；长度不一致时整份 scorer 输出会转成错误，不中断流水线
 
 ## 4. 错误处理矩阵
 
@@ -120,13 +120,13 @@
 | --- | --- | --- | --- |
 | `QueryHydrator` | 记录 error，忽略该 hydrator 输出 | 否 | 查询保留已有字段 |
 | `Source` | 记录 error，忽略该 source 输出 | 否 | 其他 source 继续 |
-| `Hydrator` | 记录 error，忽略该 hydrator 输出 | 否 | 候选保留原值 |
-| `Hydrator` 长度不匹配 | 记录 warning，跳过该 hydrator | 否 | 是契约违规保护 |
-| `Filter` | 记录 error，回滚到该 filter 执行前 | 否 | fail-open |
-| `Scorer` | 记录 error，忽略该 scorer 输出 | 否 | 保留当前得分字段 |
-| `Scorer` 长度不匹配 | 记录 warning，跳过该 scorer | 否 | 是契约违规保护 |
+| `Hydrator` 单候选失败 | 记录失败数量，只忽略对应候选更新 | 否 | 其他候选正常更新 |
+| `Hydrator` 长度不匹配 | 记录 warning，整份输出转为错误 | 否 | 所有候选保留原值 |
+| `Filter::try_run` | 记录 error，回滚到该 Filter 执行前 | 否 | 仅本地可失败扩展；标准 Filter 不返回错误 |
+| `Scorer` 单候选失败 | 记录失败数量，只忽略对应候选更新 | 否 | 保留该候选当前得分字段 |
+| `Scorer` 长度不匹配 | 记录 warning，整份输出转为错误 | 否 | 所有候选保留当前字段 |
 | `Selector` | 无 `Result`，无框架级错误处理 | 是，若内部 panic | 当前需业务自行保证 |
-| `SideEffect` | 被 `join_all` 收集，但结果被直接丢弃 | 否 | 默认无错误日志 |
+| `SideEffect` | 后台 `join_all` 执行并记录成功或错误 | 否 | 主响应不等待完成 |
 
 这说明该框架整体是“尽量给结果”的降级风格，而不是严格的 fail-fast 风格。
 
@@ -218,5 +218,5 @@
 1. `Hydrator` / `Scorer` 必须返回与输入一一对应、等长同序的结果。
 2. `update()` / `update_all()` 只能改自己拥有的字段。
 3. 同 stage 组件之间不能假设存在数据依赖。
-4. `Filter` 如果要失败，必须让失败后的旧输入仍然可继续使用。
+4. 标准 `Filter` 实现同步 `filter()`；只有可失败外部适配器才覆盖 `try_run()`，并接受失败后恢复旧输入的语义。
 5. `SideEffect` 不能依赖“必须成功”语义，因为框架不会等待它完成。

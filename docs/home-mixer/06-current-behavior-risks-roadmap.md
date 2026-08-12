@@ -1,185 +1,73 @@
 # 06. 当前行为、风险与补齐路线
 
-前面几篇讲的是结构，本篇讲“这份仓库现在真实会怎样跑”。
+本篇只记录当前请求链真实可达的退化行为、剩余风险和生产验收条件。框架执行语义见 [candidate-pipeline 风险文档](../candidate-pipeline/06-risks-tests-and-roadmap.md)，外部合同见 [05-external-deps-and-contracts](./05-external-deps-and-contracts.md)。
 
-> 本篇是"默认 stub 退化行为 + 补齐路线"的**权威文档**；[candidate-pipeline 风险文档](../candidate-pipeline/06-risks-tests-and-roadmap.md) 只保留框架层面的风险，不再复述这套退化故事。
-> 另外注意：下述退化描述的是**不设任何环境变量**的默认状态。设置 `HOME_MIXER_DEMO=1` + Phoenix gRPC 地址后，三条退化链都会被演示数据补上，端到端可跑通（见 [getting-started 第四步](../getting-started/05-第四步-跑通完整推荐链路.md)）；接真实平台的改造点见 [从演示到真实系统](../getting-started/06-从演示到真实系统.md)。
+## 1. 三种运行模式
 
-## 1. 默认代码路径下的真实行为
-
-如果直接按仓库当前默认实现（不设环境变量）启动 `home-mixer`，它不是“效果一般”，而是会发生明显退化。
-
-```mermaid
-flowchart TD
-    A["UAS Fetcher 返回空序列"] --> B["UserActionSeqQueryHydrator 报错"]
-    B --> C["query.user_action_sequence 仍为空"]
-    C --> D["PhoenixSource 无法召回网外候选"]
-    C --> E["PhoenixScorer 无法做有效预测"]
-
-    F["StratoClient 返回空 user_features"] --> G["followed_user_ids 为空"]
-    G --> H["ThunderSource 只会拿到空 following 列表"]
-
-    I["TESClient 返回空 core data"] --> J["tweet_text 为空"]
-    J --> K["CoreDataHydrationFilter 过滤掉候选"]
-
-    D --> L["候选规模变小"]
-    H --> L
-    K --> M["最终结果极可能为空"]
-```
-
-## 2. 关键退化点逐条解释
-
-### 2.1 UAS 链路默认失效
-
-`UserActionSequenceFetcher` 默认返回空行为列表，而 `UserActionSeqQueryHydrator` 会把空序列视为错误，不会写回 `query.user_action_sequence`。
-
-后果：
-
-- `PhoenixSource` 因缺少序列而失败
-- `PhoenixScorer` 缺少有效模型输入
-
-### 2.2 用户特征默认全空
-
-`StratoClient` 默认返回空 `UserFeatures`，导致：
-
-- `followed_user_ids` 为空
-- `blocked_user_ids` / `muted_user_ids` 为空
-- `muted_keywords` 为空
-- `subscribed_user_ids` 为空
-
-后果：
-
-- Thunder 几乎没有有效 following 列表
-- 个性化过滤大多退化为无效果
-
-### 2.3 TES 默认全空最致命
-
-`TESClient` 默认不给任何 core data，导致：
-
-- `tweet_text` 为空
-- `retweeted_tweet_id` / `retweeted_user_id` 为空
-- `video_duration_ms` 为空
-- `subscription_author_id` 为空
-
-其中最关键的是：
-
-- `CoreDataHydrationFilter` 要求 `tweet_text` 非空
-
-这意味着即便前面有候选进来，很多也会被这一层直接清空。
-
-### 2.4 Phoenix Prediction 默认无实际排序信号
-
-即使忽略前面问题，`PhoenixPredictionClient` 也默认返回空分布，`WeightedScorer` 大量字段都会按 `0.0` 计算。
-
-后果：
-
-- 排序信号非常弱
-- 后面的多样性和网外降权更多是在对“接近空分数”做操作
-
-### 2.5 VF 默认全部放行
-
-当前可见性系统不会实际拦截内容，因此：
-
-- 安全链路形状存在
-- 但没有真实审核效果
-
-## 3. 当前实现里的高优先级工程问题
-
-| 问题 | 原因 | 影响 |
+| 模式 | 当前行为 | 启动条件 |
 | --- | --- | --- |
-| 默认几乎返回空结果 | 多个 stub 叠加，尤其是 UAS + TES + Strato | 系统难以做端到端验证 |
-| 同 stage hydrator 有依赖错位 | Hydrator 并行执行，但部分实现依赖彼此输出 | 某些字段补全不稳定 |
-| 负分归一化公式与注释不一致 | `WeightedScorer::offset_score()` 和参数注释存在语义偏差 | 排序解释性和调参直觉受损 |
-| post-selection 删除后不回补 | selector 先取 100，后过滤再截断 50 | 返回条数可能明显不足 |
-| side effect 失败无统一观测 | 结果被异步丢弃 | 缓存回写问题不易察觉 |
+| `demo` | 注入 Demo UAS、Strato、TES、Gizmoduck、Topic 和 VF adapter，可跑通网内/网外完整演示链路 | `HOME_MIXER_MODE=demo`；`HOME_MIXER_DEMO=1` 仅作兼容别名 |
+| `degraded` | 注入显式 `Disabled*` adapter；Viewer/VF 未知时采用保守降级，主服务可以启动但不声称生产可用 | 默认模式 |
+| `production_ready` | 当前拒绝启动 | 调用方身份、Viewer、UAS、Strato、TES、Gizmoduck、VF、Phoenix、Thunder 权威合同尚未全部闭合 |
 
-## 4. 最值得注意的一个结构性风险
+`HomeMixerConfig` 是 mode 的唯一入口。`HomeMixerServer::build` 把已校验 mode 直接传给 `PhoenixCandidatePipeline::assemble_for_mode`，Pipeline 不再重新读取环境变量决定依赖，避免程序化配置与实际装配不一致。
 
-`GizmoduckCandidateHydrator` 读取 `retweeted_user_id`，但这个字段主要由 `CoreDataCandidateHydrator` 在同一 stage 中写入。
+## 2. Degraded 模式的真实行为
 
-由于同 stage hydrator 并行执行：
+默认不设置环境变量时：
 
-- `GizmoduckCandidateHydrator` 看不到这一轮刚补出的 `retweeted_user_id`
-- `retweeted_screen_name` 的正确性会受影响
+- `DisabledUserActionSequenceFetcher` 返回空行为序列，Phoenix 个性化召回和打分输入缺失。
+- `DisabledStratoClient` 返回空用户特征并拒绝持久化写入，Thunder 缺少关注列表，请求缓存 SideEffect 默认关闭。
+- `DisabledTESClient` 返回空 core data，普通候选可能被 `CoreDataHydrationFilter` 删除。
+- `DisabledGizmoduckClient` 返回未知 viewer policy，`QueryBuilder` 将请求限制为仅网内。
+- `DisabledVisibilityFilteringClient` 返回 `Unavailable`；`VFFilter` 删除网外候选、保留网内候选，附属引用/转发内容保守删除。
 
-这说明问题不只是“某个客户端没填数据”，而是“装配顺序与框架语义之间有结构性约束”。
+因此 degraded 的目标是“明确、保守、可观测地退化”，不是提供完整 Feed。需要本地完整链路时使用 Demo；需要生产流量时必须先让 `production_ready` 的合同校验通过。
 
-## 5. 观测和测试上的缺口
+## 3. 已经收口的高风险语义
 
-### 5.1 观测缺口
+- Viewer policy 只有明确 Allow 才开放网外；错误和 200 ms 超时都限制为仅网内。
+- VF 使用 `Allowed / Restricted / Unchecked / Unavailable`，不再把缺失结果当作审核通过；调用上限 500 ms。
+- Phoenix 标准/MoE 召回上限 3 s，预测上限 5 s；Viewer 为 200 ms；Thunder、VF、Topic profile/recall、UAS、Strato read/write、TES 单批和 Gizmoduck profile 均为 500 ms。超时由对应 Source/Hydrator/Scorer/SideEffect 隔离并记录。
+- `DebugScoredPosts` 默认关闭，启用时要求 metadata token；未签名 `cached_posts` 默认拒绝且只允许显式 Demo fixture。
+- Pipeline 对 Query Hydrator、Source、Hydrator、Scorer、Selector 和 SideEffect 都输出 request-scoped 成功、失败和耗时日志。
+- signed wire/store ID 到 `u64` domain ID 使用 checked conversion，负值不会静默变成大整数。
+- UAS、Strato、TES request-scoped provider 已有跨用户/跨请求隔离测试。
+- Weighted 负分归一化已与注释和排序测试一致。
 
-- selector 没有统一 stage 级打点
-- side effect 没有统一失败日志
-- `filtered_candidates` 不记录是哪个 filter 删掉的
-- post-selection 删除比例缺少直接观测
+## 4. 仍然可达的风险
 
-### 5.2 测试缺口
+### 4.1 Post-selection 过滤后不回补
 
-当前最需要的不是更多小函数单测，而是：
+Selector 先保留 100 条，VF、Gizmoduck profile 和会话去重随后执行，最终再截到 50 条。如果 post-selection 删除超过 50 条，响应会少于目标数量；Pipeline 当前不会从 `non_selected_candidates` 回补，但会输出 `result_underfilled` 告警。
 
-1. pipeline 端到端集成测试
-2. stub client 的 fake 实现组合测试
-3. 排序语义测试
-4. post-selection 缩水行为测试
+修复前先定义回补候选是否必须重新执行 VF、附属内容检查和会话去重，以及额外调用和延迟预算，避免为了补量绕过安全阶段。
 
-## 6. 推荐补齐路线
+### 4.2 普通业务 RPC 的调用方身份合同未闭合
 
-```mermaid
-flowchart LR
-    A["阶段 1<br/>先让结果非空"] --> B["阶段 2<br/>修排序与观测语义"]
-    B --> C["阶段 3<br/>处理结构性限制"]
+Debug RPC 已有独立 token，unsigned cache 已被隔离，但普通 ScoredPosts/ForYou 请求仍依赖部署层提供可信调用方身份和 viewer 绑定。`production_ready` 当前拒绝启动，所以该缺口不会被误标为生产完成；接入时需明确 mTLS/service identity、viewer 防冒用、审计和密钥轮换责任。
 
-    A1["替换或 fake TES"] --> A
-    A2["替换或 fake Strato"] --> A
-    A3["替换或 fake UAS"] --> A
-    A4["补一条完整集成测试"] --> A
+### 4.3 本地 Feed 状态不是生产持久层
 
-    B1["校正负分公式或注释"] --> B
-    B2["增加 side effect 日志/metrics"] --> B
-    B3["增加 selector/post-selection 观测"] --> B
+`InMemoryFeedStateStore` 有 10,000 用户上限，不是无界内存增长；但进程重启会丢失去重历史，多实例也不共享状态。生产合同仍需定义服务端存储、保留期、并发一致性、隐私删除和恢复策略。
 
-    C1["重构有依赖的 hydrator 阶段"] --> C
-    C2["评估 post-selection 回补机制"] --> C
-```
+## 5. 外部合同补齐顺序
 
-### 6.1 阶段 1：先让链路稳定给出非空结果
+1. **Viewer + VF**：先闭合用户选择和内容安全语义、认证、超时、漏返回及审计。
+2. **TES + Gizmoduck**：恢复权威内容和作者字段，验证删除/停用账号行为。
+3. **UAS + Strato**：恢复个性化序列、关系特征和持久去重；写回必须有幂等和保留期。
+4. **Phoenix artifact/service**：用真实 LFS artifact 验证 offline/gRPC 一致性、延迟、容量和 fallback。
+5. **普通 RPC 身份边界**：完成调用方身份与 viewer 绑定后，才允许 `production_ready` 启动。
 
-优先级建议：
+Ads、Prompt、WhoToFollow、PushToHome、Kafka/Redis 和 Grox 等旁路能力继续默认关闭；开关存在不等于合同完成。
 
-1. `TESClient`
-2. `StratoClient`
-3. `UserActionSequenceFetcher`
-4. 集成测试
+## 6. 生产验收条件
 
-原因很简单：
+只有同时满足以下条件，才应解除 `production_ready` 启动拒绝：
 
-- 没有文本，候选会被早早清空
-- 没有用户特征，Thunder 和多个过滤器都失真
-- 没有 UAS，Phoenix 两条链都跑不起来
-
-### 6.2 阶段 2：修语义与可观测性
-
-重点包括：
-
-- 校准 `WeightedScorer`
-- 给 side effect 打日志与指标
-- 给 selector 和 post-selection 增加规模变化观测
-
-### 6.3 阶段 3：再动框架结构
-
-只有在前两步完成后，才值得处理更重的结构调整：
-
-- 拆分有依赖的 hydrator
-- 设计 post-selection 回补
-- 考虑 filter 来源追踪
-
-## 7. 一个务实判断标准
-
-判断 `home-mixer` 是否“可用”，不要只看能不能编译或服务能不能起，而要看四个问题：
-
-1. 能否稳定返回非空结果
-2. 关键排序信号是否真实进入打分链
-3. 过滤和审核是否能解释为什么内容被删
-4. 出问题时能否在日志和指标里快速定位阶段
-
-按这个标准，当前仓库的 `home-mixer` 已经有了完整的系统骨架，但离真正可运营的首页编排服务还有明确的工程补齐工作。
+1. Viewer、TES、Gizmoduck、VF 使用非 `Disabled*` adapter，并有 owner、schema、认证和 deadline 证据。
+2. VF 错误、超时、漏返回、Restricted 和附属内容路径均有回归测试。
+3. 普通 RPC 调用方身份不能伪造 viewer，Debug 和缓存数据有独立信任边界。
+4. Phoenix 慢服务、不可用和长度不匹配时仍在总请求预算内返回定义好的 fallback。
+5. 多用户并发隔离、服务端去重状态和隐私删除通过集成验收。
+6. 真实 artifact 的 offline/gRPC 输出与延迟验收完成，而不是只使用 LFS pointer 或 Demo fixture。

@@ -115,9 +115,9 @@ flowchart LR
 
 则：
 
-- `WeightedScorer` 得到两个 `weighted_score`
-- `AuthorDiversityScorer` 若作者不同，则几乎不衰减
-- `OONScorer` 不生效，因为两条都是 `in_network = true`
+- `RankingScorer` 的 Weighted 阶段得到两个 `weighted_score`
+- 两位作者不同，AuthorDiversity 阶段几乎不衰减
+- 两条都是 `in_network = true`，OON 阶段不生效
 
 假设最后：
 
@@ -189,13 +189,13 @@ flowchart LR
 
 | 依赖 | 默认行为 |
 | --- | --- |
-| `UserActionSequenceFetcher` | 空行为序列 |
-| `StratoClient.get_user_features` | 空 `UserFeatures` |
-| `PhoenixRetrievalClient` | 空候选 |
+| `DisabledUserActionSequenceFetcher` | 空行为序列 |
+| `DisabledStratoClient.get_user_features` | 空 `UserFeatures` |
+| `PhoenixRetrievalClient` | endpoint 未配置时 `Unavailable`，Source 跳过 |
 | `ThunderClient` | 可能能连真实 Thunder，但输入 following 列表为空 |
-| `TESClient` | 所有帖子 core data 为空 |
-| `PhoenixPredictionClient` | 空预测 |
-| `VisibilityFilteringClient` | 全部通过 |
+| `DisabledTESClient` | 所有帖子 core data 为空 |
+| `PhoenixPredictionClient` | endpoint 未配置时 `Unavailable`，Scorer 走规则 fallback |
+| `VisibilityFilteringClient` | `Unavailable`；网外拒绝、网内保留 |
 
 ### 5.3 真实退化时序
 

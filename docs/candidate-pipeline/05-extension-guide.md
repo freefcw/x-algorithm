@@ -49,12 +49,15 @@
 
 不要简单地把两个有依赖关系的 hydrator 放在同一个 `Vec<Box<dyn Hydrator<...>>>` 里。
 
-### 2.4 Filter 要接受 fail-open 语义
+### 2.4 Filter 的标准合同是同步的，失败隔离是本地扩展
 
-当前框架里 filter 失败会回滚到执行前的输入并继续。这意味着：
+上游兼容的 Filter 实现 `filter() -> FilterResult`，本身不返回错误。只有确实依赖可失败外部适配器的 Filter 才应覆盖本地 additive `try_run()`；该扩展失败时，框架会回滚到执行前输入并继续。
 
-- filter 不能把“成功执行”当成主链路的强保证
-- 真正必须生效的规则，不适合只靠一个会失败的异步 filter
+这意味着：
+
+- 普通规则 Filter 只实现同步 `filter()`
+- 远程失败不能伪装成成功的空过滤结果
+- 真正必须生效的规则不能依赖 fail-open 的 `try_run()` 扩展
 
 ### 2.5 SideEffect 不能承载关键路径语义
 
@@ -157,15 +160,16 @@ impl Hydrator<MyQuery, MyCandidate> for MyHydrator {
         &self,
         _query: &MyQuery,
         candidates: &[MyCandidate],
-    ) -> Result<Vec<MyCandidate>, String> {
-        let partials = candidates
+    ) -> Vec<Result<MyCandidate, String>> {
+        candidates
             .iter()
-            .map(|candidate| MyCandidate {
-                my_field: Some(compute(candidate)),
-                ..Default::default()
+            .map(|candidate| {
+                Ok(MyCandidate {
+                    my_field: Some(compute(candidate)),
+                    ..Default::default()
+                })
             })
-            .collect();
-        Ok(partials)
+            .collect()
     }
 
     fn update(&self, candidate: &mut MyCandidate, hydrated: MyCandidate) {
@@ -177,15 +181,14 @@ impl Hydrator<MyQuery, MyCandidate> for MyHydrator {
 ### 4.3 Filter 模板
 
 ```rust
-#[async_trait]
 impl Filter<MyQuery, MyCandidate> for MyFilter {
-    async fn filter(
+    fn filter(
         &self,
         query: &MyQuery,
         candidates: Vec<MyCandidate>,
-    ) -> Result<FilterResult<MyCandidate>, String> {
+    ) -> FilterResult<MyCandidate> {
         let (kept, removed) = candidates.into_iter().partition(|c| keep(query, c));
-        Ok(FilterResult { kept, removed })
+        FilterResult { kept, removed }
     }
 }
 ```

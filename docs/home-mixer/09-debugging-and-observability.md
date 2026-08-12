@@ -158,16 +158,16 @@ flowchart LR
 
 - 请求里是否 `in_network_only = true`
 - `PhoenixSource` 是否失败
-- `UserActionSeqQueryHydrator` 是否成功写入序列
-- `PhoenixRetrievalClient` 是否仍是 stub
+- `ScoringSequenceQueryHydrator` / `RetrievalSequenceQueryHydrator` 是否成功写入各自序列
+- 是否设置 `PHOENIX_RETRIEVAL_GRPC_ADDR`，日志中是否出现 retrieval unavailable
 
 ### 5.3 症状：有候选，但得分很奇怪
 
 重点看：
 
 - `PhoenixPredictionClient` 是否返回空分布
-- `WeightedScorer` 是否只在用默认 `0.0`
-- `OONScorer` 是否让网外统一减半
+- `RankingScorer` 内部 Weighted 阶段是否只在使用默认 `0.0`
+- `RankingScorer` 内部 OON 阶段是否对网外应用预期系数
 - 负分 offset 公式是否符合你的预期
 
 ### 5.4 症状：条数常常不足 50

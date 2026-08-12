@@ -2,7 +2,7 @@
 
 ## 1. `home-mixer` 在整套系统里的位置
 
-`home-mixer` 对外暴露一个 gRPC 服务 `ScoredPostsService.GetScoredPosts`。它本身不存帖子、不训练模型、不消费 Kafka，而是把多个上游系统的能力拼成一次“给某个用户返回一页已排序 Feed”的同步请求链路。
+`home-mixer` 对外暴露两个 gRPC 服务：`ScoredPostsService` 提供 Get/Debug，`ForYouFeedService` 提供 legacy ScoredPostsQuery 与 additive `ForYouFeedQuery` V2。它本身不存帖子、不训练模型、不消费 Kafka，而是把多个上游系统的能力拼成同步 Feed 请求链路。
 
 ```mermaid
 flowchart TB
@@ -67,9 +67,7 @@ flowchart TB
 来自不同来源的候选必须进入一套统一排序逻辑，否则无法比较：
 
 - `PhoenixScorer` 生成互动行为概率
-- `WeightedScorer` 聚合成一个排序分数
-- `AuthorDiversityScorer` 控制单作者刷屏
-- `OONScorer` 控制网外内容的曝光强度
+- `RankingScorer` 在一个上游命名边界内组合加权、作者多样性和网外曝光调整
 
 ### 2.5 结果安全与展示可用性
 

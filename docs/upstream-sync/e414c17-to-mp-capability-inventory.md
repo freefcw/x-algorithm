@@ -5,6 +5,8 @@
 > 上游功能提交：`e414c171ed68266341193330bc4864bf3f3534e3`
 > 上游模型产物提交：`0bfc2795d308f90032544322747caacd535f75ae`
 > 本地目标分支：`mp`（`3e492095613b2a008de5d9f8295d5b6e0c07c777`）
+> 后续同步规则：[`upstream-first-maintenance.md`](./upstream-first-maintenance.md)
+> 入口执行顺序：[`entrypoint-migration-map.md`](./entrypoint-migration-map.md)
 
 ## Go / No-Go
 
@@ -59,8 +61,10 @@
 
 - `mp` 已实现完整 Rust workspace、公共 proto、Phoenix HTTP/gRPC 服务、训练脚本、Demo 客户端和一键端到端脚本。
 - `mp` 与上游共同修改 27 个文件；三方模拟合并有 24 个内容冲突。
+- `mp` 已将 Candidate Pipeline 的 portable contract 重新锚定到 `e414c17`：Source/QueryHydrator/Selector/SideEffect 保留上游实现点与 `run` 包装，Hydrator/Scorer 恢复逐候选 `Vec<Result<...>>` 和长度保护，同步 Filter 恢复 `filter -> FilterResult`；私有 metrics/config 由本地接口替代，Filter 失败恢复作为 additive `try_run` 扩展保留。
+- `mp` 已恢复 Home Mixer 的上游 service composition、`QueryBuilder`、`crate::models::*` canonical path、`u64` domain ID 合同，以及 `HM-E4/HM-E5` 内外层 portable assembly；`HM-E6` 以 additive ForYou wrapper/V2 和 typed DebugScoredPosts 扩展公共 RPC。Debug 默认关闭并要求 token，未签名 cached posts 默认拒绝且只允许显式 Demo；URT/trace 仍因合同缺失 deferred。
 - `mp` 已将右对齐位置、帖子年龄 embedding、连续行为输入/预测头接入可选模型 forward；旧模型配置默认关闭，发布模型配置按 checkpoint shape 启用。
-- `mp` 已新增统一 NPZ loader、离线 `run_pipeline.py`、发布 artifact gRPC 适配器、独立 `ScoredPostsServer`，以及 additive-compatible 的 `ForYouFeedService`。
+- `mp` 已新增统一 NPZ loader、离线 `run_pipeline.py`、发布 artifact gRPC 适配器、独立 `ScoredPostsServer`，以及 additive-compatible 的 `ForYouFeedService`。当前 offline/gRPC published 模式通过 `PublishedArtifact -> PublishedPipeline -> shared engines` 使用同一 loader、hash/preprocessing、model runner 和 output mapping；随机/本地 checkpoint 模式保持显式分支。
 - P4-A 已完成独立 `FeedItem`、ScoredPosts bridge、disabled-first Ads port，并将 `SafeGap`、`PartitionOrganic` 的间距、分组、BSR/账号/关键词规避重新锚定到上游 `e414c17`；本地仅保留缺失 verdict fail-closed、真实 `non_selected` 和公开协议适配。真实广告、Who to Follow、Prompt、Push-to-Home 来源仍属于 P4-B。
 - P5-A 已完成有界内存 served history、request timestamps 和最终 Feed 统计；Kafka、Redis、外部事件与训练数据出口仍属于 P5-B。
 - 上游 Grox 引用多个未提交模块，例如 `grox.config`、`grox.lm`、`grox.prompts`、`monitor`，不能原样运行。P6-A 只恢复了独立任务 DAG、结果信封和 Source/Sink port，不代表模型内容理解能力已经恢复。
@@ -121,9 +125,9 @@ P3 仍未完成且不能伪造的条件能力：
 
 | 证据 | 可复核内容 |
 |---|---|
-| `EV-CP` | `cargo test -p xai_candidate_pipeline`：12 项通过；覆盖执行包装、缓存、同步 Filter、selected/non-selected、单 Source 失败保留其他来源候选和 SideEffect 输入。 |
-| `EV-PHX` | Phoenix 82 项测试、真实 artifact SHA/shape、离线 retrieval→ranking 和真实 gRPC Retrieve/Predict，见 Final Validation。 |
-| `EV-P3` | `cargo test -p home-mixer`：91 项通过；默认 ScoredPosts Demo 50 条（12 网内 + 38 网外），话题 Demo 50 条，缓存 Demo 8 条；显式话题严格召回、冷启动话题限定、条件补充召回、读取失败降级和外部服务装配合同均有测试。 |
+| `EV-CP` | `cargo test -p xai_candidate_pipeline`：18 项通过；覆盖上游执行包装、逐候选 Hydrator/Scorer 失败隔离、长度保护、缓存只写成功结果、同步 Filter、selected/non-selected、post-selection underfill 不绕过过滤、单 Source 失败保留其他来源候选和 SideEffect 输入。 |
+| `EV-PHX` | Phoenix 88 项测试通过；offline JSON/proto UAS tensor parity、固定 impression-time age parity、共享 orchestration、transport-neutral inference values、O(1) topic lookup、preloaded params 和 action mapping 均有回归。真实 artifact SHA/shape、离线 retrieval→ranking 和真实 gRPC Retrieve/Predict 的历史验收见 Final Validation。 |
+| `EV-P3` | `cargo test -p home-mixer --all-targets`：146 项通过；`cargo test --workspace`：13 个套件、168 项通过。ScoredPosts/ForYou Demo 均返回 50 条（10 网内 + 40 网外），显式缓存 Demo 返回 8 条。Debug 默认 `Unavailable`，错误 token 为 `PermissionDenied`，授权 wire 验收为 600/4/50 stage counts。Viewer/VF fail-safe、所有关键外部调用 deadline、Phoenix endpoint fallback、跨用户 UAS/Strato/TES 隔离、非持久 adapter 写入拒绝、post-selection profile 装配、underfill 不绕过安全、unsigned cache 拒绝、运行模式、全 ID checked conversion 和 portable assembly 均有测试。 |
 | `EV-RANK` | Phoenix 预留离散槽位 19/20、发布 profile 缺槽位兼容、引用帖 VQV 时长门槛和 `not_dwelled` 负权重均有 Rust 回归测试；`click_dwell_time` 因协议尚无对应连续动作而保持 `None`。 |
 | `EV-P4` | `cargo test -p home-mixer --test p4_final_feed`：25 项通过；覆盖独立 FeedItem、ScoredPosts bridge、两种上游广告规则、默认关闭和 ForYou RPC。 |
 | `EV-P5` | 同一 P4/P5 集成测试覆盖连续请求、单用户/全局状态截断、构成统计和 sink 失败隔离。 |
@@ -144,7 +148,7 @@ P3 仍未完成且不能伪造的条件能力：
 | `SRC-01..02` | 完成 | 默认启用 | Phoenix/Thunder 生产地址、认证、容量和降级待验收 | `EV-P3` |
 | `SRC-03..04` | 完成 | 条件启用 | MoE/Topic 真实服务合同待集成 | `EV-P3` |
 | `SRC-05` | 未开始 | 关闭 | 缺公开 TweetMixer 合同 | Integration Backlog |
-| `SRC-06` | 完成 | 缓存存在时启用 | 请求内/本地降级已完成；外部缓存属于 P5-B | `EV-P3` |
+| `SRC-06` | 完成 | 默认拒绝请求携带的未签名缓存；仅显式 Demo 启用 | 生产缓存需服务端状态或签名/opaque 合同 | `EV-P3` |
 | `SRC-07` | 完成 | 启用 | 无额外外部依赖 | `EV-P4` |
 | `SRC-08` | 部分：Ads port 与 disabled adapter | 关闭 | 待广告合同和真实品牌安全判定 | `EV-P4`, Integration Backlog |
 | `SRC-09..11` | 部分：FeedItem、注入点和测试 Source | 关闭 | 待产品入口、内容审核和服务合同 | `EV-P4`, Integration Backlog |
@@ -153,7 +157,7 @@ P3 仍未完成且不能伪造的条件能力：
 | `QH-12..13` | 完成：本地端口、选择规则与 Demo Adapter | Demo 条件启用；生产关闭 | 待关注/推断话题真实数据合同、时效和隐私验收 | `EV-P3`, Integration Backlog |
 | `QH-14..15` | 未开始 | 关闭 | 待 starter pack/社交图数据合同 | Integration Backlog |
 | `QH-16..18` | 未开始 | 关闭 | 待隐私、公平性、同意和保留策略；本地 Query 仅有 `ip_address` 空字符串占位，`user_demographics`/`inferred_gender` 字段尚未引入 | Integration Backlog |
-| `CH-01..06`, `CH-09..11`, `CH-13..14`, `CH-16` | 完成：本地合同/实现 | 按候选数据启用 | TES、作者资料、关系和 VF 真实服务待集成 | `EV-P3` |
+| `CH-01..06`, `CH-09..11`, `CH-13..14`, `CH-16` | 完成：本地合同/实现 | 按候选数据启用；VF 未知时网外拒绝、网内保留 | TES、作者资料、关系和 VF 真实服务待集成；缺失时 `production_ready` 拒绝启动 | `EV-P3` |
 | `CH-07..08` | 部分：显式安全 verdict 边界 | 关闭 | 待广告安全 Hydrator 和供应商 | `EV-P4`, Integration Backlog |
 | `CH-12`, `CH-15`, `CH-17` | 未开始 | 关闭 | 待社交图端口或统计出口 | Integration Backlog |
 | `FLT-01..17` | 完成 | 默认或按请求条件启用 | 过滤逻辑已完成；部分输入数据随 P3-B 接入 | `EV-P3` |
@@ -505,7 +509,7 @@ git diff --name-status \
 | Grox 本地恢复范围 | **已决** | P6-A 只提供中立 DAG/port；模型、Prompt 和内容结论属于 P6-B | 满足 `p6-grox-recovery-audit.md` 的恢复条件后逐项进入 |
 | Phoenix 最新 LFS 包内真实模型配置 | **已验证** | ranker/retrieval 均为 128 维、4 层、4 头、127 历史、64 候选 | SHA、config、参数 shape、离线与 gRPC 证据已记录 |
 | `mp` 公共 proto 是否保持向后兼容 | **已决：保持** | 旧 `ScoredPostsService` 与新增 `ForYouFeedService` 并存 | 后续只做 additive 变更，破坏性调整需独立决策 |
-| Feature Switch / Decider 的本地替代 | **已决** | 条件组件依赖 `FeatureSwitches` 或显式 Query/装配开关，不依赖 X 内部类型 | `StaticFeatureSwitches` 与测试已在 P2 落地 |
+| Feature Switch / Decider 的本地替代 | **已决** | 条件组件依赖 `FeatureSwitches` 或显式 Query/装配开关，不依赖 X 内部类型；`HomeMixerFeatures` 统一控制可选外部集成 | MoE 与请求缓存旁路已默认关闭；新增旁路必须提供 typed flag、人工接入条件和主链降级证据 |
 | Served history 的本地实现 | **已决并完成** | P5-A 使用有界内存状态验证连续请求行为 | 外部持久化不得改变已验证语义 |
 | Kafka、Redis 和外部指标 | 未决/待合同 | 影响跨进程持久化、训练数据、幂等、保留期和运维 | 统一放入 P5-B Integration Backlog |
 
@@ -565,6 +569,9 @@ git diff --name-status \
 - **进入条件**：P3-A 依赖 P2；P3-B 还必须具备服务合同、认证、错误语义和测试环境。
 - **阶段规则**：一次迁移一条可验证纵向能力；外部服务先使用 trait + Demo 实现；没有真实合同的能力保持关闭，不以字段或 stub 代替生产完成。
 - **Todos**：
+  - [x] 恢复上游服务入口边界：`HomeMixerConfig -> HomeMixerServer::build/register -> ScoredPostsServer/ForYouFeedServer`；两个 RPC trait 由各自业务 Server 持有。
+  - [x] 恢复当前公共合同下的 `QueryBuilder`：统一 proto 映射和请求 ID；`GizmoduckClient::get_viewer_data` 使用 200 ms 超时，只有 `ViewerEligibility::Allowed` 开放网外，Denied/Unknown/错误/超时均限制为仅网内。
+  - [x] 建立默认关闭的 `HomeMixerFeatures`，显式控制 MoE Source 和请求缓存 SideEffect；缺少地址时跳过旁路并保留主链。
   - [x] 建立 ScoredPosts 业务模型和服务边界，同时以 additive proto 字段保持旧 gRPC 客户端兼容。
   - [x] 合并 Retrieval/Scoring sequence 和 Phoenix/Thunder source。
   - [ ] 按 QH、CH、FLT、SRC 编号逐项迁移，并更新本台账状态；默认能力已完成，条件外部能力见本节前的残余清单。
@@ -617,7 +624,7 @@ git diff --name-status \
 ## Dry-Run Findings
 
 - 直接从 P1 跳到广告混排会缺少新 Candidate/Query 字段和品牌安全信号，阶段顺序不可交换。
-- 直接复制 `RankingScorer` 会把多个排名职责重新合成一个大模块，应迁移行为而不是结构。
+- 直接复制上游 `RankingScorer` 的私有 feature-switch 实现会重新引入不可构建依赖；本地保留 Weighted/AuthorDiversity/OON 行为，并由同名 facade 提供上游装配边界。
 - 直接复制 `PipelineQuery` 会引入 X 内部实验类型，应先在 P2 定义本地开关接口。
 - 最新 LFS 对象已在隔离目录完成整包 SHA、config、shape、离线和 gRPC 验证；仓库仍只保存标准 LFS 指针，不提交 2.9 GB 二进制。
 - Grox 缺失的不是一个依赖，而是一组模型、配置、Prompt、数据类型和监控模块，因此必须作为独立恢复项目。
@@ -641,13 +648,23 @@ cd ..
 
 当前 Rust 验证结果（2026-08-08）：
 
-- `cargo test --workspace`：13 个套件，106 项通过。
-- `cargo test -p home-mixer`：6 个套件，91 项通过。
-- `cargo test -p xai_candidate_pipeline`：12 项通过。
+- `cargo test --workspace`：13 个套件，168 项通过。
+- `cargo test -p home-mixer --all-targets`：5 个套件，146 项通过。
+- `cargo test -p xai_candidate_pipeline`：18 项通过。
 - `cargo test -p home-mixer --test p4_final_feed`：25 项通过。
-- `cargo clippy -p home-mixer --all-targets`：0 error，18 条存量 warning。
-- 本次触及的 Rust 文件通过独立 `rustfmt --check`，`git diff --check` 通过。
-- `cargo fmt --all -- --check` 仍被 `thunder/kafka/tweet_events_listener.rs` 中既有的 Rust 2024 let-chain 阻塞；该文件不属于本次改动。
+- `cargo clippy -p home-mixer --all-targets -- -W clippy::all`：0 error，0 warning。
+- `./scripts/run_demo.sh`：ScoredPosts 返回 50 条（10 网内 + 40 网外），通过；标准 Phoenix 与 Topics 的同分候选按上游 Source 顺序稳定截断。
+- `./scripts/run_demo.sh --final-feed`：ForYou Feed 返回 50 条（10 网内 + 40 网外），通过。
+- `./scripts/run_demo.sh --cached-posts 8`：脚本只在显式 Demo 下开启 unsigned fixture，返回 8 条请求缓存候选。
+- additive RPC wire 验收：Debug 默认返回 `Unavailable`；启用后错误 token 返回 `PermissionDenied`；正确 token 返回 50 posts 和 600 retrieved / 4 filtered / 50 selected。`GetForYouFeedV2` 返回 50 items。
+- 运行模式验收：`production_ready` 在调用方身份、Viewer、UAS、Strato、TES、Gizmoduck、VF、Phoenix、Thunder 合同未全部闭合时退出 1；非 Demo 开启 unsigned cached posts 同样退出 1。
+- 独立端口降级验收：未启动 Thunder/Phoenix 时，Home Mixer reflection 可列出两个业务服务，gzip accept header 请求可返回 50 条 Demo 话题候选。
+- 本次触及的 Home Mixer/Candidate Pipeline Rust 文件通过独立 `rustfmt`，`git diff --check` 通过。
+- `cargo fmt --all -- --check` 已能解析全仓，但仍报告多个既有 Thunder 文件的 rustfmt 差异；未批量格式化这些无关用户改动。
+- `cargo check -p thunder --all-targets --all-features` 仍被 legacy listener 的私有 `xai_kafka`、`xai_thunder_proto` 和 `crate::schema` 依赖阻塞；受支持的默认 `cargo test -p thunder` 为 3 个套件、2 项通过。
+
+- Phoenix 当前代码验证：`uv run pytest -q` 88 项通过；变更文件通过 Ruff；shared orchestration、length mismatch、offline JSON/proto UAS、固定 impression timestamp 和 O(1) topic lookup 均有回归。
+- 当前工作树中的 2.9 GB artifact 仅为 LFS pointer（OID `fbc6017d...a83dac`），本轮未重复执行真实 artifact；下列历史验收仍对应同一 OID。
 
 需要模型 artifact 或完整外部运行环境的最近一次历史验收（2026-07-22）：
 
@@ -670,4 +687,4 @@ cd ..
 
 ## First Execution Step for Integration Backlog
 
-P3-A/P4-A/P5-A/P6-A 已完成。下一步不再重复搭建本地骨架，而是先为 UAS、用户关系、TES、VF、Phoenix/Thunder 建立统一的外部服务接入模板：明确服务所有者、接口/schema、认证、超时、错误语义、降级、测试环境和数据治理，再选择第一条可端到端验收的 P3-B 纵向能力。产品未明确启用的广告或其他非帖子内容保持关闭；Kafka/Redis 与 Grox 模型/Prompt 在对应消费者和合同齐备后再进入。
+Home Mixer `HM-E1..E6`、Phoenix `PHX-E1/E2` 与 Thunder portable boundary 已完成。下一步不再继续制造 production 外观：真实 UAS、用户关系、TES、VF、Phoenix/Thunder、Kafka/Redis 或 Grox model/Prompt 只有在 owner、schema、认证、超时、错误、保留期、隐私和恢复合同齐备后才进入对应纵向能力。未批准的非帖子内容继续关闭。
