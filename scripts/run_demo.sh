@@ -22,6 +22,7 @@ cd "$REPO_ROOT"
 
 KEEP_RUNNING=false
 HAS_CLIENT_ARGS=false
+ALLOW_UNSIGNED_CACHED_POSTS=0
 CLIENT_ARGS=()
 while [[ $# -gt 0 ]]; do
     case "$1" in
@@ -39,6 +40,7 @@ while [[ $# -gt 0 ]]; do
             [[ $# -ge 2 ]] || { echo "[demo] 错误：--cached-posts 需要一个整数"; exit 2; }
             CLIENT_ARGS+=("--cached-posts" "$2")
             HAS_CLIENT_ARGS=true
+            ALLOW_UNSIGNED_CACHED_POSTS=1
             shift 2
             ;;
         --final-feed)
@@ -81,6 +83,19 @@ wait_for_port() {
     exit 1
 }
 
+wait_for_log() {
+    local file=$1 pattern=$2 name=$3 max_wait=${4:-90}
+    for _ in $(seq 1 "${max_wait}"); do
+        if grep -q "${pattern}" "${file}" 2>/dev/null; then
+            echo "[demo] ${name} 初始化完成"
+            return 0
+        fi
+        sleep 1
+    done
+    echo "[demo] 错误：${name} 在 ${max_wait}s 内未完成初始化，查看日志：${file}"
+    exit 1
+}
+
 check_port_free() {
     local port=$1 name=$2
     if lsof -iTCP:"${port}" -sTCP:LISTEN >/dev/null 2>&1; then
@@ -112,11 +127,13 @@ RUST_LOG=info cargo run -q -p thunder -- --demo-seed-posts 200 --grpc-port 50052
 PIDS+=($!)
 
 wait_for_port 50052 thunder 60
+wait_for_log /tmp/demo-thunder.log "Server ready" thunder 60
 wait_for_port 50053 phoenix-gateway 120
 
 echo "[demo] 4/5 启动 Home Mixer（演示模式 + 连接 Thunder 与 Phoenix）..."
 RUST_LOG=info \
-HOME_MIXER_DEMO=1 \
+HOME_MIXER_MODE=demo \
+HOME_MIXER_ENABLE_UNSIGNED_CACHED_POSTS="${ALLOW_UNSIGNED_CACHED_POSTS}" \
 THUNDER_GRPC_ADDR=http://localhost:50052 \
 PHOENIX_PREDICT_GRPC_ADDR=http://localhost:50053 \
 PHOENIX_RETRIEVAL_GRPC_ADDR=http://localhost:50053 \

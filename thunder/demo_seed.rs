@@ -101,6 +101,22 @@ mod tests {
             assert!(DEMO_AUTHOR_IDS.contains(&p.author_id));
         }
 
+        // 分布与结构规则固定，时间戳只平移 Snowflake 窗口。
+        let reply_count = posts.iter().filter(|post| post.is_reply).count();
+        let video_count = posts.iter().filter(|post| post.has_video).count();
+        assert_eq!(reply_count, 8);
+        assert_eq!(video_count, 4);
+        for author_id in DEMO_AUTHOR_IDS {
+            assert_eq!(
+                posts
+                    .iter()
+                    .filter(|post| post.author_id == author_id)
+                    .count(),
+                8
+            );
+        }
+        assert!(posts.iter().all(|post| post.post_id > 0));
+
         // 回复帖指向真实存在的原帖
         let id_set: std::collections::HashSet<i64> = posts.iter().map(|p| p.post_id).collect();
         for p in posts.iter().filter(|p| p.is_reply) {

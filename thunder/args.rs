@@ -6,7 +6,7 @@ use clap::Parser;
 pub struct Args {
     // ─── 服务端口 ───
     /// gRPC 服务端口
-    #[arg(long, default_value_t = 50051)]
+    #[arg(long, default_value_t = 50052)]
     pub grpc_port: u16,
 
     /// HTTP 服务端口（健康检查 / metrics）
@@ -114,4 +114,16 @@ pub struct Args {
     /// 设为 0（默认）关闭演示模式。用于没有 Kafka 环境时快速跑通链路。
     #[arg(long, default_value_t = 0)]
     pub demo_seed_posts: usize,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn defaults_match_home_mixer_client_boundary() {
+        let args = Args::parse_from(["thunder"]);
+        assert_eq!(args.grpc_port, 50052);
+        assert_eq!(args.request_timeout_ms, 500);
+    }
 }

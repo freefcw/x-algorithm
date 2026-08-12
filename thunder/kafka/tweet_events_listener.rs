@@ -221,9 +221,7 @@ async fn process_message_batch(
                 let tweet = create_event.tweet.as_ref().unwrap();
                 let core_data = tweet.core_data.as_ref().unwrap();
 
-                if let Some(nullcast) = core_data.nullcast
-                    && nullcast
-                {
+                if core_data.nullcast == Some(true) {
                     continue;
                 }
 
