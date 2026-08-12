@@ -1,7 +1,7 @@
 # Entrypoint migration map
 
 > Status: Home Mixer `HM-E1..E6` and Phoenix `PHX-E1/E2` portable contracts completed; Thunder dependency boundary revalidated; remaining work requires Grox or production integration contracts
-> Upstream anchor: `e414c171ed68266341193330bc4864bf3f3534e3`
+> Upstream anchor: `0bfc2795d308f90032544322747caacd535f75ae` (`e414c17` plus the published-artifact LFS replacement)
 > Local branch: `feature/migrate-20260515`
 > Maintenance rule: [`upstream-first-maintenance.md`](./upstream-first-maintenance.md)
 
@@ -104,7 +104,7 @@ Status: **completed** for canonical Home Mixer models and domain ID types.
 | `candidate_pipeline/for_you_candidate_pipeline.rs` | `candidate_pipeline/for_you_candidate_pipeline.rs` | Complete in HM-E5; the former final-feed path is a pure compatibility re-export. |
 | `ads/`, `selectors/blender_selector.rs`, `sources/*` | canonical upstream paths restored | Complete portable boundaries; Ads/WTF/Prompts/PushToHome adapters remain explicitly disabled. |
 
-The compatibility re-exports to delete after downstream imports migrate are `candidate_pipeline/{candidate,candidate_features,query,query_features}.rs`. Public protobuf IDs remain signed for wire compatibility and use `try_from` at `QueryBuilder`, Thunder, and signed-store boundaries.
+The `candidate_pipeline/{candidate,candidate_features,query,query_features}.rs` compatibility re-exports are deleted; all call sites import `crate::models::*` directly. Public protobuf IDs remain signed for wire compatibility and use `try_from` at `QueryBuilder`, Thunder, and signed-store boundaries.
 
 Exit evidence: all Home Mixer production call sites use `crate::models::*`; invalid viewer IDs are rejected; negative history IDs are filtered; request and prediction identity are generated once by `QueryBuilder`; Home Mixer tests and both Demo entry points pass.
 
