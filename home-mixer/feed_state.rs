@@ -1,3 +1,10 @@
+//! Bounded in-memory served-history and request-timestamp state (U1).
+//!
+//! Upstream reads and writes this state through external storage clients and
+//! asynchronous SideEffects. The local port keeps the same observable request
+//! semantics behind `FeedStateStore` until a production history contract
+//! (atomicity, retry, retention, recovery) exists.
+
 use std::collections::{HashMap, VecDeque};
 use std::sync::Mutex;
 

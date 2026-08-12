@@ -1,4 +1,4 @@
-use crate::final_feed::{Advertisement, FeedItem, FeedItemContent};
+use crate::models::feed_item::{Advertisement, FeedItem, FeedItemContent};
 use crate::post_text::TweetTokenizer;
 use std::sync::LazyLock;
 use x_algorithm_proto::home_mixer::{BrandSafetyRiskLevel, BrandSafetyVerdict};

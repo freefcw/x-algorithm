@@ -5,7 +5,7 @@ pub(crate) mod util;
 pub(crate) use partition_organic_blender::PartitionOrganicAdsBlender;
 pub(crate) use safe_gap_blender::SafeGapAdsBlender;
 
-use crate::final_feed::FeedItem;
+use crate::models::feed_item::FeedItem;
 
 pub(crate) struct AdBlendResult {
     pub(crate) selected: Vec<FeedItem>,

@@ -1,9 +1,9 @@
 use crate::candidate_pipeline::for_you_candidate_pipeline::ForYouCandidatePipeline;
-use crate::final_feed::{
-    FeedItem, FeedStateStore, FeedStatsSink, InMemoryFeedStateStore, LoggingFeedStats,
-    ScoredPostsProvider,
-};
+use crate::feed_state::{FeedStateStore, InMemoryFeedStateStore};
+use crate::feed_stats::{FeedStatsSink, LoggingFeedStats};
+use crate::models::feed_item::FeedItem;
 use crate::models::query::ScoredPostsQuery;
+use crate::sources::scored_posts_source::ScoredPostsProvider;
 use crate::query_builder::QueryBuilder;
 use crate::scored_posts_server::ScoredPostsServer;
 use crate::selectors::blender_selector::BlenderConfig;

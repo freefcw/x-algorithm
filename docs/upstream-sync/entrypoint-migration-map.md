@@ -100,8 +100,8 @@ Status: **completed** for canonical Home Mixer models and domain ID types.
 | `models/query.rs` | `models/query.rs` | Complete. Owns unsigned domain IDs, request ID, prediction ID, and request time. |
 | `models/candidate.rs` | `models/candidate.rs` | Complete. `PostCandidate` identity fields use `u64`; signed adapters use checked conversion. |
 | `models/candidate_features.rs` | `models/candidate_features.rs` | Complete. The old Candidate Pipeline path is a pure compatibility re-export. |
-| `for_you_server.rs` | `for_you_server.rs` | Complete in HM-E5; the former final-feed path is a pure compatibility re-export. |
-| `candidate_pipeline/for_you_candidate_pipeline.rs` | `candidate_pipeline/for_you_candidate_pipeline.rs` | Complete in HM-E5; the former final-feed path is a pure compatibility re-export. |
+| `for_you_server.rs` | `for_you_server.rs` | Complete in HM-E5; the legacy `final_feed/` module is deleted. Local domain/state/stats infrastructure now lives at `models/feed_item.rs` (U2), `feed_state.rs` (U1), and `feed_stats.rs` (U1). |
+| `candidate_pipeline/for_you_candidate_pipeline.rs` | `candidate_pipeline/for_you_candidate_pipeline.rs` | Complete in HM-E5; the legacy `final_feed/` module is deleted. |
 | `ads/`, `selectors/blender_selector.rs`, `sources/*` | canonical upstream paths restored | Complete portable boundaries; Ads/WTF/Prompts/PushToHome adapters remain explicitly disabled. |
 
 The `candidate_pipeline/{candidate,candidate_features,query,query_features}.rs` compatibility re-exports are deleted; all call sites import `crate::models::*` directly. Public protobuf IDs remain signed for wire compatibility and use `try_from` at `QueryBuilder`, Thunder, and signed-store boundaries.

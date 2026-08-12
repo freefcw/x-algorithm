@@ -1,12 +1,15 @@
-use super::feed_item::{FeedItem, FeedItemKind};
-use crate::models::query::ScoredPostsQuery;
+//! Final-feed composition/position stats and the local sink port (U1).
+//!
+//! Upstream reports these numbers through `xai_stats`. The local
+//! `FeedStatsSink` port keeps composition observable; the SideEffect that
+//! feeds it lives in `side_effects/for_you_response_stats_side_effect.rs`.
+
+use crate::models::feed_item::{FeedItem, FeedItemKind};
 use log::info;
 use std::collections::BTreeMap;
 use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::Mutex;
 use tokio::sync::Notify;
-use tonic::async_trait;
-use xai_candidate_pipeline::side_effect::{SideEffect, SideEffectInput};
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct FeedResponseStats {
@@ -94,25 +97,3 @@ impl FeedStatsSink for LoggingFeedStats {
     }
 }
 
-pub struct FeedResponseStatsSideEffect {
-    sink: Arc<dyn FeedStatsSink>,
-}
-
-impl FeedResponseStatsSideEffect {
-    pub fn new(sink: Arc<dyn FeedStatsSink>) -> Self {
-        Self { sink }
-    }
-}
-
-#[async_trait]
-impl SideEffect<ScoredPostsQuery, FeedItem> for FeedResponseStatsSideEffect {
-    async fn side_effect(
-        &self,
-        input: Arc<SideEffectInput<ScoredPostsQuery, FeedItem>>,
-    ) -> Result<(), String> {
-        self.sink.record(FeedResponseStats::from_items(
-            input.query.request_id.clone(),
-            &input.selected_candidates,
-        ))
-    }
-}

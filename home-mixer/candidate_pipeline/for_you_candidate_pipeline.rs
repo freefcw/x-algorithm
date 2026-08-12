@@ -1,4 +1,6 @@
-use crate::final_feed::{FeedItem, FeedStateStore, FeedStatsSink, ScoredPostsProvider};
+use crate::feed_state::FeedStateStore;
+use crate::feed_stats::FeedStatsSink;
+use crate::models::feed_item::FeedItem;
 use crate::models::query::ScoredPostsQuery;
 use crate::query_hydrators::past_request_timestamps_query_hydrator::PastRequestTimestampsQueryHydrator;
 use crate::query_hydrators::served_history_query_hydrator::ServedHistoryQueryHydrator;
@@ -7,7 +9,7 @@ use crate::side_effects::for_you_response_stats_side_effect::ForYouResponseStats
 use crate::sources::ads_source::AdsSource;
 use crate::sources::prompts_source::PromptsSource;
 use crate::sources::push_to_home_source::PushToHomeSource;
-use crate::sources::scored_posts_source::ScoredPostsSource;
+use crate::sources::scored_posts_source::{ScoredPostsProvider, ScoredPostsSource};
 use crate::sources::who_to_follow_source::WhoToFollowSource;
 use std::sync::Arc;
 use tonic::async_trait;

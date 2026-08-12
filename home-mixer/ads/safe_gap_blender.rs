@@ -2,7 +2,7 @@ use super::util::{
     compute_spacing, find_safe_gaps, interleave_at_gaps, AdSpacing, DEFAULT_SPACING,
 };
 use super::{AdBlendResult, AdsBlender};
-use crate::final_feed::FeedItem;
+use crate::models::feed_item::FeedItem;
 
 pub(crate) struct SafeGapAdsBlender;
 

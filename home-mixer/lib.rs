@@ -13,8 +13,9 @@ pub mod clients;
 mod debug_access;
 pub mod demo;
 pub mod feature_policy;
+pub mod feed_state;
+pub mod feed_stats;
 mod filters;
-pub mod final_feed;
 pub mod for_you_server;
 pub mod models;
 pub mod params;
@@ -23,10 +24,10 @@ mod query_hydrators;
 pub mod runtime_config;
 pub mod scored_posts_server;
 pub mod scorers;
-mod selectors;
+pub mod selectors;
 pub mod server;
 mod side_effects;
-mod sources;
+pub mod sources;
 pub mod util;
 
 // 内联替代模块（替代原始 xai_* 私有依赖）

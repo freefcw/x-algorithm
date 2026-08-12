@@ -3,7 +3,7 @@ use super::util::{
     should_drop_keyword,
 };
 use super::{AdBlendResult, AdsBlender};
-use crate::final_feed::{FeedItem, FeedItemContent};
+use crate::models::feed_item::{FeedItem, FeedItemContent};
 use std::cmp::Ordering;
 
 pub(crate) struct PartitionOrganicAdsBlender;

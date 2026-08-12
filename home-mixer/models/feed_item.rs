@@ -1,3 +1,9 @@
+//! Local domain model for final-feed items (U2).
+//!
+//! Upstream represents feed items directly as `xai_home_mixer_proto::FeedItem`.
+//! The local public proto stays additive-only, so this domain enum owns feed
+//! composition and maps to the wire type at the RPC boundary via `into_proto`.
+
 use x_algorithm_proto::home_mixer as pb;
 use x_algorithm_proto::home_mixer::ScoredPost;
 

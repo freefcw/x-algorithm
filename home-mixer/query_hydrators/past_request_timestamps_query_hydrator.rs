@@ -1,4 +1,4 @@
-use crate::final_feed::FeedStateStore;
+use crate::feed_state::FeedStateStore;
 use crate::models::query::ScoredPostsQuery;
 use std::sync::Arc;
 use tonic::async_trait;
