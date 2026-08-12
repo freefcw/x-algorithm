@@ -1,3 +1,4 @@
+pub mod blocked_by_hydrator;
 pub mod core_data_candidate_hydrator;
 pub mod engagement_counts_hydrator;
 pub mod filtered_topics_hydrator;

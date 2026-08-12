@@ -115,12 +115,12 @@ Status: **portable assembly complete**. Publicly implementable component boundar
 | Stage | Upstream `e414c17` | Current | Work |
 |---|---:|---:|---|
 | Query Hydrators | 15 configured, one impressed-post hydrator constructed but unused | 7 default + optional local topic reader | Scoring/Retrieval and Blocked/Muted/Followed/Subscribed now use upstream names and field ownership over one request-scoped UAS/Strato read. CachedPosts, MutualFollow, demographics, Grok topics/starter packs, bloom filter, IP, and inferred gender remain `U3`; local safety/topic owners are `U1/U2`. |
-| Sources | 6 | 3 default + optional Topic/MoE | Available entries follow upstream order: Thunder, omitted TweetMixer, Phoenix, optional Topics, optional MoE, Cached. TweetMixer remains `U3`. |
+| Sources | 6 | 3 default + optional Topic/MoE | Available entries follow upstream order: Thunder, omitted TweetMixer, Phoenix, optional Topics, optional MoE, Cached. TweetMixer now has an upstream-shaped Source over the `TweetMixerClient` port (interface-first, unassembled). |
 | Pre-selection Hydrators | 10 | 9 | CoreData, Quote, VideoDuration, HasMedia, Subscription, Gizmoduck, FilteredTopics, and LanguageCode use upstream entry boundaries; a shared TES provider prevents duplicate core/media batches. BlockedBy remains `U3`. |
 | Filters | 14 | 14 | Complete portable order. `NewUserTopicIdsFilter` owns cold-start matching separately from `TopicIdsFilter`. |
-| Scorers | 3 | 2 | `RankingScorer` is the upstream facade over local Weighted/AuthorDiversity/OON behavior (`U1/U2`); VM Ranker remains `U3`. |
-| Post-selection Hydrators | 6 | VF only | Ads safety, tweet metrics, following replies, and mutual-follow remain `U3` until their data contracts exist. |
-| SideEffects | 6 | request cache only | Request cache is default off; other sinks remain `U3` pending consumer/schema/retention/idempotency contracts. |
+| Scorers | 3 | 2 | `RankingScorer` is the upstream facade over local Weighted/AuthorDiversity/OON behavior (`U1/U2`); VM Ranker now has an upstream-shaped Scorer over the `VMRankerClient` port (interface-first, unassembled). |
+| Post-selection Hydrators | 6 | VF only | BlockedBy now has an upstream-shaped Hydrator over `SocialGraphClientOps` (interface-first, unassembled); ads safety, tweet metrics, following replies, and mutual-follow remain `U3` until their data contracts exist. |
+| SideEffects | 6 | request cache only | Request cache is default off; seen-ids and served-candidates now have domain ports plus upstream-shaped SideEffects (interface-first, unassembled); other sinks remain `U3` pending consumer/schema/retention/idempotency contracts. |
 
 Completed portable work:
 
@@ -252,5 +252,6 @@ Home Mixer `HM-E1..E6`, Phoenix `PHX-E1/E2`, and the unchanged Thunder dependenc
 1. Grox `GRX-E1..E5` requires legal model, Prompt, policy, Source, Sink, queue, and lifecycle contracts before real classifier/embedder/summarizer behavior can be restored.
 2. P3-B/P4-B/P5-B integrations require service owners, schema, authentication, timeout/error semantics, retention/privacy, test environments, and recovery responsibility.
 3. Ads, WhoToFollow, Prompts, PushToHome, VMRanker, event sinks, and request cache remain default off until those conditions close.
+4. Interface-first ports (maintenance rule 7) now exist for VMRanker, TweetMixer, blocked-by, impression store reads, and seen-ids/served-candidates publishing: the remaining work for each is an adapter implementing the port plus an explicit assembly decision, not new component code.
 
 Do not convert a disabled adapter, trait, or historical artifact validation into a production-complete claim.

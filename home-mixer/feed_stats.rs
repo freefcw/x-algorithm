@@ -96,4 +96,3 @@ impl FeedStatsSink for LoggingFeedStats {
         Ok(())
     }
 }
-

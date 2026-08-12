@@ -1,5 +1,7 @@
 pub mod blocked_user_ids_query_hydrator;
 pub mod followed_user_ids_query_hydrator;
+pub mod impressed_posts_query_hydrator;
+pub mod impression_bloom_filter_query_hydrator;
 pub mod muted_user_ids_query_hydrator;
 pub mod past_request_timestamps_query_hydrator;
 pub mod retrieval_sequence_query_hydrator;

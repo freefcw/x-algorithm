@@ -18,6 +18,8 @@
 // 因为它们包含内部服务地址、S2S 认证逻辑等敏感信息。
 
 pub mod gizmoduck_client;
+pub mod impressed_posts_client;
+pub mod impression_bloom_filter_client;
 pub mod phoenix_prediction_client;
 pub mod phoenix_retrieval_client;
 pub mod s2s;
@@ -26,5 +28,7 @@ pub mod strato_client;
 pub mod thunder_client;
 pub mod topic_retrieval_client;
 pub mod tweet_entity_service_client;
+pub mod tweet_mixer_client;
 pub mod uas_fetcher;
 pub mod user_topic_reader;
+pub mod vm_ranker_client;

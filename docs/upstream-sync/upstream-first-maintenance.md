@@ -51,8 +51,11 @@ Unavailable or bypass dependencies follow a stricter rule than primary-path adap
 4. External SideEffect failures never block the response. Response-critical local in-memory state may remain synchronous as an explicit `U2` difference.
 5. Demo adapters are selected separately and cannot be mistaken for production completion.
 6. Do not create unused switches for capabilities with no public adapter. Keep them `U3` until the first executable contract exists.
+7. **Interface-first rule (decision 2026-08-13):** a deferred `U3` capability may ship its domain-level port (trait) and the upstream-shaped component ahead of any executable contract, with unit tests against in-memory fakes. The component stays out of every assembly path until a real adapter passes acceptance (auth, timeout, error semantics, schema, retention where applicable). Ports must reuse existing domain types and must not invent wire schemas, fake data, or enable switches. This narrows future integrations to "implement the port + explicit assembly injection".
 
 The current typed policy is `HomeMixerFeatures`; Phoenix MoE and request-cache writeback are its first default-off integrations.
+
+Ports defined ahead of contracts (rule 7): `VMRankerClient` (RANK-03), `TweetMixerClient` (SRC-05), `SocialGraphClientOps::check_blocked_by` (CH-09), `ImpressedPostsClient` (QH-05), `ImpressionBloomFilterClient` (QH-06), `SeenIdsPublisher` (SE-07), `ServedCandidatesSink` (SE-11). Each has an upstream-shaped component and fake-backed tests; none is assembled.
 
 ## Sync procedure
 

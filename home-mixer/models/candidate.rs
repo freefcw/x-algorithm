@@ -35,6 +35,10 @@ pub struct PostCandidate {
     pub author_followers_count: Option<i32>,
     pub author_screen_name: Option<String>,
     pub retweeted_screen_name: Option<String>,
+    /// 作者是否反向屏蔽 viewer；由 `BlockedByHydrator`（CH-09）负责写入。
+    pub author_blocks_viewer: Option<bool>,
+    /// 引用帖作者是否反向屏蔽 viewer；随引用补全的社交图数据写入。
+    pub quoted_author_blocks_viewer: Option<bool>,
     pub visibility_decision: vf::VisibilityDecision,
     pub drop_ancillary_posts: Option<bool>,
     pub subscription_author_id: Option<u64>,
@@ -53,7 +57,7 @@ pub struct PostCandidate {
     pub safety_labels: Vec<SafetyLabelInfo>,
 }
 
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug, Default, PartialEq)]
 pub struct PhoenixScores {
     pub favorite_score: Option<f64>,
     pub reply_score: Option<f64>,

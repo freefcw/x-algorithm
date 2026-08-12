@@ -134,6 +134,7 @@ P3 仍未完成且不能伪造的条件能力：
 | `EV-P5` | 同一 P4/P5 集成测试覆盖连续请求、单用户/全局状态截断、构成统计和 sink 失败隔离。 |
 | `EV-P6` | `uv run --project grox --group dev pytest -q grox/tests`：10 项通过；`p6-grox-recovery-audit.md` 明确模型能力未恢复。 |
 | `EV-REL` | `.gitattributes` LFS 规则、`phoenix/README.md` 三种运行路径和本文件 Final Validation。 |
+| `EV-PORT` | 接口先行批次（2026-08-13）：`VMRanker`、`TweetMixerSource`、`BlockedByHydrator`、曝光存储双 Hydrator、seen-ids/served-candidates SideEffect 均以领域端口 + 内存 fake 驱动的单测验收（分数合并与失败隔离、请求映射与超龄过滤、反向屏蔽标记、存储覆盖请求值、空请求跳过、影子流量门槛）；`AuthorSocialgraphFilter` 候选级信号有中立性回归。全部组件默认不装配。 |
 
 ### 交付状态索引
 
@@ -148,25 +149,28 @@ P3 仍未完成且不能伪造的条件能力：
 | `HM-03..04` | 完成 | ForYou 自然 Feed 启用；非帖子内容关闭 | 自然 Feed 无额外依赖；非帖子来源见 P4-B | `EV-P4` |
 | `SRC-01..02` | 完成 | 默认启用 | Phoenix/Thunder 生产地址、认证、容量和降级待验收 | `EV-P3` |
 | `SRC-03..04` | 完成 | 条件启用 | MoE/Topic 真实服务合同待集成 | `EV-P3` |
-| `SRC-05` | 未开始 | 关闭 | 缺公开 TweetMixer 合同 | Integration Backlog |
+| `SRC-05` | 部分：上游同构 Source 与 `TweetMixerClient` 端口已迁移 | 关闭（未装配） | 缺公开 TweetMixer 合同；Adapter 通过验收后经装配注入 | `EV-PORT` |
 | `SRC-06` | 完成 | 默认拒绝请求携带的未签名缓存；仅显式 Demo 启用 | 生产缓存需服务端状态或签名/opaque 合同 | `EV-P3` |
 | `SRC-07` | 完成 | 启用 | 无额外外部依赖 | `EV-P4` |
 | `SRC-08` | 部分：Ads port 与 disabled adapter | 关闭 | 待广告合同和真实品牌安全判定 | `EV-P4`, Integration Backlog |
 | `SRC-09..11` | 部分：FeedItem、注入点和测试 Source | 关闭 | 待产品入口、内容审核和服务合同 | `EV-P4`, Integration Backlog |
 | `QH-01..09` | 完成：本地合同与空数据降级 | 按请求/适配器启用 | 用户关系、曝光和请求缓存服务待集成 | `EV-P3` |
+| `QH-05..06`（服务端曝光存储） | 部分：`ImpressedPostsClient`/`ImpressionBloomFilterClient` 端口与上游同构 Hydrator 已迁移 | 关闭（未装配）；当前数据仍来自请求 | 待曝光存储服务合同；启用时须显式决策服务端与请求数据的优先级 | `EV-PORT` |
 | `QH-10..11` | 完成 | 启用 | 生产 UAS 数据源待集成 | `EV-PHX`, `EV-P3` |
 | `QH-12..13` | 完成：本地端口、选择规则与 Demo Adapter | Demo 条件启用；生产关闭 | 待关注/推断话题真实数据合同、时效和隐私验收 | `EV-P3`, Integration Backlog |
 | `QH-14..15` | 未开始 | 关闭 | 待 starter pack/社交图数据合同 | Integration Backlog |
 | `QH-16..18` | 未开始 | 关闭 | 待隐私、公平性、同意和保留策略；本地 Query 仅有 `ip_address` 空字符串占位，`user_demographics`/`inferred_gender` 字段尚未引入 | Integration Backlog |
 | `CH-01..06`, `CH-09..11`, `CH-13..14`, `CH-16` | 完成：本地合同/实现 | 按候选数据启用；VF 未知时网外拒绝、网内保留 | TES、作者资料、关系和 VF 真实服务待集成；缺失时 `production_ready` 拒绝启动 | `EV-P3` |
 | `CH-07..08` | 部分：显式安全 verdict 边界 | 关闭 | 待广告安全 Hydrator 和供应商 | `EV-P4`, Integration Backlog |
-| `CH-12`, `CH-15`, `CH-17` | 未开始 | 关闭 | 待社交图端口或统计出口 | Integration Backlog |
+| `CH-09`（候选级反向屏蔽） | 部分：`SocialGraphClientOps` 端口与上游同构 `BlockedByHydrator` 已迁移；`AuthorSocialgraphFilter` 已按上游消费候选级信号（未补全时中立） | 关闭（未装配）；Query 级 blocked-by 列表仍是当前生效路径 | 待真实社交图 Adapter（认证、超时、批量上限） | `EV-PORT` |
+| `CH-12`, `CH-15`, `CH-17` | 未开始 | 关闭 | 待社交图端口或统计出口；CH-12/15 依赖 QH-15 minhash 数据合同，先于端口定义 | Integration Backlog |
 | `FLT-01..17` | 完成 | 默认或按请求条件启用 | 过滤逻辑已完成；部分输入数据随 P3-B 接入 | `EV-P3` |
 | `RANK-01..02` | 完成 | 启用 | Phoenix 生产部署仍需环境验收 | `EV-PHX`, `EV-P3`, `EV-RANK` |
-| `RANK-03` | 未开始 | 关闭 | 缺 VM Ranker RPC/模型合同 | Integration Backlog |
+| `RANK-03` | 部分：上游同构 Scorer 与 `VMRankerClient` 端口已迁移 | 关闭（未装配） | 缺 VM Ranker RPC/模型合同；value model/DPP 由装配显式配置 | `EV-PORT` |
 | `SEL-01` | 完成 | 启用 | 无外部依赖 | `EV-CP`, `EV-P3` |
 | `SEL-02`, `ADS-01..03` | 完成：纯混排规则 | 非帖子来源默认关闭 | 真实广告和安全服务待接入 | `EV-P4` |
-| `SE-01..02`, `SE-04..05`, `SE-07..11` | 未开始 | 关闭 | 待消费者、schema、保留期、幂等和运维合同 | Integration Backlog |
+| `SE-01..02`, `SE-04..05`, `SE-08..10` | 未开始 | 关闭 | 待消费者、schema、保留期、幂等和运维合同 | Integration Backlog |
+| `SE-07`, `SE-11` | 部分：`SeenIdsPublisher`/`ServedCandidatesSink` 领域端口与上游同构 SideEffect 已迁移 | 关闭（未装配） | 待 Kafka/存储 Adapter 承担 schema、序列化、重试与幂等 | `EV-PORT` |
 | `SE-03`, `SE-12..14` | 完成：内存/日志实现 | 启用 | Redis、Kafka 和外部指标属于 P5-B | `EV-P5` |
 | `SE-06` | 部分：请求缓存边界存在 | 默认关闭 | Strato/替代存储合同待接入 | `EV-P3`, Integration Backlog |
 | `GRX-01` | 部分：Plan/Task DAG 与结果信封 | 独立运行 | Engine/Dispatcher 生命周期和持久确认待恢复 | `EV-P6` |

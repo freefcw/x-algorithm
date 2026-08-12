@@ -15,28 +15,40 @@ impl Filter<ScoredPostsQuery, PostCandidate> for AuthorSocialgraphFilter {
         let blocked_by_user_ids = query.user_features.blocked_by_user_ids.clone();
         let viewer_muted_user_ids = query.user_features.muted_user_ids.clone();
 
-        if viewer_blocked_user_ids.is_empty()
-            && blocked_by_user_ids.is_empty()
-            && viewer_muted_user_ids.is_empty()
-        {
-            return FilterResult {
-                kept: candidates,
-                removed: Vec::new(),
-            };
-        }
+        let viewer_blocks = |user_id: Option<u64>| {
+            user_id
+                .and_then(|id| i64::try_from(id).ok())
+                .is_some_and(|id| viewer_blocked_user_ids.contains(&id))
+        };
 
         let mut kept: Vec<PostCandidate> = Vec::new();
         let mut removed: Vec<PostCandidate> = Vec::new();
 
         for candidate in candidates {
-            let Ok(author_id) = i64::try_from(candidate.author_id) else {
-                kept.push(candidate);
-                continue;
+            // 与上游一致的候选级信号；未装配 BlockedByHydrator 时保持中立。
+            let author_blocks_viewer = candidate.author_blocks_viewer.unwrap_or(false);
+            let quoted_author_blocks_viewer =
+                candidate.quoted_author_blocks_viewer.unwrap_or(false);
+            let viewer_blocks_quoted_author = viewer_blocks(candidate.quoted_user_id);
+            let viewer_blocks_retweeted_user = viewer_blocks(candidate.retweeted_user_id);
+
+            // 签名关系存储无法表示的作者 ID 保持中立。
+            let (muted, blocked) = match i64::try_from(candidate.author_id) {
+                Ok(author_id) => (
+                    viewer_muted_user_ids.contains(&author_id),
+                    viewer_blocked_user_ids.contains(&author_id)
+                        || blocked_by_user_ids.contains(&author_id),
+                ),
+                Err(_) => (false, false),
             };
-            let muted = viewer_muted_user_ids.contains(&author_id);
-            let blocked = viewer_blocked_user_ids.contains(&author_id)
-                || blocked_by_user_ids.contains(&author_id);
-            if muted || blocked {
+
+            if muted
+                || blocked
+                || author_blocks_viewer
+                || quoted_author_blocks_viewer
+                || viewer_blocks_quoted_author
+                || viewer_blocks_retweeted_user
+            {
                 removed.push(candidate);
             } else {
                 kept.push(candidate);
@@ -93,5 +105,60 @@ mod tests {
         assert_eq!(result.kept[0].author_id, 100);
         assert_eq!(result.kept[1].author_id, u64::MAX);
         assert_eq!(result.removed.len(), 3);
+    }
+
+    #[test]
+    fn candidate_level_signals_follow_upstream_semantics() {
+        let filter = AuthorSocialgraphFilter;
+        let query = ScoredPostsQuery {
+            user_features: UserFeatures {
+                blocked_user_ids: vec![900],
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+
+        let candidates = vec![
+            PostCandidate {
+                tweet_id: 1,
+                author_id: 100,
+                author_blocks_viewer: Some(true),
+                ..Default::default()
+            }, // author blocks viewer (hydrated signal)
+            PostCandidate {
+                tweet_id: 2,
+                author_id: 101,
+                quoted_author_blocks_viewer: Some(true),
+                ..Default::default()
+            }, // quoted author blocks viewer
+            PostCandidate {
+                tweet_id: 3,
+                author_id: 102,
+                quoted_user_id: Some(900),
+                ..Default::default()
+            }, // viewer blocks quoted author
+            PostCandidate {
+                tweet_id: 4,
+                author_id: 103,
+                retweeted_user_id: Some(900),
+                ..Default::default()
+            }, // viewer blocks retweeted user
+            PostCandidate {
+                tweet_id: 5,
+                author_id: 104,
+                author_blocks_viewer: Some(false),
+                ..Default::default()
+            }, // explicit negative stays
+            PostCandidate {
+                tweet_id: 6,
+                author_id: 105,
+                ..Default::default()
+            }, // unhydrated stays neutral
+        ];
+
+        let result = filter.filter(&query, candidates);
+        let kept_ids: Vec<u64> = result.kept.iter().map(|c| c.tweet_id).collect();
+        assert_eq!(kept_ids, vec![5, 6]);
+        assert_eq!(result.removed.len(), 4);
     }
 }

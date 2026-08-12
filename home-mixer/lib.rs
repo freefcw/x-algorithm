@@ -7,7 +7,7 @@
 //   4. 返回最终排序后的 Feed 流
 
 pub mod ads;
-mod candidate_hydrators;
+pub mod candidate_hydrators;
 pub mod candidate_pipeline;
 pub mod clients;
 mod debug_access;
@@ -20,13 +20,13 @@ pub mod for_you_server;
 pub mod models;
 pub mod params;
 pub mod query_builder;
-mod query_hydrators;
+pub mod query_hydrators;
 pub mod runtime_config;
 pub mod scored_posts_server;
 pub mod scorers;
 pub mod selectors;
 pub mod server;
-mod side_effects;
+pub mod side_effects;
 pub mod sources;
 pub mod util;
 

@@ -1,9 +1,7 @@
 use home_mixer::feed_state::{FeedStateStore, InMemoryFeedStateStore};
 use home_mixer::feed_stats::{FeedResponseStats, FeedStatsSink, InMemoryFeedStats};
 use home_mixer::for_you_server::ForYouFeedServer;
-use home_mixer::models::feed_item::{
-    Advertisement, FeedItem, FeedItemContent, FeedItemKind,
-};
+use home_mixer::models::feed_item::{Advertisement, FeedItem, FeedItemContent, FeedItemKind};
 use home_mixer::models::query::ScoredPostsQuery;
 use home_mixer::scored_posts_server::ScoredPostsOutput;
 use home_mixer::selectors::blender_selector::{AdsBlenderStrategy, BlenderConfig, BlenderSelector};
