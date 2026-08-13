@@ -39,7 +39,9 @@ impl Hydrator<ScoredPostsQuery, PostCandidate> for CoreDataCandidateHydrator {
         candidate.in_reply_to_tweet_id = hydrated.in_reply_to_tweet_id;
         candidate.tweet_text = hydrated.tweet_text;
 
-        // The public TES adapter packs these local U2 fields into core data.
+        // CH-10 is owned here: the public TES adapter returns engagement counts
+        // inside core data, so a separate counts hydrator would only re-issue the
+        // same batch. Upstream splits them because it has a dedicated counts API.
         candidate.favorite_count = hydrated.favorite_count;
         candidate.reply_count = hydrated.reply_count;
         candidate.repost_count = hydrated.repost_count;

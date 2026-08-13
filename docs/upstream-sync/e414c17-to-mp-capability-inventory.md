@@ -161,6 +161,7 @@ P3 仍未完成且不能伪造的条件能力：
 | `QH-14..15` | 未开始 | 关闭 | 待 starter pack/社交图数据合同 | Integration Backlog |
 | `QH-16..18` | 未开始 | 关闭 | 待隐私、公平性、同意和保留策略；本地 Query 仅有 `ip_address` 空字符串占位，`user_demographics`/`inferred_gender` 字段尚未引入 | Integration Backlog |
 | `CH-01..06`, `CH-09..11`, `CH-13..14`, `CH-16` | 完成：本地合同/实现 | 按候选数据启用；VF 未知时网外拒绝、网内保留 | TES、作者资料、关系和 VF 真实服务待集成；缺失时 `production_ready` 拒绝启动 | `EV-P3` |
+| `CH-10`（字段所有权） | 完成：由 `CoreDataCandidateHydrator` 拥有 | 启用 | 公开 TES adapter 把互动数打包在 core data 内，独立 counts 组件只会重复同一批请求；上游拆分的前提是它有专用 counts API | `EV-P3` |
 | `CH-07..08` | 部分：显式安全 verdict 边界 | 关闭 | 待广告安全 Hydrator 和供应商 | `EV-P4`, Integration Backlog |
 | `CH-09`（候选级反向屏蔽） | 部分：`SocialGraphClientOps` 端口与上游同构 `BlockedByHydrator` 已迁移；`AuthorSocialgraphFilter` 已按上游消费候选级信号（未补全时中立） | 关闭（未装配）；Query 级 blocked-by 列表仍是当前生效路径 | 待真实社交图 Adapter（认证、超时、批量上限） | `EV-PORT` |
 | `CH-12`, `CH-15`, `CH-17` | 未开始 | 关闭 | 待社交图端口或统计出口；CH-12/15 依赖 QH-15 minhash 数据合同，先于端口定义 | Integration Backlog |
