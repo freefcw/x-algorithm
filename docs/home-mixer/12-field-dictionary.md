@@ -118,7 +118,7 @@
 
 来源文件：
 
-- `home-mixer/candidate_pipeline/candidate.rs`
+- `home-mixer/models/candidate.rs`
 
 这些字段本质上都是“某个候选上的行为概率或连续值”，大多由 `PhoenixScorer` 填充。
 
