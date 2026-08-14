@@ -1,0 +1,283 @@
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 X.AI Corp.
+from xai_proto import recsys_pb2
+
+action_type_map_raw = {
+    value_descriptor.name: value_descriptor.number
+    for value_descriptor in recsys_pb2.ActionName.DESCRIPTOR.values
+}
+
+continuous_action_type_map = {
+    value_descriptor.name: value_descriptor.number
+    for value_descriptor in recsys_pb2.ContinuousActionName.DESCRIPTOR.values
+}
+
+
+def to_pascal_case(s):
+    return "".join(word.capitalize() for word in s.lower().split("_"))
+
+
+action_type_map = {to_pascal_case(k): v for k, v in action_type_map_raw.items()}
+
+
+primary_engagement_to_action_types = {
+    "IsFavorited": [
+        "ServerTweetFav",
+    ],
+    "IsReplied": [
+        "ServerTweetReply",
+    ],
+    "IsRetweeted": [
+        "ServerTweetRetweet",
+    ],
+    "IsQuoted": [
+        "ServerTweetQuote",
+    ],
+    "IsBookmarked": [
+        "ClientTweetBookmark",
+    ],
+    "IsShared": [
+        "ClientTweetShare",
+    ],
+    "IsSharedViaCopyLink": [
+        "ClientTweetShareViaCopyLink",
+    ],
+    "IsSharedViaDirectMessage": [
+        "ClientTweetClickSendViaDirectMessage",
+    ],
+    "IsNotInterestedIn": [
+        "ClientTweetNotInterestedIn",
+    ],
+    "IsMuteAuthor": [
+        "ClientTweetMuteAuthor",
+    ],
+    "IsBlockAuthor": [
+        "ClientTweetBlockAuthor",
+    ],
+    "IsReported": [
+        "ClientTweetReport",
+    ],
+    "IsVideoQualityViewed": [
+        "ClientTweetVideoQualityView",
+    ],
+    "IsVideoOpened": [
+        "ClientTweetVideoOpen",
+    ],
+    "IsProfileClicked": [
+        "ClientTweetClickProfile",
+    ],
+    "IsRecapDwelled": [
+        "ClientTweetRecapDwelled",
+    ],
+    "IsRecapNotDwelled": [
+        "ClientTweetRecapNotDwelled",
+    ],
+    "IsOpenLink": [
+        "ClientTweetOpenLink",
+    ],
+    "IsClicked": [
+        "ClientTweetClick",
+    ],
+    "IsPostUnexplored": [
+        "ServerTweetPostUnexplored",
+    ],
+    "IsExternalLinkLongDwelled": [
+        "ClientTweetExternalLinkLongDwelled",
+    ],
+    "IsExternalLinkSessionLessThan3Sec": [
+        "ClientExternalLinkSessionLessThan3Sec",
+    ],
+    "IsExternalLinkSessionLessThan5Sec": [
+        "ClientExternalLinkSessionLessThan5Sec",
+    ],
+    "IsExternalLinkSessionLessThan10Sec": [
+        "ClientExternalLinkSessionLessThan10Sec",
+    ],
+    "IsExternalLinkSessionMoreThan3Sec": [
+        "ClientExternalLinkSessionMoreThan3Sec",
+    ],
+    "IsExternalLinkSessionMoreThan5Sec": [
+        "ClientExternalLinkSessionMoreThan5Sec",
+    ],
+    "IsExternalLinkSessionMoreThan15Sec": [
+        "ClientExternalLinkSessionMoreThan15Sec",
+    ],
+    "IsExternalLinkSessionMoreThan20Sec": [
+        "ClientExternalLinkSessionMoreThan20Sec",
+    ],
+    "IsExternalLinkSessionMoreThan25Sec": [
+        "ClientExternalLinkSessionMoreThan25Sec",
+    ],
+    "IsExternalLinkSessionMoreThan30Sec": [
+        "ClientExternalLinkSessionMoreThan30Sec",
+    ],
+    "IsExternalLinkSessionMoreThan60Sec": [
+        "ClientExternalLinkSessionMoreThan60Sec",
+    ],
+}
+
+
+engagement_to_action_types = {
+    **primary_engagement_to_action_types,
+    "IsPhotoExpanded": [
+        "ClientTweetPhotoExpand",
+    ],
+    "IsQuotedTweetPhotoExpanded": [
+        "ClientQuotedTweetPhotoExpand",
+    ],
+    "IsLinkOpened": [
+        "ClientTweetOpenLink",
+    ],
+    "IsHashtagClicked": [
+        "ClientTweetClickHashtag",
+    ],
+    "IsMentionClicked": [
+        "ClientTweetClickMentionScreenName",
+    ],
+    "IsAuthorFollowed": [
+        "ClientTweetFollowAuthor",
+    ],
+    "IsTranslated": [
+        "ClientTweetTranslateClick",
+    ],
+    "IsScreenshotTaken": [
+        "ClientTweetTakeScreenshot",
+    ],
+    "IsShowMoreExpanded": [
+        "ClientTweetShowMoreExpand",
+    ],
+    "IsGrokAnalyzeClicked": [
+        "ClientTweetClickGrokAnalyze",
+    ],
+    "IsAuthorUnmuted": [
+        "ClientTweetUnmuteAuthor",
+    ],
+    "IsUndoSeeFewer": [
+        "ClientTweetUndoSeeFewer",
+    ],
+}
+
+notification_engagement_to_action_types = {
+    **engagement_to_action_types,
+    "IsNotificationOpened": [
+        "ClientNotificationOpen",
+    ],
+    "IsNotificationClicked": [
+        "ClientNotificationClick",
+    ],
+    "IsNotificationDismissed": [
+        "ClientNotificationDismiss",
+    ],
+    "IsNotificationSeeLessOften": [
+        "ClientNotificationSeeLessOften",
+    ],
+    "IsNotificationImpression": [
+        "ClientNotificationImpression",
+    ],
+    "IsNotificationSent": [
+        "ClientNotificationSent",
+    ],
+}
+
+ads_conversion_engagement_to_action_types = {
+    **primary_engagement_to_action_types,
+    "IsPurchaseConversion": [
+        "AdsPurchaseConversion",
+    ],
+    "IsSignupConversion": [
+        "AdsSignUpConversion",
+    ],
+    "IsAddToCartConversion": [
+        "AdsAddToCartConversion",
+    ],
+    "IsSiteVisitConversion": [
+        "AdsSiteVisitConversion",
+    ],
+    "IsSearchConversion": [
+        "AdsSearchConversion",
+    ],
+}
+
+ads_p_conv_click_engagement_to_action_types = {
+    **primary_engagement_to_action_types,
+    "IsAttributedKeyClickConversion": [
+        "AdsAttributedKeyClickConversion",
+    ],
+    "IsAttributedClickConversion": [
+        "AdsAttributedClickConversion",
+    ],
+    "IsAttributedMactClickInstall": [
+        "AdsAttributedMactClickInstall",
+    ],
+    "IsPurchaseConversion": [
+        "AdsPurchaseConversion",
+    ],
+    "IsAddToCartConversion": [
+        "AdsAddToCartConversion",
+    ],
+    "IsCheckoutInitiatedConversion": [
+        "AdsCheckoutInitiatedConversion",
+    ],
+    "IsSignupConversion": [
+        "AdsSignUpConversion",
+    ],
+    "IsSiteVisitConversion": [
+        "AdsSiteVisitConversion",
+    ],
+    "IsWebConversion": [
+        "AdsWebConversion",
+    ],
+    "IsSearchConversion": [
+        "AdsSearchConversion",
+    ],
+    "IsAttributedKeyViewConversion": [
+        "AdsAttributedKeyViewConversion",
+    ],
+    "IsAttributedViewConversion": [
+        "AdsAttributedViewConversion",
+    ],
+}
+
+
+eng_to_action_types = {
+    "default": primary_engagement_to_action_types,
+    "all": engagement_to_action_types,
+    "notifications": notification_engagement_to_action_types,
+    "ads_conversion": ads_conversion_engagement_to_action_types,
+    "ads_p_conv_click": ads_p_conv_click_engagement_to_action_types,
+    "none": {},
+}
+
+
+def engagement_to_ids(metric_group):
+    return {
+        eng: [action_type_map[name] for name in names]
+        for eng, names in eng_to_action_types[metric_group].items()
+    }
+
+
+CLICK_ACTION_INDEX = recsys_pb2.ActionName.CLIENT_TWEET_OPEN_LINK
+CLICK_CONDITIONED_ACTION_INDICES = [
+    recsys_pb2.ActionName.ADS_ATTRIBUTED_KEY_CLICK_CONVERSION,
+    recsys_pb2.ActionName.ADS_ATTRIBUTED_CLICK_CONVERSION,
+    recsys_pb2.ActionName.ADS_PURCHASE_CONVERSION,
+    recsys_pb2.ActionName.ADS_MID_FUNNEL_CONVERSION,
+    recsys_pb2.ActionName.ADS_ADD_TO_CART_CONVERSION,
+    recsys_pb2.ActionName.ADS_UPPER_FUNNEL_CONVERSION,
+    recsys_pb2.ActionName.ADS_WEB_CONVERSION,
+    recsys_pb2.ActionName.ADS_SEARCH_CONVERSION,
+    recsys_pb2.ActionName.ADS_SIGN_UP_CONVERSION,
+    recsys_pb2.ActionName.ADS_CHECKOUT_INITIATED_CONVERSION,
+    recsys_pb2.ActionName.ADS_ATTRIBUTED_MACT_CLICK_INSTALL,
+]
+
+NEGATIVE_FEEDBACK_HEAD_INDICES = [
+    recsys_pb2.ActionName.CLIENT_TWEET_REPORT,
+    recsys_pb2.ActionName.CLIENT_TWEET_NOT_INTERESTED_IN,
+    recsys_pb2.ActionName.CLIENT_TWEET_SEE_FEWER,
+    recsys_pb2.ActionName.CLIENT_TWEET_MUTE_AUTHOR,
+    recsys_pb2.ActionName.CLIENT_TWEET_BLOCK_AUTHOR,
+    recsys_pb2.ActionName.CLIENT_TWEET_NOT_RELEVANT,
+    recsys_pb2.ActionName.CLIENT_TWEET_MUTE_CONVERSATION,
+    recsys_pb2.ActionName.CLIENT_NOTIFICATION_SEE_LESS_OFTEN,
+]

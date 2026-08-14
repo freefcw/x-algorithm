@@ -1,0 +1,32 @@
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 X.AI Corp.
+import enum
+
+import jax
+
+
+class RematType(enum.IntEnum):
+    WHOLE = 0
+    SAVE_GB300_RECSYS = 29
+
+
+def custom_remat_policy(policy: RematType):
+    if policy == RematType.WHOLE:
+        return jax.checkpoint_policies.save_only_these_names(
+            "scalar_stats",
+        )
+    elif policy == RematType.SAVE_GB300_RECSYS:
+        return jax.checkpoint_policies.save_only_these_names(
+            "attn_outputs",
+            "dense_outputs",
+            "dense_outputs_individual",
+            "attn",
+            "gate_up_proj",
+            "dense_up_proj",
+            "query_heads",
+            "key_heads",
+            "value_heads",
+            "scalar_stats",
+        )
+    else:
+        raise NotImplementedError(f"Unknown remat policy: {policy}")

@@ -6,3 +6,6 @@ members = [
     "thunder",              # 实时帖子内存缓存服务
     "home-mixer",           # Feed 流编排主服务
 ]
+# phoenix/ 自带独立 Cargo workspace（上游 47c1bcd 的 Rust serving crates，
+# 面向 Linux + CUDA 环境），不并入本 workspace。
+exclude = ["phoenix"]

@@ -27,7 +27,27 @@ def _needs_regen() -> bool:
     pb2 = _GEN_DIR / "recsys_pb2.py"
     if not pb2.exists():
         return True
-    return _PROTO_PATH.stat().st_mtime > pb2.stat().st_mtime
+    if _PROTO_PATH.stat().st_mtime > pb2.stat().st_mtime:
+        return True
+    return _gencode_incompatible(pb2)
+
+
+def _gencode_incompatible(pb2: Path) -> bool:
+    """gencode 比当前 protobuf runtime 新时必须重建，否则导入直接报
+    VersionError（例如依赖解析把 runtime 降级后残留旧产物）。"""
+    import re
+
+    from google.protobuf import __version__ as runtime_version
+
+    match = re.search(
+        r"Protobuf Python Version: (\d+)\.(\d+)", pb2.read_text(errors="replace")
+    )
+    if match is None:
+        return True
+    gen_major, gen_minor = int(match.group(1)), int(match.group(2))
+    parts = runtime_version.split(".")
+    rt_major, rt_minor = int(parts[0]), int(parts[1])
+    return (gen_major, gen_minor) > (rt_major, rt_minor)
 
 
 def _generate() -> None:

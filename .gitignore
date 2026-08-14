@@ -74,3 +74,8 @@ phoenix/services/proto_gen/
 *.log
 *.tmp
 *.bak
+
+# xai-proto 构建 hook 在源目录生成的 pb2 桩代码（uv sync 时产生）
+phoenix/python/common/xai-proto/xai_proto/*_pb2.py
+phoenix/python/common/xai-proto/xai_proto/*_pb2.pyi
+phoenix/python/common/xai-proto/xai_proto/*_pb2_grpc.py

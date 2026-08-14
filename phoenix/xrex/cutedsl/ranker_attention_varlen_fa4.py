@@ -1,0 +1,608 @@
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 X.AI Corp.
+from __future__ import annotations
+
+import dataclasses
+import functools
+import math
+from dataclasses import dataclass
+
+import jax
+import jax.numpy as jnp
+import numpy as np
+from jax.ad_checkpoint import checkpoint_name
+
+
+@dataclasses.dataclass(frozen=True)
+class TuningConfig:
+    block_q: int
+    block_kv: int
+
+
+BLACKWELL_CONFIG = TuningConfig(block_q=128, block_kv=128)
+
+
+@functools.cache
+def get_device_tuning_config() -> TuningConfig:
+    return BLACKWELL_CONFIG
+
+
+def _build_packed_block_sparse(
+    hist_sizes,
+    transformer_candidate_seq_len=128,
+    block_size=128,
+    max_hist_blocks=None,
+    num_blocks=None,
+):
+    assert all(h % block_size == 0 for h in hist_sizes), (
+        f"hist_sizes must be multiples of block_size={block_size}, got {hist_sizes}"
+    )
+    assert transformer_candidate_seq_len % block_size == 0
+    h_blocks = [h // block_size for h in hist_sizes]
+    cand_blocks_per_user = transformer_candidate_seq_len // block_size
+    actual_num_blocks = sum(hb + cand_blocks_per_user for hb in h_blocks)
+    if num_blocks is None:
+        num_blocks = actual_num_blocks
+    else:
+        assert num_blocks >= actual_num_blocks, (
+            f"num_blocks={num_blocks} too small for hist_sizes (need {actual_num_blocks})"
+        )
+
+    example_id_per_block = np.full(num_blocks, -1, dtype=np.int32)
+    is_cand_per_block = np.zeros(num_blocks, dtype=bool)
+    hist_block_start_per_user: list[int] = []
+    cand_block_start_per_user: list[int] = []
+    cur = 0
+    for i, hb in enumerate(h_blocks):
+        hist_block_start_per_user.append(cur)
+        example_id_per_block[cur : cur + hb] = i
+        cur += hb
+        cand_block_start_per_user.append(cur)
+        for j in range(cand_blocks_per_user):
+            example_id_per_block[cur + j] = i
+            is_cand_per_block[cur + j] = True
+        cur += cand_blocks_per_user
+
+    actual_max_hist_blocks = max(h_blocks) if h_blocks else 1
+    if max_hist_blocks is None:
+        max_hist_blocks = actual_max_hist_blocks
+    else:
+        assert max_hist_blocks >= actual_max_hist_blocks, (
+            f"max_hist_blocks={max_hist_blocks} too small (max h={actual_max_hist_blocks})"
+        )
+    max_q_per_n = max_hist_blocks + cand_blocks_per_user
+
+    fwd_mask_cnt = np.zeros((num_blocks,), dtype=np.int32)
+    fwd_mask_idx = np.zeros((num_blocks, 1), dtype=np.int32)
+    fwd_full_cnt = np.zeros((num_blocks,), dtype=np.int32)
+    fwd_full_idx = np.zeros((num_blocks, max_hist_blocks), dtype=np.int32)
+    fwd_diag_cnt = np.zeros((num_blocks,), dtype=np.int32)
+    fwd_diag_idx = np.zeros((num_blocks, 1), dtype=np.int32)
+    for m in range(num_blocks):
+        ex_id = int(example_id_per_block[m])
+        if ex_id < 0:
+            continue
+        hb = h_blocks[ex_id]
+        hstart = hist_block_start_per_user[ex_id]
+        fwd_full_cnt[m] = hb
+        for j in range(hb):
+            fwd_full_idx[m, j] = hstart + j
+        if is_cand_per_block[m]:
+            fwd_diag_cnt[m] = 1
+            fwd_diag_idx[m, 0] = m
+
+    bwd_mask_cnt = np.zeros((num_blocks,), dtype=np.int32)
+    bwd_mask_idx = np.zeros((num_blocks, 1), dtype=np.int32)
+    bwd_full_cnt = np.zeros((num_blocks,), dtype=np.int32)
+    bwd_full_idx = np.zeros((num_blocks, max_q_per_n), dtype=np.int32)
+    bwd_diag_cnt = np.zeros((num_blocks,), dtype=np.int32)
+    bwd_diag_idx = np.zeros((num_blocks, 1), dtype=np.int32)
+    for n_blk in range(num_blocks):
+        ex_id = int(example_id_per_block[n_blk])
+        if ex_id < 0:
+            continue
+        if is_cand_per_block[n_blk]:
+            bwd_diag_cnt[n_blk] = 1
+            bwd_diag_idx[n_blk, 0] = n_blk
+        else:
+            hb = h_blocks[ex_id]
+            hstart = hist_block_start_per_user[ex_id]
+            cand_blk_start = cand_block_start_per_user[ex_id]
+            cnt = 0
+            for j in range(hb):
+                bwd_full_idx[n_blk, cnt] = hstart + j
+                cnt += 1
+            for j in range(cand_blocks_per_user):
+                bwd_full_idx[n_blk, cnt] = cand_blk_start + j
+                cnt += 1
+            bwd_full_cnt[n_blk] = cnt
+
+    return dict(
+        total_seq_len=num_blocks * block_size,
+        num_blocks=num_blocks,
+        fwd=(fwd_mask_cnt, fwd_mask_idx, fwd_full_cnt, fwd_full_idx, fwd_diag_cnt, fwd_diag_idx),
+        bwd=(bwd_mask_cnt, bwd_mask_idx, bwd_full_cnt, bwd_full_idx, bwd_diag_cnt, bwd_diag_idx),
+    )
+
+
+@jax.tree_util.register_dataclass
+@dataclass(frozen=True, slots=True)
+class BlockSparseLayout:
+    fwd_mask_cnt: np.ndarray
+    fwd_mask_idx: np.ndarray
+    fwd_full_cnt: np.ndarray
+    fwd_full_idx: np.ndarray
+    fwd_diag_cnt: np.ndarray
+    fwd_diag_idx: np.ndarray
+    bwd_mask_cnt: np.ndarray
+    bwd_mask_idx: np.ndarray
+    bwd_full_cnt: np.ndarray
+    bwd_full_idx: np.ndarray
+    bwd_diag_cnt: np.ndarray
+    bwd_diag_idx: np.ndarray
+
+
+def build_block_sparse_layout(
+    cu_seqlens: np.ndarray,
+    transformer_candidate_seq_len: int,
+    max_history_seq_len: int,
+    packed_seq_len: int | None = None,
+) -> BlockSparseLayout:
+    per_user_lens = np.diff(cu_seqlens, axis=-1)
+    block_size = get_device_tuning_config().block_q
+    assert np.all(per_user_lens % block_size == 0), "All per-user lengths must be block-aligned"
+    assert transformer_candidate_seq_len % block_size == 0, (
+        "Candidate sequence length must be block-aligned"
+    )
+
+    num_devices, _ = per_user_lens.shape
+    if packed_seq_len is not None:
+        assert packed_seq_len % block_size == 0, (
+            f"packed_seq_len={packed_seq_len} must be a multiple of block_size={block_size}"
+        )
+        used = per_user_lens.sum(axis=-1)
+        assert int(used.max()) <= packed_seq_len, (
+            f"cu_seqlens claim more tokens than the physical row: {used.max()} > {packed_seq_len}"
+        )
+        total_blocks_per_device = packed_seq_len // block_size
+    else:
+        total_blocks_per_device = int(per_user_lens[0].sum()) // block_size
+    max_hist_blocks = max_history_seq_len // block_size
+
+    fwd_arrays: list[list[np.ndarray]] = [[] for _ in range(6)]
+    bwd_arrays: list[list[np.ndarray]] = [[] for _ in range(6)]
+    for d in range(num_devices):
+        hist_sizes = per_user_lens[d] - transformer_candidate_seq_len
+        info = _build_packed_block_sparse(
+            hist_sizes,
+            transformer_candidate_seq_len=transformer_candidate_seq_len,
+            max_hist_blocks=max_hist_blocks,
+            num_blocks=total_blocks_per_device,
+        )
+        for i, arr in enumerate(info["fwd"]):
+            fwd_arrays[i].append(arr)
+        for i, arr in enumerate(info["bwd"]):
+            bwd_arrays[i].append(arr)
+
+    fwd = [np.stack(arrs, axis=0) for arrs in fwd_arrays]
+    bwd = [np.stack(arrs, axis=0) for arrs in bwd_arrays]
+    return BlockSparseLayout(
+        fwd_mask_cnt=fwd[0],
+        fwd_mask_idx=fwd[1],
+        fwd_full_cnt=fwd[2],
+        fwd_full_idx=fwd[3],
+        fwd_diag_cnt=fwd[4],
+        fwd_diag_idx=fwd[5],
+        bwd_mask_cnt=bwd[0],
+        bwd_mask_idx=bwd[1],
+        bwd_full_cnt=bwd[2],
+        bwd_full_idx=bwd[3],
+        bwd_diag_cnt=bwd[4],
+        bwd_diag_idx=bwd[5],
+    )
+
+
+_FA4_PACKED_CACHE = {}
+
+
+def ranker_attention_varlen_fa4(q, k, v, sm_scale, block_sparse_layout):
+    import cuda.bindings.driver as cuda_driver
+    import cutlass
+    import cutlass.cute as cute
+    from cutlass.jax import cutlass_call
+
+    from xrex.cutedsl.ranker_fa4.block_sparsity import BlockSparseTensors
+    from xrex.cutedsl.ranker_fa4.flash_bwd_postprocess import FlashAttentionBackwardPostprocess
+    from xrex.cutedsl.ranker_fa4.flash_bwd_sm100 import FlashAttentionBackwardSm100
+    from xrex.cutedsl.ranker_fa4.flash_fwd_sm100 import FlashAttentionForwardSm100
+
+    batch_size, packed_S, num_q_heads, head_dim = q.shape
+    num_kv_heads = k.shape[2]
+    qpk = num_q_heads // num_kv_heads
+    block_size = 128
+    hdr = ((head_dim + 31) // 32) * 32
+    sr_q = ((packed_S + block_size - 1) // block_size) * block_size
+    sr_k = sr_q
+    dKV_postprocess = True
+    use_pack_gqa = qpk > 1 and (block_size % qpk == 0)
+
+    fwd_bs, _ = block_sparse_layout
+    bs_max_hist_blocks = int(fwd_bs[3].shape[-1])
+    bs_num_blocks = int(fwd_bs[3].shape[-2])
+
+    _expected_m_blocks = (packed_S + block_size - 1) // block_size
+    if bs_num_blocks != _expected_m_blocks:
+        raise ValueError(
+            f"block-sparse arrays cover {bs_num_blocks} m-tiles but the kernel "
+            f"will iterate {_expected_m_blocks} (packed_S={packed_S}). "
+            "Pass packed_seq_len (the physical packed row length) to "
+            "build_block_sparse_layout so every physical tile has an entry."
+        )
+
+    cache_key = (
+        "packed",
+        head_dim,
+        num_q_heads,
+        num_kv_heads,
+        batch_size,
+        packed_S,
+        bs_num_blocks,
+        bs_max_hist_blocks,
+        use_pack_gqa,
+    )
+
+    if cache_key not in _FA4_PACKED_CACHE:
+        fa_fwd = FlashAttentionForwardSm100(
+            head_dim=head_dim,
+            head_dim_v=head_dim,
+            qhead_per_kvhead=qpk,
+            is_causal=False,
+            is_local=False,
+            pack_gqa=use_pack_gqa,
+            is_persistent=True,
+            mask_mod=None,
+            q_stage=1,
+        )
+        q_shape = (batch_size, packed_S, num_q_heads, head_dim)
+        k_shape = (batch_size, packed_S, num_kv_heads, head_dim)
+        lse_shape = (batch_size, num_q_heads, packed_S)
+
+        @cute.jit
+        def launch_fwd(
+            stream: cuda_driver.CUstream,
+            mQ,
+            mK,
+            mV,
+            mMaskCnt,
+            mMaskIdx,
+            mFullCnt,
+            mFullIdx,
+            mDiagCnt,
+            mDiagIdx,
+            mO,
+            mLSE,
+            softmax_scale: cutlass.Float32,
+        ):
+            bs = BlockSparseTensors(
+                mask_block_cnt=mMaskCnt,
+                mask_block_idx=mMaskIdx,
+                full_block_cnt=mFullCnt,
+                full_block_idx=mFullIdx,
+                cu_total_m_blocks=None,
+                cu_block_idx_offsets=None,
+                dq_write_order=None,
+                dq_write_order_full=None,
+                diag_block_cnt=mDiagCnt,
+                diag_block_idx=mDiagIdx,
+                dq_write_order_diag=None,
+            )
+            fa_fwd(
+                mQ,
+                mK,
+                mV,
+                mO,
+                mLSE,
+                softmax_scale,
+                None,
+                None,
+                None,
+                None,
+                None,
+                None,
+                None,
+                None,
+                None,
+                bs,
+                None,
+                stream,
+            )
+
+        fwd_call = cutlass_call(
+            launch_fwd,
+            output_shape_dtype=[
+                jax.ShapeDtypeStruct(q_shape, jnp.bfloat16),
+                jax.ShapeDtypeStruct(lse_shape, jnp.float32),
+            ],
+            use_static_tensors=False,
+            softmax_scale=cutlass.Float32(sm_scale),
+        )
+
+        fa_bwd = FlashAttentionBackwardSm100(
+            head_dim=head_dim,
+            head_dim_v=head_dim,
+            qhead_per_kvhead=qpk,
+            is_causal=False,
+            is_local=False,
+            mask_mod=None,
+        )
+        dq_accum_shape = (batch_size, num_q_heads, sr_q * hdr)
+        dk_accum_shape = (batch_size, num_kv_heads, sr_k * hdr)
+
+        if dKV_postprocess:
+
+            @cute.jit
+            def launch_bwd(
+                stream: cuda_driver.CUstream,
+                mQ,
+                mK,
+                mV,
+                mdO,
+                mLSE,
+                mdPsum,
+                mMaskCnt,
+                mMaskIdx,
+                mFullCnt,
+                mFullIdx,
+                mDiagCnt,
+                mDiagIdx,
+                mdQa,
+                mdKa,
+                mdVa,
+                softmax_scale: cutlass.Float32,
+            ):
+                bs = BlockSparseTensors(
+                    mask_block_cnt=mMaskCnt,
+                    mask_block_idx=mMaskIdx,
+                    full_block_cnt=mFullCnt,
+                    full_block_idx=mFullIdx,
+                    cu_total_m_blocks=None,
+                    cu_block_idx_offsets=None,
+                    dq_write_order=None,
+                    dq_write_order_full=None,
+                    diag_block_cnt=mDiagCnt,
+                    diag_block_idx=mDiagIdx,
+                    dq_write_order_diag=None,
+                )
+                fa_bwd(
+                    mQ,
+                    mK,
+                    mV,
+                    mdO,
+                    mLSE,
+                    mdPsum,
+                    mdQa,
+                    mdKa,
+                    mdVa,
+                    softmax_scale,
+                    None,
+                    None,
+                    None,
+                    None,
+                    None,
+                    None,
+                    None,
+                    None,
+                    None,
+                    None,
+                    bs,
+                    stream,
+                )
+
+            bwd_call = cutlass_call(
+                launch_bwd,
+                output_shape_dtype=[
+                    jax.ShapeDtypeStruct(dq_accum_shape, jnp.float32),
+                    jax.ShapeDtypeStruct(dk_accum_shape, jnp.float32),
+                    jax.ShapeDtypeStruct(dk_accum_shape, jnp.float32),
+                ],
+                input_output_aliases={12: 0, 13: 1, 14: 2},
+                use_static_tensors=False,
+                softmax_scale=cutlass.Float32(sm_scale),
+            )
+        else:
+
+            @cute.jit
+            def launch_bwd(
+                stream: cuda_driver.CUstream,
+                mQ,
+                mK,
+                mV,
+                mdO,
+                mLSE,
+                mdPsum,
+                mMaskCnt,
+                mMaskIdx,
+                mFullCnt,
+                mFullIdx,
+                mDiagCnt,
+                mDiagIdx,
+                mdQa,
+                mdK,
+                mdV,
+                softmax_scale: cutlass.Float32,
+            ):
+                bs = BlockSparseTensors(
+                    mask_block_cnt=mMaskCnt,
+                    mask_block_idx=mMaskIdx,
+                    full_block_cnt=mFullCnt,
+                    full_block_idx=mFullIdx,
+                    cu_total_m_blocks=None,
+                    cu_block_idx_offsets=None,
+                    dq_write_order=None,
+                    dq_write_order_full=None,
+                    diag_block_cnt=mDiagCnt,
+                    diag_block_idx=mDiagIdx,
+                    dq_write_order_diag=None,
+                )
+                fa_bwd(
+                    mQ,
+                    mK,
+                    mV,
+                    mdO,
+                    mLSE,
+                    mdPsum,
+                    mdQa,
+                    mdK,
+                    mdV,
+                    softmax_scale,
+                    None,
+                    None,
+                    None,
+                    None,
+                    None,
+                    None,
+                    None,
+                    None,
+                    None,
+                    None,
+                    bs,
+                    stream,
+                )
+
+            bwd_call = cutlass_call(
+                launch_bwd,
+                output_shape_dtype=[
+                    jax.ShapeDtypeStruct(dq_accum_shape, jnp.float32),
+                    jax.ShapeDtypeStruct(k_shape, jnp.float32),
+                    jax.ShapeDtypeStruct(k_shape, jnp.float32),
+                ],
+                input_output_aliases={12: 0},
+                use_static_tensors=False,
+                softmax_scale=cutlass.Float32(sm_scale),
+            )
+
+        fa_post_dq = FlashAttentionBackwardPostprocess(
+            cutlass.BFloat16, head_dim, 100, tile_m=block_size, num_threads=128
+        )
+
+        @cute.jit
+        def launch_post_dq(stream, mAccum, mOut, scale: cutlass.Float32):
+            fa_post_dq(mAccum, mOut, scale, None, None, stream)
+
+        post_dq_call = cutlass_call(
+            launch_post_dq,
+            output_shape_dtype=[jax.ShapeDtypeStruct(q_shape, jnp.bfloat16)],
+            use_static_tensors=False,
+            scale=cutlass.Float32(sm_scale),
+        )
+
+        post_dk_call = post_dv_call = None
+        if dKV_postprocess:
+            fa_post_dk = FlashAttentionBackwardPostprocess(
+                cutlass.BFloat16, head_dim, 100, tile_m=block_size, num_threads=128
+            )
+
+            @cute.jit
+            def launch_post_dk(stream, mAccum, mOut, scale: cutlass.Float32):
+                fa_post_dk(mAccum, mOut, scale, None, None, stream)
+
+            post_dk_call = cutlass_call(
+                launch_post_dk,
+                output_shape_dtype=[jax.ShapeDtypeStruct(k_shape, jnp.bfloat16)],
+                use_static_tensors=False,
+                scale=cutlass.Float32(sm_scale),
+            )
+
+            fa_post_dv = FlashAttentionBackwardPostprocess(
+                cutlass.BFloat16, head_dim, 100, tile_m=block_size, num_threads=128
+            )
+
+            @cute.jit
+            def launch_post_dv(stream, mAccum, mOut, scale: cutlass.Float32):
+                fa_post_dv(mAccum, mOut, scale, None, None, stream)
+
+            post_dv_call = cutlass_call(
+                launch_post_dv,
+                output_shape_dtype=[jax.ShapeDtypeStruct(k_shape, jnp.bfloat16)],
+                use_static_tensors=False,
+                scale=cutlass.Float32(1.0),
+            )
+
+        _FA4_PACKED_CACHE[cache_key] = dict(
+            fwd_call=fwd_call,
+            bwd_call=bwd_call,
+            post_dq_call=post_dq_call,
+            post_dk_call=post_dk_call,
+            post_dv_call=post_dv_call,
+            dKV_postprocess=dKV_postprocess,
+            dq_accum_shape=dq_accum_shape,
+            dk_accum_shape=dk_accum_shape,
+            sr_q=sr_q,
+            hdr=hdr,
+        )
+
+    c = _FA4_PACKED_CACHE[cache_key]
+    fwd_bs, bwd_bs = block_sparse_layout
+
+    @jax.custom_vjp
+    def _attention(q, k, v, *bs_args):
+        fbs = bs_args[:6]
+        out, _lse = c["fwd_call"](q, k, v, *fbs)
+        return out
+
+    def _attention_fwd(q, k, v, *bs_args):
+        fbs = bs_args[:6]
+        out, lse = c["fwd_call"](q, k, v, *fbs)
+        out = checkpoint_name(out, "attn_outputs")
+        lse = checkpoint_name(lse, "attn_outputs")
+        return out, (q, k, v, out, lse, bs_args)
+
+    def _attention_bwd(res, g):
+        q, k, v, out, lse, bs_args = res
+        bbs = bs_args[6:]
+        dpsum = jnp.sum(out.astype(jnp.float32) * g.astype(jnp.float32), axis=-1).transpose(0, 2, 1)
+        if dpsum.shape[-1] < c["sr_q"]:
+            dpsum = jnp.pad(dpsum, ((0, 0), (0, 0), (0, c["sr_q"] - dpsum.shape[-1])))
+        lse_log2 = lse * jnp.float32(math.log2(math.e))
+        if lse_log2.shape[-1] < c["sr_q"]:
+            lse_log2 = jnp.pad(lse_log2, ((0, 0), (0, 0), (0, c["sr_q"] - lse_log2.shape[-1])))
+
+        dq_accum_init = jnp.zeros(c["dq_accum_shape"], dtype=jnp.float32)
+
+        if c["dKV_postprocess"]:
+            dk_accum_init = jnp.zeros(c["dk_accum_shape"], dtype=jnp.float32)
+            dv_accum_init = jnp.zeros_like(dk_accum_init)
+            dq_accum, dk_accum, dv_accum = c["bwd_call"](
+                q,
+                k,
+                v,
+                g,
+                lse_log2,
+                dpsum,
+                *bbs,
+                dq_accum_init,
+                dk_accum_init,
+                dv_accum_init,
+            )
+            (dq,) = c["post_dq_call"](dq_accum)
+            (dk,) = c["post_dk_call"](dk_accum)
+            (dv,) = c["post_dv_call"](dv_accum)
+        else:
+            dq_accum, dk_f32, dv_f32 = c["bwd_call"](
+                q,
+                k,
+                v,
+                g,
+                lse_log2,
+                dpsum,
+                *bbs,
+                dq_accum_init,
+            )
+            (dq,) = c["post_dq_call"](dq_accum)
+            dk = dk_f32.astype(k.dtype)
+            dv = dv_f32.astype(v.dtype)
+
+        return (dq, dk, dv) + (None,) * len(bs_args)
+
+    _attention.defvjp(_attention_fwd, _attention_bwd)
+    return _attention(q, k, v, *fwd_bs, *bwd_bs)
