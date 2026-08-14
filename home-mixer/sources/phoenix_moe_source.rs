@@ -48,7 +48,9 @@ impl Source<ScoredPostsQuery, PostCandidate> for PhoenixMoeSource {
             .map(|tweet| PostCandidate {
                 tweet_id: tweet.tweet_id,
                 author_id: tweet.author_id,
-                in_reply_to_tweet_id: Some(tweet.in_reply_to_tweet_id),
+                // wire 用 0 表示"不是回复"，直接 Some(0) 会让下游把它当成真实祖先帖。
+                in_reply_to_tweet_id: (tweet.in_reply_to_tweet_id != 0)
+                    .then_some(tweet.in_reply_to_tweet_id),
                 served_type: Some(pb::ServedType::ForYouPhoenixRetrievalMoe),
                 ..Default::default()
             })

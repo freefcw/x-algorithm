@@ -96,9 +96,21 @@ pub struct PhoenixScores {
 
 pub trait CandidateHelpers {
     fn get_screen_names(&self) -> HashMap<u64, String>;
+    /// 转推指向的原帖 ID；非转推时即自身 ID。
+    fn get_original_tweet_id(&self) -> u64;
+    /// 转推指向的原作者 ID；非转推时即自身作者。
+    fn get_original_author_id(&self) -> u64;
 }
 
 impl CandidateHelpers for PostCandidate {
+    fn get_original_tweet_id(&self) -> u64 {
+        self.retweeted_tweet_id.unwrap_or(self.tweet_id)
+    }
+
+    fn get_original_author_id(&self) -> u64 {
+        self.retweeted_user_id.unwrap_or(self.author_id)
+    }
+
     fn get_screen_names(&self) -> HashMap<u64, String> {
         let mut screen_names = HashMap::<u64, String>::new();
         if let Some(author_screen_name) = self.author_screen_name.clone() {

@@ -34,6 +34,10 @@ impl Hydrator<ScoredPostsQuery, PostCandidate> for CoreDataCandidateHydrator {
     }
 
     fn update(&self, candidate: &mut PostCandidate, hydrated: PostCandidate) {
+        // 部分召回路只带回帖子 ID，作者留空；TES 是唯一能补回作者的来源。
+        if candidate.author_id == 0 && hydrated.author_id != 0 {
+            candidate.author_id = hydrated.author_id;
+        }
         candidate.retweeted_user_id = hydrated.retweeted_user_id;
         candidate.retweeted_tweet_id = hydrated.retweeted_tweet_id;
         candidate.in_reply_to_tweet_id = hydrated.in_reply_to_tweet_id;

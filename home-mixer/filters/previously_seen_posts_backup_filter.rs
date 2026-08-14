@@ -1,5 +1,6 @@
 use crate::models::candidate::PostCandidate;
 use crate::models::query::ScoredPostsQuery;
+use crate::util::candidates_util::related_post_ids_iter;
 use std::collections::HashSet;
 use xai_candidate_pipeline::filter::{Filter, FilterResult};
 
@@ -16,9 +17,10 @@ impl Filter<ScoredPostsQuery, PostCandidate> for PreviouslySeenPostsBackupFilter
         candidates: Vec<PostCandidate>,
     ) -> FilterResult<PostCandidate> {
         let impressed: HashSet<u64> = query.impressed_post_ids.iter().copied().collect();
-        let (removed, kept) = candidates
-            .into_iter()
-            .partition(|candidate| impressed.contains(&candidate.tweet_id));
+        // 与主 seen 过滤同口径：看过原帖后，它的转推与回复也算看过。
+        let (removed, kept) = candidates.into_iter().partition(|candidate| {
+            related_post_ids_iter(candidate).any(|id| impressed.contains(&id))
+        });
         FilterResult { kept, removed }
     }
 }
@@ -47,5 +49,34 @@ mod tests {
 
         assert_eq!(result.kept[0].tweet_id, 1);
         assert_eq!(result.removed[0].tweet_id, 2);
+    }
+
+    #[test]
+    fn impressed_original_also_removes_its_retweet_and_reply() {
+        let query = ScoredPostsQuery {
+            impressed_post_ids: vec![100],
+            ..Default::default()
+        };
+        let candidates = vec![
+            PostCandidate {
+                tweet_id: 1,
+                retweeted_tweet_id: Some(100),
+                ..Default::default()
+            },
+            PostCandidate {
+                tweet_id: 2,
+                in_reply_to_tweet_id: Some(100),
+                ..Default::default()
+            },
+            PostCandidate {
+                tweet_id: 3,
+                ..Default::default()
+            },
+        ];
+        let result = PreviouslySeenPostsBackupFilter.filter(&query, candidates);
+
+        assert_eq!(result.kept.len(), 1);
+        assert_eq!(result.kept[0].tweet_id, 3);
+        assert_eq!(result.removed.len(), 2);
     }
 }

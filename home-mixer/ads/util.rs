@@ -111,13 +111,20 @@ pub(crate) fn should_drop_handle(
         return false;
     }
 
+    // 0 表示"无此关系"，不能当作真实账号去匹配规避名单。
+    let is_avoided = |user_id: u64| {
+        user_id != 0
+            && i64::try_from(user_id)
+                .ok()
+                .is_some_and(|id| advertisement.avoid_handles.contains(&id))
+    };
+
+    // 转推会把被规避账号的内容带到广告旁边，只看 author_id 会漏掉这条路径。
     let has_avoided_author = |item: &FeedItem| {
         let FeedItemContent::Post(post) = &item.content else {
             return false;
         };
-        i64::try_from(post.author_id)
-            .ok()
-            .is_some_and(|author_id| advertisement.avoid_handles.contains(&author_id))
+        is_avoided(post.author_id) || is_avoided(post.retweeted_user_id)
     };
 
     above.is_some_and(has_avoided_author) || below.is_some_and(has_avoided_author)
@@ -185,5 +192,44 @@ mod tests {
         };
 
         assert!(!should_drop_handle(&advertisement, Some(&post), None));
+    }
+
+    fn ad_avoiding(handle: i64) -> Advertisement {
+        Advertisement {
+            ad_id: "ad-1".to_string(),
+            requested_position: 1,
+            brand_safety_risk: BrandSafetyRiskLevel::BsrLow,
+            avoid_handles: vec![handle],
+            avoid_keywords: Vec::new(),
+        }
+    }
+
+    fn post_item(post: ScoredPost) -> FeedItem {
+        FeedItem {
+            position: 0,
+            content: FeedItemContent::Post(post),
+        }
+    }
+
+    #[test]
+    fn retweet_of_an_avoided_handle_drops_the_ad() {
+        let item = post_item(ScoredPost {
+            author_id: 500,
+            retweeted_user_id: 42,
+            ..Default::default()
+        });
+
+        assert!(should_drop_handle(&ad_avoiding(42), Some(&item), None));
+    }
+
+    #[test]
+    fn absent_retweet_relationship_does_not_match_a_zero_handle() {
+        let item = post_item(ScoredPost {
+            author_id: 500,
+            retweeted_user_id: 0,
+            ..Default::default()
+        });
+
+        assert!(!should_drop_handle(&ad_avoiding(0), Some(&item), None));
     }
 }

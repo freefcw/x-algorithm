@@ -17,6 +17,11 @@ impl FollowedUserIdsQueryHydrator {
 
 #[async_trait]
 impl QueryHydrator<ScoredPostsQuery> for FollowedUserIdsQueryHydrator {
+    /// 请求已带关注列表时跳过，避免覆盖调用方提供的值。
+    fn enable(&self, query: &ScoredPostsQuery) -> bool {
+        query.user_features.followed_user_ids.is_empty()
+    }
+
     async fn hydrate(&self, query: &ScoredPostsQuery) -> Result<ScoredPostsQuery, String> {
         Ok(ScoredPostsQuery {
             user_features: UserFeatures {

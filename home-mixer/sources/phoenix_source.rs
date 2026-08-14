@@ -50,7 +50,9 @@ impl Source<ScoredPostsQuery, PostCandidate> for PhoenixSource {
             .map(|tweet_info| PostCandidate {
                 tweet_id: tweet_info.tweet_id,
                 author_id: tweet_info.author_id,
-                in_reply_to_tweet_id: Some(tweet_info.in_reply_to_tweet_id),
+                // wire 用 0 表示"不是回复"，直接 Some(0) 会让下游把它当成真实祖先帖。
+                in_reply_to_tweet_id: (tweet_info.in_reply_to_tweet_id != 0)
+                    .then_some(tweet_info.in_reply_to_tweet_id),
                 served_type: Some(pb::ServedType::ForYouPhoenixRetrieval),
                 ..Default::default()
             })
