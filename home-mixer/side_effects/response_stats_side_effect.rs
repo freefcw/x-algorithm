@@ -6,18 +6,18 @@ use tonic::async_trait;
 use xai_candidate_pipeline::side_effect::{SideEffect, SideEffectInput};
 
 /// Upstream-shaped response stats boundary over the local sink port.
-pub struct ForYouResponseStatsSideEffect {
+pub struct ResponseStatsSideEffect {
     sink: Arc<dyn FeedStatsSink>,
 }
 
-impl ForYouResponseStatsSideEffect {
+impl ResponseStatsSideEffect {
     pub fn new(sink: Arc<dyn FeedStatsSink>) -> Self {
         Self { sink }
     }
 }
 
 #[async_trait]
-impl SideEffect<ScoredPostsQuery, FeedItem> for ForYouResponseStatsSideEffect {
+impl SideEffect<ScoredPostsQuery, FeedItem> for ResponseStatsSideEffect {
     async fn side_effect(
         &self,
         input: Arc<SideEffectInput<ScoredPostsQuery, FeedItem>>,

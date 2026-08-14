@@ -5,7 +5,7 @@ use crate::models::query::ScoredPostsQuery;
 use crate::query_hydrators::past_request_timestamps_query_hydrator::PastRequestTimestampsQueryHydrator;
 use crate::query_hydrators::served_history_query_hydrator::ServedHistoryQueryHydrator;
 use crate::selectors::blender_selector::{BlenderConfig, BlenderSelector};
-use crate::side_effects::for_you_response_stats_side_effect::ForYouResponseStatsSideEffect;
+use crate::side_effects::response_stats_side_effect::ResponseStatsSideEffect;
 use crate::sources::ads_source::AdsSource;
 use crate::sources::prompts_source::PromptsSource;
 use crate::sources::push_to_home_source::PushToHomeSource;
@@ -59,7 +59,7 @@ impl ForYouCandidatePipeline {
             Box::new(PastRequestTimestampsQueryHydrator::from_store(state_store)),
         ];
         let side_effects: Vec<Box<dyn SideEffect<ScoredPostsQuery, FeedItem>>> =
-            vec![Box::new(ForYouResponseStatsSideEffect::new(stats_sink))];
+            vec![Box::new(ResponseStatsSideEffect::new(stats_sink))];
         Self::with_components(
             provider,
             config,
