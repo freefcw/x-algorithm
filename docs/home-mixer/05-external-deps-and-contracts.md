@@ -146,6 +146,7 @@ sequenceDiagram
 | `DisabledTESClient` | disabled adapter | 所有帖子无 core data；演示模式注入 `DemoTESClient`（占位文本） |
 | `GizmoduckClient` | disabled + Demo adapter | `degraded` 返回未知 viewer policy，QueryBuilder 限制为仅网内；`demo` 明确允许网外并保留空作者资料；真实接入需要确认用户偏好授权语义 |
 | `VisibilityFilteringClient` | disabled + Demo adapter | `demo` 显式返回 Allow；`degraded` 返回 Unavailable，Pipeline 拒绝网外、保留网内；真实合同缺失时 `production_ready` 拒绝启动 |
+| `GrpcVMRankerClient` | 真实 gRPC 客户端（可选） | 同时设置 `HOME_MIXER_ENABLE_VM_RANKER=1` 与 `VM_RANKER_GRPC_ADDR` 后调用本仓库 `vm-ranker` 服务；上限 500 ms，失败时 Scorer 按候选数返回错误，由流水线失败隔离处理 |
 
 ### 6.1 可选集成与人工接入
 
@@ -157,6 +158,7 @@ sequenceDiagram
 | 请求缓存写回 | `HOME_MIXER_ENABLE_REQUEST_CACHE_SIDE_EFFECT=1` | 真实 Strato adapter、写入 schema、认证、幂等、保留期、隐私和恢复责任方 | SideEffect 不执行；响应路径不受影响 |
 | Debug RPC | `HOME_MIXER_ENABLE_DEBUG_RPC=1` | `HOME_MIXER_DEBUG_TOKEN`、受控调用方和日志/数据保留策略 | 默认返回 `Unavailable`；启用后 token 不匹配返回 `PermissionDenied` |
 | 未签名 cached posts | `HOME_MIXER_ENABLE_UNSIGNED_CACHED_POSTS=1` | 仅本地 fixture，不构成生产缓存合同 | 只允许 `HOME_MIXER_MODE=demo`；其他模式拒绝启动或拒绝请求 |
+| VM Ranker 二次重排 | `HOME_MIXER_ENABLE_VM_RANKER=1` | `VM_RANKER_GRPC_ADDR`（本仓库 `vm-ranker` 服务实例）、value model 产物、容量与超时 | 不装配 `VMRanker` Scorer；`RankingScorer` 的分数直接进入 Selector |
 
 禁止仅设置开关就把能力标为“已接入”。开关是人工批准入口，真实完成状态仍以能力台账中的合同和环境验收证据为准。尚无公开服务信息的 Ads、Prompt、WhoToFollow、PushToHome、Kafka/Redis 和 Grox 模型组件不会进入默认装配。
 

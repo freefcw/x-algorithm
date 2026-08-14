@@ -1,9 +1,10 @@
 //! 上游同构的 VM Ranker 二次排序 Scorer（RANK-03）。
 //!
-//! 默认不装配：需要真实 `VMRankerClient` Adapter（RPC/模型合同、集群与
-//! value model 配置）后由装配显式注入。上游按 feature switch 启用并选择
-//! 集群；本地把这两项决策交给装配/Adapter（U1）。客户端失败时按候选
-//! 数量返回错误，由流水线失败隔离处理，不伪造分数。
+//! 默认关闭：`HOME_MIXER_ENABLE_VM_RANKER=1` 且提供 `VM_RANKER_GRPC_ADDR`
+//! 时，由装配注入 `GrpcVMRankerClient`（指向本仓库 `vm-ranker` 服务）。
+//! 上游按 feature switch 启用并选择集群；本地把这两项决策交给装配/Adapter
+//! （U1）。客户端失败时按候选数量返回错误，由流水线失败隔离处理，不伪造
+//! 分数——主链保留 `RankingScorer` 的分数继续出流。
 
 use crate::clients::vm_ranker_client::{VMRankerClient, VmRankCandidate, VmRankRequest};
 use crate::models::candidate::PostCandidate;

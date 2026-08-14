@@ -7,6 +7,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         proto_dir.join("in_network.proto"),
         proto_dir.join("home_mixer.proto"),
         proto_dir.join("recsys.proto"),
+        proto_dir.join("vm_ranker.proto"),
     ];
 
     // 生成 Rust 代码，包含 gRPC 服务端和客户端桩（stubs）

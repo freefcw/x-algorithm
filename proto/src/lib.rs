@@ -30,3 +30,9 @@ pub mod home_mixer {
 pub mod recsys {
     tonic::include_proto!("recsys");
 }
+
+/// VM Ranker 服务协议 —— Value Model 重排与 DPP 多样性
+/// （wire 定义按上游 47c1bcd 使用面重建，见 definitions/vm_ranker.proto）
+pub mod vm_ranker {
+    tonic::include_proto!("vm_ranker");
+}

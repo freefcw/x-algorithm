@@ -65,7 +65,7 @@ pub fn generate_demo_posts(count: usize) -> Vec<LightPost> {
                 source_post_id: None,
                 source_user_id: None,
             };
-            last_original = Some(post.clone());
+            last_original = Some(post);
             post
         };
 

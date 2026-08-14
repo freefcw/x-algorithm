@@ -1,0 +1,122 @@
+// VM Ranker（Value Model 重排 + DPP 多样性）服务协议。
+//
+// 上游 47c1bcd 开源了 vm-ranker 服务实现，但其 wire 定义
+// （xai_vm_ranker_proto crate）未随代码发布。本文件按上游服务与
+// home-mixer 调用方的字段使用面重建（U1）：字段名与语义取自上游代码，
+// 字段编号为本地自洽分配。本地 vm-ranker 服务与 home-mixer 客户端两端
+// 均使用本定义，与 X 内部服务不保证 wire 兼容。
+syntax = "proto3";
+
+package vm_ranker;
+
+service VmRankerService {
+  rpc Rank(RankRequest) returns (RankResponse);
+}
+
+message RankRequest {
+  uint64 viewer_id = 1;
+  string value_model_id = 2;
+  repeated RankCandidate candidates = 3;
+  optional DppParams dpp_params = 4;
+  uint64 request_timestamp_ms = 5;
+  uint32 viewer_following_count = 6;
+  optional uint64 new_user_age_threshold_secs = 7;
+}
+
+message RankCandidate {
+  uint64 tweet_id = 1;
+  uint64 author_id = 2;
+  bool in_network = 3;
+  bool is_retweet = 4;
+  bool is_reply = 5;
+  int32 author_followers_count = 6;
+  bool vqv_ineligible = 7;
+  // 转发原帖 ID；0 表示非转发（上游以 0 为缺省而非 optional）。
+  uint64 retweeted_tweet_id = 8;
+  optional double score = 9;
+  optional PhoenixScores phoenix_scores = 10;
+  optional SlateContext slate_context = 11;
+  optional HeadWeights head_weights = 12;
+  optional double weighted_score = 13;
+}
+
+// Phoenix 各行为预测概率（与 home-mixer 候选模型的 PhoenixScores 对应）。
+message PhoenixScores {
+  optional double favorite_score = 1;
+  optional double reply_score = 2;
+  optional double retweet_score = 3;
+  optional double photo_expand_score = 4;
+  optional double click_score = 5;
+  optional double profile_click_score = 6;
+  optional double vqv_score = 7;
+  optional double share_score = 8;
+  optional double share_via_dm_score = 9;
+  optional double share_via_copy_link_score = 10;
+  optional double dwell_score = 11;
+  optional double quote_score = 12;
+  optional double quoted_click_score = 13;
+  optional double follow_author_score = 14;
+  optional double not_interested_score = 15;
+  optional double block_author_score = 16;
+  optional double mute_author_score = 17;
+  optional double report_score = 18;
+  optional double not_dwelled_score = 19;
+  optional double dwell_time = 20;
+  optional double click_dwell_time = 21;
+  optional double video_open_score = 22;
+  optional double open_link_score = 23;
+  optional double quoted_vqv_score = 24;
+  optional double post_unexplored_score = 25;
+  optional double active_secs_5m_residual_norm = 26;
+}
+
+// 同作者位次与候选池排名上下文（作者多样性已生效的证据）。
+message SlateContext {
+  int32 k = 1;
+  uint32 pool_rank = 2;
+  optional int32 pool_rank_gap = 3;
+}
+
+// RankingScorer 对每个候选实际生效的头权重（VMRankerSendHeadWeights 开启时）。
+message HeadWeights {
+  optional double favorite = 1;
+  optional double reply = 2;
+  optional double retweet = 3;
+  optional double photo_expand = 4;
+  optional double click = 5;
+  optional double profile_click = 6;
+  optional double vqv = 7;
+  optional double share = 8;
+  optional double share_via_dm = 9;
+  optional double share_via_copy_link = 10;
+  optional double dwell = 11;
+  optional double quote = 12;
+  optional double quoted_click = 13;
+  optional double follow_author = 14;
+  optional double not_interested = 15;
+  optional double block_author = 16;
+  optional double mute_author = 17;
+  optional double report = 18;
+  optional double dwell_time = 19;
+  optional double click_dwell_time = 20;
+  optional double not_dwelled = 21;
+  optional double video_open = 22;
+  optional double open_link = 23;
+  optional double quoted_vqv = 24;
+  optional double post_unexplored = 25;
+  optional double active_secs_5m_residual_norm = 26;
+}
+
+message DppParams {
+  double theta = 1;
+  uint32 max_selected_rank = 2;
+}
+
+message RankedCandidate {
+  uint64 tweet_id = 1;
+  double score = 2;
+}
+
+message RankResponse {
+  repeated RankedCandidate candidates = 1;
+}

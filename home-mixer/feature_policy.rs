@@ -9,6 +9,9 @@ pub struct HomeMixerFeatures {
     pub request_cache_side_effect: bool,
     pub debug_rpc: bool,
     pub unsigned_cached_posts: bool,
+    /// VM Ranker 二次重排（RANK-03）；还需 `VM_RANKER_GRPC_ADDR` 指向
+    /// 本仓库 vm-ranker 服务实例，缺地址时旁路自动禁用。
+    pub vm_ranker: bool,
 }
 
 impl HomeMixerFeatures {
@@ -24,6 +27,7 @@ impl HomeMixerFeatures {
             )),
             debug_rpc: enabled(lookup("HOME_MIXER_ENABLE_DEBUG_RPC")),
             unsigned_cached_posts: enabled(lookup("HOME_MIXER_ENABLE_UNSIGNED_CACHED_POSTS")),
+            vm_ranker: enabled(lookup("HOME_MIXER_ENABLE_VM_RANKER")),
         }
     }
 }

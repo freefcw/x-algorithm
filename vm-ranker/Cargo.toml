@@ -1,0 +1,32 @@
+# vm-ranker：Value Model 重排 + DPP 多样性服务（上游 47c1bcd）。
+#
+# 上游为 monorepo 内部 crate，无独立 Cargo.toml；本文件按其 import 面补齐。
+# wire 类型来自本地重建的 vm_ranker.proto（x-algorithm-proto crate）。
+[package]
+name = "xai-vm-ranker"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+x-algorithm-proto = { path = "../proto" }
+
+anyhow = "1.0"
+clap = { version = "4", features = ["derive"] }
+env_logger = "0.11"
+half = "2"
+lazy_static = "1.4"
+log = "0.4"
+prometheus = "0.13"
+rand = "0.9"
+tokio = { version = "1", features = ["full"] }
+tonic = { version = "0.12", features = ["gzip", "zstd"] }
+tonic-health = "0.12"
+axum = "0.7"
+
+[[bin]]
+name = "vm-ranker"
+path = "main.rs"
+
+[lib]
+name = "xai_vm_ranker"
+path = "lib.rs"

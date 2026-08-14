@@ -25,6 +25,7 @@ use crate::clients::uas_fetcher::{
     DemoUserActionSequenceFetcher, DisabledUserActionSequenceFetcher, UserActionSequenceOps,
 };
 use crate::clients::user_topic_reader::{DemoUserTopicReader, UserTopicReader};
+use crate::clients::vm_ranker_client::GrpcVMRankerClient;
 use crate::feature_policy::HomeMixerFeatures;
 use crate::filters::age_filter::AgeFilter;
 use crate::filters::ancillary_vf_filter::AncillaryVFFilter;
@@ -59,6 +60,7 @@ use crate::query_hydrators::user_topics_query_hydrator::UserTopicsQueryHydrator;
 use crate::runtime_config::HomeMixerMode;
 use crate::scorers::phoenix_scorer::PhoenixScorer;
 use crate::scorers::ranking_scorer::RankingScorer;
+use crate::scorers::vm_ranker::VMRanker;
 use crate::selectors::TopKScoreSelector;
 use crate::side_effects::phoenix_request_cache_side_effect::PhoenixRequestCacheSideEffect;
 use crate::sources::cached_posts_source::CachedPostsSource;
@@ -217,11 +219,31 @@ impl PhoenixCandidatePipeline {
         ];
 
         // RankingScorer preserves the local weighted/diversity/OON behavior behind
-        // the upstream component boundary. VMRanker remains U3 and is omitted.
-        let scorers: Vec<Box<dyn Scorer<ScoredPostsQuery, PostCandidate>>> = vec![
+        // the upstream component boundary.
+        let mut scorers: Vec<Box<dyn Scorer<ScoredPostsQuery, PostCandidate>>> = vec![
             Box::new(PhoenixScorer { phoenix_client }),
             Box::new(RankingScorer),
         ];
+
+        // 可选旁路：VM Ranker 二次重排（上游 scorers 第三位）。开关 + 地址
+        // 齐备时装配本仓库 vm-ranker 服务的 gRPC Adapter；缺地址时禁用旁路
+        // 并保留主链（与 MoE 相同的降级规则）。
+        if features.vm_ranker {
+            match std::env::var("VM_RANKER_GRPC_ADDR") {
+                Ok(addr) if !addr.trim().is_empty() => {
+                    log::info!("VMRanker scorer enabled via {addr}");
+                    scorers.push(Box::new(VMRanker {
+                        client: Arc::new(GrpcVMRankerClient::new(addr)),
+                        value_model_id: std::env::var("VM_RANKER_VALUE_MODEL_ID").ok(),
+                    }));
+                }
+                _ => {
+                    log::warn!(
+                        "HOME_MIXER_ENABLE_VM_RANKER is set but VM_RANKER_GRPC_ADDR is missing; disabling VM Ranker scorer"
+                    );
+                }
+            }
+        }
 
         // Selector
         let selector = TopKScoreSelector;

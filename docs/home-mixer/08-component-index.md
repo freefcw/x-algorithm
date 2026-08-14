@@ -81,7 +81,8 @@
 | 组件 | 文件 | enable | 读取 | 写回 | 外部依赖 | 说明 |
 | --- | --- | --- | --- | --- | --- | --- |
 | `PhoenixScorer` | `scorers/phoenix_scorer.rs` | 默认启用 | `scoring_sequence` 候选 tweet/author 关系 | `phoenix_scores` `prediction_request_id` `last_scored_at_ms` | `PhoenixPredictionClient`（5 s） | 超时保留候选并进入 fallback ranking；传播 QueryBuilder 的 prediction ID |
-| `RankingScorer` | `scorers/ranking_scorer.rs` | 默认启用 | `phoenix_scores` `video_duration_ms` `author_id` `in_network` | `weighted_score` `score` | 无 | 上游 facade；内部复用 Weighted / AuthorDiversity / OON 实现 |
+| `RankingScorer` | `scorers/ranking_scorer.rs` | 默认启用 | `phoenix_scores` `video_duration_ms` `author_id` `in_network` | `weighted_score` `score` | 无 | 对齐上游 47c1bcd：权重混合、作者多样性、OON 降权在同一 Scorer 内按序完成（旧 weighted/author_diversity/oon 三个文件已随上游删除） |
+| `VMRanker` | `scorers/vm_ranker.rs` | `HOME_MIXER_ENABLE_VM_RANKER=1` 且提供 `VM_RANKER_GRPC_ADDR` | `phoenix_scores` `score` `author_followers_count` `video_duration_ms` | `score` | `GrpcVMRankerClient`（500 ms） | 默认关闭；调用失败时按候选数返回错误交流水线隔离，不伪造分数 |
 
 ## 6. Selector
 
