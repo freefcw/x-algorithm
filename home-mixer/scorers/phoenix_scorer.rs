@@ -158,8 +158,14 @@ impl PhoenixScorer {
             mute_author_score: p.get(ActionName::ClientTweetMuteAuthor),
             report_score: p.get(ActionName::ClientTweetReport),
             not_dwelled_score: p.get(ActionName::ClientTweetNotDwelled),
+            // 上游 47c1bcd 新增头：本地发布模型与公开协议尚无对应槽位，
+            // 保持 None（权重贡献为 0），待模型/协议提供后接线。
+            video_open_score: None,
+            open_link_score: None,
+            post_unexplored_score: None,
             dwell_time: p.get_continuous(ContinuousActionName::DwellTime),
             click_dwell_time: None,
+            active_secs_5m_residual_norm: None,
         }
     }
 

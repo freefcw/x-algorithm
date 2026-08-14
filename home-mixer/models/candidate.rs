@@ -53,6 +53,9 @@ pub struct PostCandidate {
     pub repost_count: Option<i64>,
     pub quote_count: Option<i64>,
     pub mutual_follow_jaccard: Option<f64>,
+    /// viewer 与作者是否互相关注；上游由 BidirectionalFollowHydrator 写入，
+    /// 本地暂无该数据端口（U3），None 时双向关注加成不触发。
+    pub is_mutual_follow_author: Option<bool>,
     pub brand_safety_verdict: Option<BrandSafetyVerdict>,
     pub safety_labels: Vec<SafetyLabelInfo>,
 }
@@ -79,9 +82,16 @@ pub struct PhoenixScores {
     pub mute_author_score: Option<f64>,
     pub report_score: Option<f64>,
     pub not_dwelled_score: Option<f64>,
+    // Heads added by upstream 47c1bcd; the local published checkpoint does not
+    // emit them, so they stay None and contribute zero weight until the model
+    // and proto expose the corresponding slots.
+    pub video_open_score: Option<f64>,
+    pub open_link_score: Option<f64>,
+    pub post_unexplored_score: Option<f64>,
     // Continuous actions
     pub dwell_time: Option<f64>,
     pub click_dwell_time: Option<f64>,
+    pub active_secs_5m_residual_norm: Option<f64>,
 }
 
 pub trait CandidateHelpers {

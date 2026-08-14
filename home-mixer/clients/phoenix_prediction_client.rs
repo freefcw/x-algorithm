@@ -8,7 +8,7 @@
 //   1. 将候选帖子列表和用户行为序列发送给 Phoenix
 //   2. Phoenix 运行 Grok Transformer 模型，预估用户对每条帖子
 //      执行各种互动行为的概率
-//   3. 返回预测结果，供 WeightedScorer 计算最终排序分数
+//   3. 返回预测结果，供 RankingScorer 计算最终排序分数
 //
 // 预测输入：
 //   - user_id: 当前用户

@@ -9,6 +9,9 @@ pub struct UserFeatures {
     pub muted_user_ids: Vec<i64>,
     pub followed_user_ids: Vec<i64>,
     pub subscribed_user_ids: Vec<i64>,
+    /// viewer 粉丝数（上游 47c1bcd 字段）；VQV 权重的粉丝门槛使用。
+    /// 本地 UserFeatures 适配器暂不提供该值时为 None，门槛不触发。
+    pub follower_count: Option<i64>,
 }
 
 #[cfg(test)]
