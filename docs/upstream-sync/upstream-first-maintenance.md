@@ -4,6 +4,7 @@
 > Upstream common base: `aaa167b3de8a674587c53545a43c90eaad360010`
 > Absorbed upstream anchor: `0bfc2795d308f90032544322747caacd535f75ae` (equals `e414c17` plus the published-artifact LFS replacement; both are absorbed, see PHX-11)
 > Target upstream anchor: `47c1bcdadfe4911568fd6db4f8838b194325beab` (2026-08-13 snapshot; migration in progress, see [`../update/20260813.md`](../update/20260813.md))
+> Upstream head: `a389166f6cf5da70a286b568c87695d4dcdce3a1` — a same-day follow-up that only deletes `.gitattributes` (the `*.npz`/`*.zip` LFS rules), consistent with dropping the published artifacts. No source file differs from `47c1bcd`, so it needs no migration. The local `.gitattributes` keeps the `*.zip` rule as a `U2` extension because the legacy Phoenix artifact pointer still depends on it.
 
 ## Objective
 
