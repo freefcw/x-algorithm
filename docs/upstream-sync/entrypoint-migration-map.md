@@ -1,7 +1,8 @@
 # Entrypoint migration map
 
-> Status: Home Mixer `HM-E1..E6` and Phoenix `PHX-E1/E2` portable contracts completed; Thunder dependency boundary revalidated; remaining work requires Grox or production integration contracts
+> Status: Home Mixer `HM-E1..E6` and Phoenix `PHX-E1/E2` portable contracts completed against `0bfc279`; Thunder dependency boundary revalidated; remaining work requires Grox or production integration contracts
 > Upstream anchor: `0bfc2795d308f90032544322747caacd535f75ae` (`e414c17` plus the published-artifact LFS replacement)
+> Next upstream snapshot: `47c1bcd` (2026-08-13) — module inventory and staged plan in [`../update/20260813.md`](../update/20260813.md); this map still describes the `0bfc279` baseline until the new-round packages land
 > Local branch: `feature/migrate-20260515`
 > Maintenance rule: [`upstream-first-maintenance.md`](./upstream-first-maintenance.md)
 

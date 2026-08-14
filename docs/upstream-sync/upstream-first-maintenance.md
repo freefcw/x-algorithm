@@ -2,7 +2,8 @@
 
 > Status: current-code / design rule
 > Upstream common base: `aaa167b3de8a674587c53545a43c90eaad360010`
-> Current upstream anchor: `0bfc2795d308f90032544322747caacd535f75ae` (equals `e414c17` plus the published-artifact LFS replacement; both are absorbed, see PHX-11)
+> Absorbed upstream anchor: `0bfc2795d308f90032544322747caacd535f75ae` (equals `e414c17` plus the published-artifact LFS replacement; both are absorbed, see PHX-11)
+> Target upstream anchor: `47c1bcdadfe4911568fd6db4f8838b194325beab` (2026-08-13 snapshot; migration in progress, see [`../update/20260813.md`](../update/20260813.md))
 
 ## Objective
 
