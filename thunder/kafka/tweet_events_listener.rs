@@ -1,19 +1,19 @@
 use anyhow::{Context, Result};
 use log::{error, info, warn};
 use prost::Message;
-use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::RwLock;
-use xai_kafka::{KafkaMessage, config::KafkaConsumerConfig, consumer::KafkaConsumer};
+use xai_kafka::{config::KafkaConsumerConfig, consumer::KafkaConsumer, KafkaMessage};
 use xai_kafka::{KafkaProducer, KafkaProducerConfig};
 use xai_thunder_proto::{
-    InNetworkEvent, LightPost, TweetCreateEvent, TweetDeleteEvent, in_network_event,
+    in_network_event, InNetworkEvent, LightPost, TweetCreateEvent, TweetDeleteEvent,
 };
 
 use crate::{
-    args::Args,
     crate::config::MIN_VIDEO_DURATION_MS,
+    args::Args,
     deserializer::deserialize_tweet_event,
     kafka::utils::{create_kafka_consumer, deserialize_kafka_messages},
     metrics,

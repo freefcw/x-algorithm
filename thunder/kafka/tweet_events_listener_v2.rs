@@ -3,16 +3,16 @@ use log::{info, warn};
 use rdkafka::config::ClientConfig;
 use rdkafka::consumer::{CommitMode, Consumer, StreamConsumer};
 use rdkafka::message::Message;
-use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::Arc;
 use std::time::Instant;
 
-use x_algorithm_proto::thunder::{LightPost, TweetDeleteEvent, in_network_event};
+use x_algorithm_proto::thunder::{in_network_event, LightPost, TweetDeleteEvent};
 
 use crate::{
     args::Args,
     deserializer::deserialize_tweet_event_v2,
-    kafka::utils::{KafkaMessage, deserialize_kafka_messages},
+    kafka::utils::{deserialize_kafka_messages, KafkaMessage},
     metrics,
     posts::post_store::PostStore,
 };
@@ -46,10 +46,7 @@ pub async fn start_tweet_event_processing_v2(
         let auto_offset_reset = args.auto_offset_reset.clone();
 
         tokio::spawn(async move {
-            info!(
-                "Starting v2 consumer thread {}",
-                thread_id,
-            );
+            info!("Starting v2 consumer thread {}", thread_id,);
 
             // Build rdkafka consumer
             let mut config = ClientConfig::new();
@@ -68,22 +65,16 @@ pub async fn start_tweet_event_processing_v2(
                 }
             }
 
-            let consumer: StreamConsumer = config
-                .create()
-                .expect("Failed to create Kafka consumer");
+            let consumer: StreamConsumer =
+                config.create().expect("Failed to create Kafka consumer");
 
             // Subscribe to in-network events topic
             consumer
                 .subscribe(&["in-network-events"])
                 .expect("Failed to subscribe to topic");
 
-            if let Err(e) = process_tweet_events_v2(
-                consumer,
-                post_store_clone,
-                batch_size,
-                tx_clone,
-            )
-            .await
+            if let Err(e) =
+                process_tweet_events_v2(consumer, post_store_clone, batch_size, tx_clone).await
             {
                 panic!(
                     "Tweet events v2 processing thread {} exited unexpectedly: {:#}",

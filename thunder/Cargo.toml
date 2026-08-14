@@ -5,7 +5,12 @@ edition = "2021"
 
 [features]
 default = []
-legacy = ["thrift"]  # 启用 v1 Thrift Kafka 管道
+legacy = ["thrift"]  # 启用 v1 Thrift schema 与反序列化（listener 另见 lints 说明）
+
+[lints.rust]
+# v1 listener 依赖未开源的 xai_kafka/xai_thunder_proto，由该 cfg 永久排除；
+# 本地 rdkafka 适配完成后移除此声明并解锁模块。
+unexpected_cfgs = { level = "warn", check-cfg = ["cfg(xai_internal_deps)"] }
 
 [dependencies]
 # 协议定义

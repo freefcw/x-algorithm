@@ -1,4 +1,3 @@
-
 use log::{debug, info, warn};
 use std::cmp::Reverse;
 use std::collections::HashSet;
@@ -8,20 +7,18 @@ use tokio::sync::Semaphore;
 use tonic::{Request, Response, Status};
 
 use x_algorithm_proto::thunder::{
-    GetInNetworkPostsRequest, GetInNetworkPostsResponse, LightPost,
     in_network_posts_service_server::{InNetworkPostsService, InNetworkPostsServiceServer},
+    GetInNetworkPostsRequest, GetInNetworkPostsResponse, LightPost,
 };
 
-use crate::config::{
-    MAX_INPUT_LIST_SIZE, MAX_POSTS_TO_RETURN, MAX_VIDEOS_TO_RETURN,
-};
+use crate::config::{MAX_INPUT_LIST_SIZE, MAX_POSTS_TO_RETURN, MAX_VIDEOS_TO_RETURN};
 use crate::metrics::{
-    GET_IN_NETWORK_POSTS_COUNT, GET_IN_NETWORK_POSTS_DURATION,
+    Timer, GET_IN_NETWORK_POSTS_COUNT, GET_IN_NETWORK_POSTS_DURATION,
     GET_IN_NETWORK_POSTS_DURATION_WITHOUT_STRATO, GET_IN_NETWORK_POSTS_EXCLUDED_SIZE,
     GET_IN_NETWORK_POSTS_FOLLOWING_SIZE, GET_IN_NETWORK_POSTS_FOUND_FRESHNESS_SECONDS,
     GET_IN_NETWORK_POSTS_FOUND_POSTS_PER_AUTHOR, GET_IN_NETWORK_POSTS_FOUND_REPLY_RATIO,
     GET_IN_NETWORK_POSTS_FOUND_TIME_RANGE_SECONDS, GET_IN_NETWORK_POSTS_FOUND_UNIQUE_AUTHORS,
-    GET_IN_NETWORK_POSTS_MAX_RESULTS, IN_FLIGHT_REQUESTS, REJECTED_REQUESTS, Timer,
+    GET_IN_NETWORK_POSTS_MAX_RESULTS, IN_FLIGHT_REQUESTS, REJECTED_REQUESTS,
 };
 use crate::posts::post_store::PostStore;
 use crate::strato_client::StratoClient;

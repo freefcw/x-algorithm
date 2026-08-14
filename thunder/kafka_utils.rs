@@ -2,10 +2,7 @@ use anyhow::Result;
 use log::info;
 use std::sync::Arc;
 
-use crate::{
-    args,
-    kafka::tweet_events_listener_v2::start_tweet_event_processing_v2,
-};
+use crate::{args, kafka::tweet_events_listener_v2::start_tweet_event_processing_v2};
 
 /// 初始化并启动 Kafka 消费管道
 ///

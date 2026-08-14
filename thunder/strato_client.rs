@@ -18,11 +18,7 @@ impl StratoClient {
     ///
     /// MVP stub：始终返回空列表。
     /// 在实际部署中，应从 Redis 或用户关系服务获取。
-    pub async fn fetch_following_list(
-        &self,
-        user_id: i64,
-        _max_results: i32,
-    ) -> Result<Vec<i64>> {
+    pub async fn fetch_following_list(&self, user_id: i64, _max_results: i32) -> Result<Vec<i64>> {
         warn!(
             "StratoClient stub: fetch_following_list for user {} returning empty list. \
              Replace with actual data source.",
