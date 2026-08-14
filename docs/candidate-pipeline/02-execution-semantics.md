@@ -139,7 +139,7 @@
 
 这两个值可以不同。当前 `home-mixer` 的装配就是：
 
-- selector 先保留 Top 100
+- selector 先保留 Top 50
 - post-selection 过滤后再截断到 50
 
 这会产生一个非常重要的行为：

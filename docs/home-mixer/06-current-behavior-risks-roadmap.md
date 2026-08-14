@@ -39,7 +39,7 @@
 
 ### 4.1 Post-selection 过滤后不回补
 
-Selector 先保留 100 条，VF、Gizmoduck profile 和会话去重随后执行，最终再截到 50 条。如果 post-selection 删除超过 50 条，响应会少于目标数量；Pipeline 当前不会从 `non_selected_candidates` 回补，但会输出 `result_underfilled` 告警。
+Selector 先保留 50 条，VF、Gizmoduck profile 和会话去重随后执行，最终再截到 35 条。如果 post-selection 删除超过 15 条，响应会少于目标数量；Pipeline 当前不会从 `non_selected_candidates` 回补，但会输出 `result_underfilled` 告警。
 
 修复前先定义回补候选是否必须重新执行 VF、附属内容检查和会话去重，以及额外调用和延迟预算，避免为了补量绕过安全阶段。
 

@@ -56,7 +56,9 @@ Unavailable or bypass dependencies follow a stricter rule than primary-path adap
 
 The current typed policy is `HomeMixerFeatures`; Phoenix MoE and request-cache writeback are its first default-off integrations.
 
-Ports defined ahead of contracts (rule 7): `VMRankerClient` (RANK-03), `TweetMixerClient` (SRC-05), `SocialGraphClientOps::check_blocked_by` (CH-09), `ImpressedPostsClient` (QH-05), `ImpressionBloomFilterClient` (QH-06), `SeenIdsPublisher` (SE-07), `ServedCandidatesSink` (SE-11). Each has an upstream-shaped component and fake-backed tests; none is assembled.
+Ports defined ahead of contracts (rule 7): `TweetMixerClient` (SRC-05), `SocialGraphClientOps::check_blocked_by` (CH-09), `ImpressedPostsClient` (QH-05), `ImpressionBloomFilterClient` (QH-06), `SeenIdsPublisher` (SE-07), `ServedCandidatesSink` (SE-11). Each has an upstream-shaped component and fake-backed tests; none is assembled.
+
+`VMRankerClient` (RANK-03) has graduated: `47c1bcd` open-sourced the service, so the port now has a real `GrpcVMRankerClient` adapter against the in-repo `vm-ranker` crate and is assembled when `HOME_MIXER_ENABLE_VM_RANKER=1` and `VM_RANKER_GRPC_ADDR` are both set. It is the worked example of rule 7 paying off: the integration was an adapter plus an assembly decision, with no component rewrite.
 
 ## Sync procedure
 
@@ -89,7 +91,7 @@ The concrete entry graphs, work packages, and acceptance sequence are maintained
 1. **Completed:** Home Mixer model and module layout now uses canonical upstream `models::{query,candidate,candidate_features}` paths; compatibility re-exports remain for downstream cleanup.
 2. **Completed:** `PhoenixCandidatePipeline` portable Query Hydrator, Source, Hydrator, Filter, Scorer, and request-cache SideEffect boundaries now follow upstream names/order; unavailable services remain tagged `U3`.
 3. **Completed:** outer ForYou server/pipeline paths, state Query Hydrators, disabled Source entries, Blender/Ads boundaries, and response stats SideEffect now match upstream (`HM-E5`).
-4. **Completed:** additive `ForYouFeedQuery`/V2 and typed DebugScoredPosts RPCs preserve existing wire methods; URT/trace remain deferred pending public contracts (`HM-E6`).
+4. **Completed:** additive `ForYouFeedQuery`/V2 and typed DebugScoredPosts RPCs preserve existing wire methods. URT/trace are still unmigrated, but no longer for lack of a contract: `47c1bcd` open-sourced `home-mixer/util/urt/`, so `HM-E6` is now a sizing question rather than a deferral.
 5. **Completed:** Phoenix offline and published gRPC entries share artifact loading, preprocessing, model runners, and output mapping (`PHX-E1/PHX-E2`).
 6. **Completed:** Thunder public gRPC boundary, checked ID conversion, timeout/exclusions, default port, readiness, and Demo fixtures are revalidated; Kafka remains outside this upstream diff.
 7. **Contract-gated next:** P3-B/P4-B/P5-B external clients and SideEffects require schema, authentication, timeout, error, retention, and ownership decisions.

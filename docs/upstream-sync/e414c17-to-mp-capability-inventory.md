@@ -4,7 +4,8 @@
 > 上游共同基线：`aaa167b3de8a674587c53545a43c90eaad360010`
 > 上游功能提交：`e414c171ed68266341193330bc4864bf3f3534e3`
 > 上游模型产物提交：`0bfc2795d308f90032544322747caacd535f75ae`
-> 当前同步锚点：`0bfc279`（功能与模型产物均已吸收；工作树 LFS 指针即 `0bfc279` 版本，见 PHX-11）
+> 上游新快照：`47c1bcdadfe4911568fd6db4f8838b194325beab`（2026-08-13）
+> 当前同步锚点：`0bfc279` 已完整吸收（工作树 LFS 指针即 `0bfc279` 版本，见 PHX-11）；`47c1bcd` 迁移进行中——已落地 candidate-pipeline 执行语义、home-mixer 参数真值与打分权重、side_effects 布局、Phoenix 训练框架并轨、Thunder schema、vm-ranker 服务；未完成部分见 [`../update/20260813.md`](../update/20260813.md) 分期表与本文档 §47c1bcd 增量状态
 > 本地目标分支：`mp`（`3e492095613b2a008de5d9f8295d5b6e0c07c777`）
 > 后续同步规则：[`upstream-first-maintenance.md`](./upstream-first-maintenance.md)
 > 入口执行顺序：[`entrypoint-migration-map.md`](./entrypoint-migration-map.md)
@@ -63,7 +64,7 @@
 - `mp` 已实现完整 Rust workspace、公共 proto、Phoenix HTTP/gRPC 服务、训练脚本、Demo 客户端和一键端到端脚本。
 - `mp` 与上游共同修改 27 个文件；三方模拟合并有 24 个内容冲突。
 - `mp` 已将 Candidate Pipeline 的 portable contract 重新锚定到 `e414c17`：Source/QueryHydrator/Selector/SideEffect 保留上游实现点与 `run` 包装，Hydrator/Scorer 恢复逐候选 `Vec<Result<...>>` 和长度保护，同步 Filter 恢复 `filter -> FilterResult`；私有 metrics/config 由本地接口替代，Filter 失败恢复作为 additive `try_run` 扩展保留。
-- `mp` 已恢复 Home Mixer 的上游 service composition、`QueryBuilder`、`crate::models::*` canonical path、`u64` domain ID 合同，以及 `HM-E4/HM-E5` 内外层 portable assembly；`HM-E6` 以 additive ForYou wrapper/V2 和 typed DebugScoredPosts 扩展公共 RPC。Debug 默认关闭并要求 token，未签名 cached posts 默认拒绝且只允许显式 Demo；URT/trace 仍因合同缺失 deferred。
+- `mp` 已恢复 Home Mixer 的上游 service composition、`QueryBuilder`、`crate::models::*` canonical path、`u64` domain ID 合同，以及 `HM-E4/HM-E5` 内外层 portable assembly；`HM-E6` 以 additive ForYou wrapper/V2 和 typed DebugScoredPosts 扩展公共 RPC。Debug 默认关闭并要求 token，未签名 cached posts 默认拒绝且只允许显式 Demo；URT/trace 仍未迁移——47c1bcd 已开源 `home-mixer/util/urt/`（17 个文件），"缺公开合同"的理由不再成立，改为按工作量排入 P1 后续批次。
 - `mp` 已将右对齐位置、帖子年龄 embedding、连续行为输入/预测头接入可选模型 forward；旧模型配置默认关闭，发布模型配置按 checkpoint shape 启用。
 - `mp` 已新增统一 NPZ loader、离线 `run_pipeline.py`、发布 artifact gRPC 适配器、独立 `ScoredPostsServer`，以及 additive-compatible 的 `ForYouFeedService`。当前 offline/gRPC published 模式通过 `PublishedArtifact -> PublishedPipeline -> shared engines` 使用同一 loader、hash/preprocessing、model runner 和 output mapping；随机/本地 checkpoint 模式保持显式分支。
 - P4-A 已完成独立 `FeedItem`、ScoredPosts bridge、disabled-first Ads port，并将 `SafeGap`、`PartitionOrganic` 的间距、分组、BSR/账号/关键词规避重新锚定到上游 `e414c17`；本地仅保留缺失 verdict fail-closed、真实 `non_selected` 和公开协议适配。真实广告、Who to Follow、Prompt、Push-to-Home 来源仍属于 P4-B。
@@ -103,7 +104,9 @@ P3 仍未完成且不能伪造的条件能力：
 - `QH-12..13` 的主动关注/推断话题：本地仅保留“外部 Adapter 返回最终补充话题”的窄端口和 Demo Adapter；关注、推断、年龄及资格策略不在 Home Mixer 内猜测，生产仍需明确数据来源、时效和隐私决策。
 - `QH-14..18` 中的 starter packs、共同关注 minhash、IP 位置、人口统计和推断性别：需要明确数据来源、隐私和公平性决策；请求 IP 字段仅作为默认关闭的边界输入。
 - `CH-12` following-replied users、`CH-15` mutual-follow Jaccard、`CH-17` tweet type metrics：前两项缺社交图数据端口的真实实现，后一项尚未接统计出口。
-- `RANK-03` VM Ranker：没有公开 RPC/模型合同；不把未知外部分数写入核心 Ranking。
+- ~~`RANK-03` VM Ranker：没有公开 RPC/模型合同；不把未知外部分数写入核心 Ranking。~~
+  **47c1bcd 已解除**：上游开源了服务实现（本仓库 `vm-ranker/`）。wire 定义仍未发布，
+  本地按使用面重建 `vm_ranker.proto` 两端共用；Scorer 已可装配，默认关闭。
 
 因此 P3 采用分层验收：**P3-A 本地可运行迁移已完成，P3-B 生产外部集成暂缓**。条件能力继续保留编号和恢复条件，但不再阻塞 P4-A/P5-A/P6-A 的纯迁移；统一集成 TODO 见 `p3b-p6-migration-goal.md`。
 
@@ -128,13 +131,39 @@ P3 仍未完成且不能伪造的条件能力：
 |---|---|
 | `EV-CP` | `cargo test -p xai_candidate_pipeline`：18 项通过；覆盖上游执行包装、逐候选 Hydrator/Scorer 失败隔离、长度保护、缓存只写成功结果、同步 Filter、selected/non-selected、post-selection underfill 不绕过过滤、单 Source 失败保留其他来源候选和 SideEffect 输入。 |
 | `EV-PHX` | Phoenix 88 项测试通过；offline JSON/proto UAS tensor parity、固定 impression-time age parity、共享 orchestration、transport-neutral inference values、O(1) topic lookup、preloaded params 和 action mapping 均有回归。真实 artifact SHA/shape、离线 retrieval→ranking 和真实 gRPC Retrieve/Predict 的历史验收见 Final Validation。 |
-| `EV-P3` | `cargo test -p home-mixer --all-targets`：146 项通过；`cargo test --workspace`：13 个套件、168 项通过。ScoredPosts/ForYou Demo 均返回 50 条（10 网内 + 40 网外），显式缓存 Demo 返回 8 条。Debug 默认 `Unavailable`，错误 token 为 `PermissionDenied`，授权 wire 验收为 600/4/50 stage counts。Viewer/VF fail-safe、所有关键外部调用 deadline、Phoenix endpoint fallback、跨用户 UAS/Strato/TES 隔离、非持久 adapter 写入拒绝、post-selection profile 装配、underfill 不绕过安全、unsigned cache 拒绝、运行模式、全 ID checked conversion 和 portable assembly 均有测试。 |
+| `EV-P3` | `cargo test -p home-mixer --all-targets`：161 项通过；`cargo test --workspace`：196 项通过（2026-08-14 复验，含 vm-ranker 10 项）。ScoredPosts/ForYou Demo 返回 35 条（4 网内 + 31 网外）——采用上游 47c1bcd 真值 `RESULT_SIZE=35` 后的规模，此前 50 条（10 + 40）为本地自拟 `result_size` 时期的记录；显式缓存 Demo 返回 8 条。Debug 默认 `Unavailable`，错误 token 为 `PermissionDenied`，授权 wire 验收为 600/4/50 stage counts。Viewer/VF fail-safe、所有关键外部调用 deadline、Phoenix endpoint fallback、跨用户 UAS/Strato/TES 隔离、非持久 adapter 写入拒绝、post-selection profile 装配、underfill 不绕过安全、unsigned cache 拒绝、运行模式、全 ID checked conversion 和 portable assembly 均有测试。 |
 | `EV-RANK` | Phoenix 预留离散槽位 19/20、发布 profile 缺槽位兼容、引用帖 VQV 时长门槛和 `not_dwelled` 负权重均有 Rust 回归测试；`click_dwell_time` 因协议尚无对应连续动作而保持 `None`。 |
 | `EV-P4` | `cargo test -p home-mixer --test p4_final_feed`：25 项通过；覆盖独立 FeedItem、ScoredPosts bridge、两种上游广告规则、默认关闭和 ForYou RPC。 |
 | `EV-P5` | 同一 P4/P5 集成测试覆盖连续请求、单用户/全局状态截断、构成统计和 sink 失败隔离。 |
 | `EV-P6` | `uv run --project grox --group dev pytest -q grox/tests`：10 项通过；`p6-grox-recovery-audit.md` 明确模型能力未恢复。 |
+| `EV-VMR` | `cargo test -p xai-vm-ranker`：10 项通过（DPP 核与选择逻辑）；`clients::vm_ranker_client` 4 项覆盖 26 个预测头到 proto 槽位的逐字段映射、缺省值与负时间戳饱和。联调冒烟：起 `vm-ranker` 实例后 `HOME_MIXER_ENABLE_VM_RANKER=1` 跑 `run_demo.sh`，装配日志为 `[PhoenixScorer, RankingScorer, VMRanker]`，服务端 `vm_ranker_candidates_in_sum=1300 count=1`、零错误，Feed 规模不变。 |
 | `EV-REL` | `.gitattributes` LFS 规则、`phoenix/README.md` 三种运行路径和本文件 Final Validation。 |
 | `EV-PORT` | 接口先行批次（2026-08-13）：`VMRanker`、`TweetMixerSource`、`BlockedByHydrator`、曝光存储双 Hydrator、seen-ids/served-candidates SideEffect 均以领域端口 + 内存 fake 驱动的单测验收（分数合并与失败隔离、请求映射与超龄过滤、反向屏蔽标记、存储覆盖请求值、空请求跳过、影子流量门槛）；`AuthorSocialgraphFilter` 候选级信号有中立性回归。全部组件默认不装配。 |
+
+### `47c1bcd` 增量状态
+
+本节只记录 2026-08-13 新快照相对 `0bfc279` 的增量进度，能力编号语义与下方索引一致。
+分期定义见 [`../update/20260813.md`](../update/20260813.md) §三。
+
+| 分期 | 内容 | 状态 |
+|---|---|---|
+| P0 | 快照分析文档、锚点与台账刷新、上游已删死代码清理 | 完成 |
+| P1.1 | candidate-pipeline 执行语义（`pipeline_summary`、`CachedHydrator` 扩展、`Selector::stat`） | 完成 |
+| P1.2 | home-mixer 参数真值与 `params/` 布局、打分权重 | 完成 |
+| P1.3 | side_effects 布局对齐与 `cache_request_info_side_effect` 删除 | 完成 |
+| P1.4 | 修改过的 filters / sources / hydrators / clients 逐个对照迁移 | **未开始** |
+| P1.5 | 主链 scorers 重组（`value_model_gate`、`author_cold_start`、`phoenix_scores_ranking_scorer`） | **未开始** |
+| P1.6 | `util/urt/` 与新 Feed 产品家族 | **未开始**（合同已公开，按工作量排期） |
+| P2 | Phoenix 训练框架并轨引入 | 完成（macOS 只验证到合成数据与 CPU 导入；训练/服务需 Linux + GPU） |
+| P3.1 | Thunder schema | 完成 |
+| P3.2 | vm-ranker 服务 + `VMRanker` Scorer 装配 | 完成（默认关闭） |
+| P3.3 | visibility-filtering | **未开始** |
+
+P1.4/P1.5 的量化口径（2026-08-14 实测）：上游 home-mixer 共 215 个文件，与本地同名的 92 个中
+有 80 个在 `0bfc279 → 47c1bcd` 之间被上游改动，其中 67 个尚未对照迁移，合计约 6,517 行上游增量；
+另有 123 个上游文件本地不存在（含 17 个 `util/urt/`、13 个 side_effects、12 个 clients、11 个 filters、
+11 个 candidate_hydrators、10 个 query_hydrators、7 个 sources、5 个 frames，以及新 Feed 家族的
+3 个 server 与 4 个 pipeline）。这些数字随迁移推进需要复算，不要直接引用为验收结论。
 
 ### 交付状态索引
 
@@ -167,7 +196,7 @@ P3 仍未完成且不能伪造的条件能力：
 | `CH-12`, `CH-15`, `CH-17` | 未开始 | 关闭 | 待社交图端口或统计出口；CH-12/15 依赖 QH-15 minhash 数据合同，先于端口定义 | Integration Backlog |
 | `FLT-01..17` | 完成 | 默认或按请求条件启用 | 过滤逻辑已完成；部分输入数据随 P3-B 接入 | `EV-P3` |
 | `RANK-01..02` | 完成 | 启用 | Phoenix 生产部署仍需环境验收 | `EV-PHX`, `EV-P3`, `EV-RANK` |
-| `RANK-03` | 部分：上游同构 Scorer 与 `VMRankerClient` 端口已迁移 | 关闭（未装配） | 缺 VM Ranker RPC/模型合同；value model/DPP 由装配显式配置 | `EV-PORT` |
+| `RANK-03` | 完成：上游同构 Scorer、`VMRankerClient` 端口、`GrpcVMRankerClient` 适配器与上游 `vm-ranker` 服务均已迁移 | 关闭（`HOME_MIXER_ENABLE_VM_RANKER=1` + `VM_RANKER_GRPC_ADDR` 后装配） | 与 X 内部服务的 wire 兼容性未知（proto 为本地重建）；value model 产物与 DPP embedding 源待提供 | `EV-PORT`、`EV-VMR` |
 | `SEL-01` | 完成 | 启用 | 无外部依赖 | `EV-CP`, `EV-P3` |
 | `SEL-02`, `ADS-01..03` | 完成：纯混排规则 | 非帖子来源默认关闭 | 真实广告和安全服务待接入 | `EV-P4` |
 | `SE-01..02`, `SE-04..05`, `SE-08..10` | 未开始 | 关闭 | 待消费者、schema、保留期、幂等和运维合同 | Integration Backlog |
@@ -652,7 +681,19 @@ cd ..
 ./scripts/run_demo.sh
 ```
 
-当前 Rust 验证结果（2026-08-08）：
+当前验证结果（2026-08-14，`47c1bcd` 迁移进行中）：
+
+- `cargo test --workspace`：196 项通过，0 失败。
+- `cargo test -p home-mixer --all-targets`：161 项通过。
+- `cargo test -p xai_candidate_pipeline`：21 项通过。
+- `cargo test -p xai-vm-ranker`：10 项通过。
+- `cargo check --workspace --all-targets`、`cargo check -p thunder --all-targets --all-features`：均通过（47c1bcd schema 落地后，legacy listener 的 `crate::schema` 阻塞已解除；剩余 `xai_kafka`/`xai_thunder_proto` 由 `cfg(xai_internal_deps)` 永久排除）。
+- `cargo clippy --workspace --all-targets`：仅 1 项告警，位于上游逐字节保留的 `thunder/strato_client.rs`（`new_without_default`），为保持 U0 保真不修改。
+- `./scripts/run_demo.sh`：通过，返回 **35 条（4 网内 + 31 网外）**。规模较此前的 50 条下降，源于采用上游真值 `RESULT_SIZE=35`（`TOP_K_CANDIDATES_TO_SELECT=50` 仍为选择阶段上限），属预期行为变化而非回归。
+- VM Ranker 联调：见 `EV-VMR`。
+- Phoenix `uv run pytest -q`：88 项通过；grox `pytest`：10 项通过。
+
+历史 Rust 验证结果（2026-08-08，`0bfc279` 锚点）：
 
 - `cargo test --workspace`：13 个套件，168 项通过。
 - `cargo test -p home-mixer --all-targets`：5 个套件，146 项通过。

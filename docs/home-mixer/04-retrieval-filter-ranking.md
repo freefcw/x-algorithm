@@ -198,7 +198,7 @@ VQV 还有一个额外条件：
 
 ### 5.1 Selector
 
-`TopKScoreSelector` 按 `score` 降序排序，并先保留 Top 100。
+`TopKScoreSelector` 按 `score` 降序排序，并先保留 Top 50（`TOP_K_CANDIDATES_TO_SELECT`）。
 
 ### 5.2 Post-selection
 
@@ -207,14 +207,14 @@ VQV 还有一个额外条件：
 1. `VFCandidateHydrator`：批量拿可见性审核结果
 2. `VFFilter`：删除应被 Drop 的内容
 3. `DedupConversationFilter`：同一会话树只留一条最高分
-4. 最终再截断到 `RESULT_SIZE = 50`
+4. 最终再截断到 `RESULT_SIZE = 35`
 
 ```mermaid
 flowchart TD
-    A["排序后的 Top 100"] --> B["VFCandidateHydrator"]
+    A["排序后的 Top 50"] --> B["VFCandidateHydrator"]
     B --> C["VFFilter"]
     C --> D["DedupConversationFilter"]
-    D --> E["truncate 到 50"]
+    D --> E["truncate 到 35"]
     E --> F["返回响应"]
 ```
 

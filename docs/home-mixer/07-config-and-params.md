@@ -224,21 +224,23 @@ flowchart LR
 | 常量 | 值 | 影响组件 | 作用 |
 | --- | --- | --- | --- |
 | `MAX_POST_AGE` | `48 小时` | `AgeFilter` | 帖子年龄限制 |
-| `MIN_VIDEO_DURATION_MS` | `2000` | `WeightedScorer` | 是否启用 VQV 权重 |
+| `MIN_VIDEO_DURATION_MS` | `2000` | `RankingScorer` | 是否启用 VQV 权重 |
 
 ## 10. 输出参数
 
 | 常量 | 值 | 影响组件 | 作用 |
 | --- | --- | --- | --- |
-| `TOP_K_CANDIDATES_TO_SELECT` | `100` | `TopKScoreSelector` | 选择阶段保留数量 |
-| `RESULT_SIZE` | `50` | pipeline 最终裁剪 | 最终响应上限 |
+| `TOP_K_CANDIDATES_TO_SELECT` | `50` | `TopKScoreSelector` | 选择阶段保留数量 |
+| `RESULT_SIZE` | `35` | pipeline 最终裁剪 | 最终响应上限 |
+
+两个值取自上游 `47c1bcd` 的真实配置，取代了此前本地自拟的 100 / 50。
 
 ```mermaid
 flowchart LR
     A["召回后候选"] --> B["Scorers"]
-    B --> C["TopKScoreSelector<br/>保留 100"]
+    B --> C["TopKScoreSelector<br/>保留 50"]
     C --> D["Post-selection Filters"]
-    D --> E["最终 truncate<br/>保留 50"]
+    D --> E["最终 truncate<br/>保留 35"]
 ```
 
 ## 11. 当前配置体系的现实评价

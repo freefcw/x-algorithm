@@ -84,7 +84,7 @@ sequenceDiagram
     SCO-->>CP: score / weighted_score / phoenix_scores
 
     CP->>SEL: sort + topK
-    SEL-->>CP: Top 100
+    SEL-->>CP: Top 50
 
     CP->>POST: 后补全 + 后过滤
     POST-->>CP: VF 过滤后的候选

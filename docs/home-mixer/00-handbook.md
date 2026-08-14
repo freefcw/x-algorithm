@@ -244,7 +244,7 @@ flowchart TD
 
 ### 11.3 post-selection 删除后不回补
 
-- selector 先取 Top 100
+- selector 先取 Top 50
 - post-selection 再删
 - 最终截断到 50
 - 不会回补第 101 名之后的候选

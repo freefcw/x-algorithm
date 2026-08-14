@@ -87,13 +87,13 @@ TES 相关 hydrator 共享一个 request-scoped `TesHydrationProvider`，避免�
 
 1. `PhoenixScorer`：读取 Phoenix 行为概率；5 s timeout，失败保留候选。
 2. `RankingScorer`：在上游命名边界内执行 Weighted、Author Diversity 和 OON 行为。
-3. `TopKScoreSelector`：保留 post-selection 前 Top 100。
+3. `TopKScoreSelector`：保留 post-selection 前 Top 50。
 
 ### 3.6 Post-selection
 
 - Hydrators：`GizmoduckCandidateHydrator`、`VFCandidateHydrator`，两者并行且互不依赖。
 - Filters：`VFFilter`、`AncillaryVFFilter`、`DedupConversationFilter`。
-- 结果：最多返回 50 条；当前不会在 post-selection 删除后从未选候选回补。
+- 结果：最多返回 35 条（上游 `RESULT_SIZE`）；当前不会在 post-selection 删除后从未选候选回补。
 
 ### 3.7 Side Effect
 
@@ -117,7 +117,7 @@ TES 相关 hydrator 共享一个 request-scoped `TesHydrationProvider`，避免�
 
 ## 5. 关键执行约束
 
-同一 stage 的 Hydrator 并行读取同一份旧候选快照，不能看到本轮其他 Hydrator 的写入。当前装配把 `GizmoduckCandidateHydrator` 放在 post-selection，因此它能看到 pre-selection CoreData 已补出的 `retweeted_user_id`，同时只查询 Top 100 候选；VF 与 Gizmoduck 在 post-selection 内彼此独立。需要新增字段依赖时，应使用后续 stage 或合并 provider，而不是依赖装配顺序。
+同一 stage 的 Hydrator 并行读取同一份旧候选快照，不能看到本轮其他 Hydrator 的写入。当前装配把 `GizmoduckCandidateHydrator` 放在 post-selection，因此它能看到 pre-selection CoreData 已补出的 `retweeted_user_id`，同时只查询 Top 50 候选；VF 与 Gizmoduck 在 post-selection 内彼此独立。需要新增字段依赖时，应使用后续 stage 或合并 provider，而不是依赖装配顺序。
 
 Source 并行、Filter 串行、Scorer 串行、SideEffect 异步。每个阶段的逐候选错误被隔离并记录，长度不匹配由框架保护，避免部分返回错误地对应到其他候选。
 

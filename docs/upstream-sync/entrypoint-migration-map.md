@@ -2,7 +2,7 @@
 
 > Status: Home Mixer `HM-E1..E6` and Phoenix `PHX-E1/E2` portable contracts completed against `0bfc279`; Thunder dependency boundary revalidated; remaining work requires Grox or production integration contracts
 > Upstream anchor: `0bfc2795d308f90032544322747caacd535f75ae` (`e414c17` plus the published-artifact LFS replacement)
-> Next upstream snapshot: `47c1bcd` (2026-08-13) — module inventory and staged plan in [`../update/20260813.md`](../update/20260813.md); this map still describes the `0bfc279` baseline until the new-round packages land
+> Next upstream snapshot: `47c1bcd` (2026-08-13) — module inventory and staged plan in [`../update/20260813.md`](../update/20260813.md). Entrypoint shapes below still describe the `0bfc279` baseline: `47c1bcd` adds Following / RankedFollowing / ReverseChron / PhoenixScores servers that are not yet migrated, so `HM-E1..E6` remain the only assembled entrypoints. Deltas already landed that touch this map are called out inline as `47c1bcd:`
 > Local branch: `feature/migrate-20260515`
 > Maintenance rule: [`upstream-first-maintenance.md`](./upstream-first-maintenance.md)
 
@@ -158,7 +158,7 @@ Status: **completed for the current public contract**. Existing RPC method signa
 1. `ForYouFeedQuery` and additive `GetForYouFeedV2` provide a ForYou-owned growth boundary; original `GetForYouFeed(ScoredPostsQuery)` remains source/wire compatible.
 2. `DebugScoredPosts` returns the normal response plus typed retrieved/filtered/selected counts and tweet IDs from the same pipeline execution. It is default disabled and requires both `HOME_MIXER_ENABLE_DEBUG_RPC=1` and matching `x-home-mixer-debug-token` metadata.
 3. Request-supplied unsigned `cached_posts` are default rejected and may be enabled only in explicit Demo mode; a production cache requires a server-owned or signed opaque contract.
-4. URT remains deferred until public cursor, request-context, response schema, and serialization ownership are defined.
+4. URT is unmigrated. `47c1bcd:` upstream published `home-mixer/util/urt/` (17 files) covering cursors, controller data, feedback, and post/ad/frame serialization, so the missing-contract reason no longer holds; the remaining question is scope, since URT arrives together with the new Feed product family.
 5. gzip/zstd and message limits are already centralized and tested in HM-E1. Trace-header propagation remains deferred because no public header ownership contract exists.
 
 Exit evidence: generated server traits compile; wrapper validation rejects missing inner queries; Debug is default unavailable, wrong-token requests are permission denied, and an authorized live grpcurl call returned 50 posts with 600/4/50 stage counts. ForYou V2 returned 50 items. Existing clients and both original RPCs remain operational.
@@ -167,7 +167,9 @@ Exit evidence: generated server traits compile; wrapper validation rejects missi
 
 ### PHX-E1: Keep the upstream offline entry canonical
 
-Status: **completed**. `phoenix/run_pipeline.py::main` remains the canonical offline entry and keeps upstream argument names: `artifacts_dir`, `sequence_file`, `corpus_file`, `top_k_retrieval`, and `top_k_display`. Local `impression_timestamp` is explicitly additive and makes post-age features reproducible.
+Status: **completed**, now **legacy**. `phoenix/run_pipeline.py::main` remains the canonical offline entry and keeps upstream argument names: `artifacts_dir`, `sequence_file`, `corpus_file`, `top_k_retrieval`, and `top_k_display`. Local `impression_timestamp` is explicitly additive and makes post-age features reproducible.
+
+`47c1bcd:` upstream replaced this demo pipeline wholesale with a training framework (`xrex/`, `crates/`, `reference/`) and deleted `run_pipeline.py` along with the artifact zip. Locally both tracks coexist: the published-artifact inference chain described here still serves Home Mixer and keeps its 88 tests, while the upstream framework landed verbatim beside it. `PHX-E1/E2` therefore describe the **legacy track** (background in `phoenix/docs/legacy-pipeline.md`); the new framework is not an entrypoint replacement until a locally trained artifact is validated against the inference chain.
 
 The CLI now owns only argument/path parsing and presentation. `services/published_artifacts.py` owns config, NPZ params/embeddings, hashing, model config, and Snowflake age features; `services/published_pipeline.py` owns retrieval-to-ranking execution and output mapping.
 
@@ -188,6 +190,8 @@ Exit evidence: Phoenix 88 tests pass; shared retrieval-to-ranking orchestration,
 ## 5. Thunder boundary
 
 Status: **revalidated**. `e414c17` does not change Thunder relative to the common base, so no Kafka or storage behavior was imported.
+
+`47c1bcd:` upstream open-sourced the Thrift `schema/` tree (tweet, user, media, events). It landed behind the `legacy` feature, which removes the `crate::schema` compile blocker on the v1 Kafka listener — `cargo check -p thunder --all-targets --all-features` now passes. The listener still does not run: `xai_kafka` and `xai_thunder_proto` are unpublished and stay excluded by `cfg(xai_internal_deps)`, so ingest continues to use the local rdkafka path.
 
 The local `U1/U2` boundary now has:
 
@@ -252,7 +256,7 @@ Home Mixer `HM-E1..E6`, Phoenix `PHX-E1/E2`, and the unchanged Thunder dependenc
 
 1. Grox `GRX-E1..E5` requires legal model, Prompt, policy, Source, Sink, queue, and lifecycle contracts before real classifier/embedder/summarizer behavior can be restored.
 2. P3-B/P4-B/P5-B integrations require service owners, schema, authentication, timeout/error semantics, retention/privacy, test environments, and recovery responsibility.
-3. Ads, WhoToFollow, Prompts, PushToHome, VMRanker, event sinks, and request cache remain default off until those conditions close.
-4. Interface-first ports (maintenance rule 7) now exist for VMRanker, TweetMixer, blocked-by, impression store reads, and seen-ids/served-candidates publishing: the remaining work for each is an adapter implementing the port plus an explicit assembly decision, not new component code.
+3. Ads, WhoToFollow, Prompts, PushToHome, event sinks, and request cache remain default off until those conditions close. `47c1bcd:` VMRanker is no longer in this list — it has a real adapter and assembles behind `HOME_MIXER_ENABLE_VM_RANKER`, still default off.
+4. Interface-first ports (maintenance rule 7) exist for TweetMixer, blocked-by, impression store reads, and seen-ids/served-candidates publishing: the remaining work for each is an adapter implementing the port plus an explicit assembly decision, not new component code.
 
 Do not convert a disabled adapter, trait, or historical artifact validation into a production-complete claim.
