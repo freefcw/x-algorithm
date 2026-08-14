@@ -2,6 +2,7 @@ use std::any::{type_name_of_val, Any};
 use tonic::async_trait;
 
 use crate::candidate_pipeline::{PipelineCandidate, PipelineQuery};
+use crate::pipeline_summary::record_source_fetched;
 use crate::util;
 
 #[async_trait]
@@ -21,7 +22,13 @@ where
     /// Keep the wrapper separate from the implementation so instrumentation can
     /// be added without changing every source.
     async fn run(&self, query: &Q) -> Result<Vec<C>, String> {
-        self.source(query).await
+        match self.source(query).await {
+            Ok(candidates) => {
+                record_source_fetched(self.name(), candidates.len());
+                Ok(candidates)
+            }
+            Err(err) => Err(err),
+        }
     }
 
     fn name(&self) -> &'static str {

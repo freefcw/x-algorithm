@@ -79,9 +79,21 @@ where
 
     fn cache_store(&self) -> &dyn CacheStore<Self::CacheKey, Self::CacheValue>;
     fn cache_key(&self, candidate: &C) -> Self::CacheKey;
+    /// Cache key that may also depend on the query (upstream `47c1bcd`).
+    /// Defaults to the candidate-only key.
+    fn cache_key_for(&self, _query: &Q, candidate: &C) -> Self::CacheKey {
+        self.cache_key(candidate)
+    }
     fn cache_value(&self, hydrated: &C) -> Self::CacheValue;
     fn hydrate_from_cache(&self, value: Self::CacheValue) -> C;
     async fn hydrate_from_client(&self, query: &Q, candidates: &[C]) -> Vec<Result<C, String>>;
+
+    /// Skip both the cache and the client when the candidate already carries
+    /// this hydrator's fields (upstream `47c1bcd`). Defaults to never.
+    fn already_hydrated(&self, _candidate: &C) -> bool {
+        false
+    }
+
     fn update(&self, candidate: &mut C, hydrated: C);
 
     fn name(&self) -> &'static str {
@@ -107,7 +119,11 @@ where
         let mut missing_candidates = Vec::new();
 
         for (index, candidate) in candidates.iter().enumerate() {
-            let key = self.cache_key(candidate);
+            if self.already_hydrated(candidate) {
+                hydrated[index] = Some(Ok(self.hydrate_from_cache(self.cache_value(candidate))));
+                continue;
+            }
+            let key = self.cache_key_for(query, candidate);
             if let Some(value) = self.cache_store().get(&key).await {
                 hydrated[index] = Some(Ok(self.hydrate_from_cache(value)));
             } else {
@@ -347,6 +363,75 @@ mod tests {
         fn update(&self, candidate: &mut i32, hydrated: i32) {
             *candidate = hydrated;
         }
+    }
+
+    struct AlreadyHydratedAware {
+        cache: Arc<MemoryStore>,
+        client_calls: Arc<AtomicUsize>,
+    }
+
+    #[async_trait]
+    impl CachedHydrator<TestQuery, i32> for AlreadyHydratedAware {
+        type CacheKey = i32;
+        type CacheValue = i32;
+
+        fn cache_store(&self) -> &dyn CacheStore<Self::CacheKey, Self::CacheValue> {
+            self.cache.as_ref()
+        }
+
+        fn cache_key(&self, candidate: &i32) -> Self::CacheKey {
+            *candidate
+        }
+
+        fn cache_value(&self, hydrated: &i32) -> Self::CacheValue {
+            *hydrated
+        }
+
+        fn hydrate_from_cache(&self, value: Self::CacheValue) -> i32 {
+            value
+        }
+
+        // Negative candidates already carry their hydrated value.
+        fn already_hydrated(&self, candidate: &i32) -> bool {
+            *candidate < 0
+        }
+
+        async fn hydrate_from_client(
+            &self,
+            _query: &TestQuery,
+            candidates: &[i32],
+        ) -> Vec<Result<i32, String>> {
+            self.client_calls.fetch_add(1, Ordering::SeqCst);
+            candidates
+                .iter()
+                .map(|candidate| Ok(candidate * 10))
+                .collect()
+        }
+
+        fn update(&self, candidate: &mut i32, hydrated: i32) {
+            *candidate = hydrated;
+        }
+    }
+
+    #[test]
+    fn already_hydrated_candidates_skip_cache_and_client() {
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .build()
+            .expect("test runtime");
+        let cache = Arc::new(MemoryStore::default());
+        let client_calls = Arc::new(AtomicUsize::new(0));
+        let hydrator = AlreadyHydratedAware {
+            cache: Arc::clone(&cache),
+            client_calls: Arc::clone(&client_calls),
+        };
+
+        let results = runtime.block_on(hydrator.hydrate(&TestQuery, &[-5, 2]));
+
+        // -5 is served from its own value without touching cache or client.
+        assert_eq!(results[0].as_ref(), Ok(&-5));
+        assert_eq!(results[1].as_ref(), Ok(&20));
+        assert_eq!(client_calls.load(Ordering::SeqCst), 1);
+        assert_eq!(runtime.block_on(cache.get(&-5)), None);
     }
 
     #[test]

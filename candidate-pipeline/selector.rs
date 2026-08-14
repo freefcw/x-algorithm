@@ -1,5 +1,6 @@
 use crate::candidate_pipeline::{PipelineCandidate, PipelineQuery};
 use crate::util;
+use log::info;
 use std::any::type_name_of_val;
 
 #[derive(Clone, Debug, PartialEq)]
@@ -45,7 +46,9 @@ where
     /// Keep the wrapper separate from the implementation so instrumentation can
     /// be added without changing every selector.
     fn run(&self, query: &Q, candidates: Vec<C>) -> SelectResult<C> {
-        self.select(query, candidates)
+        let result = self.select(query, candidates);
+        self.stat(&result);
+        result
     }
 
     /// Extract the score from a candidate to use for sorting.
@@ -69,6 +72,14 @@ where
 
     fn name(&self) -> &'static str {
         util::short_type_name(type_name_of_val(self))
+    }
+
+    /// Record selection result size, surfacing empty results (upstream
+    /// `47c1bcd` reports these to the stats backend; the local build logs).
+    fn stat(&self, result: &SelectResult<C>) {
+        if result.selected.is_empty() {
+            info!("component={} result_empty=1", self.name());
+        }
     }
 }
 
