@@ -131,7 +131,7 @@ P3 仍未完成且不能伪造的条件能力：
 |---|---|
 | `EV-CP` | `cargo test -p xai_candidate_pipeline`：18 项通过；覆盖上游执行包装、逐候选 Hydrator/Scorer 失败隔离、长度保护、缓存只写成功结果、同步 Filter、selected/non-selected、post-selection underfill 不绕过过滤、单 Source 失败保留其他来源候选和 SideEffect 输入。 |
 | `EV-PHX` | Phoenix 88 项测试通过；offline JSON/proto UAS tensor parity、固定 impression-time age parity、共享 orchestration、transport-neutral inference values、O(1) topic lookup、preloaded params 和 action mapping 均有回归。真实 artifact SHA/shape、离线 retrieval→ranking 和真实 gRPC Retrieve/Predict 的历史验收见 Final Validation。 |
-| `EV-P3` | `cargo test -p home-mixer --all-targets`：161 项通过；`cargo test --workspace`：196 项通过（2026-08-14 复验，含 vm-ranker 10 项）。ScoredPosts/ForYou Demo 返回 35 条（4 网内 + 31 网外）——采用上游 47c1bcd 真值 `RESULT_SIZE=35` 后的规模，此前 50 条（10 + 40）为本地自拟 `result_size` 时期的记录；显式缓存 Demo 返回 8 条。Debug 默认 `Unavailable`，错误 token 为 `PermissionDenied`，授权 wire 验收为 600/4/50 stage counts。Viewer/VF fail-safe、所有关键外部调用 deadline、Phoenix endpoint fallback、跨用户 UAS/Strato/TES 隔离、非持久 adapter 写入拒绝、post-selection profile 装配、underfill 不绕过安全、unsigned cache 拒绝、运行模式、全 ID checked conversion 和 portable assembly 均有测试。 |
+| `EV-P3` | `cargo test -p home-mixer --all-targets`：166 项通过；`cargo test --workspace`：201 项通过（2026-08-14 复验，含 vm-ranker 10 项）。ScoredPosts/ForYou Demo 返回 35 条（4 网内 + 31 网外）——采用上游 47c1bcd 真值 `RESULT_SIZE=35` 后的规模，此前 50 条（10 + 40）为本地自拟 `result_size` 时期的记录；显式缓存 Demo 返回 8 条。Debug 默认 `Unavailable`，错误 token 为 `PermissionDenied`，授权 wire 验收为 600/4/50 stage counts。Viewer/VF fail-safe、所有关键外部调用 deadline、Phoenix endpoint fallback、跨用户 UAS/Strato/TES 隔离、非持久 adapter 写入拒绝、post-selection profile 装配、underfill 不绕过安全、unsigned cache 拒绝、运行模式、全 ID checked conversion 和 portable assembly 均有测试。 |
 | `EV-RANK` | Phoenix 预留离散槽位 19/20、发布 profile 缺槽位兼容、引用帖 VQV 时长门槛和 `not_dwelled` 负权重均有 Rust 回归测试；`click_dwell_time` 因协议尚无对应连续动作而保持 `None`。 |
 | `EV-P4` | `cargo test -p home-mixer --test p4_final_feed`：25 项通过；覆盖独立 FeedItem、ScoredPosts bridge、两种上游广告规则、默认关闭和 ForYou RPC。 |
 | `EV-P5` | 同一 P4/P5 集成测试覆盖连续请求、单用户/全局状态截断、构成统计和 sink 失败隔离。 |
@@ -151,13 +151,48 @@ P3 仍未完成且不能伪造的条件能力：
 | P1.1 | candidate-pipeline 执行语义（`pipeline_summary`、`CachedHydrator` 扩展、`Selector::stat`） | 完成 |
 | P1.2 | home-mixer 参数真值与 `params/` 布局、打分权重 | 完成 |
 | P1.3 | side_effects 布局对齐与 `cache_request_info_side_effect` 删除 | 完成 |
-| P1.4 | 修改过的 filters / sources / hydrators / clients 逐个对照迁移 | **未开始** |
-| P1.5 | 主链 scorers 重组（`value_model_gate`、`author_cold_start`、`phoenix_scores_ranking_scorer`） | **未开始** |
+| P1.4 | 修改过的 filters / sources / hydrators / clients 逐个对照迁移 | 完成（67 文件逐个分类；5 项正确性修复已迁入，其余为多 Feed 或依赖阻塞，见下） |
+| P1.5 | 主链 scorers 重组（`value_model_gate`、`author_cold_start`、`phoenix_scores_ranking_scorer`） | 完成分类：三个均**不可迁**，理由见下 |
 | P1.6 | `util/urt/` 与新 Feed 产品家族 | **未开始**（合同已公开，按工作量排期） |
 | P2 | Phoenix 训练框架并轨引入 | 完成（macOS 只验证到合成数据与 CPU 导入；训练/服务需 Linux + GPU） |
 | P3.1 | Thunder schema | 完成 |
 | P3.2 | vm-ranker 服务 + `VMRanker` Scorer 装配 | 完成（默认关闭） |
-| P3.3 | visibility-filtering | **未开始** |
+| P3.3 | visibility-filtering | 完成评估：**不引入**，理由见下（U3） |
+
+#### P1.4 分类结论（2026-08-14）
+
+67 个待办文件逐个比对后，只有 5 处是本地适用的缺陷，已随 `989e017` 迁入并补测试：
+
+| 修复 | 症状 |
+|---|---|
+| `DedupConversationFilter` + `CandidateHelpers::get_original_tweet_id` | 无祖先时回落自身 ID，转推与该原帖的回复被判为两个会话，双双保留 |
+| `PhoenixSource` / `PhoenixMoeSource` 的 `in_reply_to_tweet_id` | wire 的 0 哨兵被映射成 `Some(0)`，非回复帖被当作回复 |
+| `PreviouslySeenPostsBackupFilter` | 只比 `tweet_id`，看过原帖不会连带过滤其转推与回复（主 seen 过滤已按关联 ID 比对） |
+| `CoreDataCandidateHydrator::update` | 从不回填 `author_id`，而 TES 是唯一能补回作者的来源 |
+| `ads/util.rs::should_drop_handle` | 只看 `author_id`，转推被规避账号的帖子仍可紧邻广告 |
+
+其余 62 个文件的上游增量归为四类，均不迁入：多 Feed 家族专用（Following/RankedFollowing/ReverseChron/PhoenixScores 的 server、pipeline、selector、source、filter 注册）、私有依赖（XDS、feature switch、Simclusters、engagement counts、Redis/Kafka、`xai_core_entities` 重导出）、纯基础设施改动（`MokaCache`→`QuickCache`、FxHash、容量预分配）、以及本地已有等价或更严格实现（`AuthorSocialgraphFilter` 多覆盖 `blocked_by_user_ids`、`IneligibleSubscriptionFilter` 多做签名 ID 校验、seen/served 过滤已按关联 ID 比对）。
+
+两处**刻意不跟随上游**：
+
+- `TopicIdsFilter`：上游把 X 自有话题分类体系（约 530 行 ID 常量）内联进 `TopicIdExpansion`。`mp` 是另一个产品，这些 ID 无意义；本地保留中立骨架。上游的 filter 算法本身未变，无需跟进。
+- `ImpressionBloomFilterQueryHydrator`：上游新增 `enable()`，请求已携带 `bloom_filter_entries` 时跳过拉取（请求值优先）。本地相反——服务端存储是唯一数据源，正是为了不让调用方自带曝光状态，与 unsigned cached posts 的既有立场一致。
+
+#### P1.5 三个 scorer 的核实结论
+
+| Scorer | 上游位置 | 不可迁的原因 |
+|---|---|---|
+| `author_cold_start`（494 行） | **在上游 ForYou 主链装配** | 冷启动的核心闸门是 `view_count < ColdStartImpressionThreshold`；`view_count` 由上游私有 engagement counts API 经 `engagement_counts_hydrator` 写入，本地无该字段也无数据源（本地曝光口径落在 TES core data，只有 fav/reply/repost/quote）。迁入后闸门永远不成立，等于装一个永不触发的 Scorer，比不装更容易误判为已具备能力。 |
+| `value_model_gate`（537 行） | 被上游 `ranking_scorer` 引用 | 通过 Arrow IPC 读取 gate 模型产物；该产物不在开源范围内。 |
+| `phoenix_scores_ranking_scorer`（38 行） | 只被 `phoenix_scores_pipeline` 使用 | 多 Feed 家族专用，随 P1.6 一起评估。 |
+
+#### P3.3 visibility-filtering 不引入的理由
+
+上游 70 个文件、58 条已注册规则，`rules/` 与 `models/` 本身对私有依赖不重（主要是 `FilteredReason`、`LabelValue`、`TakedownReason` 三个枚举），单看规则层确实可以做 U1 替换。**但喂给这些规则的 `hydration/` 层整层建立在未开源组件上**：`xai_core_entities` 的 TES/Gizmoduck 客户端、`xai_x_thrift::user_labels`、以及最关键的 `xai_visibility_filtering_proto`——安全标签本身来自那个未开源服务。
+
+因此即便把 58 条规则迁进来，`HydratedTweetCandidate` 在本地也只能是空特征，所有规则一律返回 Allow。而本地现有 VF 桩在 `degraded` 下是 fail-closed（拒绝网外、保留网内）。**部分迁移一个安全系统会把 fail-closed 变成 fail-open，同时让它看起来像是已经具备完整审核能力**，方向是负的。
+
+结论：维持本地 `VisibilityFilteringClient` 端口与 fail-closed 语义不变；真实接入的前置条件是安全标签数据源合同，而不是规则代码。
 
 P1.4/P1.5 的量化口径（2026-08-14 实测）：上游 home-mixer 共 215 个文件，与本地同名的 92 个中
 有 80 个在 `0bfc279 → 47c1bcd` 之间被上游改动，其中 67 个尚未对照迁移，合计约 6,517 行上游增量；
@@ -683,8 +718,8 @@ cd ..
 
 当前验证结果（2026-08-14，`47c1bcd` 迁移进行中）：
 
-- `cargo test --workspace`：196 项通过，0 失败。
-- `cargo test -p home-mixer --all-targets`：161 项通过。
+- `cargo test --workspace`：201 项通过，0 失败。
+- `cargo test -p home-mixer --all-targets`：166 项通过。
 - `cargo test -p xai_candidate_pipeline`：21 项通过。
 - `cargo test -p xai-vm-ranker`：10 项通过。
 - `cargo check --workspace --all-targets`、`cargo check -p thunder --all-targets --all-features`：均通过（47c1bcd schema 落地后，legacy listener 的 `crate::schema` 阻塞已解除；剩余 `xai_kafka`/`xai_thunder_proto` 由 `cfg(xai_internal_deps)` 永久排除）。
