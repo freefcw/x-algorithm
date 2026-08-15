@@ -31,6 +31,10 @@ axum = "0.7"
 # 静态初始化
 lazy_static = "1.5"
 
+# 冷启动探索
+rand = "0.9"
+rand_distr = "0.5"
+
 # 内部 workspace 依赖
 xai_candidate_pipeline = { path = "../candidate-pipeline" }
 

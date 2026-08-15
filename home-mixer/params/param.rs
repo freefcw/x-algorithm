@@ -145,6 +145,23 @@ pub const ENABLE_OON_RESCORE_FOR_IN_NETWORK_REPLIES_RETWEETS: bool = true;
 pub const NEW_USER_AGE_THRESHOLD_SECS: u64 = 0;
 
 // =============================================================================
+// 新作者冷启动探索（上游真值；默认关闭）
+// =============================================================================
+
+pub const ENABLE_VIEWER_COLD_START: bool = false;
+pub const ENABLE_COLD_START_THOMPSON_SAMPLING: bool = false;
+pub const COLD_START_IMPRESSION_THRESHOLD: u64 = 1000;
+pub const COLD_START_SLOT_MIN: usize = 15;
+pub const COLD_START_SLOT_MAX: usize = 16;
+pub const COLD_START_FOLLOWER_CAP: i64 = 1000;
+pub const COLD_START_MAX_POST_AGE_SECS: u64 = 86_400;
+pub const LOW_IMPRESSIONS_MAX_POSITION_RATIO: f64 = 0.85;
+pub const COLD_START_BETA_ALPHA0: f64 = 0.75;
+pub const COLD_START_BETA_BETA0: f64 = 49.25;
+pub const COLD_START_TS_TOP_K: usize = 5;
+pub const COLD_START_IMPRESSION_SCALE: f64 = 1.0;
+
+// =============================================================================
 // 视频门槛（上游真值）
 // =============================================================================
 
