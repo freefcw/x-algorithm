@@ -21,24 +21,56 @@ def test_public_post_bool_schema_is_stable_and_optional():
     assert bool_names.isdisjoint(feature_config.REQUIRED_COLUMNS)
 
 
-def test_all_python_server_entrypoints_forward_stale_post_config():
+def test_predictor_servers_can_only_be_constructed_through_shared_factory():
     inference_dir = Path(__file__).parents[1] / "xrex" / "inference"
-    expected_calls = {
-        "model_runner.py": 2,
-        "sid_retrieval_runner.py": 1,
-        "gen_recs_runner.py": 1,
-    }
+    server_names = {"RecsysPredictorServer", "RecsysRetrievalPredictorServer"}
+    direct_constructions = []
+    factory_calls = []
 
-    for filename, expected_count in expected_calls.items():
-        tree = ast.parse((inference_dir / filename).read_text())
-        forwarded = []
+    for path in inference_dir.rglob("*.py"):
+        tree = ast.parse(path.read_text())
         for node in ast.walk(tree):
             if not isinstance(node, ast.Call):
                 continue
-            for keyword in node.keywords:
-                if keyword.arg == "enable_stale_post":
-                    forwarded.append(ast.unparse(keyword.value))
-        assert forwarded == ["self.enable_stale_post"] * expected_count
+            if isinstance(node.func, ast.Name) and node.func.id == "create_recsys_server":
+                factory_calls.append((path.name, node.lineno))
+            if (
+                isinstance(node.func, ast.Attribute)
+                and node.func.attr in server_names
+                and isinstance(node.func.value, ast.Name)
+                and node.func.value.id == "xai_recsys_engine"
+            ):
+                direct_constructions.append((path.name, node.lineno))
+
+    assert not direct_constructions
+    assert len(factory_calls) == 4
+
+
+def test_shared_server_factory_owns_the_stale_post_contract():
+    code = """
+from xrex.inference.server_factory import create_recsys_server
+
+class Runner:
+    enable_stale_post = True
+
+captured = {}
+def fake_server(*args, **kwargs):
+    captured.update(kwargs)
+    return object()
+
+create_recsys_server(fake_server, Runner(), 1, custom="value")
+assert captured["num_post_bool_features"] == 3
+assert captured["enable_stale_post"] is True
+assert captured["custom"] == "value"
+
+try:
+    create_recsys_server(fake_server, Runner(), num_post_bool_features=0)
+except TypeError as error:
+    assert "cannot be overridden" in str(error)
+else:
+    raise AssertionError("reserved feature arguments must be factory-owned")
+"""
+    subprocess.run([sys.executable, "-c", code], check=True)
 
 
 def test_legacy_batches_default_missing_bool_features_to_false():

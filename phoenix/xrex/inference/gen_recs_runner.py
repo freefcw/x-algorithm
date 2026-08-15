@@ -17,10 +17,10 @@ from jax.sharding import PartitionSpec as P
 
 import xai_recsys_engine
 from xrex.data.parquet_recsys import PhoenixDataset
-from xrex.data.recsys import recsys_batch
 from xrex.data.recsys.recsys_batch import RecsysFeaturesBatch
 from xrex.inference.h2d import EmbeddingSlices, lookup_h2d_embeddings
 from xrex.inference.model_runner import BaseModelRunner
+from xrex.inference.server_factory import create_recsys_server
 from xrex.models.recsys_embedding import RecsysEmbeddings
 from xrex.models.recsys_gen_recs_model import RecsysGenRecsModelConfig
 from xrex.models.sharding_context import make_legacy_sharding_context
@@ -314,7 +314,9 @@ class GenRecsModelRunner(
         assert isinstance(self.dataset, PhoenixDataset)
         assert isinstance(self.model_config, RecsysGenRecsModelConfig)
         hash_keys = self.dataset.hash_table.hash_keys
-        return xai_recsys_engine.RecsysRetrievalPredictorServer(
+        return create_recsys_server(
+            xai_recsys_engine.RecsysRetrievalPredictorServer,
+            self,
             self.grpc_port,
             self.metrics_port,
             self.inference_batch_size,
@@ -347,6 +349,4 @@ class GenRecsModelRunner(
             history_seq_len=self.history_seq_len,
             candidate_seq_len=self.candidate_seq_len,
             multimodal_embedding_dim=self.model_config.mm_target_dim,
-            num_post_bool_features=recsys_batch.POST_BOOL_FEATURE_SIZE,
-            enable_stale_post=self.enable_stale_post,
         )

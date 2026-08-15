@@ -61,6 +61,7 @@ from xrex.inference.h2d import (
     prefault_memmap,
 )
 from xrex.inference.metrics import MetricsPublisher, get_metrics_publisher
+from xrex.inference.server_factory import create_recsys_server
 from xrex.inference.status_server import StatusServer, StatusServerConfig
 from xrex.models.model_utils import Parameter, unwrap_tree
 from xrex.models.recsys_embedding import RecsysEmbeddings
@@ -3999,7 +4000,9 @@ class RankingModelRunner(
         engine_sid_num_levels = (
             self.model_config.sid_num_levels if self.model_config.use_post_sid else 0
         )
-        return xai_recsys_engine.RecsysPredictorServer(
+        return create_recsys_server(
+            xai_recsys_engine.RecsysPredictorServer,
+            self,
             self.grpc_port,
             self.metrics_port,
             self.inference_batch_size,
@@ -4043,10 +4046,8 @@ class RankingModelRunner(
             num_user_int64_features=recsys_batch.USER_INT64_FEATURE_SIZE,
             num_user_installed_apps=recsys_batch.NUM_USER_INSTALLED_APPS,
             num_post_categorical_features=recsys_batch.POST_CATEGORICAL_FEATURE_SIZE,
-            num_post_bool_features=recsys_batch.POST_BOOL_FEATURE_SIZE,
             num_post_float_features=recsys_batch.POST_FLOAT_FEATURE_SIZE,
             num_post_int64_features=recsys_batch.POST_INT64_FEATURE_SIZE,
-            enable_stale_post=self.enable_stale_post,
             enable_async_response_compression=self.enable_async_response_compression,
             sid_num_levels=engine_sid_num_levels,
         )
@@ -4677,7 +4678,9 @@ class RetrievalModelRunner(
         elif _use_post_sid and not self.sid_endpoint:
             raise ValueError("use_post_sid=True but no sid_endpoint configured")
 
-        return xai_recsys_engine.RecsysRetrievalPredictorServer(
+        return create_recsys_server(
+            xai_recsys_engine.RecsysRetrievalPredictorServer,
+            self,
             self.grpc_port,
             self.metrics_port,
             self.inference_batch_size,
@@ -4721,10 +4724,8 @@ class RetrievalModelRunner(
             num_user_int64_features=recsys_batch.USER_INT64_FEATURE_SIZE,
             num_user_installed_apps=recsys_batch.NUM_USER_INSTALLED_APPS,
             num_post_categorical_features=recsys_batch.POST_CATEGORICAL_FEATURE_SIZE,
-            num_post_bool_features=recsys_batch.POST_BOOL_FEATURE_SIZE,
             num_post_float_features=recsys_batch.POST_FLOAT_FEATURE_SIZE,
             num_post_int64_features=recsys_batch.POST_INT64_FEATURE_SIZE,
-            enable_stale_post=self.enable_stale_post,
             enable_async_response_compression=self.enable_async_response_compression,
             sid_num_levels=sid_num_levels if sid_client is not None else 0,
         )

@@ -21,6 +21,7 @@ from xrex.data.recsys import recsys_batch
 from xrex.data.recsys.recsys_batch import RecsysFeaturesBatch
 from xrex.inference.h2d import EmbeddingSlices, lookup_h2d_embeddings
 from xrex.inference.model_runner import BaseModelRunner
+from xrex.inference.server_factory import create_recsys_server
 from xrex.inference.sid_post_index import SidBeamResolver, SidPostIndex
 from xrex.models.recsys_embedding import (
     RecsysEmbeddings,
@@ -394,7 +395,9 @@ class SidRetrievalModelRunner(
                 self.model_config.sid_num_levels,
             )
 
-        return xai_recsys_engine.RecsysRetrievalPredictorServer(
+        return create_recsys_server(
+            xai_recsys_engine.RecsysRetrievalPredictorServer,
+            self,
             self.grpc_port,
             self.metrics_port,
             self.inference_batch_size,
@@ -438,10 +441,8 @@ class SidRetrievalModelRunner(
             num_user_int64_features=recsys_batch.USER_INT64_FEATURE_SIZE,
             num_user_installed_apps=recsys_batch.NUM_USER_INSTALLED_APPS,
             num_post_categorical_features=recsys_batch.POST_CATEGORICAL_FEATURE_SIZE,
-            num_post_bool_features=recsys_batch.POST_BOOL_FEATURE_SIZE,
             num_post_float_features=recsys_batch.POST_FLOAT_FEATURE_SIZE,
             num_post_int64_features=recsys_batch.POST_INT64_FEATURE_SIZE,
-            enable_stale_post=self.enable_stale_post,
             enable_async_response_compression=self.enable_async_response_compression,
             sid_num_levels=(self.model_config.sid_num_levels if sid_client is not None else 0),
         )
