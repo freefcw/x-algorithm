@@ -252,6 +252,7 @@ impl ScoringWeights {
 pub struct RankingScorer;
 
 impl RankingScorer {
+    /// `score` 是当前 viewer 的行为预测值，不是帖子的原始互动次数。
     fn apply(score: Option<f64>, weight: f64) -> f64 {
         score.unwrap_or(0.0) * weight
     }

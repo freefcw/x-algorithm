@@ -26,6 +26,12 @@ pub const PHOENIX_MOE_MAX_RESULTS: u32 = 200;
 // 打分权重（上游真值；正向头）
 // =============================================================================
 
+// 这些权重乘的是 Phoenix 针对当前 viewer 预测的行为概率（或停留时间等
+// 连续预测值），不是帖子的原始互动次数。比如 REPORT_WEIGHT / FAVORITE_WEIGHT
+// 的比值不能解释成“一次举报抵消多少次点赞”；两项分别作用于 P(report) 和
+// P(favorite)，而且预测本身是个性化的。负向行为的基准概率远低于点赞，因此
+// 需要更大的绝对权重，才能在最终分数中产生可见影响。
+
 /// rust_home_mixer_favorite_weight = 0.5
 pub const FAVORITE_WEIGHT: f64 = 0.5;
 /// rust_home_mixer_reply_weight = 5.0
