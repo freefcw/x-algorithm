@@ -1,5 +1,7 @@
+import ast
 import subprocess
 import sys
+from pathlib import Path
 
 from xrex.data.recsys import feature_config
 
@@ -17,6 +19,25 @@ def test_public_post_bool_schema_is_stable_and_optional():
     bool_names = {feature.name for feature in feature_config.BoolFeature}
     assert bool_names == feature_config.OPTIONAL_BOOL_FEATURE_NAMES
     assert bool_names.isdisjoint(feature_config.REQUIRED_COLUMNS)
+
+
+def test_all_python_server_entrypoints_forward_stale_post_config():
+    inference_dir = Path(__file__).parents[1] / "xrex" / "inference"
+    expected_calls = {
+        "model_runner.py": 2,
+        "sid_retrieval_runner.py": 1,
+    }
+
+    for filename, expected_count in expected_calls.items():
+        tree = ast.parse((inference_dir / filename).read_text())
+        forwarded = []
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.Call):
+                continue
+            for keyword in node.keywords:
+                if keyword.arg == "enable_stale_post":
+                    forwarded.append(ast.unparse(keyword.value))
+        assert forwarded == ["self.enable_stale_post"] * expected_count
 
 
 def test_legacy_batches_default_missing_bool_features_to_false():

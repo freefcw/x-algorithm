@@ -441,6 +441,7 @@ class SidRetrievalModelRunner(
             num_post_bool_features=recsys_batch.POST_BOOL_FEATURE_SIZE,
             num_post_float_features=recsys_batch.POST_FLOAT_FEATURE_SIZE,
             num_post_int64_features=recsys_batch.POST_INT64_FEATURE_SIZE,
+            enable_stale_post=self.enable_stale_post,
             enable_async_response_compression=self.enable_async_response_compression,
             sid_num_levels=(self.model_config.sid_num_levels if sid_client is not None else 0),
         )

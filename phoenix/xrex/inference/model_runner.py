@@ -539,6 +539,7 @@ class BaseModelRunner(RecsysTrainer, Generic[RequestBatch, ModelConfig], ABC):
     jax_profile: bool = False
     jax_profile_path: str | None = None
     fake_mm_embeddings: bool = False
+    enable_stale_post: bool = False
     enable_async_response_compression: bool = False
     retrieval_dataset_types: tuple[RetrievalDataset, ...] = (RetrievalDataset.HOME,)
     request_count: int = field(default=0, init=False)
@@ -4045,6 +4046,7 @@ class RankingModelRunner(
             num_post_bool_features=recsys_batch.POST_BOOL_FEATURE_SIZE,
             num_post_float_features=recsys_batch.POST_FLOAT_FEATURE_SIZE,
             num_post_int64_features=recsys_batch.POST_INT64_FEATURE_SIZE,
+            enable_stale_post=self.enable_stale_post,
             enable_async_response_compression=self.enable_async_response_compression,
             sid_num_levels=engine_sid_num_levels,
         )
@@ -4722,6 +4724,7 @@ class RetrievalModelRunner(
             num_post_bool_features=recsys_batch.POST_BOOL_FEATURE_SIZE,
             num_post_float_features=recsys_batch.POST_FLOAT_FEATURE_SIZE,
             num_post_int64_features=recsys_batch.POST_INT64_FEATURE_SIZE,
+            enable_stale_post=self.enable_stale_post,
             enable_async_response_compression=self.enable_async_response_compression,
             sid_num_levels=sid_num_levels if sid_client is not None else 0,
         )

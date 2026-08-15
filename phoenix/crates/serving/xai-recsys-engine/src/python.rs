@@ -3097,6 +3097,16 @@ async fn handle_retrieval_request(
     }
 }
 
+fn validate_stale_post_config(enabled: bool, num_post_bool_features: usize) -> PyResult<()> {
+    let required_width = xai_recsys::feature_config::bool_feature::IS_STALE_POST14D + 1;
+    if enabled && num_post_bool_features < required_width {
+        return Err(pyo3::exceptions::PyValueError::new_err(format!(
+            "enable_stale_post requires num_post_bool_features >= {required_width}"
+        )));
+    }
+    Ok(())
+}
+
 macro_rules! server_impl {
     ($class_name:ident, $item_type:ty, $batch_type:ident, $service_struct:ident, $proto_server_type:ty, $prep_type:ty) => {
         #[pyclass(module = "xai_recsys_engine")]
@@ -3258,6 +3268,7 @@ macro_rules! server_impl {
                         tls_key_path: Option<String>,
                         tls_client_ca_path: Option<String>,
                     ) -> PyResult<Self> {
+                        validate_stale_post_config(enable_stale_post, num_post_bool_features)?;
                         xai_recsys_server::init_env_logger();
                         let queue_max_staleness = if queue_max_staleness_ms == 0 {
                             Duration::MAX
@@ -3762,4 +3773,22 @@ pub fn xai_recsys_engine(_py: Python<'_>, m: &Bound<PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(adler32_shard_partial, m)?)?;
     m.add_function(wrap_pyfunction!(adler32_combine_partials, m)?)?;
     Ok(())
+}
+
+#[cfg(test)]
+mod stale_post_config_tests {
+    use super::*;
+
+    #[test]
+    fn rejects_stale_post_without_required_bool_width() {
+        Python::initialize();
+        let error = validate_stale_post_config(true, 0).expect_err("invalid stale config");
+        assert!(error.to_string().contains("num_post_bool_features >= 3"));
+    }
+
+    #[test]
+    fn accepts_disabled_or_sufficient_stale_post_config() {
+        assert!(validate_stale_post_config(false, 0).is_ok());
+        assert!(validate_stale_post_config(true, 3).is_ok());
+    }
 }
