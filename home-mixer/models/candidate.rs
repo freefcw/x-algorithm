@@ -49,6 +49,8 @@ pub struct PostCandidate {
     pub has_media: Option<bool>,
     pub language_code: Option<String>,
     pub favorite_count: Option<i64>,
+    /// Home Timeline exposure denominator used by cold-start exploration.
+    pub view_count: Option<u64>,
     pub reply_count: Option<i64>,
     pub repost_count: Option<i64>,
     pub quote_count: Option<i64>,

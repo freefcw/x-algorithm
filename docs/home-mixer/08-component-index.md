@@ -37,7 +37,7 @@
 | 组件 | 文件 | enable | 读取 | 写回 | 外部依赖 | 下游依赖 |
 | --- | --- | --- | --- | --- | --- | --- |
 | `InNetworkCandidateHydrator` | `candidate_hydrators/in_network_candidate_hydrator.rs` | 默认启用 | `query.user_id` `followed_user_ids` `candidate.author_id` | `in_network` | 无 | `RankingScorer`、`VFCandidateHydrator` |
-| `CoreDataCandidateHydrator` | `candidate_hydrators/core_data_candidate_hydrator.rs` | 默认启用 | `candidate.tweet_id` | `retweeted_user_id` `retweeted_tweet_id` `in_reply_to_tweet_id` `tweet_text` counts | `TESClient.get_tweet_core_datas` via shared provider | `CoreDataHydrationFilter`、`RetweetDeduplicationFilter`、`MutedKeywordFilter`、`PhoenixScorer` |
+| `CoreDataCandidateHydrator` | `candidate_hydrators/core_data_candidate_hydrator.rs` | 默认启用 | `candidate.tweet_id` | `retweeted_user_id` `retweeted_tweet_id` `in_reply_to_tweet_id` `tweet_text` `favorite_count` `view_count` 等互动计数 | `TESClient.get_tweet_core_datas` via shared provider | `CoreDataHydrationFilter`、`RetweetDeduplicationFilter`、`MutedKeywordFilter`、`PhoenixScorer`、冷启动探索 |
 | `QuoteHydrator` | `candidate_hydrators/quote_hydrator.rs` | 默认启用 | shared core batch | `quoted_tweet_id` `quoted_user_id` `quoted_tweet_text` `quoted_video_duration_ms` | shared TES core/media batches | quote-aware filters / Ranking |
 | `HasMediaHydrator` | `candidate_hydrators/has_media_hydrator.rs` | 默认启用 | shared media batch | `has_media` | `TESClient.get_tweet_media_entities` via shared provider | `VideoFilter` / response |
 | `VideoDurationCandidateHydrator` | `candidate_hydrators/video_duration_candidate_hydrator.rs` | 默认启用 | `candidate.tweet_id` | `video_duration_ms` | shared `TESClient` media batch | `RankingScorer` |

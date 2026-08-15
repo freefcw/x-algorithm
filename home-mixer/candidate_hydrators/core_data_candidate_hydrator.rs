@@ -47,6 +47,7 @@ impl Hydrator<ScoredPostsQuery, PostCandidate> for CoreDataCandidateHydrator {
         // inside core data, so a separate counts hydrator would only re-issue the
         // same batch. Upstream splits them because it has a dedicated counts API.
         candidate.favorite_count = hydrated.favorite_count;
+        candidate.view_count = hydrated.view_count;
         candidate.reply_count = hydrated.reply_count;
         candidate.repost_count = hydrated.repost_count;
         candidate.quote_count = hydrated.quote_count;
@@ -79,6 +80,7 @@ mod tests {
                             quoted_user_id: Some(400),
                             language_code: Some("en".to_string()),
                             favorite_count: Some(12),
+                            view_count: Some(120),
                             filtered_topic_ids: vec![10],
                             ..Default::default()
                         }
@@ -126,6 +128,7 @@ mod tests {
         let hydrated = hydrated[0].as_ref().expect("core hydration");
         assert_eq!(hydrated.tweet_text, "main text");
         assert_eq!(hydrated.favorite_count, Some(12));
+        assert_eq!(hydrated.view_count, Some(120));
         assert_eq!(hydrated.quoted_tweet_text, "quoted text");
         assert_eq!(hydrated.language_code.as_deref(), Some("en"));
         assert_eq!(hydrated.filtered_topic_ids, vec![10]);
@@ -134,6 +137,7 @@ mod tests {
         hydrator.update(&mut candidate, hydrated.clone());
         assert_eq!(candidate.tweet_text, "main text");
         assert_eq!(candidate.favorite_count, Some(12));
+        assert_eq!(candidate.view_count, Some(120));
         assert!(candidate.quoted_tweet_text.is_empty());
         assert!(candidate.language_code.is_none());
         assert!(candidate.filtered_topic_ids.is_empty());

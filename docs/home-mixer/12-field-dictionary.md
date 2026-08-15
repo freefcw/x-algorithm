@@ -95,6 +95,8 @@
 | `last_scored_at_ms` | `Option<u64>` | `PhoenixScorer` | 响应输出 |
 | `weighted_score` | `Option<f64>` | `RankingScorer` | debug / 响应内部排序解释 |
 | `score` | `Option<f64>` | `RankingScorer` | selector、会话去重、响应输出 |
+| `favorite_count` | `Option<i64>` | `CoreDataCandidateHydrator` | 冷启动探索的成功次数 |
+| `view_count` | `Option<u64>` | `CoreDataCandidateHydrator` | 冷启动资格与 Thompson Sampling 曝光分母；缺失时不参与 |
 
 ### 4.3 来源、网络与展示字段
 

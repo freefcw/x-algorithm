@@ -205,6 +205,7 @@ impl TesHydrationProvider {
                     in_reply_to_tweet_id: core.and_then(|value| value.in_reply_to_tweet_id),
                     language_code: core.and_then(|value| value.language_code.clone()),
                     favorite_count: core.and_then(|value| value.favorite_count),
+                    view_count: core.and_then(|value| value.view_count),
                     reply_count: core.and_then(|value| value.reply_count),
                     repost_count: core.and_then(|value| value.repost_count),
                     quote_count: core.and_then(|value| value.quote_count),

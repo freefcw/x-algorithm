@@ -13,6 +13,7 @@ pub struct PureCoreData {
     pub in_reply_to_user_id: Option<u64>,
     pub language_code: Option<String>,
     pub favorite_count: Option<i64>,
+    pub view_count: Option<u64>,
     pub reply_count: Option<i64>,
     pub repost_count: Option<i64>,
     pub quote_count: Option<i64>,
@@ -84,4 +85,18 @@ pub struct GizmoduckUser {
 #[serde(rename_all = "camelCase")]
 pub struct GizmoduckUserResult {
     pub user: Option<GizmoduckUser>,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn core_data_without_view_count_remains_compatible() {
+        let core: PureCoreData = serde_json::from_str(r#"{"authorId":7,"text":"post"}"#)
+            .expect("legacy core data should deserialize");
+
+        assert_eq!(core.author_id, 7);
+        assert_eq!(core.view_count, None);
+    }
 }
