@@ -124,6 +124,7 @@ mod tests {
                 tweet_id: 1,
                 author_id: 10,
                 author_followers_count: Some(100),
+                author_profile_looked_up_for_user_id: Some(10),
                 view_count: Some(2_000),
                 score: Some(0.1),
                 ..Default::default()
@@ -132,6 +133,7 @@ mod tests {
                 tweet_id: 2,
                 author_id: 20,
                 author_followers_count: Some(100),
+                author_profile_looked_up_for_user_id: Some(20),
                 view_count: Some(10),
                 score: Some(0.2),
                 ..Default::default()

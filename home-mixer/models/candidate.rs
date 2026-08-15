@@ -35,6 +35,13 @@ pub struct PostCandidate {
     pub author_followers_count: Option<i32>,
     pub author_screen_name: Option<String>,
     pub retweeted_screen_name: Option<String>,
+    /// Request-local lookup marker. The ID prevents stale profile data from being
+    /// reused if another hydrator changes the candidate author.
+    #[doc(hidden)]
+    pub author_profile_looked_up_for_user_id: Option<u64>,
+    /// Request-local lookup marker for the original author of a retweet.
+    #[doc(hidden)]
+    pub retweeted_profile_looked_up_for_user_id: Option<u64>,
     /// 作者是否反向屏蔽 viewer；由 `BlockedByHydrator`（CH-09）负责写入。
     pub author_blocks_viewer: Option<bool>,
     /// 引用帖作者是否反向屏蔽 viewer；随引用补全的社交图数据写入。

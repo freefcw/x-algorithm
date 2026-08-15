@@ -175,6 +175,7 @@ fn target_score<R: Rng + ?Sized>(
 fn is_eligible(candidate: &PostCandidate, config: &ColdStartConfig) -> bool {
     candidate.in_reply_to_tweet_id.is_none()
         && candidate.retweeted_tweet_id.is_none()
+        && candidate.author_profile_looked_up_for_user_id == Some(candidate.author_id)
         && candidate
             .author_followers_count
             .is_some_and(|followers| i64::from(followers) <= config.follower_cap)
@@ -258,6 +259,7 @@ mod tests {
             tweet_id: tweet_id_with_age(age),
             author_id,
             author_followers_count: Some(100),
+            author_profile_looked_up_for_user_id: Some(author_id),
             favorite_count: Some(0),
             view_count: views,
             ..Default::default()
@@ -309,6 +311,19 @@ mod tests {
         assert_eq!(
             cold_start.apply(&candidates, &[100.0, 20.0, 10.0]),
             vec![100.0, 20.0, 10.0]
+        );
+    }
+
+    #[test]
+    fn mismatched_author_profile_is_ineligible() {
+        let mut stale_profile = candidate(2, minutes(10), Some(10));
+        stale_profile.author_profile_looked_up_for_user_id = Some(99);
+        let candidates = vec![candidate(1, minutes(10), Some(2_000)), stale_profile];
+        let cold_start = AuthorColdStart::new(enabled_config());
+
+        assert_eq!(
+            cold_start.apply(&candidates, &[100.0, 10.0]),
+            vec![100.0, 10.0]
         );
     }
 
