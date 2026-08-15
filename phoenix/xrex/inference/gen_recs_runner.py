@@ -17,6 +17,7 @@ from jax.sharding import PartitionSpec as P
 
 import xai_recsys_engine
 from xrex.data.parquet_recsys import PhoenixDataset
+from xrex.data.recsys import recsys_batch
 from xrex.data.recsys.recsys_batch import RecsysFeaturesBatch
 from xrex.inference.h2d import EmbeddingSlices, lookup_h2d_embeddings
 from xrex.inference.model_runner import BaseModelRunner
@@ -346,4 +347,6 @@ class GenRecsModelRunner(
             history_seq_len=self.history_seq_len,
             candidate_seq_len=self.candidate_seq_len,
             multimodal_embedding_dim=self.model_config.mm_target_dim,
+            num_post_bool_features=recsys_batch.POST_BOOL_FEATURE_SIZE,
+            enable_stale_post=self.enable_stale_post,
         )

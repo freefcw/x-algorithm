@@ -26,6 +26,7 @@ def test_all_python_server_entrypoints_forward_stale_post_config():
     expected_calls = {
         "model_runner.py": 2,
         "sid_retrieval_runner.py": 1,
+        "gen_recs_runner.py": 1,
     }
 
     for filename, expected_count in expected_calls.items():
