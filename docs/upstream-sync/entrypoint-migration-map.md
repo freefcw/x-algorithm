@@ -1,8 +1,8 @@
 # Entrypoint migration map
 
-> Status: Home Mixer `HM-E1..E6` and Phoenix `PHX-E1/E2` portable contracts completed against `0bfc279`; Thunder dependency boundary revalidated; remaining work requires Grox or production integration contracts
-> Upstream anchor: `0bfc2795d308f90032544322747caacd535f75ae` (`e414c17` plus the published-artifact LFS replacement)
-> Next upstream snapshot: `47c1bcd` (2026-08-13) — module inventory and staged plan in [`../update/20260813.md`](../update/20260813.md). Entrypoint shapes below still describe the `0bfc279` baseline: `47c1bcd` adds Following / RankedFollowing / ReverseChron / PhoenixScores servers that are not yet migrated, so `HM-E1..E6` remain the only assembled entrypoints. Deltas already landed that touch this map are called out inline as `47c1bcd:`
+> Status: Home Mixer `HM-E1..E6` and Phoenix `PHX-E1/E2` portable contracts completed; later portable deltas are absorbed through `c65aa17`; remaining work requires explicit production integration contracts
+> Upstream anchor: `c65aa179db7bdd61e2c2821eac87f208a105c053` (2026-08-14 semantic anchor)
+> Snapshot reports: [`../update/20260813.md`](../update/20260813.md) for the `47c1bcd` restructuring and [`../update/20260814.md`](../update/20260814.md) for `c65aa17` migration outcomes. Entrypoint shapes below retain the established For You scope; later multi-Feed products remain unassembled U3 capabilities.
 > Local branch: `feature/migrate-20260515`
 > Maintenance rule: [`upstream-first-maintenance.md`](./upstream-first-maintenance.md)
 
