@@ -146,6 +146,8 @@ impl TESClient for DemoTESClient {
                         in_reply_to_tweet_id: None,
                         in_reply_to_user_id: None,
                         language_code: Some("en".to_string()),
+                        favorite_count: Some((id % 10) as i64),
+                        view_count: Some(id % 200),
                         ..Default::default()
                     }),
                 )

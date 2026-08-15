@@ -9,7 +9,9 @@ use crate::candidate_hydrators::subscription_hydrator::SubscriptionHydrator;
 use crate::candidate_hydrators::tes_hydration_provider::TesHydrationProvider;
 use crate::candidate_hydrators::vf_candidate_hydrator::VFCandidateHydrator;
 use crate::candidate_hydrators::video_duration_candidate_hydrator::VideoDurationCandidateHydrator;
-use crate::clients::gizmoduck_client::{DisabledGizmoduckClient, GizmoduckClient};
+use crate::clients::gizmoduck_client::{
+    DemoGizmoduckClient, DisabledGizmoduckClient, GizmoduckClient,
+};
 use crate::clients::phoenix_prediction_client::{
     PhoenixPredictionClient, ProdPhoenixPredictionClient,
 };
@@ -58,6 +60,7 @@ use crate::query_hydrators::user_features_query_hydrator::UserFeaturesQueryHydra
 use crate::query_hydrators::user_safety_features_query_hydrator::UserSafetyFeaturesQueryHydrator;
 use crate::query_hydrators::user_topics_query_hydrator::UserTopicsQueryHydrator;
 use crate::runtime_config::HomeMixerMode;
+use crate::scorers::author_cold_start::{AuthorColdStart, ColdStartConfig};
 use crate::scorers::phoenix_scorer::PhoenixScorer;
 use crate::scorers::ranking_scorer::RankingScorer;
 use crate::scorers::vm_ranker::VMRanker;
@@ -186,8 +189,9 @@ impl PhoenixCandidatePipeline {
         // Hydrators follow upstream ownership while sharing the public TES batches.
         // BlockedBy remains U3 because no production social-graph contract exists.
         let tes_provider = Arc::new(TesHydrationProvider::new(tes_client.clone()));
-        let gizmoduck_hydrator = GizmoduckCandidateHydrator::new(gizmoduck_client).await;
-        let hydrators: Vec<Box<dyn Hydrator<ScoredPostsQuery, PostCandidate>>> = vec![
+        let gizmoduck_hydrator =
+            GizmoduckCandidateHydrator::new(Arc::clone(&gizmoduck_client)).await;
+        let mut hydrators: Vec<Box<dyn Hydrator<ScoredPostsQuery, PostCandidate>>> = vec![
             Box::new(InNetworkCandidateHydrator),
             Box::new(CoreDataCandidateHydrator::new(Arc::clone(&tes_provider))),
             Box::new(QuoteHydrator::new(Arc::clone(&tes_provider))),
@@ -199,6 +203,11 @@ impl PhoenixCandidatePipeline {
             Box::new(FilteredTopicsHydrator::new(Arc::clone(&tes_provider))),
             Box::new(LanguageCodeHydrator::new(tes_provider)),
         ];
+        if features.author_cold_start {
+            hydrators.push(Box::new(
+                GizmoduckCandidateHydrator::new(gizmoduck_client).await,
+            ));
+        }
 
         // Filters
         let filters: Vec<Box<dyn Filter<ScoredPostsQuery, PostCandidate>>> = vec![
@@ -220,9 +229,14 @@ impl PhoenixCandidatePipeline {
 
         // RankingScorer preserves the local weighted/diversity/OON behavior behind
         // the upstream component boundary.
+        let author_cold_start = AuthorColdStart::new(ColdStartConfig {
+            enabled: features.author_cold_start,
+            thompson_sampling: features.author_cold_start && features.cold_start_thompson_sampling,
+            ..Default::default()
+        });
         let mut scorers: Vec<Box<dyn Scorer<ScoredPostsQuery, PostCandidate>>> = vec![
             Box::new(PhoenixScorer { phoenix_client }),
-            Box::new(RankingScorer),
+            Box::new(RankingScorer::new(author_cold_start.clone())),
         ];
 
         // 可选旁路：VM Ranker 二次重排（上游 scorers 第三位）。开关 + 地址
@@ -235,6 +249,7 @@ impl PhoenixCandidatePipeline {
                     scorers.push(Box::new(VMRanker {
                         client: Arc::new(GrpcVMRankerClient::new(addr)),
                         value_model_id: std::env::var("VM_RANKER_VALUE_MODEL_ID").ok(),
+                        author_cold_start: author_cold_start.clone(),
                     }));
                 }
                 _ => {
@@ -377,11 +392,16 @@ impl PhoenixCandidatePipeline {
                 .expect("Failed to create Phoenix retrieval client"),
         );
         let thunder_client = Arc::new(ThunderClient::new().await);
-        let gizmoduck_client = Arc::new(
-            DisabledGizmoduckClient::new()
-                .await
-                .expect("Failed to create disabled Gizmoduck boundary"),
-        );
+        let gizmoduck_client: Arc<dyn GizmoduckClient + Send + Sync> =
+            if demo_mode && features.author_cold_start {
+                Arc::new(DemoGizmoduckClient)
+            } else {
+                Arc::new(
+                    DisabledGizmoduckClient::new()
+                        .await
+                        .expect("Failed to create disabled Gizmoduck boundary"),
+                )
+            };
         let vf_client: Arc<dyn VisibilityFilteringClient + Send + Sync> = if demo_mode {
             Arc::new(DemoVisibilityFilteringClient)
         } else {
@@ -481,6 +501,28 @@ impl CandidatePipeline<ScoredPostsQuery, PostCandidate> for PhoenixCandidatePipe
 mod tests {
     use super::*;
     use xai_candidate_pipeline::candidate_pipeline::PipelineStage;
+
+    #[tokio::test]
+    async fn cold_start_adds_pre_selection_author_hydration_explicitly() {
+        let pipeline = PhoenixCandidatePipeline::assemble_for_mode(
+            HomeMixerMode::Demo,
+            HomeMixerFeatures {
+                author_cold_start: true,
+                ..Default::default()
+            },
+        )
+        .await;
+        let components = pipeline.components();
+        let pre_selection = components
+            .iter()
+            .find(|entry| entry.stage == PipelineStage::Hydrator)
+            .expect("pre-selection hydrators");
+
+        assert!(pre_selection
+            .components
+            .iter()
+            .any(|name| name == "GizmoduckCandidateHydrator"));
+    }
 
     #[tokio::test]
     async fn profile_hydration_runs_only_after_selection() {

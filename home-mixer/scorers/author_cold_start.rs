@@ -50,6 +50,10 @@ impl AuthorColdStart {
         Self { config }
     }
 
+    pub fn is_enabled(&self) -> bool {
+        self.config.enabled
+    }
+
     pub fn apply(&self, candidates: &[PostCandidate], scores: &[f64]) -> Vec<f64> {
         self.apply_with_rng(candidates, scores, &mut rand::rng())
     }

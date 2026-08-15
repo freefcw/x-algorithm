@@ -20,7 +20,9 @@
 // 替换建议：对接你平台的用户微服务 API
 // 当前为 stub 实现。
 
-use crate::models::candidate_features::GizmoduckUserResult;
+use crate::models::candidate_features::{
+    GizmoduckUser, GizmoduckUserCounts, GizmoduckUserProfile, GizmoduckUserResult,
+};
 use std::collections::HashMap;
 use tonic::async_trait;
 
@@ -93,7 +95,24 @@ impl GizmoduckClient for DemoGizmoduckClient {
         &self,
         user_ids: Vec<u64>,
     ) -> Result<HashMap<u64, Option<GizmoduckUserResult>>, anyhow::Error> {
-        Ok(user_ids.into_iter().map(|id| (id, None)).collect())
+        Ok(user_ids
+            .into_iter()
+            .map(|id| {
+                let followers_count = u32::try_from(id % 900 + 50).expect("bounded demo count");
+                (
+                    id,
+                    Some(GizmoduckUserResult {
+                        user: Some(GizmoduckUser {
+                            user_id: id,
+                            profile: GizmoduckUserProfile {
+                                screen_name: format!("demo_user_{id}"),
+                            },
+                            counts: GizmoduckUserCounts { followers_count },
+                        }),
+                    }),
+                )
+            })
+            .collect())
     }
 }
 
