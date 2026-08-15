@@ -5,7 +5,7 @@
 > 上游功能提交：`e414c171ed68266341193330bc4864bf3f3534e3`
 > 上游模型产物提交：`0bfc2795d308f90032544322747caacd535f75ae`
 > 上游新快照：`47c1bcdadfe4911568fd6db4f8838b194325beab`（2026-08-13）
-> 当前同步锚点：`0bfc279` 已完整吸收（工作树 LFS 指针即 `0bfc279` 版本，见 PHX-11）；`47c1bcd` 迁移进行中——已落地 candidate-pipeline 执行语义、home-mixer 参数真值与打分权重、side_effects 布局、Phoenix 训练框架并轨、Thunder schema、vm-ranker 服务；未完成部分见 [`../update/20260813.md`](../update/20260813.md) 分期表与本文档 §47c1bcd 增量状态
+> 当前语义同步锚点：`c65aa179db7bdd61e2c2821eac87f208a105c053`；本文件保留 `e414c17`/`0bfc279` 能力编号与历史验收，`47c1bcd` 重构见 [`../update/20260813.md`](../update/20260813.md)，`c65aa17` 最终迁移与 U3 重入条件见 [`../update/20260814.md`](../update/20260814.md)
 > 本地目标分支：`mp`（`3e492095613b2a008de5d9f8295d5b6e0c07c777`）
 > 后续同步规则：[`upstream-first-maintenance.md`](./upstream-first-maintenance.md)
 > 入口执行顺序：[`entrypoint-migration-map.md`](./entrypoint-migration-map.md)

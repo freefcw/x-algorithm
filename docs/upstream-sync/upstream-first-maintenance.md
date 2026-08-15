@@ -28,7 +28,7 @@ A difference without one of these classifications is drift and should be removed
 
 ## Candidate Pipeline anchor
 
-The Candidate Pipeline is the compatibility layer for later Home Mixer components. Its portable API is now re-anchored to `e414c17`:
+The Candidate Pipeline is the compatibility layer for later Home Mixer components. Its portable API is now tracked against the absorbed `c65aa17` semantic anchor:
 
 | Surface | Current rule | Delta class |
 |---|---|---|
@@ -56,7 +56,7 @@ Unavailable or bypass dependencies follow a stricter rule than primary-path adap
 6. Do not create unused switches for capabilities with no public adapter. Keep them `U3` until the first executable contract exists.
 7. **Interface-first rule (decision 2026-08-13):** a deferred `U3` capability may ship its domain-level port (trait) and the upstream-shaped component ahead of any executable contract, with unit tests against in-memory fakes. The component stays out of every assembly path until a real adapter passes acceptance (auth, timeout, error semantics, schema, retention where applicable). Ports must reuse existing domain types and must not invent wire schemas, fake data, or enable switches. This narrows future integrations to "implement the port + explicit assembly injection".
 
-The current typed policy is `HomeMixerFeatures`; Phoenix MoE and request-cache writeback are its first default-off integrations.
+The current typed policy is `HomeMixerFeatures`; Phoenix MoE, request-cache writeback, VM Ranker, and demo-only Author Cold Start are explicit default-off integrations.
 
 Ports defined ahead of contracts (rule 7): `TweetMixerClient` (SRC-05), `SocialGraphClientOps::check_blocked_by` (CH-09), `ImpressedPostsClient` (QH-05), `ImpressionBloomFilterClient` (QH-06), `SeenIdsPublisher` (SE-07), `ServedCandidatesSink` (SE-11). Each has an upstream-shaped component and fake-backed tests; none is assembled.
 
@@ -68,7 +68,7 @@ For each later upstream snapshot, compare upstream changes before comparing fina
 
 ```bash
 # What upstream changed after the currently anchored snapshot.
-git diff --find-renames 0bfc2795d308f90032544322747caacd535f75ae..<new-upstream> -- <module>
+git diff --find-renames c65aa179db7bdd61e2c2821eac87f208a105c053..<new-upstream> -- <module>
 
 # How the local implementation intentionally differs from the new anchor.
 git diff --find-renames <new-upstream> -- <module>

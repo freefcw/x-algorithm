@@ -8,7 +8,7 @@
 
 ## 1. Scope and terminology
 
-This document compares the upstream `e414c17` entry paths with the current local, runnable paths. “Align” means preserving upstream entry names and ownership where portable. It does not mean importing unavailable X service builders, feature-switch systems, storage clients, models, or deployment code.
+This document compares the portable upstream entry paths through `c65aa17` with the current local, runnable paths. “Align” means preserving upstream entry names and ownership where portable. It does not mean importing unavailable X service builders, feature-switch systems, storage clients, models, or deployment code.
 
 The audit proceeds from process entry to service assembly, request construction, application server, pipeline assembly, domain models, component implementations, and external adapters. Work should follow that order so later components do not target another temporary boundary.
 
@@ -113,13 +113,13 @@ Exit evidence: all Home Mixer production call sites use `crate::models::*`; inva
 
 Status: **portable assembly complete**. Publicly implementable component boundaries use upstream-comparable names and order; missing services remain `U1`, `U2`, or `U3`, so this is not a production integration claim.
 
-| Stage | Upstream `e414c17` | Current | Work |
+| Stage | Upstream through `c65aa17` | Current | Work |
 |---|---:|---:|---|
 | Query Hydrators | 15 configured, one impressed-post hydrator constructed but unused | 7 default + optional local topic reader | Scoring/Retrieval and Blocked/Muted/Followed/Subscribed now use upstream names and field ownership over one request-scoped UAS/Strato read. CachedPosts, MutualFollow, demographics, Grok topics/starter packs, bloom filter, IP, and inferred gender remain `U3`; local safety/topic owners are `U1/U2`. |
 | Sources | 6 | 3 default + optional Topic/MoE | Available entries follow upstream order: Thunder, omitted TweetMixer, Phoenix, optional Topics, optional MoE, Cached. TweetMixer now has an upstream-shaped Source over the `TweetMixerClient` port (interface-first, unassembled). |
-| Pre-selection Hydrators | 10 | 8 | InNetwork, CoreData, Quote, VideoDuration, HasMedia, Subscription, FilteredTopics, and LanguageCode use upstream entry boundaries; a shared TES provider prevents duplicate core/media batches. Gizmoduck runs post-selection instead (`U2`, see below). CoreData also owns engagement counts because the public TES adapter returns them inside core data (`U1`). BlockedBy remains `U3`. |
-| Filters | 14 | 14 | Complete portable order. `NewUserTopicIdsFilter` owns cold-start matching separately from `TopicIdsFilter`. |
-| Scorers | 3 | 2 | `RankingScorer` is the upstream facade over local Weighted/AuthorDiversity/OON behavior (`U1/U2`); VM Ranker now has an upstream-shaped Scorer over the `VMRankerClient` port (interface-first, unassembled). |
+| Pre-selection Hydrators | 10 | 8 default + demo Cold Start author profile | InNetwork, CoreData, Quote, VideoDuration, HasMedia, Subscription, FilteredTopics, and LanguageCode use upstream entry boundaries; a shared TES provider prevents duplicate core/media batches. Gizmoduck normally runs post-selection (`U2`); explicit demo Cold Start adds a pre-selection pass for follower eligibility. CoreData owns engagement counts because the public TES adapter returns them inside core data (`U1`). BlockedBy remains `U3`. |
+| Filters | 15 | 14 | Portable order is complete except `Brazil2026ElectionFilter`, which is an explicit product decision not to adopt. `NewUserTopicIdsFilter` owns cold-start topic matching separately from `TopicIdsFilter`. |
+| Scorers | 3 | 2 default + optional VM + demo Cold Start final scorer | `RankingScorer` preserves local Weighted/AuthorDiversity/OON behavior. VM Ranker is assembled when its switch and address are present. Demo Cold Start is a final scorer after optional VM so exploration applies exactly once; non-demo remains disabled until TES/Gizmoduck production adapters are verified. |
 | Post-selection Hydrators | 6 | 2 | Gizmoduck and VF. Author profile hydration is deferred until after selection (`U2`) so profile reads follow the truncated candidate set; `profile_hydration_runs_only_after_selection` locks that placement. BlockedBy now has an upstream-shaped Hydrator over `SocialGraphClientOps` (interface-first, unassembled); ads safety, tweet metrics, following replies, and mutual-follow remain `U3` until their data contracts exist. |
 | SideEffects | 6 | request cache only | Request cache is default off; seen-ids and served-candidates now have domain ports plus upstream-shaped SideEffects (interface-first, unassembled); other sinks remain `U3` pending consumer/schema/retention/idempotency contracts. |
 
