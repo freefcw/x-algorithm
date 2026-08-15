@@ -10,7 +10,6 @@ use crate::clients::vm_ranker_client::{VMRankerClient, VmRankCandidate, VmRankRe
 use crate::models::candidate::PostCandidate;
 use crate::models::query::ScoredPostsQuery;
 use crate::params::MIN_VIDEO_DURATION_MS;
-use crate::scorers::author_cold_start::AuthorColdStart;
 use std::collections::HashMap;
 use std::sync::Arc;
 use tonic::async_trait;
@@ -20,7 +19,6 @@ pub struct VMRanker {
     pub client: Arc<dyn VMRankerClient>,
     /// 上游从 feature switch 读取；本地由装配显式配置。
     pub value_model_id: Option<String>,
-    pub author_cold_start: AuthorColdStart,
 }
 
 #[async_trait]
@@ -46,33 +44,13 @@ impl Scorer<ScoredPostsQuery, PostCandidate> for VMRanker {
             .map(|scored| (scored.tweet_id, scored.score))
             .collect();
 
-        let base_scores: Vec<Option<f64>> = candidates
-            .iter()
-            .map(|candidate| {
-                score_map
-                    .get(&candidate.tweet_id)
-                    .copied()
-                    .or(candidate.score)
-            })
-            .collect();
-        let scores = if self.author_cold_start.is_enabled() {
-            let numeric_scores: Vec<f64> = base_scores
-                .iter()
-                .map(|score| score.unwrap_or(0.0))
-                .collect();
-            self.author_cold_start
-                .apply(candidates, &numeric_scores)
-                .into_iter()
-                .map(Some)
-                .collect()
-        } else {
-            base_scores
-        };
-
         candidates
             .iter()
-            .zip(scores)
-            .map(|(_candidate, score)| {
+            .map(|candidate| {
+                let score = score_map
+                    .get(&candidate.tweet_id)
+                    .copied()
+                    .or(candidate.score);
                 Ok(PostCandidate {
                     score,
                     ..Default::default()
@@ -125,6 +103,9 @@ fn build_request(
 mod tests {
     use super::*;
     use crate::clients::vm_ranker_client::{VmRankResponse, VmRankedCandidate};
+    use crate::scorers::author_cold_start::{
+        AuthorColdStart, AuthorColdStartScorer, ColdStartConfig,
+    };
 
     struct FakeVmRanker {
         response: Result<VmRankResponse, String>,
@@ -141,11 +122,17 @@ mod tests {
         vec![
             PostCandidate {
                 tweet_id: 1,
+                author_id: 10,
+                author_followers_count: Some(100),
+                view_count: Some(2_000),
                 score: Some(0.1),
                 ..Default::default()
             },
             PostCandidate {
                 tweet_id: 2,
+                author_id: 20,
+                author_followers_count: Some(100),
+                view_count: Some(10),
                 score: Some(0.2),
                 ..Default::default()
             },
@@ -164,7 +151,6 @@ mod tests {
                 }),
             }),
             value_model_id: None,
-            author_cold_start: AuthorColdStart::default(),
         };
 
         let mut candidates = candidates();
@@ -176,6 +162,23 @@ mod tests {
 
         assert_eq!(candidates[0].score, Some(0.9));
         assert_eq!(candidates[1].score, Some(0.2));
+
+        let cold_start = AuthorColdStartScorer::new(AuthorColdStart::new(ColdStartConfig {
+            enabled: true,
+            thompson_sampling: true,
+            thompson_top_k: 10,
+            slot_min: 0,
+            slot_max: 1,
+            max_position_ratio: 1.0,
+            ..Default::default()
+        }));
+        let scored = cold_start
+            .score(&ScoredPostsQuery::default(), &candidates)
+            .await;
+        cold_start.update_all(&mut candidates, scored);
+
+        assert_eq!(candidates[0].score, Some(0.9));
+        assert_eq!(candidates[1].score, Some(0.9));
     }
 
     #[tokio::test]
@@ -185,7 +188,6 @@ mod tests {
                 response: Err("vm ranker unavailable".to_string()),
             }),
             value_model_id: None,
-            author_cold_start: AuthorColdStart::default(),
         };
 
         let mut candidates = candidates();

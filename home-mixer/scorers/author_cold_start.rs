@@ -1,9 +1,10 @@
 use crate::models::candidate::PostCandidate;
+use crate::models::query::ScoredPostsQuery;
 use crate::params;
-use crate::util::snowflake::duration_since_creation_opt;
 use rand::Rng;
 use rand_distr::{Beta, Distribution};
-use std::time::Duration;
+use tonic::async_trait;
+use xai_candidate_pipeline::scorer::Scorer;
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct ColdStartConfig {
@@ -13,7 +14,6 @@ pub struct ColdStartConfig {
     pub slot_min: usize,
     pub slot_max: usize,
     pub follower_cap: i64,
-    pub max_post_age: Duration,
     pub max_position_ratio: f64,
     pub beta_alpha0: f64,
     pub beta_beta0: f64,
@@ -30,7 +30,6 @@ impl Default for ColdStartConfig {
             slot_min: params::COLD_START_SLOT_MIN,
             slot_max: params::COLD_START_SLOT_MAX,
             follower_cap: params::COLD_START_FOLLOWER_CAP,
-            max_post_age: Duration::from_secs(params::COLD_START_MAX_POST_AGE_SECS),
             max_position_ratio: params::LOW_IMPRESSIONS_MAX_POSITION_RATIO,
             beta_alpha0: params::COLD_START_BETA_ALPHA0,
             beta_beta0: params::COLD_START_BETA_BETA0,
@@ -102,6 +101,45 @@ impl AuthorColdStart {
     }
 }
 
+#[derive(Clone, Debug)]
+pub struct AuthorColdStartScorer {
+    author_cold_start: AuthorColdStart,
+}
+
+impl AuthorColdStartScorer {
+    pub fn new(author_cold_start: AuthorColdStart) -> Self {
+        Self { author_cold_start }
+    }
+}
+
+#[async_trait]
+impl Scorer<ScoredPostsQuery, PostCandidate> for AuthorColdStartScorer {
+    async fn score(
+        &self,
+        _query: &ScoredPostsQuery,
+        candidates: &[PostCandidate],
+    ) -> Vec<Result<PostCandidate, String>> {
+        let scores: Vec<f64> = candidates
+            .iter()
+            .map(|candidate| candidate.score.unwrap_or(0.0))
+            .collect();
+        self.author_cold_start
+            .apply(candidates, &scores)
+            .into_iter()
+            .map(|score| {
+                Ok(PostCandidate {
+                    score: Some(score),
+                    ..Default::default()
+                })
+            })
+            .collect()
+    }
+
+    fn update(&self, candidate: &mut PostCandidate, scored: PostCandidate) {
+        candidate.score = scored.score;
+    }
+}
+
 fn positions_among_nonzero(scores: &[f64]) -> (Vec<usize>, usize) {
     let mut order: Vec<usize> = scores
         .iter()
@@ -143,8 +181,6 @@ fn is_eligible(candidate: &PostCandidate, config: &ColdStartConfig) -> bool {
         && candidate
             .view_count
             .is_some_and(|views| views < config.impression_threshold)
-        && duration_since_creation_opt(candidate.tweet_id)
-            .is_some_and(|age| age <= config.max_post_age)
 }
 
 fn pick_by_score(eligible: &[usize], scores: &[f64]) -> Option<usize> {
@@ -201,7 +237,7 @@ fn pick_thompson<R: Rng + ?Sized>(
 mod tests {
     use super::*;
     use rand::SeedableRng;
-    use std::time::{SystemTime, UNIX_EPOCH};
+    use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
     const TWITTER_EPOCH_MS: u64 = 1_288_834_974_657;
 
@@ -277,27 +313,38 @@ mod tests {
     }
 
     #[test]
-    fn replies_retweets_old_posts_and_large_authors_are_ineligible() {
+    fn replies_retweets_and_large_authors_are_ineligible() {
         let mut reply = candidate(2, minutes(10), Some(10));
         reply.in_reply_to_tweet_id = Some(1);
         let mut retweet = candidate(3, minutes(10), Some(10));
         retweet.retweeted_tweet_id = Some(1);
-        let mut old = candidate(4, Duration::from_secs(90_000), Some(10));
-        old.author_followers_count = Some(100);
-        let mut large_author = candidate(5, minutes(10), Some(10));
+        let mut large_author = candidate(4, minutes(10), Some(10));
         large_author.author_followers_count = Some(1_001);
         let candidates = vec![
             candidate(1, minutes(10), Some(2_000)),
             reply,
             retweet,
-            old,
             large_author,
         ];
         let cold_start = AuthorColdStart::new(enabled_config());
 
         assert_eq!(
-            cold_start.apply(&candidates, &[100.0, 40.0, 30.0, 20.0, 10.0]),
-            vec![100.0, 40.0, 30.0, 20.0, 10.0]
+            cold_start.apply(&candidates, &[100.0, 30.0, 20.0, 10.0]),
+            vec![100.0, 30.0, 20.0, 10.0]
+        );
+    }
+
+    #[test]
+    fn generic_holdout_does_not_apply_treatment_freshness_gate() {
+        let candidates = vec![
+            candidate(1, minutes(10), Some(2_000)),
+            candidate(2, Duration::from_secs(90_000), Some(10)),
+        ];
+        let cold_start = AuthorColdStart::new(enabled_config());
+
+        assert_eq!(
+            cold_start.apply(&candidates, &[100.0, 10.0]),
+            vec![100.0, 100.0]
         );
     }
 
@@ -335,6 +382,28 @@ mod tests {
             cold_start.apply(&candidates, &[100.0, 20.0, 10.0]),
             vec![100.0, 100.0, 10.0]
         );
+    }
+
+    #[tokio::test]
+    async fn final_scorer_boosts_once_from_current_candidate_scores() {
+        let scorer = AuthorColdStartScorer::new(AuthorColdStart::new(enabled_config()));
+        let candidates = vec![
+            PostCandidate {
+                score: Some(100.0),
+                ..candidate(1, minutes(10), Some(2_000))
+            },
+            PostCandidate {
+                score: Some(10.0),
+                ..candidate(2, minutes(10), Some(10))
+            },
+        ];
+
+        let scored = scorer
+            .score(&ScoredPostsQuery::default(), &candidates)
+            .await;
+
+        assert_eq!(scored[0].as_ref().unwrap().score, Some(100.0));
+        assert_eq!(scored[1].as_ref().unwrap().score, Some(100.0));
     }
 
     #[test]

@@ -60,7 +60,7 @@ use crate::query_hydrators::user_features_query_hydrator::UserFeaturesQueryHydra
 use crate::query_hydrators::user_safety_features_query_hydrator::UserSafetyFeaturesQueryHydrator;
 use crate::query_hydrators::user_topics_query_hydrator::UserTopicsQueryHydrator;
 use crate::runtime_config::HomeMixerMode;
-use crate::scorers::author_cold_start::{AuthorColdStart, ColdStartConfig};
+use crate::scorers::author_cold_start::{AuthorColdStart, AuthorColdStartScorer, ColdStartConfig};
 use crate::scorers::phoenix_scorer::PhoenixScorer;
 use crate::scorers::ranking_scorer::RankingScorer;
 use crate::scorers::vm_ranker::VMRanker;
@@ -236,7 +236,7 @@ impl PhoenixCandidatePipeline {
         });
         let mut scorers: Vec<Box<dyn Scorer<ScoredPostsQuery, PostCandidate>>> = vec![
             Box::new(PhoenixScorer { phoenix_client }),
-            Box::new(RankingScorer::new(author_cold_start.clone())),
+            Box::new(RankingScorer),
         ];
 
         // 可选旁路：VM Ranker 二次重排（上游 scorers 第三位）。开关 + 地址
@@ -249,7 +249,6 @@ impl PhoenixCandidatePipeline {
                     scorers.push(Box::new(VMRanker {
                         client: Arc::new(GrpcVMRankerClient::new(addr)),
                         value_model_id: std::env::var("VM_RANKER_VALUE_MODEL_ID").ok(),
-                        author_cold_start: author_cold_start.clone(),
                     }));
                 }
                 _ => {
@@ -258,6 +257,9 @@ impl PhoenixCandidatePipeline {
                     );
                 }
             }
+        }
+        if features.author_cold_start {
+            scorers.push(Box::new(AuthorColdStartScorer::new(author_cold_start)));
         }
 
         // Selector
@@ -350,6 +352,7 @@ impl PhoenixCandidatePipeline {
         features: HomeMixerFeatures,
     ) -> PhoenixCandidatePipeline {
         let demo_mode = mode == HomeMixerMode::Demo;
+        let features = features_for_mode(mode, features);
         if demo_mode {
             log::info!("HOME_MIXER_MODE=demo: injecting demo UAS / Strato / TES clients");
         }
@@ -455,6 +458,17 @@ impl PhoenixCandidatePipeline {
     }
 }
 
+fn features_for_mode(mode: HomeMixerMode, mut features: HomeMixerFeatures) -> HomeMixerFeatures {
+    if mode != HomeMixerMode::Demo && features.author_cold_start {
+        log::warn!(
+            "Author Cold Start requires verified TES and Gizmoduck count adapters; disabling it outside demo mode"
+        );
+        features.author_cold_start = false;
+        features.cold_start_thompson_sampling = false;
+    }
+    features
+}
+
 #[async_trait]
 impl CandidatePipeline<ScoredPostsQuery, PostCandidate> for PhoenixCandidatePipeline {
     fn query_hydrators(&self) -> &[Box<dyn QueryHydrator<ScoredPostsQuery>>] {
@@ -517,11 +531,34 @@ mod tests {
             .iter()
             .find(|entry| entry.stage == PipelineStage::Hydrator)
             .expect("pre-selection hydrators");
+        let scorers = components
+            .iter()
+            .find(|entry| entry.stage == PipelineStage::Scorer)
+            .expect("scorers");
 
         assert!(pre_selection
             .components
             .iter()
             .any(|name| name == "GizmoduckCandidateHydrator"));
+        assert_eq!(
+            scorers.components,
+            vec!["PhoenixScorer", "RankingScorer", "AuthorColdStartScorer"]
+        );
+    }
+
+    #[test]
+    fn cold_start_is_disabled_without_verified_non_demo_adapters() {
+        let features = features_for_mode(
+            HomeMixerMode::Degraded,
+            HomeMixerFeatures {
+                author_cold_start: true,
+                cold_start_thompson_sampling: true,
+                ..Default::default()
+            },
+        );
+
+        assert!(!features.author_cold_start);
+        assert!(!features.cold_start_thompson_sampling);
     }
 
     #[tokio::test]

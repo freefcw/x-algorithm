@@ -18,7 +18,6 @@ use crate::models::candidate::{PhoenixScores, PostCandidate};
 use crate::models::query::ScoredPostsQuery;
 use crate::params as p;
 use crate::params::config::NEGATIVE_SCORES_OFFSET;
-use crate::scorers::author_cold_start::AuthorColdStart;
 use crate::util::candidates_util;
 use std::cmp::Ordering;
 use std::collections::HashMap;
@@ -250,15 +249,9 @@ impl ScoringWeights {
     }
 }
 
-#[derive(Clone, Debug, Default)]
-pub struct RankingScorer {
-    author_cold_start: AuthorColdStart,
-}
+pub struct RankingScorer;
 
 impl RankingScorer {
-    pub fn new(author_cold_start: AuthorColdStart) -> Self {
-        Self { author_cold_start }
-    }
     /// `score` 是当前 viewer 的行为预测值，不是帖子的原始互动次数。
     fn apply(score: Option<f64>, weight: f64) -> f64 {
         score.unwrap_or(0.0) * weight
@@ -481,7 +474,6 @@ impl Scorer<ScoredPostsQuery, PostCandidate> for RankingScorer {
                 }
             })
             .collect();
-        let final_scores = self.author_cold_start.apply(candidates, &final_scores);
 
         weighted_scores
             .iter()
@@ -505,82 +497,20 @@ impl Scorer<ScoredPostsQuery, PostCandidate> for RankingScorer {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::scorers::author_cold_start::ColdStartConfig;
-    use std::time::{Duration, SystemTime, UNIX_EPOCH};
-
-    const TWITTER_EPOCH_MS: u64 = 1_288_834_974_657;
-
-    fn recent_tweet_id() -> u64 {
-        let now_ms = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .expect("current time after Unix epoch")
-            .as_millis() as u64;
-        ((now_ms - TWITTER_EPOCH_MS) << 22) - ((Duration::from_secs(60).as_millis() as u64) << 22)
-    }
 
     fn weights() -> ScoringWeights {
         ScoringWeights::from_defaults()
     }
 
     fn score_all(query: &ScoredPostsQuery, candidates: &[PostCandidate]) -> Vec<PostCandidate> {
-        score_all_with(&RankingScorer::default(), query, candidates)
-    }
-
-    fn score_all_with(
-        scorer: &RankingScorer,
-        query: &ScoredPostsQuery,
-        candidates: &[PostCandidate],
-    ) -> Vec<PostCandidate> {
         let runtime = tokio::runtime::Builder::new_current_thread()
             .build()
             .expect("test runtime");
         runtime
-            .block_on(scorer.score(query, candidates))
+            .block_on(RankingScorer.score(query, candidates))
             .into_iter()
             .map(|result| result.expect("ranking result"))
             .collect()
-    }
-
-    #[test]
-    fn enabled_cold_start_runs_after_weighted_adjustments() {
-        let high_score = PostCandidate {
-            tweet_id: recent_tweet_id(),
-            author_id: 1,
-            author_followers_count: Some(100),
-            view_count: Some(2_000),
-            phoenix_scores: PhoenixScores {
-                favorite_score: Some(0.9),
-                ..Default::default()
-            },
-            ..Default::default()
-        };
-        let low_impression = PostCandidate {
-            tweet_id: recent_tweet_id() + 1,
-            author_id: 2,
-            author_followers_count: Some(100),
-            view_count: Some(10),
-            phoenix_scores: PhoenixScores {
-                favorite_score: Some(0.1),
-                ..Default::default()
-            },
-            ..Default::default()
-        };
-        let scorer = RankingScorer::new(AuthorColdStart::new(ColdStartConfig {
-            enabled: true,
-            slot_min: 0,
-            slot_max: 1,
-            max_position_ratio: 1.0,
-            ..Default::default()
-        }));
-
-        let scored = score_all_with(
-            &scorer,
-            &ScoredPostsQuery::default(),
-            &[high_score, low_impression],
-        );
-
-        assert_eq!(scored[0].score, scored[1].score);
-        assert!(scored[1].weighted_score < scored[0].weighted_score);
     }
 
     #[test]
