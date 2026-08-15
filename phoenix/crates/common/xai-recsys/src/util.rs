@@ -63,8 +63,6 @@ const LOCAL_HOUR_IDX: usize = LOCAL_HOUR_OF_DAY_SEQ;
 const LOCAL_DOW_IDX: usize = LOCAL_DAY_OF_WEEK_SEQ;
 pub const AUTHOR_IS_NSFW_CATEGORICAL_IDX: usize = AUTHOR_IS_NSFW_SEQ;
 
-const AUTHOR_NSFW_BIT: u64 = 2;
-
 fn stamp_engagement_counts(
     dest: &mut [i64],
     num_features: usize,
@@ -529,7 +527,7 @@ impl InputBuffer {
             .candidates
             .iter()
             .take(candidates_to_process)
-            .map(|c| ((c.safety_label_mask >> AUTHOR_NSFW_BIT) & 1) as i32)
+            .map(|c| (c.safety_label_mask & pb::SAFETY_BIT_AUTHOR_NSFW != 0) as i32)
             .collect();
         stamp_i32_as_categorical(
             &candidate_author_is_nsfw,
@@ -847,7 +845,7 @@ impl InputBuffer {
                     })
                     .fold(0u64, |acc, m| acc | m);
                 history_author_is_nsfw[valid_entry_count] =
-                    ((hist_safety_mask >> AUTHOR_NSFW_BIT) & 1) as i32;
+                    (hist_safety_mask & pb::SAFETY_BIT_AUTHOR_NSFW != 0) as i32;
 
                 stamp_engagement_counts(
                     &mut history_int64_features,
@@ -1640,7 +1638,11 @@ mod tests {
             candidate_set.candidates.push(pb::TweetInfo {
                 tweet_id: 1000 + i as u64,
                 author_id: 2000 + i as u64,
-                safety_label_mask: if i % 2 == 0 { 1 << AUTHOR_NSFW_BIT } else { 0 },
+                safety_label_mask: if i % 2 == 0 {
+                    pb::SAFETY_BIT_AUTHOR_NSFW
+                } else {
+                    0
+                },
                 ..Default::default()
             });
         }
@@ -1668,7 +1670,7 @@ mod tests {
         for i in 0..candidate_seq_len {
             candidate_set.candidates.push(pb::TweetInfo {
                 tweet_id: 1000 + i as u64,
-                safety_label_mask: 1 << AUTHOR_NSFW_BIT,
+                safety_label_mask: pb::SAFETY_BIT_AUTHOR_NSFW,
                 ..Default::default()
             });
         }

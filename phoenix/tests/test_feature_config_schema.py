@@ -6,6 +6,7 @@ from xrex.data.recsys import feature_config
 
 def test_public_post_bool_schema_is_stable_and_optional():
     assert feature_config.STALE_POST_14D_TTL_SEC == 1_209_600
+    assert 1 << feature_config.AUTHOR_NSFW_BIT == 4
     assert list(feature_config.BoolFeature) == [
         feature_config.BoolFeature.isAuthorFollowedByViewerSeq,
         feature_config.BoolFeature.isAuthorFollowingViewerSeq,
