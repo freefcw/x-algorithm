@@ -35,10 +35,15 @@ fn record_sid_coverage(sequence: &str, present: u64, count: u64) {
         .inc_by(count.saturating_sub(present));
 }
 
+use crate::feature_config::bool_feature::{
+    IS_AUTHOR_FOLLOWED_BY_VIEWER_SEQ, IS_AUTHOR_FOLLOWED_BY_VIEWER_SEQ_COLUMN,
+    IS_AUTHOR_FOLLOWING_VIEWER_SEQ, IS_AUTHOR_FOLLOWING_VIEWER_SEQ_COLUMN, IS_STALE_POST14D,
+};
 use crate::feature_config::categorical_feature::{
     AUTHOR_IS_NSFW_SEQ, LOCAL_DAY_OF_WEEK_SEQ, LOCAL_HOUR_OF_DAY_SEQ, PRODUCT_SURFACE_SEQ,
     PRODUCT_SURFACE_SEQ_COLUMN, TIMEZONE_SEQ,
 };
+use crate::feature_config::constants::STALE_POST_14D_TTL_SEC;
 #[cfg(recsys_ads_dpa)]
 use crate::feature_config::constants::{
     ADS_PRODUCT_KEY_HASH_BIAS, ADS_PRODUCT_KEY_HASH_BIAS_2, ADS_PRODUCT_KEY_HASH_MODULUS,
@@ -129,6 +134,14 @@ pub fn stamp_i32_as_categorical(
     if num_features > feature_idx {
         for (i, &val) in source.iter().enumerate() {
             dest[i * num_features + feature_idx] = val as i16;
+        }
+    }
+}
+
+pub fn stamp_bool_seq(source: &[bool], dest: &mut [bool], num_features: usize, feature_idx: usize) {
+    if num_features > feature_idx {
+        for (i, &val) in source.iter().enumerate() {
+            dest[i * num_features + feature_idx] = val;
         }
     }
 }
@@ -443,22 +456,50 @@ impl InputBuffer {
         );
 
         let mut candidate_int64_features = vec![0i64; candidate_seq_len * n_post_int64];
+        let mut candidate_is_author_followed = vec![false; candidate_seq_len];
+        let mut candidate_is_author_following = vec![false; candidate_seq_len];
+        let mut candidate_is_stale_post = vec![false; candidate_seq_len];
+        let mut candidate_bool_features = vec![false; candidate_seq_len * n_post_bool];
+
+        let stale_post_enabled = model_config.hash_table.enable_stale_post;
+        assert!(
+            !stale_post_enabled || n_post_bool > IS_STALE_POST14D,
+            "enable_stale_post requires the isStalePost14d bool feature"
+        );
         for (j, candidate) in candidate_set
             .candidates
             .iter()
             .take(candidates_to_process)
             .enumerate()
         {
-            stamp_engagement_counts(
-                &mut candidate_int64_features,
-                n_post_int64,
-                j,
-                candidate.fav_count,
-                candidate.reply_count,
-                candidate.retweet_count,
-                candidate.quote_count,
-                candidate.view_count,
-            );
+            let creation_valid = candidate_post_creation_ts_sec[j] > 0;
+            let original_age_sec = now_sec as i64 - candidate_post_creation_ts_sec[j] as i64;
+            let is_stale =
+                stale_post_enabled && creation_valid && original_age_sec > STALE_POST_14D_TTL_SEC;
+            candidate_is_stale_post[j] = is_stale;
+            if is_stale {
+                stamp_engagement_counts(
+                    &mut candidate_int64_features,
+                    n_post_int64,
+                    j,
+                    0,
+                    0,
+                    0,
+                    0,
+                    0,
+                );
+            } else {
+                stamp_engagement_counts(
+                    &mut candidate_int64_features,
+                    n_post_int64,
+                    j,
+                    candidate.fav_count,
+                    candidate.reply_count,
+                    candidate.retweet_count,
+                    candidate.quote_count,
+                    candidate.view_count,
+                );
+            }
 
             #[cfg(recsys_ads_dpa)]
             {
@@ -476,6 +517,12 @@ impl InputBuffer {
                         hash_dpa_product_key_2(raw_key);
                 }
             }
+            candidate_is_author_followed[j] = candidate.is_author_followed_by_user;
+            candidate_is_author_following[j] = candidate
+                .author_info
+                .as_ref()
+                .and_then(|ai| ai.is_following_user)
+                .unwrap_or(false);
         }
 
         let candidate_author_is_nsfw: Vec<i32> = candidate_set
@@ -491,6 +538,25 @@ impl InputBuffer {
             AUTHOR_IS_NSFW_CATEGORICAL_IDX,
         );
 
+        stamp_bool_seq(
+            &candidate_is_stale_post,
+            &mut candidate_bool_features,
+            n_post_bool,
+            IS_STALE_POST14D,
+        );
+        stamp_bool_seq(
+            &candidate_is_author_followed,
+            &mut candidate_bool_features,
+            n_post_bool,
+            IS_AUTHOR_FOLLOWED_BY_VIEWER_SEQ,
+        );
+        stamp_bool_seq(
+            &candidate_is_author_following,
+            &mut candidate_bool_features,
+            n_post_bool,
+            IS_AUTHOR_FOLLOWING_VIEWER_SEQ,
+        );
+
         CandidateData {
             post_hashes: candidate_post_hashes,
             auth_hashes: candidate_auth_hashes,
@@ -498,7 +564,7 @@ impl InputBuffer {
             embeddings: mm_embeddings_opt.unwrap_or_default(),
             search_query_embeddings: candidate_search_query_embeddings,
             categorical_features,
-            bool_features: vec![false; candidate_seq_len * n_post_bool],
+            bool_features: candidate_bool_features,
             float_features: vec![0.0f32; candidate_seq_len * n_post_float],
             int64_features: candidate_int64_features,
             impr_ts: candidate_impr_ts,
@@ -666,6 +732,8 @@ impl InputBuffer {
         let mut history_post_creation_ts_sec = vec![0i32; history_seq_len];
         let mut history_tz_enums = vec![0i16; history_seq_len];
         let mut history_author_is_nsfw = vec![0i32; history_seq_len];
+        let mut history_is_author_followed = vec![false; history_seq_len];
+        let mut history_is_author_following = vec![false; history_seq_len];
         let mut history_post_ids = vec![0i64; history_seq_len];
         let mut history_int64_features = vec![0i64; history_seq_len * n_post_int64];
 
@@ -792,6 +860,14 @@ impl InputBuffer {
                     tweet_info.view_count,
                 );
 
+                history_is_author_followed[valid_entry_count] =
+                    tweet_info.is_author_followed_by_user;
+                history_is_author_following[valid_entry_count] = tweet_info
+                    .author_info
+                    .as_ref()
+                    .and_then(|ai| ai.is_following_user)
+                    .unwrap_or(false);
+
                 valid_entry_count += 1;
             }
         }
@@ -821,6 +897,20 @@ impl InputBuffer {
             &mut history_categorical_features,
             n_post_cat,
             AUTHOR_IS_NSFW_CATEGORICAL_IDX,
+        );
+
+        let mut history_bool_features = vec![false; history_seq_len * n_post_bool];
+        stamp_bool_seq(
+            &history_is_author_followed,
+            &mut history_bool_features,
+            n_post_bool,
+            IS_AUTHOR_FOLLOWED_BY_VIEWER_SEQ,
+        );
+        stamp_bool_seq(
+            &history_is_author_following,
+            &mut history_bool_features,
+            n_post_bool,
+            IS_AUTHOR_FOLLOWING_VIEWER_SEQ,
         );
 
         let request_ip = candidate_set
@@ -883,7 +973,7 @@ impl InputBuffer {
             user_int64_features: user_features.int64_features,
             user_installed_apps: user_features.installed_apps,
             history_categorical_features,
-            history_bool_features: vec![false; history_seq_len * n_post_bool],
+            history_bool_features,
             history_float_features: vec![0.0f32; history_seq_len * n_post_float],
             history_int64_features,
             candidate_categorical_features,
@@ -965,6 +1055,8 @@ impl InputBuffer {
         let mut history_tz_enums = vec![0i16; history_seq_len];
         let mut history_post_ids = vec![0i64; history_seq_len];
         let mut history_int64_features = vec![0i64; history_seq_len * n_post_int64];
+        let mut history_is_author_followed = vec![false; history_seq_len];
+        let mut history_is_author_following = vec![false; history_seq_len];
         let sid_num_levels = model_config.sid_num_levels;
         let mut history_semantic_ids = vec![0u16; history_seq_len * sid_num_levels];
 
@@ -984,6 +1076,7 @@ impl InputBuffer {
                 let n_post_bool = model_config.hash_table.num_post_bool_features;
                 let n_post_float = model_config.hash_table.num_post_float_features;
                 let n_post_int64 = model_config.hash_table.num_post_int64_features;
+                let history_bool_features = vec![false; history_seq_len * n_post_bool];
                 let request_ip = candidate_set
                     .device_feature
                     .as_ref()
@@ -1044,7 +1137,7 @@ impl InputBuffer {
                     user_int64_features: user_features.int64_features,
                     user_installed_apps: user_features.installed_apps,
                     history_categorical_features: vec![0i16; history_seq_len * n_post_cat],
-                    history_bool_features: vec![false; history_seq_len * n_post_bool],
+                    history_bool_features,
                     history_float_features: vec![0.0f32; history_seq_len * n_post_float],
                     history_int64_features: vec![0i64; history_seq_len * n_post_int64],
                     candidate_categorical_features,
@@ -1114,6 +1207,12 @@ impl InputBuffer {
         let col_view_count = batch
             .column_by_name(VIEW_COUNT_SEQ_COLUMN)
             .and_then(|c| c.as_any().downcast_ref::<Int64Array>());
+        let col_is_author_followed_by_viewer = batch
+            .column_by_name(IS_AUTHOR_FOLLOWED_BY_VIEWER_SEQ_COLUMN)
+            .and_then(|c| c.as_any().downcast_ref::<BooleanArray>());
+        let col_is_author_following_viewer = batch
+            .column_by_name(IS_AUTHOR_FOLLOWING_VIEWER_SEQ_COLUMN)
+            .and_then(|c| c.as_any().downcast_ref::<BooleanArray>());
 
         let start_row = num_rows.saturating_sub(history_seq_len);
         let mut valid_entry_count = 0;
@@ -1208,6 +1307,11 @@ impl InputBuffer {
                 col_view_count.map_or(0, |arr| arr.value(row_idx)) as u64,
             );
 
+            history_is_author_followed[valid_entry_count] = col_is_author_followed_by_viewer
+                .is_some_and(|arr| !arr.is_null(row_idx) && arr.value(row_idx));
+            history_is_author_following[valid_entry_count] = col_is_author_following_viewer
+                .is_some_and(|arr| !arr.is_null(row_idx) && arr.value(row_idx));
+
             valid_entry_count += 1;
         }
 
@@ -1237,6 +1341,20 @@ impl InputBuffer {
             &history_tz_enums,
             &mut history_categorical_features,
             n_post_cat,
+        );
+
+        let mut history_bool_features = vec![false; history_seq_len * n_post_bool];
+        stamp_bool_seq(
+            &history_is_author_followed,
+            &mut history_bool_features,
+            n_post_bool,
+            IS_AUTHOR_FOLLOWED_BY_VIEWER_SEQ,
+        );
+        stamp_bool_seq(
+            &history_is_author_following,
+            &mut history_bool_features,
+            n_post_bool,
+            IS_AUTHOR_FOLLOWING_VIEWER_SEQ,
         );
 
         let request_ip = candidate_set
@@ -1299,7 +1417,7 @@ impl InputBuffer {
             user_int64_features: user_features.int64_features,
             user_installed_apps: user_features.installed_apps,
             history_categorical_features,
-            history_bool_features: vec![false; history_seq_len * n_post_bool],
+            history_bool_features,
             history_float_features: vec![0.0f32; history_seq_len * n_post_float],
             history_int64_features,
             candidate_categorical_features,
@@ -1386,6 +1504,9 @@ impl InputBuffer {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::feature_config::bool_feature::{
+        IS_AUTHOR_FOLLOWED_BY_VIEWER_SEQ, IS_AUTHOR_FOLLOWING_VIEWER_SEQ, IS_STALE_POST14D,
+    };
     use crate::feature_config::categorical_feature::{
         PRODUCT_SURFACE_SEQ, PRODUCT_SURFACE_SEQ_COLUMN, PRODUCT_SURFACE_SEQ_NAME,
     };
@@ -1423,6 +1544,7 @@ mod tests {
                 num_post_bool_features: 0,
                 num_post_float_features: 0,
                 num_post_int64_features: 0,
+                enable_stale_post: false,
             },
             history_seq_len: 4,
             candidate_seq_len: 3,
@@ -1559,6 +1681,46 @@ mod tests {
     }
 
     #[test]
+    fn candidate_relation_bools_are_stamped() {
+        let mut model_config = test_model_config(1);
+        model_config.hash_table.num_post_bool_features = IS_STALE_POST14D + 1;
+        let n_post_bool = model_config.hash_table.num_post_bool_features;
+        let candidate_set = pb::CandidateSet {
+            candidates: vec![pb::TweetInfo {
+                tweet_id: 1000,
+                author_id: 2000,
+                is_author_followed_by_user: true,
+                author_info: Some(pb::AuthorInfo {
+                    is_following_user: Some(true),
+                    ..Default::default()
+                }),
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+
+        let candidate = InputBuffer::new_with_candidates(&model_config, &candidate_set, None);
+
+        assert!(candidate.bool_features[IS_AUTHOR_FOLLOWED_BY_VIEWER_SEQ]);
+        assert!(candidate.bool_features[IS_AUTHOR_FOLLOWING_VIEWER_SEQ]);
+        assert!(!candidate.bool_features[IS_STALE_POST14D]);
+        assert!(
+            candidate.bool_features[n_post_bool..]
+                .iter()
+                .all(|value| !value)
+        );
+    }
+
+    #[test]
+    #[should_panic(expected = "enable_stale_post requires the isStalePost14d bool feature")]
+    fn stale_post_rejects_missing_bool_feature_width() {
+        let mut model_config = test_model_config(1);
+        model_config.hash_table.enable_stale_post = true;
+
+        InputBuffer::new_with_candidates(&model_config, &pb::CandidateSet::default(), None);
+    }
+
+    #[test]
     fn product_surface_padding_slots_are_zero() {
         let n_post_cat = 1;
         let model_config = test_model_config(n_post_cat);
@@ -1636,6 +1798,51 @@ mod tests {
             None,
         )
         .num_history
+    }
+
+    #[test]
+    fn history_relation_bools_are_stamped() {
+        use pb::user_action_sequence_data_container::Data;
+
+        let mut model_config = test_history_model_config();
+        model_config.hash_table.num_post_bool_features = IS_STALE_POST14D + 1;
+        let sequence = Some(pb::UserActionSequence {
+            user_actions_data: Some(pb::UserActionSequenceDataContainer {
+                data: Some(Data::OrderedAggregatedUserActionsList(
+                    pb::AggregatedUserActionList {
+                        aggregated_user_actions: vec![pb::AggregatedUserAction {
+                            tweet_info: Some(pb::TweetInfo {
+                                tweet_id: 10,
+                                author_id: 20,
+                                is_author_followed_by_user: true,
+                                author_info: Some(pb::AuthorInfo {
+                                    is_following_user: Some(true),
+                                    ..Default::default()
+                                }),
+                                ..Default::default()
+                            }),
+                            ..Default::default()
+                        }],
+                        ..Default::default()
+                    },
+                )),
+            }),
+            ..Default::default()
+        });
+
+        let buffer = InputBuffer::compute_for_item(
+            &model_config,
+            &sequence,
+            &pb::CandidateSet::default(),
+            None,
+            None,
+            None,
+            None,
+        );
+
+        assert!(buffer.history_bool_features[IS_AUTHOR_FOLLOWED_BY_VIEWER_SEQ]);
+        assert!(buffer.history_bool_features[IS_AUTHOR_FOLLOWING_VIEWER_SEQ]);
+        assert!(!buffer.history_bool_features[IS_STALE_POST14D]);
     }
 
     #[test]
@@ -1845,5 +2052,58 @@ mod tests {
             assert_eq!(0, cand.int64_features[n_post_int64 + slot]);
             assert_eq!(0, cand.int64_features[2 * n_post_int64 + slot]);
         }
+    }
+
+    #[test]
+    fn stale_post_14d_zeroes_and_flags_old_candidate() {
+        let n_post_cat = 1;
+        let mut model_config = test_model_config(n_post_cat);
+        let n_post_int64 = VIEW_COUNT_SEQ + 1;
+        model_config.hash_table.num_post_int64_features = n_post_int64;
+        model_config.hash_table.num_post_bool_features = IS_STALE_POST14D + 1;
+        model_config.hash_table.enable_stale_post = true;
+        let n_post_bool = model_config.hash_table.num_post_bool_features;
+
+        let now_ms = now_epoch_sec() as i64 * 1000;
+        let tweet_id_for_age_h = |age_h: i64| -> u64 {
+            let creation_ms = now_ms - age_h * 3600 * 1000;
+            (((creation_ms - TWITTER_EPOCH_MS) << 22) as u64) & !((1u64 << 22) - 1)
+        };
+
+        let mut candidate_set = pb::CandidateSet::default();
+        candidate_set.candidates.push(pb::TweetInfo {
+            tweet_id: tweet_id_for_age_h(400),
+            author_id: 2000,
+            fav_count: 7,
+            reply_count: 8,
+            retweet_count: 9,
+            quote_count: 10,
+            view_count: 11,
+            ..Default::default()
+        });
+        candidate_set.candidates.push(pb::TweetInfo {
+            tweet_id: tweet_id_for_age_h(1),
+            author_id: 2001,
+            fav_count: 1,
+            reply_count: 2,
+            retweet_count: 3,
+            quote_count: 4,
+            view_count: 5,
+            ..Default::default()
+        });
+
+        let cand = InputBuffer::new_with_candidates(&model_config, &candidate_set, None);
+
+        assert_eq!(0, cand.int64_features[FAV_COUNT_SEQ]);
+        assert_eq!(0, cand.int64_features[REPLY_COUNT_SEQ]);
+        assert_eq!(0, cand.int64_features[REPOST_COUNT_SEQ]);
+        assert_eq!(0, cand.int64_features[QUOTE_COUNT_SEQ]);
+        assert_eq!(0, cand.int64_features[VIEW_COUNT_SEQ]);
+        assert!(cand.bool_features[IS_STALE_POST14D]);
+
+        let base1 = n_post_int64;
+        assert_eq!(1, cand.int64_features[base1 + FAV_COUNT_SEQ]);
+        assert_eq!(5, cand.int64_features[base1 + VIEW_COUNT_SEQ]);
+        assert!(!cand.bool_features[n_post_bool + IS_STALE_POST14D]);
     }
 }

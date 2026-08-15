@@ -5,6 +5,9 @@ from __future__ import annotations
 import enum
 
 
+STALE_POST_14D_TTL_SEC = 1_209_600
+
+
 class CategoricalFeature(enum.IntEnum):
     productSurfaceSeq = 0
     timezoneSeq = 5
@@ -36,8 +39,15 @@ COMPUTED_CATEGORICAL_FEATURE_NAMES: frozenset[str] = frozenset(
 AUTHOR_NSFW_BIT = 2
 
 
+# Stable public indices shared with the generated Rust feature config. The
+# columns stay optional so datasets written before this schema zero-fill them.
 class BoolFeature(enum.IntEnum):
-    pass
+    isAuthorFollowedByViewerSeq = 0
+    isAuthorFollowingViewerSeq = 1
+    isStalePost14d = 2
+
+
+OPTIONAL_BOOL_FEATURE_NAMES: frozenset[str] = frozenset(feature.name for feature in BoolFeature)
 
 
 class FloatFeature(enum.IntEnum):
@@ -133,7 +143,11 @@ def _build_required_columns() -> list[str]:
         USER_INT64_FEATURES,
     ):
         for col in feature_list:
-            if col not in seen and col not in COMPUTED_CATEGORICAL_FEATURE_NAMES:
+            if (
+                col not in seen
+                and col not in COMPUTED_CATEGORICAL_FEATURE_NAMES
+                and col not in OPTIONAL_BOOL_FEATURE_NAMES
+            ):
                 result.append(col)
                 seen.add(col)
     return result
