@@ -5,7 +5,7 @@
 #   uv run train_retrieval.py --data-dir ./my_data   # 用真实 Parquet 数据训练
 #
 # 依赖：
-#   uv add optax                                    # 运行前先安装优化器库
+#   optax 已在 pyproject 主依赖中，uv sync 即可
 #
 # ── 与 train_ranker.py 的关系 ─────────────────────────────────────────────────
 # 本脚本从 train_ranker.py 拷贝演进而来，主要差异：
@@ -320,7 +320,7 @@ def train(args):
     try:
         import optax
     except ImportError:
-        raise ImportError("训练需要安装 optax：uv add optax")
+        raise ImportError("训练需要 optax，请先在 phoenix 目录执行 uv sync")
 
     logger.info("=== Phoenix 召回模型训练开始 ===")
     logger.info(f"数据来源：{'模拟数据' if args.data_dir is None else args.data_dir}")
