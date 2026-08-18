@@ -4,10 +4,12 @@
 
 ## 1. 召回：为什么要双路
 
-`home-mixer` 当前的召回是双路并行：
+`home-mixer` 默认是双路并行，演示还会加上话题源：
 
-- `ThunderSource`：网内内容
-- `PhoenixSource`：网外内容
+- `ThunderSource`：网内内容（有 cached posts 时关闭）
+- `PhoenixSource`：网外内容（网内限定、严格话题、或有 cached posts 时关闭）
+- `PhoenixTopicsSource`：演示默认装配；非 demo 要显式注入 adapter
+- `CachedPostsSource`：只接受 QueryBuilder 已批准的 demo fixture
 
 ```mermaid
 flowchart LR
@@ -22,7 +24,7 @@ flowchart LR
 作用：
 
 - 从 Thunder 取关注作者最近帖子
-- 默认总是启用
+- 默认启用；请求已带 cached posts 时关闭
 
 输入：
 
@@ -44,10 +46,12 @@ flowchart LR
 启用条件：
 
 - `!query.in_network_only`
+- 没有 cached posts
+- 不是 strict / cold-start 话题请求
 
 硬依赖：
 
-- `query.user_action_sequence`
+- retrieval sequence
 
 输出特点：
 
@@ -62,9 +66,12 @@ flowchart LR
 | --- | --- | --- |
 | `InNetworkCandidateHydrator` | 判断作者是否在关注网络内 | `RankingScorer` 内部 OON 阶段、`VFCandidateHydrator` |
 | `CoreDataCandidateHydrator` | 补文本、转推关系、回复关系 | 多个 filter 和 scorer 依赖 |
+| `QuoteHydrator` | 补引用帖 | quote-aware 过滤 / Ranking |
 | `VideoDurationCandidateHydrator` | 补视频时长 | VQV 权重判断 |
+| `HasMediaHydrator` | 补是否有媒体 | `VideoFilter` / 响应 |
 | `SubscriptionHydrator` | 补订阅作者信息 | 订阅过滤 |
-| `GizmoduckCandidateHydrator` | 补作者 screen_name、粉丝数 | 展示、未来归一化 |
+| `FilteredTopicsHydrator` / `LanguageCodeHydrator` | 补话题和语言 | 话题过滤 |
+| `GizmoduckCandidateHydrator` | 补作者 screen_name、粉丝数 | 默认在 post-selection；冷启动打开时预选再跑一次 |
 
 ## 3. 过滤链：先把明显不该排的内容拿掉
 
@@ -82,7 +89,8 @@ flowchart TD
     F7 --> F8["PreviouslyServedPosts<br/>仅 bottom request"]
     F8 --> F9["MutedKeyword"]
     F9 --> F10["AuthorSocialgraph"]
-    F10 --> B["进入打分"]
+    F10 --> F11["Video / TopicIds / NewUserTopic"]
+    F11 --> B["进入打分"]
 ```
 
 ### 3.1 过滤器按问题分类
@@ -94,8 +102,9 @@ flowchart TD
 | 内容过旧 | `AgeFilter` |
 | 不该给自己看 | `SelfTweetFilter` |
 | 权限不匹配 | `IneligibleSubscriptionFilter` |
-| 已经看过 / 已下发过 | `PreviouslySeenPostsFilter`、`PreviouslyServedPostsFilter` |
+| 已经看过 / 已下发过 | `PreviouslySeenPostsFilter`、`PreviouslySeenPostsBackupFilter`、`PreviouslyServedPostsFilter` |
 | 用户明确不想看 | `MutedKeywordFilter`、`AuthorSocialgraphFilter` |
+| 请求不要视频 / 话题约束 | `VideoFilter`、`TopicIdsFilter`、`NewUserTopicIdsFilter` |
 
 ### 3.2 为什么 `PreviouslyServedPostsFilter` 只在 bottom request 启用
 
@@ -187,7 +196,7 @@ VQV 还有一个额外条件：
 当前关键参数：
 
 - `AUTHOR_DIVERSITY_DECAY = 0.5`
-- `AUTHOR_DIVERSITY_FLOOR = 0.1`
+- `AUTHOR_DIVERSITY_FLOOR = 0.25`（第 2、3 条大约 ×0.625、×0.4375）
 
 ### 4.4 `OONScorer`
 
@@ -198,7 +207,8 @@ VQV 还有一个额外条件：
 规则：
 
 - `in_network == false` 时，`score *= OON_WEIGHT_FACTOR`
-- 当前 `OON_WEIGHT_FACTOR = 0.5`
+- 网内回复/转发默认也乘同一因子（`ENABLE_OON_RESCORE_FOR_IN_NETWORK_REPLIES_RETWEETS = true`）
+- 当前普通请求 `OON_WEIGHT_FACTOR = 0.75`；话题请求用 `TOPIC_OON_WEIGHT_FACTOR = 0.5`
 
 ## 5. 选择与后处理
 
@@ -210,10 +220,12 @@ VQV 还有一个额外条件：
 
 选择后并没有立刻返回，还会继续做：
 
-1. `VFCandidateHydrator`：批量拿可见性审核结果
-2. `VFFilter`：删除应被 Drop 的内容
-3. `DedupConversationFilter`：同一会话树只留一条最高分
-4. 最终再截断到 `RESULT_SIZE = 35`
+1. `GizmoduckCandidateHydrator`：补作者资料
+2. `VFCandidateHydrator`：批量拿可见性审核结果
+3. `VFFilter`：删除应被 Drop 的内容
+4. `AncillaryVFFilter`：引用/转发附属内容被挡住时去掉
+5. `DedupConversationFilter`：同一会话树只留一条最高分
+6. 最终再截断到 `RESULT_SIZE = 35`
 
 ```mermaid
 flowchart TD
@@ -238,6 +250,6 @@ flowchart TD
 
 代价：
 
-- 如果 VF 删掉很多结果，不会回补第 101 名以后的候选
+- 如果 VF 删掉很多结果，不会回补第 51 名以后的候选
 
 这也是后面风险文档里会单独指出的问题。

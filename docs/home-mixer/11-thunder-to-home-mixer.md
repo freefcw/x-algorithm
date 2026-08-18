@@ -65,8 +65,8 @@ Thunder 对外返回的不是完整帖子，而是 `LightPost`。
 | --- | --- |
 | `user_id` | `query.user_id` |
 | `following_user_ids` | `query.user_features.followed_user_ids` |
-| `max_results` | `THUNDER_MAX_RESULTS = 500` |
-| `exclude_tweet_ids` | 固定空列表 |
+| `max_results` | `THUNDER_MAX_RESULTS = 1200` |
+| `exclude_tweet_ids` | `query.seen_ids` |
 | `algorithm` | 固定 `"default"` |
 | `debug` | 固定 `false` |
 | `is_video_request` | 固定 `false` |
@@ -76,7 +76,7 @@ Thunder 对外返回的不是完整帖子，而是 `LightPost`。
 1. `home-mixer` 当前默认不依赖 Thunder 自己回查 following list。  
    因为 `debug=false`，Thunder 里的“following 为空时从 Strato 回查”逻辑不会触发。
 
-2. `home-mixer` 当前不使用 Thunder 端的 `exclude_tweet_ids` 去重。  
+2. `home-mixer` 把 `query.seen_ids` 下推到 Thunder 的 `exclude_tweet_ids`。
    它把去重主要放在自己后面的 filter 链里。
 
 ## 4. Thunder 取数不是“拿所有帖子”
@@ -263,12 +263,12 @@ ThunderSource 当前构造 `ancestors` 的规则是：
 - 如果 Strato 返回空 following
 - Thunder 就几乎一定给不出网内候选
 
-### 10.2 当前不利用 Thunder 侧去重
+### 10.2 Thunder 侧只下推 seen_ids
 
-`exclude_tweet_ids` 传空，意味着：
+`exclude_tweet_ids` 来自 `query.seen_ids`：
 
-- Thunder 不参与已看过/已下发去重
-- 这些事情都压到 `home-mixer` 的 filter 链里做
+- Thunder 会先丢掉这些已看过的帖
+- 已投递、布隆过滤器、备份曝光 ID 仍由 `home-mixer` 的 filter 链处理
 
 ### 10.3 Thunder 的时间窗口与 `home-mixer` 时间窗口是双重限制
 

@@ -11,7 +11,6 @@
 | P0 | 小流量场景可能卡住初始化 | 只有满 `kafka_batch_size` 才处理 batch | 消息不足一个 batch 时永远不发 init signal |
 | P1 | Following fallback 语义错误 | 只有 `following_user_ids` 为空且 `debug=true` 才查 Strato | 非调试请求缺少 following 时直接空查 |
 | P1 | Strato 仍是 stub | `fetch_following_list()` 永远返回空 | Thunder 内部无法独立补齐关系图 |
-| P1 | Home Mixer 默认端口错配 | Thunder 默认 `50051`，客户端默认 `50052` | 默认部署下两边连不上 |
 | P1 | HTTP 观测面未接通 | 只有空 Router，没有 metrics/health | 指标抓不到，也没有 readiness |
 | P1 | v2 SASL 参数用错 | v2 代码读取的是 producer 侧 SASL 配置 | 消费端认证配置容易失效 |
 | P2 | 多个 CLI 参数未生效 | `skip_to_latest`、`fetch_timeout_ms` 等未使用 | 配置表面看可控，实际上无效 |
@@ -83,7 +82,6 @@ flowchart LR
 | `/metrics` | 真正导出 `prometheus` registry |
 | `/readyz` | 至少反映 Kafka 初始化和依赖状态 |
 | `StratoClient` | 接真实关系源，而不是返回空 |
-| 配置默认值 | Thunder 与 Home Mixer 默认端口一致 |
 | SASL 配置 | consumer 读 consumer 参数，producer 读 producer 参数 |
 
 ## 6. 阶段 3 才值得考虑的增强

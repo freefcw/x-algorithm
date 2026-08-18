@@ -54,7 +54,7 @@ sequenceDiagram
     App->>Runner: 覆盖 params 或保留随机初始化
 ```
 
-当前仓库里精排服务和召回服务都走这个套路。
+当前召回服务（`retrieval_service.py`）走这个套路；精排服务（`ranker_service.py`）在策略模式重构后改为由 `create_strategy()` 装配 `RankingStrategy`（策略内部再完成 runner 初始化与 checkpoint 加载），切换策略只需设置 `RANKER_STRATEGY` 环境变量。
 
 ## 4. 两种 API 形态
 
@@ -76,7 +76,7 @@ Phoenix 里实际上存在两套 API 形态。
 
 - `services/ranker_service.py`：精排 HTTP 服务（FastAPI，8081）。
 - `services/retrieval_service.py`：召回 HTTP 服务（FastAPI，8082）。
-- `services/grpc_gateway.py`：gRPC 网关（50053），实现 `proto/definitions/recsys.proto` 的 `PhoenixPredictionService` / `PhoenixRetrievalService`，是 home-mixer 调用 Phoenix 的实际入口；与 HTTP 服务的区别是它真正消费请求里的用户行为序列来构造模型输入。
+- `services/grpc_gateway.py`：gRPC 网关（50053），实现 `proto/definitions/recsys.proto` 的 `PhoenixPredictionService` / `PhoenixRetrievalService`，是 home-mixer 调用 Phoenix 的实际入口；与 HTTP 服务的区别是它真正消费请求里的用户行为序列来构造模型输入。生产 Rust 引擎用的是另一套 proto（`phoenix/crates/serving/xai-recsys-proto`），不要和演示网关混用。
 
 适合生产化部署时分开扩容和隔离资源。
 
@@ -98,11 +98,12 @@ graph LR
 
 ## 5. 配置体系
 
-`services/config.py` 提供三类配置：
+`services/config.py` 提供四类配置：
 
 - `ModelConfig`：模型结构参数。
 - `RankerServiceConfig`：精排服务配置。
 - `RetrievalServiceConfig`：召回服务配置。
+- `FeatureServiceConfig`：特征服务配置（含 Redis 后端参数）。
 
 配置来源是环境变量，例如：
 
@@ -125,6 +126,7 @@ graph TD
     A --> D[get_item_embeddings]
     A --> E[get_author_embeddings]
     A --> F[build_recsys_batch]
+    A --> H[get_candidate_embeddings]
     G[MockFeatureStore] --> A
 ```
 

@@ -115,19 +115,23 @@ flowchart TD
 
 ## 6. 召回策略
 
-`home-mixer` 当前是双路召回。
+`home-mixer` 默认是双路召回，演示里还会加上话题源。
 
 ### 6.1 ThunderSource
 
 - 负责网内候选
 - 输入依赖 `followed_user_ids`
 - 输出轻量候选，附带 reply / conversation 关系
+- 请求带未签名 cached posts 时关闭
 
 ### 6.2 PhoenixSource
 
 - 负责网外候选
-- 输入依赖 `user_action_sequence`
-- 当前仓库里 retrieval client 默认仍是 stub
+- 输入依赖 retrieval sequence
+- 设 `PHOENIX_RETRIEVAL_GRPC_ADDR` 后真连网关；没设就跳过这一路
+- 网内限定、严格话题、或已有 cached posts 时关闭
+
+Demo 还会装配 `PhoenixTopicsSource`。`CachedPostsSource` 一直在列表里，只有显式打开未签名 fixture 才会出数。
 
 ## 7. 补全、过滤和排序
 
@@ -165,13 +169,14 @@ flowchart TD
 
 1. `PhoenixScorer`
 2. `RankingScorer`（内部依次组合 Weighted、AuthorDiversity、OON 行为）
+3. 可选 `VMRanker`、`AuthorColdStartScorer`（都要显式开开关）
 
 含义是：
 
 - 先预测行为概率
 - 再加权合成相关性
 - 再做作者多样性衰减
-- 最后给网外内容统一降权
+- 最后给网外内容降权；网内回复/转发默认也乘同一因子
 
 ## 8. Thunder 为什么重要
 
@@ -246,8 +251,8 @@ flowchart TD
 
 - selector 先取 Top 50
 - post-selection 再删
-- 最终截断到 50
-- 不会回补第 101 名之后的候选
+- 最终截断到 35（`RESULT_SIZE`）
+- 不会回补第 51 名之后的候选
 
 ### 11.4 观测能力偏弱
 
@@ -258,8 +263,8 @@ flowchart TD
 配置来源主要有三类：
 
 - CLI 参数：端口等
-- 环境变量：如 `THUNDER_GRPC_ADDR`、`APP_ENV`
-- `params.rs` 常量：召回上限、权重、Age、TopK、ResultSize
+- 环境变量：如 `THUNDER_GRPC_ADDR`、`HOME_MIXER_MODE`
+- `params/` 常量：召回上限、权重、Age、TopK、ResultSize
 
 最重要的参数组是：
 

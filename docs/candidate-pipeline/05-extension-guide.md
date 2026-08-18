@@ -13,6 +13,8 @@
 | 需要计算一个新得分或重写已有得分 | `Scorer` | 适合串行叠加 |
 | 需要重排、混排、截断 | `Selector` | 它是最终排序入口 |
 | 需要异步缓存、打点、回写 | `SideEffect` | 不阻塞主链路 |
+| 后一个 QueryHydrator 需要读前一个写入的 query 字段 | `dependent_query_hydrators()` | 框架内置两段 query hydration，无需改框架 |
+| 需要对最终结果做统一收尾处理 | `finalize()` | truncate 之后、side effects 之前的公共扩展点，默认空实现 |
 
 最常见的误区是把“会删除候选的逻辑”写进 `Hydrator` 或 `Scorer`。在这个框架里，这样做会破坏等长同序契约。
 
@@ -46,6 +48,8 @@
 1. 把两步合并成一个 hydrator
 2. 把依赖逻辑移到后续串行阶段，比如 `Filter` 或 `Scorer`
 3. 扩展框架本身，增加一个新的阶段边界
+
+如果依赖发生在 query 级（后一个 `QueryHydrator` 需要读取前一个写入的 query 字段），则不需要改框架：把后者注册到 `dependent_query_hydrators()`，它会在第一段 query hydration 完成后、`fetch_candidates` 之前执行。
 
 不要简单地把两个有依赖关系的 hydrator 放在同一个 `Vec<Box<dyn Hydrator<...>>>` 里。
 

@@ -204,4 +204,4 @@ Phoenix 在实现上做了几件偏工程化的处理：
 
 - 当前排序逻辑只用 `favorite_score`。
 - 没有完整精排前向单元测试，主要只测了 attention mask。
-- 还没有看到训练期的 label 定义、损失函数和多目标融合方式。
+- 训练期的 label 定义、损失函数和多目标融合方式见 `scripts/train_ranker.py` 的 `loss_fn`（前 18 个行为 BCE + dwell_time MSE）与 `docs/training/training_data_spec.md`。

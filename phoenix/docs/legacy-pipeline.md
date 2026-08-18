@@ -125,14 +125,14 @@ A key detail is the **attention mask** that prevents candidates from attending t
          │ User │    History (S positions)    │   Candidates (C positions)    │
     ┌────┼──────┼─────────────────────────────┼───────────────────────────────┤
     │    │      │                             │                               │
-    │ U  │  ✓   │  ✓   ✓   ✓   ✓   ✓   ✓   ✓  │  ✗   ✗   ✗   ✗   ✗   ✗   ✗    │
+    │ U  │  ✓   │  ✗   ✗   ✗   ✗   ✗   ✗   ✗  │  ✗   ✗   ✗   ✗   ✗   ✗   ✗    │
     │    │      │                             │                               │
     ├────┼──────┼─────────────────────────────┼───────────────────────────────┤
  Q  │    │      │                             │                               │
- u  │ H  │  ✓   │  ✓   ✓   ✓   ✓   ✓   ✓   ✓  │  ✗   ✗   ✗   ✗   ✗   ✗   ✗    │
- e  │ i  │  ✓   │  ✓   ✓   ✓   ✓   ✓   ✓   ✓  │  ✗   ✗   ✗   ✗   ✗   ✗   ✗    │
- r  │ s  │  ✓   │  ✓   ✓   ✓   ✓   ✓   ✓   ✓  │  ✗   ✗   ✗   ✗   ✗   ✗   ✗    │
- i  │ t  │  ✓   │  ✓   ✓   ✓   ✓   ✓   ✓   ✓  │  ✗   ✗   ✗   ✗   ✗   ✗   ✗    │
+ u  │ H  │  ✓   │  ✓   ✗   ✗   ✗   ✗   ✗   ✗  │  ✗   ✗   ✗   ✗   ✗   ✗   ✗    │
+ e  │ i  │  ✓   │  ✓   ✓   ✗   ✗   ✗   ✗   ✗  │  ✗   ✗   ✗   ✗   ✗   ✗   ✗    │
+ r  │ s  │  ✓   │  ✓   ✓   ✓   ✗   ✗   ✗   ✗  │  ✗   ✗   ✗   ✗   ✗   ✗   ✗    │
+ i  │ t  │  ✓   │  ✓   ✓   ✓   ✓   ✗   ✗   ✗  │  ✗   ✗   ✗   ✗   ✗   ✗   ✗    │
  e  │    │      │                             │                               │
  s  ├────┼──────┼─────────────────────────────┼───────────────────────────────┤
     │    │      │                             │  DIAGONAL ONLY (self-attend)  │
@@ -149,9 +149,12 @@ A key detail is the **attention mask** that prevents candidates from attending t
     ✓ = Can attend (1)          ✗ = Cannot attend (0)
 
     Legend:
-    ├─ User + History: Full bidirectional attention among themselves
-    ├─ Candidates → User/History: Candidates CAN attend to user and history  
+    ├─ User + History: Causal attention (each position attends to itself and earlier positions)
+    ├─ Candidates → User/History: Candidates CAN attend to user and all history positions
     └─ Candidates → Candidates: Candidates CANNOT attend to each other (only self)
+
+    Note: this diagram matches the demo-path grok.py (causal mask); the production
+    xrex implementation is non-causal, see the English README.
 ```
 
 ---

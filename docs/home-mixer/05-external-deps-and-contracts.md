@@ -55,7 +55,7 @@ Thunder 负责的不是排序，而是给一批“关注的人最近发了什么
 | `user_id` | `query.user_id` |
 | `following_user_ids` | `query.user_features.followed_user_ids` |
 | `max_results` | `THUNDER_MAX_RESULTS` |
-| `exclude_tweet_ids` | 当前实现固定空列表 |
+| `exclude_tweet_ids` | `query.seen_ids` |
 | `algorithm` | 固定 `"default"` |
 | `is_video_request` | 固定 `false` |
 
@@ -123,7 +123,7 @@ sequenceDiagram
 | 客户端 trait | 调用方 | 作用 |
 | --- | --- | --- |
 | `UserActionSequenceOps` | `ScoringSequenceQueryHydrator` / `RetrievalSequenceQueryHydrator`（共享 request-scoped provider） | 取用户行为序列；500 ms 上限 |
-| `StratoClient` | 四个 user-id owner / `UserSafetyFeaturesQueryHydrator`（共享 provider）/ `CacheRequestInfoSideEffect` | 取用户特征和写请求缓存均为 500 ms 上限 |
+| `StratoClient` | 四个 user-id owner / `UserSafetyFeaturesQueryHydrator`（共享 provider）/ `PhoenixRequestCacheSideEffect` | 取用户特征和写请求缓存均为 500 ms 上限 |
 | `PhoenixRetrievalClient` | `PhoenixSource` | 网外召回 |
 | `ThunderClient` | `ThunderSource` | 网内召回 |
 | `TESClient` | 多个 candidate hydrator | 补帖子文本、媒体、订阅信息；每个批次 500 ms 上限 |
@@ -147,6 +147,8 @@ sequenceDiagram
 | `GizmoduckClient` | disabled + Demo adapter | `degraded` 返回未知 viewer policy，QueryBuilder 限制为仅网内；`demo` 明确允许网外并保留空作者资料；真实接入需要确认用户偏好授权语义 |
 | `VisibilityFilteringClient` | disabled + Demo adapter | `demo` 显式返回 Allow；`degraded` 返回 Unavailable，Pipeline 拒绝网外、保留网内；真实合同缺失时 `production_ready` 拒绝启动 |
 | `GrpcVMRankerClient` | 真实 gRPC 客户端（可选） | 同时设置 `HOME_MIXER_ENABLE_VM_RANKER=1` 与 `VM_RANKER_GRPC_ADDR` 后调用本仓库 `vm-ranker` 服务；上限 500 ms，失败时 Scorer 按候选数返回错误，由流水线失败隔离处理 |
+
+除上表外，`clients/` 下还有未接入主链的骨架客户端：`impressed_posts_client.rs`、`impression_bloom_filter_client.rs`、`socialgraph_client.rs`、`tweet_mixer_client.rs`，均为 trait + 占位实现，供后续扩展。
 
 ### 6.1 可选集成与人工接入
 

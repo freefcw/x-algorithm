@@ -4,7 +4,7 @@
 
 Thunder 的 Kafka 和 gRPC 只是两条 I/O 边，真正承载系统语义的是 `PostStore`。
 
-它把帖子维护成四类状态：
+它把帖子维护成五类状态：
 
 - `posts`: `post_id -> LightPost`
 - `original_posts_by_user`: `author_id -> VecDeque<TinyPost>`
@@ -185,7 +185,7 @@ flowchart TD
 几个关键细节：
 
 - 裁剪判断基于 `TinyPost.created_at`
-- original / secondary 裁剪时会同步 `posts.remove(post_id)`
+- original / secondary / video 裁剪走同一闭包，都会同步 `posts.remove(post_id)`（video 裁剪时该帖通常已被原路径删过）
 - 处理 `DELETE_EVENT_KEY` 时，还会顺手删除对应 tombstone
 - 如果某个作者时间线空了，会把该作者键一起删掉
 

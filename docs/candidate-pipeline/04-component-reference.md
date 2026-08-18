@@ -20,5 +20,5 @@
 
 ## 两个容易踩的实现事实
 
-- `CoreDataCandidateHydrator` 的 `update()` 不会写回 `candidate.author_id`，作者 ID 始终以 Source 阶段填充的为准。
-- 同 stage Hydrator 仍不能依赖彼此写回。当前 `GizmoduckCandidateHydrator` 已移到 post-selection，所以能读取 pre-selection CoreData 写入的 `retweeted_user_id`；后续字段依赖也必须用跨 stage 或共享 provider 表达。
+- `CoreDataCandidateHydrator` 的 `update()` 只在 `candidate.author_id == 0`（source 未填作者）且 TES 返回了作者时才写回 `candidate.author_id`；已填的作者 ID 不会被覆盖。
+- 同 stage Hydrator 仍不能依赖彼此写回。当前 `GizmoduckCandidateHydrator` 已移到 post-selection，所以能读取 pre-selection CoreData 写入的 `retweeted_user_id`；后续字段依赖也必须用跨 stage 或共享 provider 表达。注意 demo 且开启 `author_cold_start` 时，装配层会额外向 pre-selection hydrators 注入一个 `GizmoduckCandidateHydrator` 实例（用于探索前补作者粉丝数）。

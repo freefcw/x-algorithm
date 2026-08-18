@@ -12,6 +12,8 @@
 6. 对外返回：`home_mixer::ScoredPost`
 7. Thunder 输入对象：`thunder::LightPost`
 
+> **收录范围**：本篇只收录对链路行为有直接影响的核心字段，不是逐字段全集。完整字段定义以源文件为准：proto 见 `proto/definitions/home_mixer.proto`，内部结构见 `home-mixer/models/` 对应文件。
+
 ## 1. 对外请求字段：proto `ScoredPostsQuery`
 
 来源文件：

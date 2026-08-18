@@ -87,7 +87,8 @@ TES 相关 hydrator 共享一个 request-scoped `TesHydrationProvider`，避免�
 
 1. `PhoenixScorer`：读取 Phoenix 行为概率；5 s timeout，失败保留候选。
 2. `RankingScorer`：在上游命名边界内执行 Weighted、Author Diversity 和 OON 行为。
-3. `TopKScoreSelector`：保留 post-selection 前 Top 50。
+3. 可选 `VMRanker`、`AuthorColdStartScorer`（都要显式开开关）。
+4. `TopKScoreSelector`：保留 post-selection 前 Top 50。
 
 ### 3.6 Post-selection
 

@@ -13,7 +13,8 @@
 1. [home-mixer/](./home-mixer/)：Feed 编排层——一次请求如何经过召回、补全、过滤、打分、选择。
 2. [candidate-pipeline/](./candidate-pipeline/)：流水线框架——各阶段的执行顺序、并发与容错语义。
 3. [thunder/](./thunder/)：网内实时帖子缓存——Kafka 摄入、内存索引、查询服务。
-4. [phoenix/](./phoenix/)：Python/JAX 模型——精排、双塔召回、服务化与训练。
+4. [phoenix/](./phoenix/)：模型层——演示用 Python/JAX 链路，以及 `xrex/`/`crates/` 生产引擎导读。
+5. 旁路（默认不进演示）：根目录 `vm-ranker/`（二次重排）、`grox/`（独立任务 DAG，见 [../grox/README.md](../grox/README.md)）。
 
 ## 我想继续建设生产链路
 
@@ -40,7 +41,9 @@
 | [home-mixer/](./home-mixer/) | `current-code` | 首页 Feed 编排服务、请求生命周期、组件和字段字典。 |
 | [candidate-pipeline/](./candidate-pipeline/) | `current-code` | 通用候选流框架及 `PhoenixCandidatePipeline` 当前装配。 |
 | [thunder/](./thunder/) | `current-code` | Kafka 摄入、内存索引、gRPC 查询和运维缺口。 |
-| [phoenix/](./phoenix/) | `current-code` | 精排、召回、服务封装的代码导读（操作类内容以 `phoenix/docs/` 为准）。 |
+| [phoenix/](./phoenix/) | `current-code` | 精排、召回、服务封装的代码导读（操作类内容以 `phoenix/docs/` 为准）。演示链与生产引擎两套代码都在 `phoenix/`。 |
+| [`../vm-ranker/`](../vm-ranker/) | `current-code` | 可选 VM Ranker + DPP 重排服务，默认关闭。 |
+| [`../grox/README.md`](../grox/README.md) | `current-code` | 独立 Grox DAG 运行时，不进主推荐链。 |
 | [training/](./training/) | `design` | 数据准备、训练样本和模型产物约束。 |
 | [operations/](./operations/) | `runbook` | 持续更新、切版、故障处理和发布检查。 |
 | [upstream-sync/](./upstream-sync/) | `design` / `current-code` | 上游能力同步（P3/P3b/P6 个性化话题与 MoE 召回演进记录）。 |
@@ -60,3 +63,4 @@ Phoenix 子项目内还有一套操作向文档（训练指引、真实数据接
 - 操作命令只写在一个地方（getting-started 或 phoenix/docs），其他文档用链接引用，避免命令漂移。
 - 新增文档时同步更新本文件和对应子目录的 `README.md`。
 - 引用仓库内文件统一使用相对路径，不使用本机绝对路径。
+- 代码行为变化后更新文档时，同一文档内的结论、缺口清单和示意图必须与篇首的更新说明一并重写，避免出现"开头说已实现、文末说未实现"的自相矛盾。

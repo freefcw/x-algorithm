@@ -67,7 +67,7 @@
 ```python
 import hashlib
 
-def id_to_hashes(entity_id, num_hashes: int = 2, table_size: int = 100_000) -> list[int]:
+def hash_id(entity_id, num_hashes: int = 2, table_size: int = 100_000) -> list[int]:
     """
     将任意整数或字符串 ID 映射为 num_hashes 个嵌入表索引。
     结果值域 [1, table_size]，0 保留给 padding。
@@ -157,8 +157,8 @@ post_emb_table   = ...
 author_emb_table = ...
 
 # 2. 把业务 ID 转为哈希值
-user_hashes[0] = id_to_hashes(user_id)
-history_post_hashes[0, t] = id_to_hashes(post_id)
+user_hashes[0] = hash_id(user_id)
+history_post_hashes[0, t] = hash_id(post_id)
 # ...（其余字段同理）
 
 # 3. 用哈希值做 numpy fancy indexing 查表（一行代码）
@@ -297,7 +297,6 @@ runner.params = unflatten_dict({k: raw[k] for k in raw.files})  # 再覆盖
 ### 6.2 训练代码骨架
 
 ```python
-# 需要先：uv add optax
 import optax
 import jax
 import haiku as hk
@@ -323,7 +322,7 @@ def train_step(params, opt_state, batch, embeddings, labels):
     return params_new, opt_state_new, loss
 ```
 
-> 完整训练脚本尚未在仓库中实现，上述为骨架示意。详细讨论见 `06-training-and-data.md §10`。
+> 上述为教学用骨架示意；仓库中可运行的完整实现见 `scripts/train_ranker.py`（含数据加载、多目标损失与 checkpoint 保存）。详细讨论见 `06-training-and-data.md §10`。
 
 ---
 
@@ -363,4 +362,4 @@ assert (batch.candidate_post_hashes > 0).all()
 | 训练侧全局分析 | `docs/phoenix/06-training-and-data.md` | 训练与推理一致性、损失函数推断、训练缺口清单 |
 | 本文档 | `docs/phoenix/07-real-data-integration.md` | 哈希嵌入实操、构造代码、保存/加载、阶段路径 |
 | 可运行示例 | `phoenix/scripts/run_real_data_demo.py` | 端到端代码，直接 `uv run scripts/run_real_data_demo.py` |
-| 双塔模型输入输出 | `phoenix/双塔模型输入输出指引文档.md` | 召回模型专项说明 |
+| 双塔模型输入输出 | `phoenix/docs/双塔模型输入输出指引文档.md` | 召回模型专项说明 |

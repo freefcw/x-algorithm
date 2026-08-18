@@ -26,6 +26,7 @@
 | `selector.rs` | 排序/截断 trait |
 | `side_effect.rs` | 副作用 trait |
 | `feature_switch.rs` | 特性开关控制抽象与辅助扩展 |
+| `pipeline_summary.rs` | 每请求分阶段聚合统计与摘要日志 |
 | `util.rs` | 通用工具，目前主要是日志展示用的类型名缩短 |
 
 ## 3. 核心数据模型
@@ -82,9 +83,9 @@
 
 ### 4.1 组件共性
 
-除 `Selector` 外，其他阶段组件都支持：
+所有阶段组件（含 `Selector`）都支持：
 
-- `enable(&self, query: &Q)` 或 `enable(&self, query: Arc<Q>)`
+- `enable(&self, query: &Q)` 或 `enable(&self, query: Arc<Q>)`；`Selector::enable()` 返回 false 时直接透传候选，不排序也不裁剪
 - `name()`，默认来自组件类型名
 
 这意味着运行期开关全部是“按请求动态决定”的，而不是全局静态装配。
@@ -105,7 +106,8 @@
 ```mermaid
 flowchart LR
     A[原始 Query] --> B[QueryHydrators]
-    B --> C[Sources]
+    B --> B2[DependentQueryHydrators]
+    B2 --> C[Sources]
     C --> D[Hydrators]
     D --> E[Filters]
     E --> F[Scorers]
@@ -113,21 +115,25 @@ flowchart LR
     G --> H[Post-selection Hydrators]
     H --> I[Post-selection Filters]
     I --> J[truncate result_size]
-    J --> K[run SideEffects]
-    J --> L[PipelineResult]
+    J --> J2[finalize 扩展点]
+    J2 --> K[run SideEffects]
+    J2 --> L[PipelineResult]
 ```
 
-框架源码中的 `PipelineStage` 只覆盖：
+框架源码中的 `PipelineStage` 覆盖全部阶段，共 10 个变体：
 
 - `QueryHydrator`
+- `DependentQueryHydrator`
 - `Source`
 - `Hydrator`
 - `PostSelectionHydrator`
 - `Filter`
 - `PostSelectionFilter`
 - `Scorer`
+- `Selector`
+- `SideEffect`
 
-它没有 `Selector` 和 `SideEffect` 两个 stage 枚举值。这意味着日志里不会自然形成完整的“selector / side effect 阶段”观测维度。
+selector 和 side effect 同样有框架级 stage 日志（`select()` 输出 `input/selected/non_selected/elapsed_ms`，`run_side_effects()` 逐个记录成功/失败），`pipeline_summary.rs` 的每请求聚合摘要覆盖全部 10 个变体。
 
 ## 6. 运行时假设
 

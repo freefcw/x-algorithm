@@ -82,7 +82,7 @@ flowchart TD
 
 ## 3. Pipeline 的真实装配顺序
 
-`home-mixer` 当前只装了一条主 pipeline：`PhoenixCandidatePipeline`。
+`home-mixer` 有两层：内层 `PhoenixCandidatePipeline` 负责帖子召回和打分；外层 `ForYouCandidatePipeline` 用 `BlenderSelector` 把帖子和可选模块（广告 / 关注推荐 / Prompt，默认都关）编成最终 Feed。`GetScoredPosts` 只走内层，`GetForYouFeed` 再走外层。
 
 ### 3.1 Query Hydrators
 
@@ -135,6 +135,8 @@ flowchart TD
 
 1. `PhoenixScorer`
 2. `RankingScorer`（内部保留 Weighted / AuthorDiversity / OON 行为）
+3. 可选 `VMRanker`（`HOME_MIXER_ENABLE_VM_RANKER` + `VM_RANKER_GRPC_ADDR`）
+4. 可选 `AuthorColdStartScorer`（仅 demo，且 `HOME_MIXER_ENABLE_AUTHOR_COLD_START`）
 
 ### 3.6 Selector
 
@@ -167,7 +169,7 @@ graph LR
 
 | 上游写入 | 下游依赖 |
 | --- | --- |
-| `scoring_sequence` / `retrieval_sequence` | `PhoenixScorer` / `PhoenixSource` |
+| `scoring_sequence` / `retrieval_sequence`（各自缺失时都回退 `user_action_sequence`） | `PhoenixScorer` / `PhoenixSource` |
 | `user_features.followed_user_ids` | `ThunderSource`、`InNetworkCandidateHydrator` |
 | `tweet_text` | `CoreDataHydrationFilter`、`MutedKeywordFilter` |
 | `retweeted_tweet_id` | `RetweetDeduplicationFilter`、`PhoenixScorer` |

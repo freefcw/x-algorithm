@@ -33,11 +33,13 @@ cd phoenix && uv sync --group service && cd ..
 
 ```text
 #    帖子 ID                作者       得分         网内         来源
-1    2079102310290007235  212      0.2642     否          Phoenix 网外
+1    2079102310290007235  212      0.0031     否          Phoenix 网外
 ...
-48   2079100111060730041  101      0.1717     是          Thunder 网内
-共 50 条：网内 12 条 + 网外 38 条。链路打通。
+34   2079100111060730041  101      0.0008     是          Thunder 网内
+共 35 条：网内 4 条 + 网外 31 条。链路打通。
 ```
+
+演示先保留打分后的 Top 50，再把响应裁到 35 条（`RESULT_SIZE`）。上面的 4 / 31 只是某次随机权重快照，比例会变，两类来源都出现即可。
 
 完整教程（装环境 → 模型演示 → 起服务 → 训练 → 端到端 → 生产缺口）见 **[docs/getting-started/](docs/getting-started/)**，文档总入口是 [docs/README.md](docs/README.md)。
 
@@ -76,7 +78,7 @@ cd phoenix && uv sync --group service && cd ..
 | 选择后过滤 | 最终的可见性和去重检查 |
 | 副作用 (Side Effects) | 缓存请求信息以供未来使用 |
 
-服务器对外暴露 gRPC 接口（`ScoredPostsService`）。上游依赖（用户资料、帖子内容、行为日志、内容安全）通过 `home-mixer/clients/` 下的 trait 抽象——当前是带演示模式（`HOME_MIXER_DEMO=1`）的桩实现，设计上就是留给你替换为自己平台服务的。
+服务器对外暴露 `ScoredPostsService`（排序帖子）和 `ForYouFeedService`（最终 Feed）。上游依赖（用户资料、帖子内容、行为日志、内容安全）通过 `home-mixer/clients/` 下的 trait 抽象——当前是带演示模式（`HOME_MIXER_MODE=demo`；`HOME_MIXER_DEMO=1` 是旧别名）的桩实现，设计上就是留给你替换为自己平台服务的。
 
 ### Thunder
 
@@ -108,13 +110,13 @@ Phoenix 自带训练脚本（`phoenix/scripts/train_*.py`）、HTTP 服务和 gR
 
 ## 打分与排序
 
-Phoenix 模型预测多种互动行为的概率，**加权打分器**把它们合成最终得分：
+Phoenix 模型预测多种互动行为的概率，**RankingScorer** 把它们合成最终得分（内部按序做加权、作者多样性、网外降权）：
 
 ```
 最终得分 = Σ (权重_i × P(行为_i))
 ```
 
-正向行为（点赞、转发、分享）为正权重，负向行为（拉黑、静音、举报）为负权重。权重定义在 [`home-mixer/params.rs`](home-mixer/params.rs)——它们是开源默认值，不是 X 线上真实参数。
+正向行为（点赞、转发、分享）为正权重，负向行为（拉黑、静音、举报）为负权重。权重定义在 [`home-mixer/params/`](home-mixer/params/)——它们是对齐上游的开源默认值，不是 X 线上实时参数。
 
 ## 过滤
 
@@ -129,15 +131,19 @@ Phoenix 模型预测多种互动行为的概率，**加权打分器**把它们�
 | `RetweetDeduplicationFilter` | 对同一内容的转发去重 |
 | `IneligibleSubscriptionFilter` | 移除无权访问的付费订阅内容 |
 | `PreviouslySeenPostsFilter` | 移除已经看过的帖子 |
+| `PreviouslySeenPostsBackupFilter` | 请求只有曝光 ID、没有 seen_ids 时的备份去重 |
 | `PreviouslyServedPostsFilter` | 移除本会话已投递过的帖子 |
 | `MutedKeywordFilter` | 移除包含屏蔽词的帖子 |
 | `AuthorSocialgraphFilter` | 移除被拉黑/静音作者的帖子 |
+| `VideoFilter` | 请求带 `exclude_videos` 时去掉视频帖 |
+| `TopicIdsFilter` / `NewUserTopicIdsFilter` | 话题请求只保留对题的帖 |
 
 **选择后过滤器：**
 
 | 过滤器 | 用途 |
 |--------|------|
 | `VFFilter` | 移除已删除/垃圾/暴力等帖子 |
+| `AncillaryVFFilter` | 引用/转发附属内容被审核挡住时一并去掉 |
 | `DedupConversationFilter` | 对同一对话线程的多个分支去重 |
 
 ## 关键设计决策

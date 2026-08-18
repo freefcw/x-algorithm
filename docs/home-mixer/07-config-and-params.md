@@ -12,13 +12,13 @@
 
 - 进程启动参数
 - 环境变量
-- 编译期常量 `params.rs`
+- 编译期常量 `params/`（`param.rs` 权重与召回上限，`config.rs` TopK / 超时）
 
 ```mermaid
 flowchart TD
     A["启动配置"] --> B["CLI 参数<br/>main.rs"]
     A --> C["环境变量<br/>clients / side_effects"]
-    A --> D["编译期常量<br/>params.rs"]
+    A --> D["编译期常量<br/>params/"]
 
     B --> B1["grpc_port"]
     B --> B2["metrics_port"]
@@ -27,7 +27,7 @@ flowchart TD
 
     C --> C1["THUNDER_GRPC_ADDR"]
     C --> C2["Phoenix gRPC 地址"]
-    C --> C3["HOME_MIXER_DEMO"]
+    C --> C3["HOME_MIXER_MODE"]
     C --> C4["HOME_MIXER_ENABLE_*<br/>可选集成，默认关闭"]
 
     D --> D1["召回上限"]
@@ -119,7 +119,7 @@ Phoenix 两个主服务地址通常同时指向 `phoenix/scripts/run_grpc_gatewa
 
 | 常量 | 值 | 使用点 |
 | --- | --- | --- |
-| `MAX_GRPC_MESSAGE_SIZE` | `16 * 1024 * 1024` | gRPC server 的编码/解码消息大小限制 |
+| `MAX_GRPC_MESSAGE_SIZE` | `128 * 1024 * 1024` | gRPC server 的编码/解码消息大小限制 |
 | `THUNDER_REQUEST_TIMEOUT_MS` | `500` | Thunder 网内召回上限 |
 | `UAS_FETCH_TIMEOUT_MS` | `500` | request-scoped UAS 读取上限 |
 | `USER_FEATURES_FETCH_TIMEOUT_MS` | `500` | request-scoped Strato 用户特征读取上限 |
@@ -131,6 +131,7 @@ Phoenix 两个主服务地址通常同时指向 `phoenix/scripts/run_grpc_gatewa
 | `PHOENIX_PREDICTION_TIMEOUT_MS` | `5000` | Phoenix 精排上限 |
 | `TOPIC_RETRIEVAL_TIMEOUT_MS` | `500` | Topic 召回上限 |
 | `VF_REQUEST_TIMEOUT_MS` | `500` | 单组可见性检查上限 |
+| `VM_RANKER_TIMEOUT_MS` | `500` | 可选 VM Ranker 二次重排上限 |
 
 ### 4.2 对外监听结构
 
@@ -153,10 +154,11 @@ flowchart LR
 
 | 常量 | 值 | 影响组件 | 影响说明 |
 | --- | --- | --- | --- |
-| `THUNDER_MAX_RESULTS` | `500` | `ThunderSource` | 网内召回上限 |
-| `PHOENIX_MAX_RESULTS` | `300` | `PhoenixSource` | 网外召回上限 |
+| `THUNDER_MAX_RESULTS` | `1200` | `ThunderSource` | 网内召回上限 |
+| `PHOENIX_MAX_RESULTS` | `1000` | `PhoenixSource` | 网外召回上限 |
+| `TOPIC_MAX_RESULTS` | `100` | `PhoenixTopicsSource` | 话题源单次上限 |
 
-这两个值共同决定了进入补全阶段前的候选池规模上限。
+Thunder + Phoenix 决定主链进入补全前的候选池规模；话题源另计。
 
 ## 6. 打分权重参数
 
@@ -165,54 +167,55 @@ flowchart LR
 | 常量 | 值 | 含义 |
 | --- | --- | --- |
 | `FAVORITE_WEIGHT` | `0.5` | 点赞 |
-| `REPLY_WEIGHT` | `27.0` | 回复 |
+| `REPLY_WEIGHT` | `5.0` | 回复 |
 | `RETWEET_WEIGHT` | `1.0` | 转发 |
-| `PHOTO_EXPAND_WEIGHT` | `0.02` | 图片展开 |
-| `CLICK_WEIGHT` | `0.04` | 点击详情 |
-| `PROFILE_CLICK_WEIGHT` | `0.02` | 点击作者主页 |
-| `VQV_WEIGHT` | `0.005` | 视频有效观看 |
-| `SHARE_WEIGHT` | `1.0` | 分享 |
-| `SHARE_VIA_DM_WEIGHT` | `1.0` | 私信分享 |
-| `SHARE_VIA_COPY_LINK_WEIGHT` | `1.0` | 复制链接分享 |
-| `DWELL_WEIGHT` | `0.001` | 二值停留 |
-| `QUOTE_WEIGHT` | `1.0` | 引用转发 |
-| `QUOTED_CLICK_WEIGHT` | `0.02` | 点击引用帖 |
-| `FOLLOW_AUTHOR_WEIGHT` | `1.0` | 关注作者 |
+| `PHOTO_EXPAND_WEIGHT` | `0.05` | 图片展开 |
+| `VIDEO_OPEN_WEIGHT` | `0.05` | 打开视频 |
+| `CLICK_WEIGHT` | `0.4` | 点击详情 |
+| `OPEN_LINK_WEIGHT` | `0.2` | 打开链接 |
+| `PROFILE_CLICK_WEIGHT` | `0.0` | 点击作者主页 |
+| `POST_UNEXPLORED_WEIGHT` | `0.02` | 低探索帖加分（默认只加给网内） |
+| `VQV_WEIGHT` | `0.05` | 视频有效观看 |
+| `SHARE_WEIGHT` | `2.0` | 分享 |
+| `SHARE_VIA_DM_WEIGHT` | `5.0` | 私信分享 |
+| `SHARE_VIA_COPY_LINK_WEIGHT` | `20.0` | 复制链接分享 |
+| `DWELL_WEIGHT` | `0.0` | 二值停留 |
+| `QUOTE_WEIGHT` | `5.0` | 引用转发 |
+| `QUOTED_CLICK_WEIGHT` | `0.05` | 点击引用帖 |
+| `FOLLOW_AUTHOR_WEIGHT` | `4.0` | 关注作者 |
 
 ### 6.2 连续行为
 
 | 常量 | 值 | 含义 |
 | --- | --- | --- |
-| `CONT_DWELL_TIME_WEIGHT` | `0.0001` | 连续停留时间 |
+| `CONT_DWELL_TIME_WEIGHT` | `0.004` | 连续停留时间 |
 
 ### 6.3 负向行为
 
 | 常量 | 值 | 含义 |
 | --- | --- | --- |
-| `NOT_INTERESTED_WEIGHT` | `-74.0` | 不感兴趣 |
-| `BLOCK_AUTHOR_WEIGHT` | `-74.0` | 拉黑作者 |
-| `MUTE_AUTHOR_WEIGHT` | `-74.0` | 静音作者 |
-| `REPORT_WEIGHT` | `-369.0` | 举报 |
+| `NOT_INTERESTED_WEIGHT` | `-43.2` | 不感兴趣 |
+| `BLOCK_AUTHOR_WEIGHT` | `-31.2` | 拉黑作者 |
+| `MUTE_AUTHOR_WEIGHT` | `-58.8` | 静音作者 |
+| `REPORT_WEIGHT` | `-234.0` | 举报 |
+| `NOT_DWELLED_WEIGHT` | `-0.02` | 未停留 |
 
 ### 6.4 归一化相关
 
 | 常量 | 值 | 当前作用 |
 | --- | --- | --- |
-| `WEIGHTS_SUM` | `33.6112` | `WeightedScorer::offset_score()` |
-| `NEGATIVE_WEIGHTS_SUM` | `-591.001` | `WeightedScorer::offset_score()` |
-| `NEGATIVE_SCORES_OFFSET` | `1.0` | `WeightedScorer::offset_score()` |
+| `NEGATIVE_SCORES_OFFSET` | `0.001` | `RankingScorer` 把负分映射进 `[0, offset)`，正分整体抬高该值 |
 
-注意：
-
-- 这些常量的注释意图和当前负分公式之间存在不完全一致，详见风险文档。
+正负权重和在 `ScoringWeights::from_defaults()` 里现场求和，不再单独维护 `WEIGHTS_SUM` / `NEGATIVE_WEIGHTS_SUM`。
 
 ## 7. 多样性与网外降权参数
 
 | 常量 | 值 | 影响组件 | 作用 |
 | --- | --- | --- | --- |
-| `OON_WEIGHT_FACTOR` | `0.5` | `OONScorer` | 网外内容统一降权 |
-| `AUTHOR_DIVERSITY_DECAY` | `0.5` | `AuthorDiversityScorer` | 同作者重复衰减 |
-| `AUTHOR_DIVERSITY_FLOOR` | `0.1` | `AuthorDiversityScorer` | 衰减地板 |
+| `OON_WEIGHT_FACTOR` | `0.75` | `RankingScorer` | 网外降权；网内回复/转发默认也乘（`ENABLE_OON_RESCORE_FOR_IN_NETWORK_REPLIES_RETWEETS`） |
+| `TOPIC_OON_WEIGHT_FACTOR` | `0.5` | `RankingScorer` | 话题请求的网外降权 |
+| `AUTHOR_DIVERSITY_DECAY` | `0.5` | `RankingScorer` | 同作者重复衰减 |
+| `AUTHOR_DIVERSITY_FLOOR` | `0.25` | `RankingScorer` | 衰减地板 |
 
 ## 8. UAS 参数
 
@@ -226,7 +229,7 @@ flowchart LR
 | 常量 | 值 | 影响组件 | 作用 |
 | --- | --- | --- | --- |
 | `MAX_POST_AGE` | `48 小时` | `AgeFilter` | 帖子年龄限制 |
-| `MIN_VIDEO_DURATION_MS` | `2000` | `RankingScorer` | 是否启用 VQV 权重 |
+| `MIN_VIDEO_DURATION_MS` | `10000` | `RankingScorer` | 是否启用 VQV 权重 |
 
 ## 10. 输出参数
 
@@ -250,7 +253,7 @@ flowchart LR
 当前配置体系是“骨架完整、动态化不足”的状态：
 
 - 有明确的参数分层
-- 主要排序和过滤阈值都集中在 `params.rs`
+- 主要排序和过滤阈值都集中在 `params/`
 - 但很多参数还是编译期常量，不是运行时配置
 - 启动参数里也有两个暂未接入业务逻辑的保留位
 

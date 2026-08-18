@@ -44,16 +44,12 @@ graph TD
 
 ## Phoenix 在仓库里的位置
 
-Phoenix 是一个独立的 Python 3.11/JAX 子项目，核心文件集中在 `phoenix/`：
+`phoenix/` 里有两套代码：
 
-- `grok.py`：Transformer 基础实现。
-- `recsys_model.py`：精排模型。
-- `recsys_retrieval_model.py`：召回模型。
-- `runners.py`：把 Haiku/JAX 模型封装成可初始化、可调用的推理器。
-- `scripts/run_ranker.py` / `scripts/run_retrieval.py`：本地演示入口。
-- `scripts/train_ranker.py` / `scripts/train_retrieval.py`：训练入口。
-- `services/`：拆分后的精排服务、召回服务、gRPC 网关及其配套组件。
-- `tests/`：当前测试。
+- **演示链路**（getting-started 和 home-mixer 演示走这条）：`grok.py`、`recsys_model.py`、`recsys_retrieval_model.py`、`runners.py`、`scripts/`、`services/`。macOS 可跑，gRPC 网关实现仓库根上的 `proto/definitions/recsys.proto`。
+- **生产引擎**（Linux + CUDA）：`xrex/`、`python/`、`crates/serving/`。自己的 proto 在 `phoenix/crates/serving/xai-recsys-proto`。入口见 [`phoenix/README.md`](../../phoenix/README.md) 和 `QUICKSTART.md`。
+
+下面这组文档主要讲演示链路。生产引擎以 `phoenix/README.md` 为准。
 
 ## 一张总图
 

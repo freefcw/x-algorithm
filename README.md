@@ -32,12 +32,14 @@ cd phoenix && uv sync --group service && cd ..
 Expected output — a ranked feed mixing both retrieval sources:
 
 ```text
-#    Post ID              Author   Score      In-Net     Source
-1    2079102310290007235  212      0.2642     no         Phoenix (out-of-network)
+#    帖子 ID                作者       得分         网内         来源
+1    2079102310290007235  212      0.0031     否          Phoenix 网外
 ...
-48   2079100111060730041  101      0.1717     yes        Thunder (in-network)
-Total 50 posts: 12 in-network + 38 out-of-network. Pipeline works.
+34   2079100111060730041  101      0.0008     是          Thunder 网内
+共 35 条：网内 4 条 + 网外 31 条。链路打通。
 ```
+
+The client prints Chinese headers. The demo keeps the top 50 after scoring, then trims the response to 35 (`RESULT_SIZE`). In-network / out-of-network counts and scores vary with random weights; both sources appearing is enough.
 
 The full walkthrough (environment setup → model demo → serving → training → end-to-end → production gaps) lives in **[docs/getting-started/](docs/getting-started/)** (Chinese, as is most documentation in this repo). The documentation hub is [docs/README.md](docs/README.md).
 
@@ -146,7 +148,7 @@ The orchestration layer that assembles the For You feed. It leverages the `Candi
 | Post-Selection Filters | Final visibility and dedup checks |
 | Side Effects | Cache request info for future use |
 
-The server exposes a gRPC endpoint (`ScoredPostsService`) that returns ranked posts for a given user. Upstream dependencies (user profiles, post content, engagement logs, trust & safety) are abstracted behind traits in `home-mixer/clients/` — currently stubs with a demo mode (`HOME_MIXER_DEMO=1`), designed to be replaced with your platform's services.
+The server exposes `ScoredPostsService` (ranked posts) and `ForYouFeedService` (final feed). Upstream dependencies (user profiles, post content, engagement logs, trust & safety) are abstracted behind traits in `home-mixer/clients/` — currently stubs with a demo mode (`HOME_MIXER_MODE=demo`; `HOME_MIXER_DEMO=1` is a legacy alias), designed to be replaced with your platform's services.
 
 ### Thunder
 
@@ -223,11 +225,10 @@ The framework runs sources and hydrators in parallel where possible, with config
    - Previously seen or recently served
    - Ineligible subscription content
 
-5. **Scoring**: Apply multiple scorers sequentially:
+5. **Scoring**: Apply scorers sequentially:
    - **Phoenix Scorer**: Get ML predictions from the Phoenix transformer model
-   - **Weighted Scorer**: Combine predictions into a final relevance score
-   - **Author Diversity Scorer**: Attenuate repeated author scores for diversity
-   - **OON Scorer**: Adjust scores for out-of-network content
+   - **Ranking Scorer**: Combine predictions into a weighted score, then apply author diversity and out-of-network attenuation
+   - Optional: **VM Ranker** (second-pass rerank) and **Author Cold Start** (behind explicit flags)
 
 6. **Selection**: Sort by score and select the top K candidates
 
@@ -256,13 +257,13 @@ Predictions:
 └── P(report)
 ```
 
-The **Weighted Scorer** combines these into a final score:
+The **Ranking Scorer** combines these into a final score:
 
 ```
 Final Score = Σ (weight_i × P(action_i))
 ```
 
-Positive actions (like, repost, share) have positive weights. Negative actions (block, mute, report) have negative weights, pushing down content the user would likely dislike. The weights live in [`home-mixer/params.rs`](home-mixer/params.rs) — they are open-source defaults, not X's production values.
+Positive actions (like, repost, share) have positive weights. Negative actions (block, mute, report) have negative weights, pushing down content the user would likely dislike. The weights live in [`home-mixer/params/`](home-mixer/params/) — they are open-source defaults mirrored from upstream, not X's live production values.
 
 ### Filtering
 
@@ -278,14 +279,18 @@ Filters run at two stages:
 | `RetweetDeduplicationFilter` | Dedupe reposts of same content |
 | `IneligibleSubscriptionFilter` | Remove paywalled content user can't access |
 | `PreviouslySeenPostsFilter` | Remove posts user has already seen |
+| `PreviouslySeenPostsBackupFilter` | Backup seen-id filter when the request only has impression IDs |
 | `PreviouslyServedPostsFilter` | Remove posts already served in session |
 | `MutedKeywordFilter` | Remove posts with user's muted keywords |
 | `AuthorSocialgraphFilter` | Remove posts from blocked/muted authors |
+| `VideoFilter` | Drop video posts when the request sets `exclude_videos` |
+| `TopicIdsFilter` / `NewUserTopicIdsFilter` | Keep topic-constrained requests on-topic |
 
 **Post-Selection Filters:**
 | Filter | Purpose |
 |--------|---------|
 | `VFFilter` | Remove posts that are deleted/spam/violence/gore etc. |
+| `AncillaryVFFilter` | Drop quote/retweet ancillaries when VF says so |
 | `DedupConversationFilter` | Deduplicate multiple branches of the same conversation thread |
 
 ## Key Design Decisions

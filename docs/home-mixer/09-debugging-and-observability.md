@@ -56,10 +56,10 @@
 `candidate-pipeline` 框架里最重要的日志模式是：
 
 ```text
-request_id=... stage=... component=... fetched N candidates
-request_id=... stage=... component=... failed: ...
-request_id=... stage=... component=... skipped: length_mismatch ...
-request_id=... stage=... kept N, removed M
+request_id=... stage=Source component=... output=N elapsed_ms=...
+request_id=... stage=... component=... failed: ... elapsed_ms=...
+Hydrator length_mismatch expected=N got=M   # warn 级，无 request_id 前缀，该组件整份转 Err
+request_id=... stage=Filter component=... input=K kept=N removed=M elapsed_ms=...
 ```
 
 这几类日志分别对应：
@@ -116,7 +116,7 @@ flowchart TD
 
 Filter 阶段会有总的：
 
-- `kept N, removed M`
+- `kept=N removed=M`
 
 如果 source 有候选但 filter 后接近清空，问题就在补全或过滤链。
 
@@ -124,7 +124,7 @@ Filter 阶段会有总的：
 
 即使前面都正常，最终条数还是可能不足，因为：
 
-- selector 先取 100
+- selector 先取 50
 - post-selection 再删
 - 不回补
 
@@ -180,7 +180,7 @@ flowchart LR
 
 这里要记住：
 
-- 当前实现不会从第 101 名以后回补
+- 当前实现不会从第 51 名以后回补
 
 ## 6. 当前观测盲点
 

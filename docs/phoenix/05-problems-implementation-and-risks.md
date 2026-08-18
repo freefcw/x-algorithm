@@ -120,17 +120,14 @@ flowchart TD
 ### 已覆盖
 
 - `make_recsys_attn_mask` 的结构和边界情况。
-- 召回模型输出 shape。
-- 用户向量、候选向量的 L2 归一化。
-- 召回 runner 的初始化与调用。
+- 召回模型输出 shape、向量归一化和 runner 调用。
+- gRPC 网关契约、策略工厂、规则打分、发布 artifact 兼容。
 
 ### 未充分覆盖
 
-- 精排模型完整前向。
-- 精排 logits 到 `RankingOutput` 的行为字段映射。
-- 服务层接口和异常路径。
-- checkpoint 加载与热更新。
-- 真实 feature store / vector index 集成。
+- 精排模型完整前向和 logits 到行为字段的逐项映射。
+- checkpoint 热更新。
+- 真实 feature store / 外部向量索引集成。
 
 ## 5. 当前最值得关注的风险
 
@@ -155,15 +152,15 @@ flowchart TD
 - `VectorIndex` 默认回退 mock corpus。
 - 没有完整 ANN 检索闭环。
 
-## 5.4 训练闭环缺失
+## 5.4 训练评估与例行化缺失
 
-当前代码能说明“推理时怎么做”，但还不能完整说明：
+基础训练程序已落地（`scripts/train_ranker.py`：多目标 BCE + dwell MSE；`scripts/train_retrieval.py`：in-batch negatives），已经能说明参数如何训练得来、多目标 loss 如何定义、负采样如何做。仍不能完整说明：
 
-- 参数如何训练得来。
-- 多目标 loss 如何定义。
-- 负采样、召回训练、精排训练如何配合。
+- 训练效果如何评估（AUC / 召回率等指标与评估集）。
+- 离线物品向量导出与索引如何串联。
+- 持续训练、checkpoint 版本化与发版如何例行化。
 
-这意味着 Phoenix 目前更适合做推理结构分析，而不是训练策略分析。
+这意味着 Phoenix 目前可以完成基础训练与推理结构分析，但还缺少训练效果评估与生产例行化证据。
 
 ## 5.5 默认随机初始化导致结果只具备演示意义
 

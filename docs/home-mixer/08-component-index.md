@@ -9,6 +9,8 @@
 - 外部依赖
 - 下游依赖
 
+> **索引范围**：§1-§10 索引内层 `PhoenixCandidatePipeline` 装配的组件；ForYou 外层 pipeline（`for_you_candidate_pipeline.rs`）的装配见 §11；存在于代码中但未装配进任何 pipeline 的骨架组件见 §12。
+
 ## 1. Query Hydrators
 
 | 组件 | 文件 | enable | 读取 | 写回 | 外部依赖 | 下游依赖 |
@@ -27,7 +29,7 @@
 | 组件 | 文件 | enable | 读取 | 产出字段 | 外部依赖 | 说明 |
 | --- | --- | --- | --- | --- | --- | --- |
 | `ThunderSource` | `sources/thunder_source.rs` | 默认启用 | `user_id`、`followed_user_ids` | `tweet_id` `author_id` `in_reply_to_tweet_id` `ancestors` `served_type` | `ThunderClient` | 上游顺序第一；用 reply / conversation 构造 `ancestors` |
-| `PhoenixSource` | `sources/phoenix_source.rs` | 非网内限定、非 strict/cold-start topic、无 cached posts | `user_id`、`retrieval_sequence` | `tweet_id` `author_id` `in_reply_to_tweet_id` `served_type` | `PhoenixRetrievalClient` | 缺失序列直接失败 |
+| `PhoenixSource` | `sources/phoenix_source.rs` | 非网内限定、非 strict/cold-start topic、无 cached posts | `user_id`、`retrieval_sequence`（缺时回退 `user_action_sequence`） | `tweet_id` `author_id` `in_reply_to_tweet_id` `served_type` | `PhoenixRetrievalClient` | 两个序列都缺失时直接失败 |
 | `PhoenixTopicsSource` | `sources/phoenix_topics_source.rs` | 注入 topic adapter 且有 topic recall | selected topics | `tweet_id` `author_id` `served_type` | `TopicRetrievalClient` | 可选话题候选召回 |
 | `PhoenixMoeSource` | `sources/phoenix_moe_source.rs` | typed switch + endpoint + 请求允许 | `user_id`、`retrieval_sequence` | `tweet_id` `author_id` `served_type` | `PhoenixRetrievalClient` (MoE) | 默认关闭 |
 | `CachedPostsSource` | `sources/cached_posts_source.rs` | QueryBuilder 已接受显式 Demo unsigned fixture | 本地请求缓存 | `tweet_id` `author_id` 等 | 无 | 默认请求拒绝未签名缓存；启用时其他主要来源关闭 |
@@ -60,13 +62,13 @@
 | `RetweetDeduplicationFilter` | `filters/retweet_deduplication_filter.rs` | 默认启用 | `tweet_id` `retweeted_tweet_id` | 原帖/转推去重域冲突 |
 | `IneligibleSubscriptionFilter` | `filters/ineligible_subscription_filter.rs` | 默认启用 | `subscription_author_id` `subscribed_user_ids` | 订阅内容作者不在订阅列表 |
 | `PreviouslySeenPostsFilter` | `filters/previously_seen_posts_filter.rs` | 默认启用 | `seen_ids` `bloom_filter_entries` `related_post_ids` | 见过任一相关帖子 |
-| `PreviouslySeenPostsBackupFilter` | `filters/previously_seen_posts_backup_filter.rs` | 默认启用 | `seen_ids` | 命中二级已看去重备份逻辑 |
+| `PreviouslySeenPostsBackupFilter` | `filters/previously_seen_posts_backup_filter.rs` | `seen_ids` 为空且带了 `impressed_post_ids` | `impressed_post_ids` | 主 seen 列表缺失时，用曝光 ID 做备份去重 |
 | `PreviouslyServedPostsFilter` | `filters/previously_served_posts_filter.rs` | `query.is_bottom_request` | `served_ids` `related_post_ids` | 下翻请求里命中已下发帖子 |
 | `MutedKeywordFilter` | `filters/muted_keyword_filter.rs` | 默认启用 | `tweet_text` `muted_keywords` | 文本命中屏蔽关键词 |
 | `AuthorSocialgraphFilter` | `filters/author_socialgraph_filter.rs` | 默认启用 | `author_id` `blocked_user_ids` `muted_user_ids` | 作者在拉黑或静音列表 |
 | `TopicIdsFilter` | `filters/topic_ids_filter.rs` | strict topic 或 excluded topics | topic fields | strict topic 不匹配或命中排除项 |
 | `NewUserTopicIdsFilter` | `filters/new_user_topic_ids_filter.rs` | cold-start topics | `new_user_topic_ids` `filtered_topic_ids` `in_network` | 网外且不匹配 cold-start topic |
-| `VideoFilter` | `filters/video_filter.rs` | 默认启用 | `video_duration_ms` / 媒体信息 | 损坏或不合规的视频候选 |
+| `VideoFilter` | `filters/video_filter.rs` | `query.exclude_videos` | `video_duration_ms` | 请求不要视频时，丢掉带时长的候选 |
 
 ### 4.2 Post-selection Filters
 
@@ -80,9 +82,10 @@
 
 | 组件 | 文件 | enable | 读取 | 写回 | 外部依赖 | 说明 |
 | --- | --- | --- | --- | --- | --- | --- |
-| `PhoenixScorer` | `scorers/phoenix_scorer.rs` | 默认启用 | `scoring_sequence` 候选 tweet/author 关系 | `phoenix_scores` `prediction_request_id` `last_scored_at_ms` | `PhoenixPredictionClient`（5 s） | 超时保留候选并进入 fallback ranking；传播 QueryBuilder 的 prediction ID |
+| `PhoenixScorer` | `scorers/phoenix_scorer.rs` | 默认启用 | `scoring_sequence`（缺时回退 `user_action_sequence`）、候选 tweet/author 关系 | `phoenix_scores` `prediction_request_id` `last_scored_at_ms` | `PhoenixPredictionClient`（5 s） | 超时保留候选并进入 fallback ranking；传播 QueryBuilder 的 prediction ID |
 | `RankingScorer` | `scorers/ranking_scorer.rs` | 默认启用 | `phoenix_scores` `video_duration_ms` `author_id` `in_network` | `weighted_score` `score` | 无 | 对齐上游 47c1bcd：权重混合、作者多样性、OON 降权在同一 Scorer 内按序完成（旧 weighted/author_diversity/oon 三个文件已随上游删除） |
 | `VMRanker` | `scorers/vm_ranker.rs` | `HOME_MIXER_ENABLE_VM_RANKER=1` 且提供 `VM_RANKER_GRPC_ADDR` | `phoenix_scores` `score` `author_followers_count` `video_duration_ms` | `score` | `GrpcVMRankerClient`（500 ms） | 默认关闭；调用失败时按候选数返回错误交流水线隔离，不伪造分数 |
+| `AuthorColdStartScorer` | `scorers/author_cold_start.rs` | demo 且 `HOME_MIXER_ENABLE_AUTHOR_COLD_START` | `view_count` `author_followers_count` | `score` | 无 | 默认关闭；缺曝光或粉丝数的候选不参与 |
 
 ## 6. Selector
 
@@ -107,7 +110,6 @@
 | `snowflake` | `util/snowflake.rs` | 从 tweet id 推导创建时间 |
 | `bloom_filter` | `util/bloom_filter.rs` | 支持已看过内容去重 |
 | `candidates_util` | `util/candidates_util.rs` | 生成 related post ids |
-| `score_normalizer` | `util/score_normalizer.rs` | 归一化钩子，当前为 stub |
 | `post_text` | `post_text/mod.rs` | 屏蔽关键词分词与匹配 |
 | `visibility/models` | `visibility/models.rs` | 安全过滤原因和动作模型 |
 
@@ -151,3 +153,32 @@ flowchart TD
 - `VFCandidateHydrator` 的 `SafetyLevel` 选择
 
 所以它其实是排序和安全策略的共同分叉点。
+
+## 11. ForYou 外层 pipeline 组件
+
+`for_you_candidate_pipeline.rs` 在内层 `PhoenixCandidatePipeline` 之外装配了 ForYou 外层链路（query 类型同为 `ScoredPostsQuery`，候选类型为 `FeedItem`）：
+
+| 组件 | 文件 | 说明 |
+| --- | --- | --- |
+| `ServedHistoryQueryHydrator` | `query_hydrators/served_history_query_hydrator.rs` | 外层 query 补全：已服务历史 |
+| `PastRequestTimestampsQueryHydrator` | `query_hydrators/past_request_timestamps_query_hydrator.rs` | 外层 query 补全：历史请求时间戳 |
+| `ScoredPostsSource` | `sources/scored_posts_source.rs` | 把内层 pipeline 结果作为外层候选来源 |
+| `AdsSource` | `sources/ads_source.rs` | 广告来源（当前 `disabled`） |
+| `WhoToFollowSource` | `sources/who_to_follow_source.rs` | 推荐关注来源 |
+| `PromptsSource` | `sources/prompts_source.rs` | 提示卡片来源 |
+| `PushToHomeSource` | `sources/push_to_home_source.rs` | push 转 home 来源 |
+| `BlenderSelector` | `selectors/blender_selector.rs` | 外层混合选择（`BlenderConfig.max_items` 为外层 result_size） |
+| `ResponseStatsSideEffect` | `side_effects/response_stats_side_effect.rs` | 外层响应统计（`FeedStatsSink`） |
+
+## 12. 未装配的骨架组件
+
+以下组件存在于代码中，但当前未装配进任何 pipeline（预留扩展点）：
+
+| 组件 | 文件 |
+| --- | --- |
+| `ImpressedPostsQueryHydrator` | `query_hydrators/impressed_posts_query_hydrator.rs` |
+| `ImpressionBloomFilterQueryHydrator` | `query_hydrators/impression_bloom_filter_query_hydrator.rs` |
+| `TweetMixerSource` | `sources/tweet_mixer_source.rs` |
+| `BlockedByHydrator` | `candidate_hydrators/blocked_by_hydrator.rs`（BlockedBy 仍为 U3） |
+| `PublishSeenIdsToKafkaSideEffect` | `side_effects/publish_seen_ids_to_kafka_side_effect.rs` |
+| `ServedCandidatesKafkaSideEffect` | `side_effects/served_candidates_kafka_side_effect.rs` |

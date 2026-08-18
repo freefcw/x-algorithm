@@ -140,6 +140,8 @@ def id_to_hashes(id_val: int, num_hashes: int = 2, table_size: int = 100_000) ->
     return hashes
 ```
 
+> 注意：推理侧演示脚本 `phoenix/scripts/run_real_data_demo.py` 的 `hash_id` 用的是 `hash((entity_id, seed))` 实现，与本节 MD5 实现产出的哈希值不同。训练数据准备与推理输入构造必须使用同一种实现，否则嵌入表查找会错位。
+
 ### 4.2 `dwell_time`（索引 18）的归一化
 
 `dwell_time` 是一个连续值而非 0/1，建议用对数归一化后压缩到 [0, 1]：

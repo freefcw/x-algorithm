@@ -9,16 +9,18 @@
 | 步骤 | 调用 | 输入 | 输出 | 说明 |
 | --- | --- | --- | --- | --- |
 | 1 | `hydrate_query` | 原始 `Q` | hydrated `Q` | 并行执行所有启用的 `QueryHydrator` |
-| 2 | `fetch_candidates` | hydrated `Q` | `Vec<C>` | 并行执行所有启用的 `Source` 并拼接结果 |
-| 3 | `hydrate` | hydrated `Q` + candidates | hydrated `Vec<C>` | 并行执行候选补全 |
-| 4 | `filter` | hydrated `Q` + hydrated candidates | `(kept, removed)` | 串行执行 pre-selection filters |
-| 5 | `score` | hydrated `Q` + kept | scored `Vec<C>` | 串行执行 scorers |
-| 6 | `select` | hydrated `Q` + scored | selected `Vec<C>` | selector 排序和裁剪 |
-| 7 | `hydrate_post_selection` | hydrated `Q` + selected | hydrated `Vec<C>` | 对已选中候选做后补全 |
-| 8 | `filter_post_selection` | hydrated `Q` + post-hydrated | `(kept, removed)` | 串行执行 post-selection filters |
-| 9 | `truncate(result_size)` | kept | final `Vec<C>` | 结果再次裁剪 |
-| 10 | `run_side_effects` | query + final candidates | 无 | fire-and-forget |
-| 11 | 组装 `PipelineResult` | 各阶段中间结果 | `PipelineResult<Q, C>` | 返回给调用方 |
+| 2 | `hydrate_dependent_query` | hydrated `Q` | hydrated `Q` | 并行执行 `dependent_query_hydrators()`（默认空；可读取第一段 hydrator 写入的 query 字段） |
+| 3 | `fetch_candidates` | hydrated `Q` | `Vec<C>` | 并行执行所有启用的 `Source` 并拼接结果 |
+| 4 | `hydrate` | hydrated `Q` + candidates | hydrated `Vec<C>` | 并行执行候选补全 |
+| 5 | `filter` | hydrated `Q` + hydrated candidates | `(kept, removed)` | 串行执行 pre-selection filters |
+| 6 | `score` | hydrated `Q` + kept | scored `Vec<C>` | 串行执行 scorers |
+| 7 | `select` | hydrated `Q` + scored | selected `Vec<C>` | selector 排序和裁剪 |
+| 8 | `hydrate_post_selection` | hydrated `Q` + selected | hydrated `Vec<C>` | 对已选中候选做后补全 |
+| 9 | `filter_post_selection` | hydrated `Q` + post-hydrated | `(kept, removed)` | 串行执行 post-selection filters |
+| 10 | `truncate(result_size)` | kept | final `Vec<C>` | 结果再次裁剪；不足 result_size 时输出 `result_underfilled` 告警 |
+| 11 | `finalize` | query + final candidates | 无 | 公共扩展点，默认空实现 |
+| 12 | `run_side_effects` | query + final candidates | 无 | fire-and-forget |
+| 13 | 组装 `PipelineResult` | 各阶段中间结果 | `PipelineResult<Q, C>` | 返回给调用方 |
 
 ## 2. 并发与串行策略
 
@@ -140,7 +142,7 @@
 这两个值可以不同。当前 `home-mixer` 的装配就是：
 
 - selector 先保留 Top 50
-- post-selection 过滤后再截断到 50
+- post-selection 过滤后再截断到 35
 
 这会产生一个非常重要的行为：
 
@@ -193,15 +195,14 @@
 
 框架对 side effect 的处理是：
 
-- `tokio::spawn`
-- 不 await
-- 不检查每个 side effect 的结果
+- `tokio::spawn`，主链路不 await
+- 后台任务内 `join_all` 后逐个检查结果：成功记 `info!`、失败记 `error!`（含组件名与耗时）
 
-所以它不会影响主链路返回，但也意味着默认观测较弱。
+所以它不会影响主链路返回；结果有 request 级日志，但不进入 metrics 维度。
 
-### 7.3 selector 不在 `PipelineStage` 里
+### 7.3 selector 已有框架级日志
 
-当前框架对 selector 没有统一日志包装；如果需要观测 selector 选择前后规模或排序行为，需要在业务 selector 内部自行打点。
+`PipelineStage` 包含 `Selector` 变体，`select()` 会输出框架级 info 日志（`request_id=... stage=Selector component=... input=N selected=K non_selected=M elapsed_ms=...`），`selector.rs` 的 `run()` 还统一调用 `stat()` 包装。只有需要更细粒度的排序行为观测时，才需要在业务 selector 内部自行打点。
 
 ### 7.4 过滤和打分阶段都允许“静默降级”
 

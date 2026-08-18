@@ -6,7 +6,7 @@ Thunder 当前运行时会启动两个监听端口：
 
 | 端口 | 默认值 | 当前状态 |
 |---|---|---|
-| gRPC | `50051` | 真正提供 `GetInNetworkPosts` |
+| gRPC | `50052` | 真正提供 `GetInNetworkPosts` |
 | HTTP | `8080` | 只启动空 `Router`，没有实际路由 |
 
 所以当前对外的真实情况是：
@@ -79,7 +79,7 @@ flowchart TD
     A[Thunder 启动后不可用] --> B{gRPC 端口打开了吗?}
     B -- 否 --> C[检查进程是否启动 / 端口配置]
     B -- 是 --> D{Home Mixer 是否连对地址?}
-    D -- 否 --> E[检查 THUNDER_GRPC_ADDR 与默认 50051/50052 偏差]
+    D -- 否 --> E[检查 THUNDER_GRPC_ADDR 是否指向 50052]
     D -- 是 --> F{请求是否被 RESOURCE_EXHAUSTED?}
     F -- 是 --> G[检查 max_concurrent_requests 与流量峰值]
     F -- 否 --> H{查询结果为空?}
@@ -91,7 +91,7 @@ flowchart TD
 
 | 检查项 | 为什么重要 |
 |---|---|
-| `THUNDER_GRPC_ADDR` 是否与 Thunder 端口一致 | 默认值与 `home-mixer` 不一致 |
+| `THUNDER_GRPC_ADDR` 是否与 Thunder 端口一致 | 两边默认都是 `50052`；只在改过 `--grpc-port` 时才需要显式对齐 |
 | Kafka topic 是否真叫 `in-network-events` | v2 代码里是硬编码订阅 |
 | `kafka_batch_size` 是否适合流量规模 | 批太大时低流量会卡初始化和实时性 |
 | `max_concurrent_requests` 是否足够 | Thunder 过载时会立刻拒绝而不是排队 |
@@ -131,5 +131,5 @@ Thunder 现在更像“开发态/实验态服务”：
 ## 10. 这一层要记住的核心结论
 
 - Thunder 现在不是“没有观测”，而是“观测代码存在，但运维接入口未闭合”。
-- 部署层最容易踩的是端口错配、空 HTTP router、初始化时机误判和批大小设置不合理。
+- 部署层最容易踩的是空 HTTP router、初始化时机误判和批大小设置不合理。默认 gRPC 端口已与 home-mixer 对齐为 `50052`。
 - 只靠 `Server ready` 日志不能替代标准 readiness 检查。

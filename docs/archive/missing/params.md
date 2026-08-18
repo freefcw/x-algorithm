@@ -2,7 +2,7 @@
 
 状态：`historical`
 
-本文是早期迁移过程中对 `home-mixer/params` 缺失影响的说明。当前仓库已经在 `home-mixer/params.rs` 中重建了一组开源可运行的参数常量，因此本文只作为历史背景，不作为当前代码事实。
+本文是早期迁移过程中对 `home-mixer/params` 缺失影响的说明。当前仓库已经在 `home-mixer/params/` 中重建了一组开源可运行的参数常量，因此本文只作为历史背景，不作为当前代码事实。
 
 ## Params 的作用
 
@@ -17,7 +17,7 @@
 
 ## 当前仓库的处理方式
 
-当前仓库不再依赖缺失的私有 Params 模块，而是在 `home-mixer/params.rs` 中提供本地常量。相关解释请优先看：
+当前仓库不再依赖缺失的私有 Params 模块，而是在 `home-mixer/params/` 中提供本地常量。相关解释请优先看：
 
 - [../home-mixer/07-config-and-params.md](../../home-mixer/07-config-and-params.md)
 - [../home-mixer/06-current-behavior-risks-roadmap.md](../../home-mixer/06-current-behavior-risks-roadmap.md)

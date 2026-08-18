@@ -47,7 +47,7 @@
 
 - **保留窗口**：`thunder/args.rs` 中 `post_retention_seconds` 默认 `172800s = 2 天`；`thunder/posts/post_store.rs` 的 `insert_posts` 强制丢弃 `created_at` 超出窗口的记录。
 - **每作者上限**：`MAX_ORIGINAL_POSTS_PER_AUTHOR / MAX_REPLY_POSTS_PER_AUTHOR / MAX_VIDEO_POSTS_PER_AUTHOR`，防止高产作者撑爆内存。
-- **下游再收窄**：`home-mixer/params.rs` 的 `MAX_POST_AGE = 48h` 会过滤 48 小时以上的候选；Thunder 保留 2 天只是为了容忍重启和偶发消费延迟。
+- **下游再收窄**：`home-mixer/params/` 的 `MAX_POST_AGE = 48h` 会过滤 48 小时以上的候选；Thunder 保留 2 天只是为了容忍重启和偶发消费延迟。
 - **增量方式**：Kafka 实时消费 `TweetCreateEvent` / `TweetDeleteEvent`，见 `thunder/kafka/tweet_events_listener.rs`。
 - **冷启动**：`auto_offset_reset = "earliest"`，重启时从 Kafka 保留期内最老 offset 一路 replay 到 now，`PostStore::finalize_init` 再做一次排序和修剪。
 
@@ -126,7 +126,7 @@ flowchart LR
 - 服务端 `encode_user(batch, embeddings)` 即时跑用户塔；
 - 因此"用户历史"的更新等于 UAS 拉取的更新，和 ANN 索引无关。
 
-窗口大小参考 `home-mixer/params.rs`：`UAS_WINDOW_TIME_MS = 7 天`，`UAS_MAX_SEQUENCE_LENGTH = 300`。
+窗口大小参考 `home-mixer/params/`：`UAS_WINDOW_TIME_MS = 7 天`，`UAS_MAX_SEQUENCE_LENGTH = 300`。
 
 ---
 
@@ -378,5 +378,5 @@ vector_index/
 - `docs/phoenix/03-retrieval-pipeline.md`：召回链路设计
 - `docs/phoenix/06-training-and-data.md`：训练侧能力评估
 - `thunder/args.rs` / `thunder/posts/post_store.rs`：网内缓存的保留窗口实现
-- `home-mixer/params.rs`：Feed 编排期的窗口参数
+- `home-mixer/params/`：Feed 编排期的窗口参数
 - `phoenix/services/retrieval_service.py`：`VectorIndex` / `set_corpus` 入口

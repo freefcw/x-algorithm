@@ -51,9 +51,9 @@ flowchart TD
 
 ```mermaid
 flowchart LR
-    T[Kafka Topic] --> G0[consumer group thunder-v2-0]
-    T --> G1[consumer group thunder-v2-1]
-    T --> G2[consumer group thunder-v2-2]
+    T[Kafka Topic] --> G0[consumer group thunder-consumer-v2-0]
+    T --> G1[consumer group thunder-consumer-v2-1]
+    T --> G2[consumer group thunder-consumer-v2-2]
     G0 --> S[同一个 PostStore]
     G1 --> S
     G2 --> S

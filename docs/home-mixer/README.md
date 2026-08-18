@@ -20,13 +20,13 @@
 flowchart LR
     Client["客户端<br/>ScoredPostsQuery"] --> HM["home-mixer<br/>编排层"]
     HM --> QH["查询补全<br/>UAS / UserFeatures"]
-    QH --> SRC["候选召回<br/>Thunder + Phoenix"]
+    QH --> SRC["候选召回<br/>Thunder + Phoenix + 话题"]
     SRC --> HYD["候选补全<br/>文本 / 关系 / 视频 / 用户信息"]
     HYD --> FIL["过滤<br/>去重 / 年龄 / 已看过 / 静音等"]
-    FIL --> SCO["打分<br/>Phoenix / Weighted / Diversity / OON"]
-    SCO --> SEL["选择<br/>Top-K"]
+    FIL --> SCO["打分<br/>Phoenix + RankingScorer"]
+    SCO --> SEL["选择<br/>Top-50 再裁到 35"]
     SEL --> POST["后处理<br/>VF / 会话去重"]
-    POST --> RESP["ScoredPostsResponse"]
+    POST --> RESP["ScoredPostsResponse / ForYouFeedResponse"]
 ```
 
 ## 主入口
