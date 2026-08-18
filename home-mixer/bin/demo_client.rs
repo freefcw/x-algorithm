@@ -3,6 +3,9 @@
 // 用法：
 //   cargo run -p home-mixer --bin demo-client
 //   cargo run -p home-mixer --bin demo-client -- --addr http://localhost:50051 --viewer-id 1
+//   cargo run -p home-mixer --bin demo-client -- --topic-id 10
+//   cargo run -p home-mixer --bin demo-client -- --cached-posts 8
+//   cargo run -p home-mixer --bin demo-client -- --final-feed
 //
 // 用于本地验证整条链路（thunder → home-mixer → phoenix）是否真的返回了排序结果，
 // 不依赖 grpcurl 等外部工具。
