@@ -224,6 +224,14 @@ message NextActionDistribution {
   repeated float continuousActionsValues = 6;
 
   map<uint32, float> indexToContinuousValues = 7;
+
+  RewardOutputs rewardOutputs = 8;
+}
+
+message RewardOutputs {
+  repeated float values = 1;
+
+  repeated float policyLogits = 2;
 }
 
 enum ActionName {
@@ -332,6 +340,8 @@ enum ActionName {
   BRAND_ENGAGEMENT = 102;
   CLIENT_TWEET_DETAIL_DWELL = 103;
   CLIENT_TWEET_SEARCH_QUERY_REFORMULATED = 104;
+  CLIENT_TWEET_RELEVANT_TO_SEARCH = 105;
+  CLIENT_TWEET_NOT_RELEVANT_TO_SEARCH = 106;
 
   ADS_WEB_CONVERSION = 128;
   ADS_VIDEO_VIEW = 129;
@@ -366,16 +376,16 @@ enum ActionName {
   CLIENT_EXTERNAL_LINK_SESSION_MORE_THAN_15_SEC = 158;
   CLIENT_EXTERNAL_LINK_SESSION_MORE_THAN_20_SEC = 159;
   CLIENT_EXTERNAL_LINK_SESSION_MORE_THAN_25_SEC = 160;
-  CLIENT_TWEET_RELEVANT_TO_SEARCH = 161;
-  CLIENT_TWEET_NOT_RELEVANT_TO_SEARCH = 162;
+  CLIENT_TWEET_RELEVANT_TO_SEARCH_DEPRECATED = 161;
+  CLIENT_TWEET_NOT_RELEVANT_TO_SEARCH_DEPRECATED = 162;
   CLIENT_TWEET_REPLY_DOWNVOTE = 163;
   ADS_LONG_DWELL_10_SEC_AND_ATTRIBUTED_CONVERSION = 164;
   ADS_LONG_DWELL_15_SEC_AND_ATTRIBUTED_CONVERSION = 165;
   ADS_LONG_SITE_DWELL_CONVERSION = 166;
-  PLACE_HOLDER_167 = 167;
-  PLACE_HOLDER_168 = 168;
-  PLACE_HOLDER_169 = 169;
-  PLACE_HOLDER_170 = 170;
+  P_OPEN_LINK_P10 = 167;
+  P_OPEN_LINK_P25 = 168;
+  P_OPEN_LINK_P50 = 169;
+  P_OPEN_LINK_P75 = 170;
   ADS_PURCHASE_CONVERSION = 200;
   ADS_MID_FUNNEL_CONVERSION = 201;
   ADS_ADD_TO_CART_CONVERSION = 202;
@@ -429,7 +439,7 @@ enum ActionName {
   ADS_RAW_ENGAGEMENT_TYPE_VIDEO_CONTENT_PLAY_FROM_TAP_V2 = 250;
   ADS_RAW_ENGAGEMENT_TYPE_VIDEO_CTA_URL_CLICK = 251;
   ADS_RAW_ENGAGEMENT_TYPE_VIDEO_CTA_WATCH_CLICK = 252;
-  PLACE_HOLDER_253 = 253;
+  P_OPEN_LINK_P90 = 253;
   PLACE_HOLDER_254 = 254;
   PLACE_HOLDER_255 = 255;
 }
@@ -1192,6 +1202,7 @@ message ScoreInfo {
   optional double weightedScore = 2;
   optional double finalScore = 3;
   SlateContext slateContext = 4;
+  optional double rewardRerankSlotProb = 5;
 }
 
 message SlateContext {
@@ -1200,6 +1211,13 @@ message SlateContext {
   optional uint32 poolRankGap = 3;
   double fatigue = 4;
   double preDiversityScore = 5;
+  bool sidKnown = 6;
+  uint32 sidK1 = 7;
+  uint32 sidK2 = 8;
+  uint32 sidK3 = 9;
+  optional uint32 sidGap1 = 10;
+  optional uint32 sidGap2 = 11;
+  optional uint32 sidGap3 = 12;
 }
 
 message ActionInfo {
@@ -1635,6 +1653,7 @@ message FetchAggregatedUserActionRequests {
   string client_id = 2;
   UaasModelType model_type = 3;
   UaasProductSurface product_surface = 4;
+  map<string, string> feature_switch_overrides = 5;
 }
 
 message ChunkMetadata {

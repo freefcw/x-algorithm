@@ -26,13 +26,25 @@ lazy_static! {
     .unwrap();
 }
 
-fn record_sid_coverage(sequence: &str, present: u64, count: u64) {
+pub fn record_sid_coverage(sequence: &str, present: u64, count: u64) {
     SID_COVERAGE_TOTAL
         .with_label_values(&[sequence, "present"])
         .inc_by(present);
     SID_COVERAGE_TOTAL
         .with_label_values(&[sequence, "missing"])
         .inc_by(count.saturating_sub(present));
+}
+
+pub fn stamp_semantic_ids(dst: &mut [u16], entry_idx: usize, sid_num_levels: usize, codes: &[i32]) {
+    if sid_num_levels > 0 && codes.len() == sid_num_levels {
+        let base = entry_idx * sid_num_levels;
+        for (d, &c) in dst[base..base + sid_num_levels]
+            .iter_mut()
+            .zip(codes.iter())
+        {
+            *d = (c + 1) as u16;
+        }
+    }
 }
 
 use crate::feature_config::bool_feature::{
@@ -395,15 +407,12 @@ impl InputBuffer {
                 candidate_funding_instrument_ids[j] = ad.funding_instrument_id;
             }
 
-            if sid_num_levels > 0 && candidate.semantic_ids.len() == sid_num_levels {
-                let base = j * sid_num_levels;
-                for (d, &c) in candidate_semantic_ids[base..base + sid_num_levels]
-                    .iter_mut()
-                    .zip(candidate.semantic_ids.iter())
-                {
-                    *d = (c + 1) as u16;
-                }
-            }
+            stamp_semantic_ids(
+                &mut candidate_semantic_ids,
+                j,
+                sid_num_levels,
+                &candidate.semantic_ids,
+            );
         }
 
         if sid_num_levels > 0 {
@@ -734,6 +743,8 @@ impl InputBuffer {
         let mut history_is_author_following = vec![false; history_seq_len];
         let mut history_post_ids = vec![0i64; history_seq_len];
         let mut history_int64_features = vec![0i64; history_seq_len * n_post_int64];
+        let sid_num_levels = model_config.sid_num_levels;
+        let mut history_semantic_ids = vec![0u16; history_seq_len * sid_num_levels];
 
         let _empty = Vec::new();
         let agg_user_actions = match sequence {
@@ -774,6 +785,13 @@ impl InputBuffer {
                 }
 
                 history_post_ids[valid_entry_count] = tweet_id;
+
+                stamp_semantic_ids(
+                    &mut history_semantic_ids,
+                    valid_entry_count,
+                    sid_num_levels,
+                    &tweet_info.semantic_ids,
+                );
 
                 let base_idx = valid_entry_count * output_vocab_size;
                 let continuous_base_idx = valid_entry_count * num_continuous_actions;
@@ -868,6 +886,13 @@ impl InputBuffer {
 
                 valid_entry_count += 1;
             }
+        }
+
+        if sid_num_levels > 0 {
+            let present = (0..valid_entry_count)
+                .filter(|&i| history_semantic_ids[i * sid_num_levels] != 0)
+                .count() as u64;
+            record_sid_coverage("history", present, valid_entry_count as u64);
         }
 
         let user_features =
@@ -996,7 +1021,7 @@ impl InputBuffer {
             user_conversion_history_hashes,
             candidate_account_hashes,
             history_post_ids,
-            history_semantic_ids: vec![0u16; history_seq_len * model_config.sid_num_levels],
+            history_semantic_ids,
             candidate_semantic_ids,
             num_history: valid_entry_count,
         }
@@ -1238,19 +1263,17 @@ impl InputBuffer {
 
             history_post_ids[valid_entry_count] = tweet_id;
 
-            if sid_num_levels > 0
-                && let Some(sid_col) = col_semantic_id
-            {
+            if let Some(sid_col) = col_semantic_id {
                 let fsl = sid_col.as_fixed_size_list();
                 if !fsl.is_null(row_idx) {
                     let inner = fsl.value(row_idx);
-                    if let Some(codes) = inner.as_any().downcast_ref::<Int32Array>()
-                        && codes.len() == sid_num_levels
-                    {
-                        let base = valid_entry_count * sid_num_levels;
-                        for d in 0..sid_num_levels {
-                            history_semantic_ids[base + d] = (codes.value(d) + 1) as u16;
-                        }
+                    if let Some(codes) = inner.as_any().downcast_ref::<Int32Array>() {
+                        stamp_semantic_ids(
+                            &mut history_semantic_ids,
+                            valid_entry_count,
+                            sid_num_levels,
+                            codes.values(),
+                        );
                     }
                 }
             }
@@ -1872,6 +1895,123 @@ mod tests {
             None,
         );
         assert_eq!(0, buf.num_history);
+    }
+
+    #[test]
+    fn proto_history_semantic_ids_use_ranking_plus_one_shift() {
+        let mut model_config = test_history_model_config();
+        model_config.sid_num_levels = 3;
+        let sequence = Some(pb::UserActionSequence {
+            user_actions_data: Some(pb::UserActionSequenceDataContainer {
+                data: Some(
+                    pb::user_action_sequence_data_container::Data::OrderedAggregatedUserActionsList(
+                        pb::AggregatedUserActionList {
+                            aggregated_user_actions: vec![
+                                pb::AggregatedUserAction {
+                                    tweet_info: Some(pb::TweetInfo {
+                                        tweet_id: 11,
+                                        author_id: 21,
+                                        semantic_ids: vec![0, 7, -1],
+                                        ..Default::default()
+                                    }),
+                                    ..Default::default()
+                                },
+                                pb::AggregatedUserAction {
+                                    tweet_info: Some(pb::TweetInfo {
+                                        tweet_id: 12,
+                                        author_id: 22,
+                                        semantic_ids: vec![3, 4],
+                                        ..Default::default()
+                                    }),
+                                    ..Default::default()
+                                },
+                            ],
+                            ..Default::default()
+                        },
+                    ),
+                ),
+            }),
+            ..Default::default()
+        });
+
+        let buf = InputBuffer::compute_for_item(
+            &model_config,
+            &sequence,
+            &pb::CandidateSet::default(),
+            None,
+            None,
+            None,
+            None,
+        );
+
+        assert_eq!(
+            buf.history_semantic_ids,
+            vec![1, 8, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]
+        );
+        assert_eq!(buf.history_post_ids, vec![11, 12, 0, 0]);
+    }
+
+    #[test]
+    fn stamp_semantic_ids_shifts_and_skips_wrong_arity() {
+        let mut dst = vec![0u16; 6];
+        stamp_semantic_ids(&mut dst, 0, 3, &[0, 7, -1]);
+        stamp_semantic_ids(&mut dst, 1, 3, &[3, 4]);
+        assert_eq!(dst, vec![1, 8, 0, 0, 0, 0]);
+    }
+
+    #[test]
+    fn columnar_history_semantic_ids_read_semantic_id_column() {
+        use arrow::array::{FixedSizeListArray, Int32Array, Int64Array};
+        use arrow::datatypes::{DataType, Field, Schema};
+        use arrow::ipc::writer::StreamWriter;
+        use arrow::record_batch::RecordBatch;
+        use std::sync::Arc;
+
+        let item = Arc::new(Field::new("item", DataType::Int32, true));
+        let schema = Schema::new(vec![
+            Field::new("tweetId", DataType::Int64, false),
+            Field::new("authorId", DataType::Int64, false),
+            Field::new("semanticId", DataType::FixedSizeList(item.clone(), 3), true),
+        ]);
+        let sid = FixedSizeListArray::new(
+            item,
+            3,
+            Arc::new(Int32Array::from(vec![0, 7, -1, 3, 4, 5])),
+            None,
+        );
+        let batch = RecordBatch::try_new(
+            Arc::new(schema),
+            vec![
+                Arc::new(Int64Array::from(vec![11i64, 12])),
+                Arc::new(Int64Array::from(vec![21i64, 22])),
+                Arc::new(sid),
+            ],
+        )
+        .unwrap();
+        let mut bytes = Vec::new();
+        {
+            let mut writer = StreamWriter::try_new(&mut bytes, batch.schema().as_ref()).unwrap();
+            writer.write(&batch).unwrap();
+            writer.finish().unwrap();
+        }
+
+        let mut model_config = test_history_model_config();
+        model_config.sid_num_levels = 3;
+        let buf = InputBuffer::compute_from_columnar_bytes(
+            &model_config,
+            &bytes,
+            &pb::CandidateSet::default(),
+            None,
+            None,
+            None,
+            None,
+        )
+        .unwrap();
+
+        assert_eq!(
+            buf.history_semantic_ids,
+            vec![1, 8, 0, 4, 5, 6, 0, 0, 0, 0, 0, 0]
+        );
     }
 
     #[test]

@@ -33,9 +33,9 @@ url = { workspace = true }
 http-body = { workspace = true }
 http-body-util = { workspace = true }
 lazy_static = { workspace = true }
-libc = { workspace = true }
 log = { workspace = true }
 md5 = { workspace = true }
+libc = { workspace = true }
 memmap2 = { workspace = true }
 murmur3 = { workspace = true }
 nix = { workspace = true, features = ["fs", "uio"] }
@@ -69,7 +69,9 @@ xai-recsys-mm-server = { workspace = true }
 ibverbs = { workspace = true }
 
 [dev-dependencies]
-serial_test = "3"
+rcgen = { workspace = true }
+serial_test = { workspace = true }
+tempfile = { workspace = true }
 tokio-stream = { workspace = true }
 
 [lints]

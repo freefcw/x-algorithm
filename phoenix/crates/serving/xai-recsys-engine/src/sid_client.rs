@@ -51,6 +51,36 @@ pub struct SemanticIdClient {
     sid_num_levels: usize,
 }
 
+pub fn fill_semantic_ids(
+    sids: &HashMap<i64, Vec<i32>>,
+    post_ids: &[i64],
+    dst: &mut [u16],
+    sid_dim: usize,
+) {
+    for (j, &post_id) in post_ids.iter().enumerate() {
+        if post_id == 0 {
+            continue;
+        }
+        if let Some(codes) = sids.get(&post_id) {
+            assert_eq!(
+                codes.len(),
+                sid_dim,
+                "SID codes length ({}) != sid_num_levels ({}) for post_id {}",
+                codes.len(),
+                sid_dim,
+                post_id,
+            );
+            let dst_start = j * sid_dim;
+            for (d, &c) in dst[dst_start..dst_start + sid_dim]
+                .iter_mut()
+                .zip(codes.iter())
+            {
+                *d = (c + 1) as u16;
+            }
+        }
+    }
+}
+
 impl SemanticIdClient {
     pub fn new(endpoint: &str, sid_num_levels: usize) -> Self {
         let clients = (0..NUM_CHANNELS)
@@ -140,5 +170,20 @@ impl PySemanticIdClient {
             endpoint,
             sid_num_levels,
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn semantic_ids_are_shifted_and_missing_values_remain_padding() {
+        let sids = HashMap::from([(11, vec![0, 7, -1]), (22, vec![3, 4, 5])]);
+        let mut dst = vec![0u16; 3 * 3];
+
+        fill_semantic_ids(&sids, &[11, 0, 22], &mut dst, 3);
+
+        assert_eq!(dst, vec![1, 8, 0, 0, 0, 0, 4, 5, 6]);
     }
 }

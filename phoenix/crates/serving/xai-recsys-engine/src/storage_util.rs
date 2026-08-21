@@ -76,8 +76,9 @@ fn o2_store_from_url(
         ..Default::default()
     };
 
-    let endpoint =
-        env::var("O2_ENDPOINT_URL").unwrap_or_else(|_| "http://o2.example.invalid".into());
+    let endpoint = env::var("O2_ENDPOINT_URL").map_err(|_| {
+        "O2 endpoint not set: set XAI_O2_ENDPOINT_URL or O2_ENDPOINT_URL".to_string()
+    })?;
     let access_key = env::var("O2_ACCESS_KEY_ID").unwrap_or_else(|_| "anonymous".to_string());
     let secret_key = env::var("O2_SECRET_ACCESS_KEY").unwrap_or_else(|_| "anonymous".to_string());
 
