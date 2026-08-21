@@ -7,12 +7,14 @@ from xrex.data.recsys import feature_config
 
 
 def test_public_post_bool_schema_is_stable_and_optional():
-    assert feature_config.STALE_POST_14D_TTL_SEC == 1_209_600
+    # aad7179 起跟随上游公开排序（stale 前移为 0）与 TTL 终值；
+    # 此前 c65aa17 的本地钉住顺序（followed/following/stale = 0/1/2）已废弃。
+    assert feature_config.STALE_POST_14D_TTL_SEC == 1_213_200
     assert 1 << feature_config.AUTHOR_NSFW_BIT == 4
     assert list(feature_config.BoolFeature) == [
+        feature_config.BoolFeature.isStalePost14d,
         feature_config.BoolFeature.isAuthorFollowedByViewerSeq,
         feature_config.BoolFeature.isAuthorFollowingViewerSeq,
-        feature_config.BoolFeature.isStalePost14d,
     ]
     assert [feature.value for feature in feature_config.BoolFeature] == [0, 1, 2]
 

@@ -379,20 +379,21 @@ class SidRetrievalModelRunner(
         hash_keys = self.dataset.hash_table.hash_keys
 
         sid_client = None
-        if self.model_config.use_post_sid and self.model_config.sid_num_levels > 0:
-            if not self.sid_endpoint:
-                raise ValueError(
-                    "v4 SID retrieval has use_post_sid=True; "
-                    "must pass --sid_endpoint <addr> to launch_inference.py"
-                )
+        sid_num_levels = self.model_config.sid_num_levels if self.model_config.use_post_sid else 0
+        if self.sid_endpoint and sid_num_levels > 0:
             sid_client = xai_recsys_engine.PySemanticIdClient(
                 self.sid_endpoint,
-                self.model_config.sid_num_levels,
+                sid_num_levels,
             )
             logger.info(
                 "SID client connected: endpoint=%s, sid_num_levels=%d",
                 self.sid_endpoint,
-                self.model_config.sid_num_levels,
+                sid_num_levels,
+            )
+        elif self.model_config.use_post_sid:
+            logger.info(
+                "Parsing history SIDs from the request (sid_num_levels=%d); no sid_endpoint",
+                sid_num_levels,
             )
 
         return create_recsys_server(
@@ -444,5 +445,5 @@ class SidRetrievalModelRunner(
             num_post_float_features=recsys_batch.POST_FLOAT_FEATURE_SIZE,
             num_post_int64_features=recsys_batch.POST_INT64_FEATURE_SIZE,
             enable_async_response_compression=self.enable_async_response_compression,
-            sid_num_levels=(self.model_config.sid_num_levels if sid_client is not None else 0),
+            sid_num_levels=sid_num_levels,
         )

@@ -868,6 +868,7 @@ class PhoenixDataset(Dataset):
     sid_num_levels: int = 0
 
     compute_post_unexplored_label: bool = False
+    enable_stale_post: bool = False
 
     multimodal_embedding_type: EmbeddingType | None = None
 
@@ -1153,6 +1154,7 @@ class PhoenixDataset(Dataset):
                         global_post_sids=global_post_sids,
                         sid_num_levels=self.sid_num_levels if self.use_post_sid else 0,
                         compute_post_unexplored_label=self.compute_post_unexplored_label,
+                        zero_stale_post_14d_candidate_counts=self.enable_stale_post,
                     )
 
                     if self.use_conversion_labels and self.emit_conversion_label_keys:

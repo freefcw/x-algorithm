@@ -1708,7 +1708,10 @@ mod tests {
     #[test]
     fn candidate_relation_bools_are_stamped() {
         let mut model_config = test_model_config(1);
-        model_config.hash_table.num_post_bool_features = IS_STALE_POST14D + 1;
+        model_config.hash_table.num_post_bool_features = IS_STALE_POST14D
+            .max(IS_AUTHOR_FOLLOWED_BY_VIEWER_SEQ)
+            .max(IS_AUTHOR_FOLLOWING_VIEWER_SEQ)
+            + 1;
         let n_post_bool = model_config.hash_table.num_post_bool_features;
         let candidate_set = pb::CandidateSet {
             candidates: vec![pb::TweetInfo {
@@ -1830,7 +1833,10 @@ mod tests {
         use pb::user_action_sequence_data_container::Data;
 
         let mut model_config = test_history_model_config();
-        model_config.hash_table.num_post_bool_features = IS_STALE_POST14D + 1;
+        model_config.hash_table.num_post_bool_features = IS_STALE_POST14D
+            .max(IS_AUTHOR_FOLLOWED_BY_VIEWER_SEQ)
+            .max(IS_AUTHOR_FOLLOWING_VIEWER_SEQ)
+            + 1;
         let sequence = Some(pb::UserActionSequence {
             user_actions_data: Some(pb::UserActionSequenceDataContainer {
                 data: Some(Data::OrderedAggregatedUserActionsList(
@@ -2202,7 +2208,10 @@ mod tests {
         let mut model_config = test_model_config(n_post_cat);
         let n_post_int64 = VIEW_COUNT_SEQ + 1;
         model_config.hash_table.num_post_int64_features = n_post_int64;
-        model_config.hash_table.num_post_bool_features = IS_STALE_POST14D + 1;
+        model_config.hash_table.num_post_bool_features = IS_STALE_POST14D
+            .max(IS_AUTHOR_FOLLOWED_BY_VIEWER_SEQ)
+            .max(IS_AUTHOR_FOLLOWING_VIEWER_SEQ)
+            + 1;
         model_config.hash_table.enable_stale_post = true;
         let n_post_bool = model_config.hash_table.num_post_bool_features;
 

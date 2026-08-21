@@ -3048,7 +3048,13 @@ async fn handle_retrieval_request(
 }
 
 fn validate_stale_post_config(enabled: bool, num_post_bool_features: usize) -> PyResult<()> {
-    let required_width = xai_recsys::feature_config::bool_feature::IS_STALE_POST14D + 1;
+    use xai_recsys::feature_config::bool_feature as bf;
+    // stale/relation bool 共用同一段宽度，required width 取三者最大下标 + 1，
+    // 不假设上游公开的枚举顺序。
+    let required_width = bf::IS_STALE_POST14D
+        .max(bf::IS_AUTHOR_FOLLOWED_BY_VIEWER_SEQ)
+        .max(bf::IS_AUTHOR_FOLLOWING_VIEWER_SEQ)
+        + 1;
     if enabled && num_post_bool_features < required_width {
         return Err(pyo3::exceptions::PyValueError::new_err(format!(
             "enable_stale_post requires num_post_bool_features >= {required_width}"

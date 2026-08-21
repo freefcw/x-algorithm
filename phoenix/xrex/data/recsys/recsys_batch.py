@@ -16,11 +16,18 @@ from numpy import typing as npt
 
 from xrex.data.recsys.constants import action_type_map
 from xrex.data.recsys.feature_config import (
+    ADS_PRODUCT_KEY_HASH_BIAS,
+    ADS_PRODUCT_KEY_HASH_BIAS_2,
+    ADS_PRODUCT_KEY_HASH_MODULUS,
+    ADS_PRODUCT_KEY_HASH_SCALE,
+    ADS_PRODUCT_KEY_HASH_SCALE_2,
+    ADS_PRODUCT_KEY_TABLE_SIZE,
     AUTHOR_NSFW_BIT,
     BOOL_FEATURES,
     CATEGORICAL_FEATURES,
     FLOAT_FEATURES,
     INT64_FEATURES,
+    STALE_POST_14D_TTL_SEC,
     BoolFeature,
     CategoricalFeature,
     FloatFeature,
@@ -174,7 +181,10 @@ def _col(
     batch_size: int,
     t: type[_T],
 ) -> npt.NDArray[_T]:
-    arr = (rb.column(col).values.to_numpy(zero_copy_only=False).reshape(batch_size, -1)).astype(t)
+    values = rb.column(col).values
+    if values.null_count:
+        values = values.fill_null(False if pa.types.is_boolean(values.type) else 0)
+    arr = values.to_numpy(zero_copy_only=False).reshape(batch_size, -1).astype(t)
     return typing.cast(npt.NDArray[_T], arr)
 
 
@@ -347,6 +357,7 @@ def from_record_batch(
     global_post_sids: np.ndarray | None = None,
     sid_num_levels: int = 0,
     compute_post_unexplored_label: bool = False,
+    zero_stale_post_14d_candidate_counts: bool = False,
 ) -> RecsysFeaturesBatch:
     start = time.time()
     batch_size = record_batch.num_rows
@@ -831,6 +842,41 @@ def from_record_batch(
             _INT32_MAX,
             out=cand_int64_features[:, :, _ec_idx],
         )
+
+    _dpa_idx = Int64Feature.firstDpaProductKey.value
+
+    def _hash_dpa_keys(keys: npt.NDArray[np.int64], scale: int, bias: int) -> npt.NDArray:
+        hashed = (
+            (keys * scale + bias) % ADS_PRODUCT_KEY_HASH_MODULUS % (ADS_PRODUCT_KEY_TABLE_SIZE - 1)
+        ) + 1
+        return np.where(keys == 0, 0, hashed)
+
+    _dpa_idx2 = Int64Feature.firstDpaProductKeyHash2.value
+    for _dpa_arr in (hist_int64_features, cand_int64_features):
+        _dpa_keys = _dpa_arr[:, :, _dpa_idx].copy()
+        _dpa_arr[:, :, _dpa_idx2] = _hash_dpa_keys(
+            _dpa_keys, ADS_PRODUCT_KEY_HASH_SCALE_2, ADS_PRODUCT_KEY_HASH_BIAS_2
+        )
+        _dpa_arr[:, :, _dpa_idx] = _hash_dpa_keys(
+            _dpa_keys, ADS_PRODUCT_KEY_HASH_SCALE, ADS_PRODUCT_KEY_HASH_BIAS
+        )
+
+    if zero_stale_post_14d_candidate_counts:
+        ttl_sec = np.int64(STALE_POST_14D_TTL_SEC)
+        original_age_sec = candidate_impr_ts.astype(
+            np.int64
+        ) - candidate_post_creation_ts_sec.astype(np.int64)
+        stale_post_14d = (
+            (candidate_impr_ts > 0)
+            & (candidate_post_creation_ts_sec > 0)
+            & (original_age_sec > ttl_sec)
+        )
+        for _ec_idx in _ENGAGEMENT_COUNT_INT64_INDICES:
+            cand_int64_features[:, :, _ec_idx] = np.where(
+                stale_post_14d, 0, cand_int64_features[:, :, _ec_idx]
+            )
+        if cand_bool_features.shape[2] > BoolFeature.isStalePost14d.value:
+            cand_bool_features[:, :, BoolFeature.isStalePost14d.value] = stale_post_14d
 
     history_seq = PostSeq(
         impr_ts=history_impr_ts,

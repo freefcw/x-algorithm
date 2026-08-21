@@ -18,7 +18,7 @@ logger = logging.getLogger(__name__)
 
 _O2_SCHEME = "o2://"
 
-_O2_DEFAULT_ENDPOINT = settings.OBJECT_STORE_ENDPOINT
+O2_DEFAULT_ENDPOINT = settings.OBJECT_STORE_ENDPOINT
 
 _O2_CREDENTIALS_DIR = Path(settings.OBJECT_STORE_CREDENTIALS_DIR)
 _GCS_CREDENTIALS_DIR = Path(settings.GCS_CREDENTIALS_DIR)
@@ -30,12 +30,12 @@ _GCS_MIRRORED = {"ACTIVE_ADS", "DPA_PRODUCTS"}
 PHOENIX_INDEX_BASE = Path(settings.PHOENIX_INDEX_BASE)
 
 
-def _bridge_ads_s3_env() -> None:
-    if not settings.ADS_S3_ENV_PREFIX:
+def _bridge_o2_env() -> None:
+    if not settings.O2_ENV_PREFIX:
         return
     for suffix in ("ENDPOINT", "ACCESS_KEY", "SECRET_KEY"):
-        prefixed = f"{settings.ADS_S3_ENV_PREFIX}ADS_S3_{suffix}"
-        generic = f"ADS_S3_{suffix}"
+        prefixed = f"{settings.O2_ENV_PREFIX}O2_PROD_{suffix}"
+        generic = f"O2_PROD_{suffix}"
         if os.environ.get(generic):
             continue
         val = os.environ.get(prefixed)
@@ -47,7 +47,7 @@ def _bridge_ads_s3_env() -> None:
             os.environ[generic] = val
 
 
-_bridge_ads_s3_env()
+_bridge_o2_env()
 
 
 def _idx(sub: str) -> str:
@@ -96,11 +96,15 @@ def _parse_snapshot_timestamp(key: str) -> int | None:
 def _download_from_o2(name: str, bucket: str, prefix: str) -> tuple[bytes, int, str]:
     import boto3
 
+    endpoint = os.environ.get("O2_PROD_ENDPOINT", O2_DEFAULT_ENDPOINT)
+    access_key = _read_credential("O2_PROD_ACCESS_KEY")
+    secret_key = _read_credential("O2_PROD_SECRET_KEY")
+    logger.info("%s: O2 endpoint: %s", name, endpoint)
     s3 = boto3.client(
         "s3",
-        endpoint_url=os.environ.get("ADS_S3_ENDPOINT", _O2_DEFAULT_ENDPOINT),
-        aws_access_key_id=_read_credential("ADS_S3_ACCESS_KEY"),
-        aws_secret_access_key=_read_credential("ADS_S3_SECRET_KEY"),
+        endpoint_url=endpoint,
+        aws_access_key_id=access_key,
+        aws_secret_access_key=secret_key,
     )
     objects = [
         (obj["Key"], obj["LastModified"].timestamp())

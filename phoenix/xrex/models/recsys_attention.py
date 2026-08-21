@@ -265,6 +265,8 @@ class CutedslRankerVarlenAttention(CustomAttention):
             bsp_bwd_full_idx,
             bsp_bwd_diag_cnt,
             bsp_bwd_diag_idx,
+            bsp_valid_block_upper,
+            bsp_valid_block_lower,
         ):
             del segment_ids, segment_ids_k, temp
             fwd_bs = (
@@ -290,6 +292,8 @@ class CutedslRankerVarlenAttention(CustomAttention):
                     v,
                     sm_scale,
                     block_sparse_layout=(fwd_bs, bwd_bs),
+                    valid_block_upper=bsp_valid_block_upper,
+                    valid_block_lower=bsp_valid_block_lower,
                 ),
                 None,
             )
@@ -310,6 +314,8 @@ class CutedslRankerVarlenAttention(CustomAttention):
             "bsp_bwd_full_idx",
             "bsp_bwd_diag_cnt",
             "bsp_bwd_diag_idx",
+            "bsp_valid_block_upper",
+            "bsp_valid_block_lower",
         )
         extras = tuple((name, _rep) for name in bsp_names)
         return sharded_mha, extras

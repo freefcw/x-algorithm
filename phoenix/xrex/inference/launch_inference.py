@@ -463,7 +463,16 @@ if __name__ == "__main__":
         "--copy_url",
         type=str,
         default="",
-        help="address of a weight source, typically trainer",
+        help="address of a weight source, typically trainer; an https:// prefix opts into TLS",
+    )
+    parser.add_argument("--copy_tls_ca", type=str, default="", help="CA PEM verifying the server")
+    parser.add_argument("--copy_tls_cert", type=str, default="", help="client cert PEM (mTLS)")
+    parser.add_argument("--copy_tls_key", type=str, default="", help="client key PEM (mTLS)")
+    parser.add_argument(
+        "--copy_tls_server_name",
+        type=str,
+        default="",
+        help="hostname-verification override matching a server cert SAN",
     )
     parser.add_argument(
         "--grpc_port",
@@ -647,9 +656,9 @@ if __name__ == "__main__":
         "--pinned_d2h_num_buffers",
         type=int,
         default=3,
-        help="Number of pinned host buffers per output shape when --use_pinned_d2h is enabled. "
-        "Only needs to cover the Python pipeline depth (not Rust reply threads) since "
-        "reply_request() copies into heap memory before donating to Rust.",
+        help="Floor for the number of pinned host buffers per output shape when "
+        "--use_pinned_d2h is enabled; the runner auto-raises it to "
+        "len(retrieval_dataset_types)+1 to cover all transfers within one batch.",
     )
     parser.add_argument(
         "--embedding_gather_threads",
@@ -791,9 +800,8 @@ if __name__ == "__main__":
         type=str,
         default=None,
         help=(
-            "gRPC endpoint of the SID service for SID-aware retrieval inference. "
-            "Required when the model uses use_post_sid=True. The endpoint must match "
-            "the model's trained sid_codebook_size."
+            "Optional leftover SID lookup endpoint. History SIDs are parsed "
+            "from the request; this is not required for use_post_sid=True."
         ),
     )
     parser.add_argument(
@@ -845,5 +853,13 @@ if __name__ == "__main__":
     )
 
     args = parser.parse_args()
+    for flag, env in (
+        ("copy_tls_ca", "COPY_PORT_TLS_CA"),
+        ("copy_tls_cert", "COPY_PORT_TLS_CERT"),
+        ("copy_tls_key", "COPY_PORT_TLS_KEY"),
+        ("copy_tls_server_name", "COPY_PORT_TLS_SERVER_NAME"),
+    ):
+        if value := getattr(args, flag):
+            os.environ[env] = value
     pin_visible_devices(args.num_devices_per_process)
     run(args=args)

@@ -1149,6 +1149,10 @@ class Trainer(Config):
         mask = checkpointing_common.get_load_mask(axes, srcs, self.mesh)
         return axes, srcs, mask
 
+    def purge_opt_state_on_load(self, host_state):
+        rank_logger.info("Not loading optimizer state from checkpoint")
+        return host_state.purge_opt_state()
+
     def maybe_load_checkpoint(
         self, ctx: TrainerContext, tag: str | None = None
     ) -> tuple[bool, int, int]:
@@ -1176,8 +1180,7 @@ class Trainer(Config):
             ) and ctx.checkpoint.is_manual_load()
 
             if do_not_load_opt_state:
-                rank_logger.info("Not loading optimizer state from checkpoint")
-                host_state = host_state.purge_opt_state()
+                host_state = self.purge_opt_state_on_load(host_state)
 
             host_state = tree_to_dict(host_state)
             domains = None
@@ -1245,8 +1248,23 @@ class Trainer(Config):
                 )
 
                 _, treedef = jax.tree.flatten(self.state_shape)
-                axes = jax.tree.unflatten(treedef, jax.tree.flatten(axes)[0])
-                srcs = jax.tree.unflatten(treedef, jax.tree.flatten(srcs)[0])
+                keep = [
+                    len(jax.tree.leaves(node)) > 0
+                    for node in jax.tree.leaves(
+                        self.state_shape, is_leaf=lambda x: isinstance(x, Parameter)
+                    )
+                ]
+
+                def _align_to_state(tree):
+                    kept = [
+                        leaf
+                        for leaf, keep_leaf in zip(jax.tree.leaves(tree), keep, strict=True)
+                        if keep_leaf
+                    ]
+                    return jax.tree.unflatten(treedef, kept)
+
+                axes = _align_to_state(axes)
+                srcs = _align_to_state(srcs)
                 self.state = checkpointing_load.broadcast_replicated(
                     self.state, axes, srcs, self.mesh
                 )
@@ -1430,20 +1448,19 @@ class Trainer(Config):
         mfu = self.model_config.compute_mfu(num_seq_per_sec_per_device)
         tflops = self.model_config.compute_tflops(num_seq_per_sec_per_device)
 
+        etas: list[float] = []
+        fractions: list[float] = []
         if self.max_steps is not None:
-            eta = (self.max_steps - self.prev_step) * step_time / 3600
-            metrics["finished_percent"] = int(metrics["step"]) / self.max_steps
-        elif self.max_samples is not None:
-            eta = (
-                (self.max_samples - self.elapsed_samples)
-                / float(metrics["examples_per_batch"])
-                * step_time
-                / 3600
+            etas.append((self.max_steps - self.prev_step) * step_time / 3600)
+            fractions.append(int(metrics["step"]) / self.max_steps)
+        if self.max_samples is not None:
+            remaining_steps = (self.max_samples - self.elapsed_samples) / float(
+                metrics["examples_per_batch"]
             )
-            metrics["finished_percent"] = self.elapsed_samples / self.max_samples
-        else:
-            eta = -1
-            metrics["finished_percent"] = -1
+            etas.append(remaining_steps * step_time / 3600)
+            fractions.append(self.elapsed_samples / self.max_samples)
+        eta = min(etas) if etas else -1
+        metrics["finished_percent"] = max(fractions) if fractions else -1
         self.prev_step = int(metrics["step"])
 
         metrics["soft_step"] = soft_step

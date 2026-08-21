@@ -1245,19 +1245,17 @@ class RecsysTwoTowerModel(hk.Module):
                 user_representation, P(self.data_axis, None)
             )
         else:
-            user_embeddings, user_padding_mask, _, _, _, _, _, _, _, _, _ = (
-                pad_to_next_128_multiple(
-                    user_embeddings,
-                    user_padding_mask,
-                    jnp.zeros_like(user_padding_mask),
-                    None,
-                    None,
-                    None,
-                    None,
-                    None,
-                    None,
-                    None,
-                )
+            user_embeddings, user_padding_mask, *_ = pad_to_next_128_multiple(
+                user_embeddings,
+                user_padding_mask,
+                jnp.zeros_like(user_padding_mask),
+                None,
+                None,
+                None,
+                None,
+                None,
+                None,
+                None,
             )
 
             B, T = user_padding_mask.shape

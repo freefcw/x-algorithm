@@ -20,6 +20,14 @@ class CheckpointConfig(Config):
 
     copy_port: int = 0
 
+    copy_port_tls_cert: str = ""
+    copy_port_tls_key: str = ""
+    copy_port_tls_client_ca: str = ""
+    copy_port_tls_ca: str = ""
+    copy_port_tls_server_name: str = ""
+    copy_port_tls_client_cert: str = ""
+    copy_port_tls_client_key: str = ""
+
     checkpoint_disk_every_s: int = 0
 
     shm_max_entries: int = 5

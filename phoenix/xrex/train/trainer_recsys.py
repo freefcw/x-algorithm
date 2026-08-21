@@ -9,6 +9,7 @@ import json
 import logging
 import math
 import os
+import pathlib
 import shutil
 import signal
 import sys
@@ -84,6 +85,7 @@ from xrex.optimizers.recsys.async_emb_gradient_update import (
     AsyncEmbOptimizer,
 )
 from xrex.train.misc import (
+    CheckpointConfig,
     PostEmbeddings,
     RecsysTrainingState,
 )
@@ -390,6 +392,11 @@ def _read_checkpoint_kafka_config(ctx) -> tuple[str | None, int | None]:
     except (json.JSONDecodeError, OSError) as e:
         rank_logger.warning("Failed to read kafka config from %s: %s", config_path, e)
         return None, None
+
+
+@configclass
+class RecsysCheckpointConfig(CheckpointConfig):
+    keep_emb_opt_state: bool = False
 
 
 @configclass
@@ -1432,7 +1439,7 @@ class RecsysTrainer(Trainer):
             self.batch_size, -1, flat_prefetched.shape[-1]
         )
 
-        prev_update_pins, updating_table, updating_emb_state = (
+        prev_update_pins, updating_table, updating_emb_state, emb_optim_metrics = (
             self._emb_optim.gradient_update_start(
                 self._async_emb_context,
                 prev_step_grad_update,
@@ -1522,6 +1529,7 @@ class RecsysTrainer(Trainer):
             "emb_grad_norm": emb_grad_norm,
             "emb_valid_step": emb_valid_step,
         }
+        metrics.update(emb_optim_metrics)
         if self.track_norm_metrics:
             metrics.update(norm_metrics(new_params, new_opt_state, gradients, updates))
 
@@ -1663,6 +1671,8 @@ class RecsysTrainer(Trainer):
             transformer_candidate_seq_len=transformer_candidate_seq_len,
             max_history_seq_len=(_mc.num_user_prefix_tokens + _mc.history_seq_len),
             packed_seq_len=int(layout.segment_ids.shape[1]),
+            padding_mask=layout.padding_mask,
+            num_user_prefix_tokens=_mc.num_user_prefix_tokens,
         )
         return {**batch, "packing_layout": replace(layout, block_sparse=block_sparse)}
 
@@ -1754,7 +1764,7 @@ class RecsysTrainer(Trainer):
             )
 
         def apply_deferred_embedding_update(state, grad_update):
-            pins, updating_table, updating_emb_state = self._emb_optim.gradient_update_start(
+            pins, updating_table, updating_emb_state, _ = self._emb_optim.gradient_update_start(
                 self._async_emb_context,
                 grad_update,
                 state.emb_table.x,
@@ -2142,6 +2152,34 @@ class RecsysTrainer(Trainer):
             return self.ctx.rank == 0
         return hostnames.index(hostnames[self.ctx.rank]) == self.ctx.rank
 
+    def _copy_port_channel(self, port: int) -> grpc.Channel:
+        cc = self.checkpoint_config
+        if not cc.copy_port_tls_cert:
+            return grpc.insecure_channel(f"127.0.0.1:{port}")
+        if not cc.copy_port_tls_ca or not cc.copy_port_tls_server_name:
+            raise ValueError(
+                "copy_port_tls_ca and copy_port_tls_server_name are required for the "
+                "loopback client when copy_port TLS is enabled"
+            )
+        if cc.copy_port_tls_client_ca and not (
+            cc.copy_port_tls_client_cert and cc.copy_port_tls_client_key
+        ):
+            raise ValueError(
+                "copy_port_tls_client_ca (mTLS) requires copy_port_tls_client_cert/key "
+                "for the loopback client"
+            )
+
+        def read(p: str) -> bytes | None:
+            return pathlib.Path(p).read_bytes() if p else None
+
+        creds = grpc.ssl_channel_credentials(
+            root_certificates=read(cc.copy_port_tls_ca),
+            private_key=read(cc.copy_port_tls_client_key),
+            certificate_chain=read(cc.copy_port_tls_client_cert),
+        )
+        options = (("grpc.ssl_target_name_override", cc.copy_port_tls_server_name),)
+        return grpc.secure_channel(f"127.0.0.1:{port}", creds, options=options)
+
     def _free_ports(self):
         if port := self.checkpoint_config.copy_port:
             for conn in psutil.net_connections(kind="inet"):
@@ -2390,6 +2428,12 @@ class RecsysTrainer(Trainer):
         if not os.path.isdir(own_dir):
             return False
         return any(d.startswith("elapsed_samples_") for d in os.listdir(own_dir))
+
+    def purge_opt_state_on_load(self, host_state):
+        if getattr(self.checkpoint_config, "keep_emb_opt_state", False):
+            rank_logger.info("Not loading dense optimizer state (keeping emb_table_state)")
+            return host_state._replace(opt_state=None)
+        return super().purge_opt_state_on_load(host_state)
 
     def maybe_load_checkpoint(self, ctx: TrainerContext, tag=None):
         assert isinstance(
@@ -2947,12 +2991,16 @@ class RecsysTrainer(Trainer):
 
         if port:
             if self._engine is None and self._is_copy_port_binder():
+                cc = self.checkpoint_config
                 self._engine = xai_recsys_engine.RecsysPredictorServer(
                     port,
                     port + 1,
                     1,
                     0,
-                    copy_max_entries=self.checkpoint_config.shm_max_entries,
+                    copy_max_entries=cc.shm_max_entries,
+                    tls_cert_path=cc.copy_port_tls_cert or None,
+                    tls_key_path=cc.copy_port_tls_key or None,
+                    tls_client_ca_path=cc.copy_port_tls_client_ca or None,
                 )
             multihost_utils.sync_global_devices("recsys-copy-port-bind")
 
@@ -2964,7 +3012,7 @@ class RecsysTrainer(Trainer):
                 self._pending_shmem_ckpt_write_s = self._shmem_write_future.result()
                 self._shmem_write_future = None
             multihost_utils.sync_global_devices("recsys-save-checkpoint1")
-            stub = copy_pb2_grpc.CopyStub(grpc.insecure_channel(f"127.0.0.1:{port}"))
+            stub = copy_pb2_grpc.CopyStub(self._copy_port_channel(port))
 
             if not hasattr(self, "host_state") or self.host_state is None:
                 self.host_state = jax.device_put(self.state, self.host_sharding)

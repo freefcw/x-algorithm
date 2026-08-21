@@ -90,6 +90,7 @@ class PhoenixGrpcDataset(PhoenixDataset):
             output_vocab_size=self.hash_table.output_vocab_size,
             history_seq_len=self.history_seq_len,
             candidate_seq_len=self.candidate_seq_len,
+            enable_stale_post=self.enable_stale_post,
         )
 
         prefetch_queue = Queue(maxsize=2)

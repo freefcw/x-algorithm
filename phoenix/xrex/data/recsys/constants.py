@@ -179,6 +179,21 @@ notification_engagement_to_action_types = {
     ],
 }
 
+SEARCH_RELEVANCE_ACTION_INDICES = [
+    recsys_pb2.ActionName.CLIENT_TWEET_RELEVANT_TO_SEARCH,
+    recsys_pb2.ActionName.CLIENT_TWEET_NOT_RELEVANT_TO_SEARCH,
+]
+
+search_engagement_to_action_types = {
+    **primary_engagement_to_action_types,
+    "IsRelevantToSearch": [
+        "ClientTweetRelevantToSearch",
+    ],
+    "IsNotRelevantToSearch": [
+        "ClientTweetNotRelevantToSearch",
+    ],
+}
+
 ads_conversion_engagement_to_action_types = {
     **primary_engagement_to_action_types,
     "IsPurchaseConversion": [
@@ -243,6 +258,7 @@ eng_to_action_types = {
     "default": primary_engagement_to_action_types,
     "all": engagement_to_action_types,
     "notifications": notification_engagement_to_action_types,
+    "search": search_engagement_to_action_types,
     "ads_conversion": ads_conversion_engagement_to_action_types,
     "ads_p_conv_click": ads_p_conv_click_engagement_to_action_types,
     "none": {},
