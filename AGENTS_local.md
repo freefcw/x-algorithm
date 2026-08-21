@@ -24,6 +24,7 @@
 ## 已验证事实
 - `cargo build -p x-algorithm-proto` 在当前环境可直接成功。
 - `proto/build.rs` 依赖本机 `protoc`；当前机器已满足该前提。
+- `phoenix` Rust workspace 的 pyo3 crate（xai-recsys-engine、xai-recsys-mm-server）默认链接系统 Python 3.9 framework 桩，测试二进制在 macOS 上因 `no LC_RPATH` 无法执行（dyld 加载期失败）。解决办法：`cd phoenix && PYO3_PYTHON=$PWD/.venv/bin/python3 cargo test --workspace`，重链到 uv 管理的 Python 3.12 后 116 项测试全部通过（2026-08-21 验证）。
 
 ## 额外说明
 - 如果上层指令提到 `@RTK.md`，不要默认认为仓库根目录一定存在这个文件；当前仓库内未找到 `RTK.md`。若引用来自外层会话配置，以外层注入内容为准，不要在仓库里反复查找。
