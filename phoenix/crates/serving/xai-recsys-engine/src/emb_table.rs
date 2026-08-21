@@ -1161,63 +1161,59 @@ pub fn load_tensor_no_resharding<'py>(
     Ok((checksum,).into_pyobject(py)?.into())
 }
 
-#[pyfunction]
-pub fn load_tensor<'py>(
-    py: Python<'py>,
-    path: Bound<'py, PyString>,
-    urls: Bound<'py, PyString>,
-    shard_sources: Bound<'py, PyList>,
-    mut tensor: PyReadwriteArray1<'py, u8>,
+pub fn load_tensor_into(
+    path: &str,
+    urls: &str,
+    shard_sources: &[(String, String, usize, usize)],
+    tensor: &mut [u8],
     row_size: usize,
     num_row_segments: usize,
-) -> PyResult<()> {
+) -> Result<(), String> {
     #[cfg(target_os = "linux")]
     let oflags = OFlag::O_RDONLY | OFlag::O_DIRECT;
     #[cfg(not(target_os = "linux"))]
     let oflags = OFlag::O_RDONLY;
 
-    let tensor_slice = tensor.as_slice_mut()?;
-    let tensor_size = tensor_slice.len();
-    if num_row_segments == 0 || tensor_size % num_row_segments != 0 {
-        return Err(PyValueError::new_err(format!(
+    let tensor_size = tensor.len();
+    if num_row_segments == 0 || !tensor_size.is_multiple_of(num_row_segments) {
+        return Err(format!(
             "tensor size {tensor_size} must be divisible by num_row_segments {num_row_segments}"
-        )));
+        ));
     }
     let row_segment_size = tensor_size / num_row_segments;
     if row_size == 0 || !row_segment_size.is_multiple_of(row_size) {
-        return Err(PyValueError::new_err(format!(
-            "row_segment_size {row_segment_size} must be divisible by row_size {row_size}",
-        )));
+        return Err(format!(
+            "row_segment_size {row_segment_size} must be divisible by row_size {row_size}"
+        ));
     }
-
-    if shard_sources.len() % num_row_segments != 0 {
-        return Err(PyValueError::new_err(format!(
+    if !shard_sources.len().is_multiple_of(num_row_segments) {
+        return Err(format!(
             "shard sources size {} must be divisible by num_row_segments {num_row_segments}",
             shard_sources.len()
-        )));
+        ));
     }
     let num_shards = shard_sources.len() / num_row_segments;
     if !PAGE_SIZE.is_multiple_of(row_size) {
-        return Err(PyValueError::new_err(format!(
+        return Err(format!(
             "page size {PAGE_SIZE} must be divisible by row_size {row_size}"
-        )));
+        ));
     }
     if num_shards == 0 || !row_size.is_multiple_of(num_shards) {
-        return Err(PyValueError::new_err(format!(
-            "row_size {row_size} must be divisible by num_shards {num_shards}",
-        )));
+        return Err(format!(
+            "row_size {row_size} must be divisible by num_shards {num_shards}"
+        ));
     }
     let w_s = row_size / num_shards;
     if w_s < WIDTH && !WIDTH.is_multiple_of(w_s) {
-        return Err(PyValueError::new_err(format!(
+        return Err(format!(
             "{WIDTH} must be divisible by (row_size / num_shards) {w_s}"
-        )));
+        ));
     }
     let delta_shards = cmp::max(1, WIDTH / w_s);
     if !num_shards.is_multiple_of(delta_shards) {
-        return Err(PyValueError::new_err(format!(
+        return Err(format!(
             "num_shards {num_shards} must be divisible by delta_shards {delta_shards}"
-        )));
+        ));
     }
     let num_blocks = num_shards / delta_shards;
     let shard_size = row_segment_size / num_shards;
@@ -1234,14 +1230,16 @@ pub fn load_tensor<'py>(
     let runtime = runtime::Builder::new_multi_thread()
         .enable_all()
         .build()
-        .unwrap();
+        .map_err(|e| format!("tokio runtime: {e}"))?;
 
-    let path = path.to_string();
     let prefix: Vec<_> = path.split('/').rev().take(3).collect();
+    if prefix.len() < 3 {
+        return Err(format!("checkpoint path too short: {path}"));
+    }
     let prefix = format!("{}/{}/", prefix[2], prefix[1]);
     let (channels, entries) = runtime
         .block_on(get_channels_list_entries(urls.to_string(), prefix.clone()))
-        .map_err(|s| PyOSError::new_err(format!("gRPC error: {}", s.message())))?;
+        .map_err(|s| format!("gRPC error: {}", s.message()))?;
 
     let mut channel_indexes = HashMap::new();
     for (channel_idx, inner) in entries.into_iter().enumerate() {
@@ -1249,6 +1247,151 @@ pub fn load_tensor<'py>(
             channel_indexes.insert(key, (channel_idx, value));
         }
     }
+    for (key, fname, offset, size) in shard_sources {
+        if *size != shard_size {
+            return Err(format!(
+                "bad shard size of name {key}: wanted {shard_size}, got {size}"
+            ));
+        }
+        let empty_fname = fname.is_empty();
+        let fname = format!("{path}/{fname}");
+        let idx_or_fd: Result<usize, OwnedFd> = if let Some(&(idx, sz)) = channel_indexes.get(key) {
+            if sz != *size {
+                return Err(format!(
+                    "bad shard size of name {key}: wanted {size}, got {sz}"
+                ));
+            }
+            Ok(idx)
+        } else {
+            if empty_fname {
+                return Err(format!("cannot load shard {key}"));
+            }
+            Err(open(fname.as_str(), oflags, Mode::empty())
+                .map_err(|e| format!("failed to open file {fname}: {e}"))?)
+        };
+        shards.push((idx_or_fd, *offset, format!("{prefix}{key}")));
+    }
+
+    let ok = AtomicBool::new(true);
+    let counters = (AtomicUsize::new(0), AtomicUsize::new(0));
+    for row_segment_idx in 0..num_row_segments {
+        let shard_idx = row_segment_idx * num_shards;
+        let chunk_size = cmp::max(
+            READ_SIZE * num_shards,
+            row_segment_size / num_shards / PAGE_SIZE / CONCURRENCY_OUTER * num_shards * PAGE_SIZE,
+        );
+        let row_segment_slice = &mut tensor
+            [row_segment_size * row_segment_idx..row_segment_size * (row_segment_idx + 1)];
+        let base_ptr = row_segment_slice.as_ptr() as usize;
+        row_segment_slice
+            .par_chunks_mut(chunk_size)
+            .for_each(|chunk| {
+                let file_offset = (chunk.as_ptr() as usize - base_ptr) / num_shards;
+                let min_count = chunk.len() / num_shards;
+                let buf_size = min_count.div_ceil(PAGE_SIZE) * PAGE_SIZE;
+
+                let mut vecs = vec![vec![0; buf_size + 2 * PAGE_SIZE]; delta_shards];
+                let mut bufs = Vec::with_capacity(delta_shards);
+                for v in vecs.iter_mut() {
+                    let _ = madvise_hugepage_internal(v);
+                    let o = (!(v.as_ptr() as usize) + 1) & (PAGE_SIZE - 1);
+                    bufs.push(&mut v[o..o + buf_size + PAGE_SIZE]);
+                }
+                let mut pads = vec![0; delta_shards];
+                let mut counts = (0usize, 0usize);
+
+                for block_idx in 0..num_blocks {
+                    let mut futures = Vec::<BoxFuture<_>>::with_capacity(delta_shards);
+
+                    for idx in 0..delta_shards {
+                        let shard = &shards[shard_idx + block_idx * delta_shards + idx];
+                        let offset = shard.1 + file_offset;
+                        pads[idx] = offset & (PAGE_SIZE - 1);
+                        let o = (offset - pads[idx]) as i64;
+                        match &shard.0 {
+                            Ok(channel_idx) => {
+                                let b = bufs[idx].as_mut_ptr();
+                                let b: &'static mut [u8] = unsafe {
+                                    mem::transmute(slice::from_raw_parts_mut(
+                                        b.add(pads[idx]),
+                                        min_count,
+                                    ))
+                                };
+                                futures.push(Box::pin(send_entries(
+                                    channels[*channel_idx].clone(),
+                                    vec![shard.2.as_bytes().to_vec()],
+                                    vec![file_offset],
+                                    vec![min_count],
+                                    b,
+                                    #[cfg(target_os = "linux")]
+                                    (Vec::new(), Arc::new(Vec::new()), Arc::new(Vec::new())),
+                                )));
+                            }
+                            Err(fd) => {
+                                let count = pread(fd.as_fd(), bufs[idx], o).unwrap_or(0);
+                                if count < min_count + pads[idx] {
+                                    ok.store(false, Ordering::Relaxed);
+                                }
+                                counts.0 += count;
+                            }
+                        }
+                    }
+
+                    if let Some(results) = block_on(&runtime, futures, None) {
+                        for (count, _) in results {
+                            if count != min_count {
+                                ok.store(false, Ordering::Relaxed);
+                            }
+                            counts.1 += count;
+                        }
+                    } else {
+                        ok.store(false, Ordering::Relaxed);
+                    }
+
+                    let y0 = block_idx * delta_shards * w_s;
+                    let slice_size = chunk.len() / CONCURRENCY_INNER / row_size * row_size;
+                    let base_ptr = chunk.as_ptr() as usize;
+                    chunk.par_chunks_mut(slice_size).for_each(|slice| {
+                        let row_idx_base = (slice.as_ptr() as usize - base_ptr) / row_size;
+                        for row_idx in 0..slice.len() / row_size {
+                            let x1 = (row_idx_base + row_idx) * w_s;
+                            let y1 = y0 + row_idx * row_size;
+                            for idx in 0..delta_shards {
+                                let x2 = x1 + pads[idx];
+                                let y2 = y1 + idx * w_s;
+                                slice[y2..y2 + w_s].copy_from_slice(&bufs[idx][x2..x2 + w_s]);
+                            }
+                        }
+                    });
+                }
+                counters.0.fetch_add(counts.0, Ordering::Relaxed);
+                counters.1.fetch_add(counts.1, Ordering::Relaxed);
+            });
+    }
+
+    log::info!(
+        "load_tensor stats: {} via file system, {} via gRPC, {} total",
+        counters.0.load(Ordering::Relaxed),
+        counters.1.load(Ordering::Relaxed),
+        tensor_size,
+    );
+    if !ok.load(Ordering::Relaxed) {
+        return Err("could not read files".into());
+    }
+    Ok(())
+}
+
+#[pyfunction]
+pub fn load_tensor<'py>(
+    py: Python<'py>,
+    path: Bound<'py, PyString>,
+    urls: Bound<'py, PyString>,
+    shard_sources: Bound<'py, PyList>,
+    mut tensor: PyReadwriteArray1<'py, u8>,
+    row_size: usize,
+    num_row_segments: usize,
+) -> PyResult<()> {
+    let mut parsed = Vec::with_capacity(shard_sources.len());
     for t in shard_sources.iter() {
         let err0 =
             || PyTypeError::new_err("shard_sources entry must be (name, fname, offset, size)");
@@ -1256,7 +1399,6 @@ pub fn load_tensor<'py>(
         if tuple.len() != 4 {
             return Err(err0());
         }
-
         let k = tuple.get_item(0)?;
         let key: String = k.extract().map_err(|_| {
             PyTypeError::new_err(format!(
@@ -1271,147 +1413,25 @@ pub fn load_tensor<'py>(
                 "shard_sources entry must be (name, fname, offset, size) for name {key}"
             ))
         };
-
         let fname: String = tuple.get_item(1)?.extract().map_err(|_| err())?;
-        let empty_fname = fname.is_empty();
-        let fname = format!("{path}/{fname}");
         let offset: usize = tuple.get_item(2)?.extract().map_err(|_| err())?;
         let size: usize = tuple.get_item(3)?.extract().map_err(|_| err())?;
-        if size != shard_size {
-            return Err(PyValueError::new_err(format!(
-                "bad shard size of name {key}: wanted {shard_size}, got {size}"
-            )));
-        }
-
-        let idx_or_fd: Result<usize, OwnedFd> = if let Some(&(idx, sz)) = channel_indexes.get(&key)
-        {
-            if sz != size {
-                return Err(PyValueError::new_err(format!(
-                    "bad shard size of name {key}: wanted {size}, got {sz}"
-                )));
-            }
-            Ok(idx)
-        } else {
-            if empty_fname {
-                return Err(PyOSError::new_err(format!("cannot load shard {key}")));
-            }
-            Err(open(fname.as_str(), oflags, Mode::empty())
-                .map_err(|e| PyOSError::new_err(format!("failed to open file {}: {}", fname, e)))?)
-        };
-        shards.push((idx_or_fd, offset, format!("{}{}", prefix, key)));
+        parsed.push((key, fname, offset, size));
     }
-
-    let ok = AtomicBool::new(true);
+    let path = path.to_string();
+    let urls = urls.to_string();
+    let tensor_slice = tensor.as_slice_mut()?;
     py.detach(|| {
-        let counters = (AtomicUsize::new(0), AtomicUsize::new(0));
-        for row_segment_idx in 0..num_row_segments {
-            let shard_idx = row_segment_idx * num_shards;
-            let chunk_size = cmp::max(
-                READ_SIZE * num_shards,
-                row_segment_size / num_shards / PAGE_SIZE / CONCURRENCY_OUTER
-                    * num_shards
-                    * PAGE_SIZE,
-            );
-            let row_segment_slice = &mut tensor_slice
-                [row_segment_size * row_segment_idx..row_segment_size * (row_segment_idx + 1)];
-            let base_ptr = row_segment_slice.as_ptr() as usize;
-            row_segment_slice
-                .par_chunks_mut(chunk_size)
-                .for_each(|chunk| {
-                    let file_offset = (chunk.as_ptr() as usize - base_ptr) / num_shards;
-                    let min_count = chunk.len() / num_shards;
-                    let buf_size = min_count.div_ceil(PAGE_SIZE) * PAGE_SIZE;
-
-                    let mut vecs = vec![vec![0; buf_size + 2 * PAGE_SIZE]; delta_shards];
-                    let mut bufs = Vec::with_capacity(delta_shards);
-                    for v in vecs.iter_mut() {
-                        let _ = madvise_hugepage_internal(v);
-                        let o = (!(v.as_ptr() as usize) + 1) & (PAGE_SIZE - 1);
-                        bufs.push(&mut v[o..o + buf_size + PAGE_SIZE]);
-                    }
-                    let mut pads = vec![0; delta_shards];
-                    let mut counts = (0usize, 0usize);
-
-                    for block_idx in 0..num_blocks {
-                        let mut futures = Vec::<BoxFuture<_>>::with_capacity(delta_shards);
-
-                        for idx in 0..delta_shards {
-                            let shard = &shards[shard_idx + block_idx * delta_shards + idx];
-                            let offset = shard.1 + file_offset;
-                            pads[idx] = offset & (PAGE_SIZE - 1);
-                            let o = (offset - pads[idx]) as i64;
-                            match &shard.0 {
-                                Ok(channel_idx) => {
-                                    let b = bufs[idx].as_mut_ptr();
-                                    let b: &'static mut [u8] = unsafe {
-                                        mem::transmute(slice::from_raw_parts_mut(
-                                            b.add(pads[idx]),
-                                            min_count,
-                                        ))
-                                    };
-                                    futures.push(Box::pin(send_entries(
-                                        channels[*channel_idx].clone(),
-                                        vec![shard.2.as_bytes().to_vec()],
-                                        vec![file_offset],
-                                        vec![min_count],
-                                        b,
-                                        #[cfg(target_os = "linux")]
-                                        (Vec::new(), Arc::new(Vec::new()), Arc::new(Vec::new())),
-                                    )));
-                                }
-                                Err(fd) => {
-                                    let count = pread(fd.as_fd(), bufs[idx], o).unwrap_or(0);
-                                    if count < min_count + pads[idx] {
-                                        ok.store(false, Ordering::Relaxed);
-                                    }
-                                    counts.0 += count;
-                                }
-                            }
-                        }
-
-                        if let Some(results) = block_on(&runtime, futures, None) {
-                            for (count, _) in results {
-                                if count != min_count {
-                                    ok.store(false, Ordering::Relaxed);
-                                }
-                                counts.1 += count;
-                            }
-                        } else {
-                            ok.store(false, Ordering::Relaxed);
-                        }
-
-                        let y0 = block_idx * delta_shards * w_s;
-                        let slice_size = chunk.len() / CONCURRENCY_INNER / row_size * row_size;
-                        let base_ptr = chunk.as_ptr() as usize;
-                        chunk.par_chunks_mut(slice_size).for_each(|slice| {
-                            let row_idx_base = (slice.as_ptr() as usize - base_ptr) / row_size;
-                            for row_idx in 0..slice.len() / row_size {
-                                let x1 = (row_idx_base + row_idx) * w_s;
-                                let y1 = y0 + row_idx * row_size;
-                                for idx in 0..delta_shards {
-                                    let x2 = x1 + pads[idx];
-                                    let y2 = y1 + idx * w_s;
-                                    slice[y2..y2 + w_s].copy_from_slice(&bufs[idx][x2..x2 + w_s]);
-                                }
-                            }
-                        });
-                    }
-                    counters.0.fetch_add(counts.0, Ordering::Relaxed);
-                    counters.1.fetch_add(counts.1, Ordering::Relaxed);
-                });
-        }
-
-        log::info!(
-            "load_tensor stats: {} via file system, {} via gRPC, {} total",
-            counters.0.load(Ordering::Relaxed),
-            counters.1.load(Ordering::Relaxed),
-            tensor_size,
-        );
-    });
-    if !ok.load(Ordering::Relaxed) {
-        return Err(PyOSError::new_err("could not read files"));
-    }
-    Ok(())
+        load_tensor_into(
+            &path,
+            &urls,
+            &parsed,
+            tensor_slice,
+            row_size,
+            num_row_segments,
+        )
+        .map_err(PyOSError::new_err)
+    })
 }
 
 #[cfg(test)]
