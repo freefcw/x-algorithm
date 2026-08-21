@@ -4,11 +4,11 @@ use crate::post_text::{MatchTweetGroup, TokenSequence, TweetTokenizer, UserMutes
 use std::sync::Arc;
 use xai_candidate_pipeline::filter::{Filter, FilterResult};
 
-pub struct MutedKeywordFilter {
+pub struct ViewerMutedKeywordFilter {
     pub tokenizer: Arc<TweetTokenizer>,
 }
 
-impl MutedKeywordFilter {
+impl ViewerMutedKeywordFilter {
     pub fn new() -> Self {
         let tokenizer = TweetTokenizer::new();
         Self {
@@ -17,7 +17,7 @@ impl MutedKeywordFilter {
     }
 }
 
-impl Filter<ScoredPostsQuery, PostCandidate> for MutedKeywordFilter {
+impl Filter<ScoredPostsQuery, PostCandidate> for ViewerMutedKeywordFilter {
     fn filter(
         &self,
         query: &ScoredPostsQuery,
@@ -81,7 +81,7 @@ mod tests {
             },
         ];
 
-        let result = MutedKeywordFilter::new().filter(&query, candidates);
+        let result = ViewerMutedKeywordFilter::new().filter(&query, candidates);
 
         assert_eq!(result.kept[0].tweet_id, 2);
         assert_eq!(result.removed[0].tweet_id, 1);

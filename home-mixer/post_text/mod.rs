@@ -4,10 +4,10 @@
 //
 // 原始功能说明：
 // xai_post_text 提供推文文本的分词和匹配功能，
-// 用于实现 MutedKeywordFilter（屏蔽关键词过滤器）。
+// 用于实现 ViewerMutedKeywordFilter（屏蔽关键词过滤器）。
 //
 // 在 Home Mixer 管道中的作用链：
-//   用户设置屏蔽关键词 → MutedKeywordFilter 拿到关键词列表
+//   用户设置屏蔽关键词 → ViewerMutedKeywordFilter 拿到关键词列表
 //   → TweetTokenizer 分词 → UserMutes 构建匹配规则
 //   → MatchTweetGroup 检查每条帖子文本是否命中
 //   → 命中则从候选集中移除

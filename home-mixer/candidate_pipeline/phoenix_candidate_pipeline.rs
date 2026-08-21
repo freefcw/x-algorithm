@@ -36,7 +36,6 @@ use crate::filters::core_data_hydration_filter::CoreDataHydrationFilter;
 use crate::filters::dedup_conversation_filter::DedupConversationFilter;
 use crate::filters::drop_duplicates_filter::DropDuplicatesFilter;
 use crate::filters::ineligible_subscription_filter::IneligibleSubscriptionFilter;
-use crate::filters::muted_keyword_filter::MutedKeywordFilter;
 use crate::filters::new_user_topic_ids_filter::NewUserTopicIdsFilter;
 use crate::filters::previously_seen_posts_backup_filter::PreviouslySeenPostsBackupFilter;
 use crate::filters::previously_seen_posts_filter::PreviouslySeenPostsFilter;
@@ -46,6 +45,7 @@ use crate::filters::self_tweet_filter::SelfTweetFilter;
 use crate::filters::topic_ids_filter::TopicIdsFilter;
 use crate::filters::vf_filter::VFFilter;
 use crate::filters::video_filter::VideoFilter;
+use crate::filters::viewer_muted_keyword_filter::ViewerMutedKeywordFilter;
 use crate::models::candidate::PostCandidate;
 use crate::models::query::ScoredPostsQuery;
 use crate::params;
@@ -220,7 +220,7 @@ impl PhoenixCandidatePipeline {
             Box::new(PreviouslySeenPostsFilter),
             Box::new(PreviouslySeenPostsBackupFilter),
             Box::new(PreviouslyServedPostsFilter),
-            Box::new(MutedKeywordFilter::new()),
+            Box::new(ViewerMutedKeywordFilter::new()),
             Box::new(AuthorSocialgraphFilter),
             Box::new(VideoFilter),
             Box::new(TopicIdsFilter),

@@ -84,7 +84,7 @@ pub trait StratoClient: Send + Sync {
     /// 这些特征在管道中被多个组件使用：
     ///   - InNetworkCandidateHydrator: 判断帖子是否来自关注者
     ///   - AuthorSocialgraphFilter: 过滤被屏蔽/静音的作者
-    ///   - MutedKeywordFilter: 使用屏蔽关键词列表
+    ///   - ViewerMutedKeywordFilter: 使用屏蔽关键词列表
     ///   - IneligibleSubscriptionFilter: 检查付费订阅状态
     ///
     /// # Arguments
