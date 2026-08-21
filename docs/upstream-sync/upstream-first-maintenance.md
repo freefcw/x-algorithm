@@ -2,8 +2,10 @@
 
 > Status: current-code / design rule
 > Upstream common base: `aaa167b3de8a674587c53545a43c90eaad360010`
-> Absorbed upstream anchor: `b089ce64891f9c50fab73aa00dbe65acb82f198f` (2026-08-17 snapshot; inventory in [`b089ce6-capability-inventory.md`](./b089ce6-capability-inventory.md), adoption outcome in [`../update/20260817.md`](../update/20260817.md))
-> Upstream head: `b089ce64891f9c50fab73aa00dbe65acb82f198f`
+> Absorbed upstream anchor: `11a71f87d6a7fc4c1e8159dad8f3c5ff90a0f7ed` (2026-08-18 snapshot; inventory in [`11a71f8-capability-inventory.md`](./11a71f8-capability-inventory.md), outcome in [`../update/20260818.md`](../update/20260818.md); no portable deltas, U3 lane semantics updated)
+> Upstream head: `11a71f87d6a7fc4c1e8159dad8f3c5ff90a0f7ed`
+>
+> Previous anchor: `b089ce64891f9c50fab73aa00dbe65acb82f198f` (2026-08-17 snapshot; inventory in [`b089ce6-capability-inventory.md`](./b089ce6-capability-inventory.md), adoption outcome in [`../update/20260817.md`](../update/20260817.md))
 >
 > Previous anchor: `c65aa179db7bdd61e2c2821eac87f208a105c053` (2026-08-14 semantic migration; portable changes landed and U3 lanes recorded in [`../update/20260814.md`](../update/20260814.md))
 >
