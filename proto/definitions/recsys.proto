@@ -144,6 +144,11 @@ message TweetInfo {
   uint64 author_id = 2;
   // 帖子被回复的原始帖 ID（如果适用）
   uint64 in_reply_to_tweet_id = 3;
+  // 候选安全标签位掩码；位语义对齐 Phoenix 引擎合同的
+  // TweetInfo.safetyLabelMask / Candidate.safetyLabelMask。
+  // 当前唯一定义的位是 SAFETY_BIT_AUTHOR_NSFW（见 x-algorithm-proto 同名常量），
+  // 仅原创帖作者命中时置位，转帖不置位。
+  uint64 safety_label_mask = 4;
 }
 
 // 单个候选帖子的预测分布

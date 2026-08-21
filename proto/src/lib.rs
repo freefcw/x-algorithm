@@ -7,6 +7,12 @@
 //
 // 生成的代码包括 Protobuf 消息结构体和 tonic gRPC 客户端/服务端桩。
 
+/// 作者 NSFW 安全位：对齐 Phoenix 引擎 `xai-recsys-proto` 的同名常量，
+/// phoenix 侧测试锁定 `1 << 2 == 4`
+/// （phoenix/crates/serving/xai-recsys-proto/src/lib.rs）。
+/// 仅原创帖作者命中时置位；转帖不置位。
+pub const SAFETY_BIT_AUTHOR_NSFW: u64 = 1 << 2;
+
 /// 演示模式共享契约（thunder 与 home-mixer 的演示数据咬合约定）
 pub mod demo;
 
