@@ -42,7 +42,7 @@
 |---|---|---|---|
 | A1 | `compute_verdict_v2`：V2 中/低风险标签集、`strip_v1_grok_written`（剥离 prompt 侧双写的 v1 标签，规则 ID 1400–1700）、`GROK_SFA_V2` 门控、`PTOS_REVIEWED` + tweet ID cutoff 门控、v1/v2 等价性矩阵测试 | **U3** | 依赖未公开合同：`xai_x_thrift` 的 V2 `SafetyLabelType` 变体与 botmaker 规则 ID 语义；且依附本地不存在的 ads 管线。重入条件：V2 标签类型进入公开 proto/thrift 合同 **且** ads 管线落地。本节语义已记录，重入时无需重读上游 diff |
 | A2 | `EnableAdsBrandSafetyVerdictV2` 参数 + `ads_brand_safety_vf_hydrator` 内 v1/v2 切换 | **U3** | 依附 A1；参数宏体系本地已重写，无对应挂载点 |
-| A3 | `PostCandidate.nsfw_author_phoenix` 字段 + 候选→phoenix 请求时置 `safety_label_mask = SAFETY_BIT_AUTHOR_NSFW`（仅原创帖，转帖不置位）；gizmoduck 侧从 `user.safety.nsfw_user/nsfw_admin` 与 `NSFW_HIGH_PRECISION/POSSIBLY_NSFW_ACCOUNT` 标签推导 | **拆分**：字段+mask 映射 = **U0 合同补齐**；gizmoduck 推导 = **U3** | 字段与映射现在落地：`None` → mask 0，无行为变化，补齐 `b7d0c6c` 缺失的生产者半侧。gizmoduck 填充依赖作者安全标签数据源（本地 TES/demo 适配器无此字段），列 U3，重入条件：作者安全标签进入 TES core-data 或等价合同 |
+| A3 | `PostCandidate.nsfw_author_phoenix` 字段 + 候选→phoenix 请求时置 `safety_label_mask = SAFETY_BIT_AUTHOR_NSFW`（仅原创帖，转帖不置位）；gizmoduck 侧从 `user.safety.nsfw_user/nsfw_admin` 与 `NSFW_HIGH_PRECISION/POSSIBLY_NSFW_ACCOUNT` 标签推导 | **拆分**：字段+mask 映射 = **U0 合同补齐**；gizmoduck 推导 = **U3** | 曾落地（`None` → mask 0，补齐 `b7d0c6c` 缺失的生产者半侧），**2026-08-22 复验确认已整体回退**：`PostCandidate` 无该字段、`phoenix_scorer` 恒发 mask 0（见 §4 注）。gizmoduck 填充依赖作者安全标签数据源（本地 TES/demo 适配器无此字段），列 U3，重入条件：作者安全标签进入 TES core-data 或等价合同 |
 | A4 | 候选→phoenix 请求映射中 `followers` 仅原创帖设置（转帖置 `None`） | **U3**（落地中重分类） | 上游修的是引擎请求映射中转发作者粉丝数的串扰；本地网关 `TweetInfo` 无 followers/authorInfo 字段、无任何 followers 转发链路，无此 bug 的载体。重入条件：引入 followers 转发时直接采用原创帖限定语义 |
 | A5 | `SlateContext` 新增 `sid_known/sid_k_l1..3/sid_gap_l1..3`；`ranking_scorer` 在最终排序后对三级 semantic-ID 前缀（每级 20 bit 打包）做滑窗频次与位距统计 | **U3** | 算法本身可移植，但依附两条本地未引入链路：`SlateContext`（`ranking_scorer.rs:382` 已记录暂缓）与候选 `semantic_ids`（上游由检索侧填充，`aad7179` 的 `sid_client` 相关）。重入条件：semantic_ids 数据源落地 + SlateContext 重评估。注意：该统计在请求内即时计算即可供给 phoenix slate 特征，**不强制依赖** SlateContext 的请求缓存持久化，重入时按此重新评估拆分 |
 | A6 | `FOLLOWING_MAX_RESULT_SIZE` 100 → 110 | **U3** | 本地无该常量，following 管线参数体系不同；随 following 链路重入一并评估 |
@@ -79,6 +79,7 @@
 1. `home-mixer: wire author NSFW safety mask producer side`（A3 合同补齐；A4 在落地时重分类为 U3，见 §3 表）
    - `PostCandidate` 新增 `nsfw_author_phoenix: Option<bool>`；网关 proto `TweetInfo` 新增 `safety_label_mask`（字段 4）；`phoenix_scorer` 置位规则为原创帖且 `Some(true)`；常量由 `x-algorithm-proto` 导出。
    - 默认路径行为不变（字段缺省 `None` → mask 0）。
+   - **2026-08-22 复验确认已回退**：生产侧接线整体撤回（字段移除、`phoenix_scorer` 恒发 0、单测删除）。proto 合同字段与 phoenix 侧消费逻辑保留，A3 重入条件不变。
 2. `phoenix: drop env override for mm embedding TTL`（B1）
    - 删除 `embedding_ttl()` 与 `MM_EMBEDDING_TTL_SECS`，统一使用 `EMBEDDING_TTL`。
 

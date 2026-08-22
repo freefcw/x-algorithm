@@ -67,10 +67,6 @@ pub struct PostCandidate {
     pub is_mutual_follow_author: Option<bool>,
     pub brand_safety_verdict: Option<BrandSafetyVerdict>,
     pub safety_labels: Vec<SafetyLabelInfo>,
-    /// 作者是否被 Phoenix 安全口径判定为 NSFW；仅原创帖参与置位，
-    /// 由候选→Phoenix 请求映射写入 `TweetInfo.safety_label_mask`。
-    /// 本地尚无作者安全标签数据源（U3），缺省 `None` 时掩码为 0。
-    pub nsfw_author_phoenix: Option<bool>,
 }
 
 #[derive(Clone, Debug, Default, PartialEq)]

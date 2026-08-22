@@ -37,15 +37,7 @@ impl Scorer<ScoredPostsQuery, PostCandidate> for PhoenixScorer {
                     x_algorithm_proto::recsys::TweetInfo {
                         tweet_id,
                         author_id,
-                        // 上游 b089ce6 合同：仅原创帖且作者命中 Phoenix NSFW 口径时置位；
-                        // 转帖不置位（原作者安全语义经由原帖 ID 传递）。
-                        safety_label_mask: if c.retweeted_user_id.is_none()
-                            && c.nsfw_author_phoenix.unwrap_or(false)
-                        {
-                            x_algorithm_proto::SAFETY_BIT_AUTHOR_NSFW
-                        } else {
-                            0
-                        },
+                        safety_label_mask: 0,
                         ..Default::default()
                     }
                 })
@@ -235,30 +227,6 @@ mod tests {
         }
     }
 
-    #[derive(Default)]
-    struct RecordingPhoenixClient {
-        seen: std::sync::Mutex<Vec<x_algorithm_proto::recsys::TweetInfo>>,
-    }
-
-    #[async_trait]
-    impl PhoenixPredictionClient for RecordingPhoenixClient {
-        async fn predict(
-            &self,
-            _user_id: u64,
-            _sequence: x_algorithm_proto::recsys::UserActionSequence,
-            candidates: Vec<x_algorithm_proto::recsys::TweetInfo>,
-        ) -> Result<x_algorithm_proto::recsys::PredictNextActionsResponse, anyhow::Error> {
-            *seen_lock(&self.seen) = candidates;
-            Ok(Default::default())
-        }
-    }
-
-    fn seen_lock<'a>(
-        seen: &'a std::sync::Mutex<Vec<x_algorithm_proto::recsys::TweetInfo>>,
-    ) -> std::sync::MutexGuard<'a, Vec<x_algorithm_proto::recsys::TweetInfo>> {
-        seen.lock().expect("recording client lock")
-    }
-
     fn scorer() -> PhoenixScorer {
         PhoenixScorer {
             phoenix_client: Arc::new(UnusedPhoenixClient),
@@ -313,56 +281,6 @@ mod tests {
             .await;
 
         assert!(scored[0].is_err());
-    }
-
-    #[tokio::test]
-    async fn author_nsfw_bit_only_set_for_original_posts() {
-        let client = Arc::new(RecordingPhoenixClient::default());
-        let scorer = PhoenixScorer {
-            phoenix_client: client.clone(),
-        };
-        let query = ScoredPostsQuery {
-            prediction_id: 1,
-            scoring_sequence: Some(Default::default()),
-            ..Default::default()
-        };
-        let candidates = vec![
-            // 原创帖 + 命中 NSFW：置位
-            PostCandidate {
-                tweet_id: 1,
-                nsfw_author_phoenix: Some(true),
-                ..Default::default()
-            },
-            // 转帖 + 命中 NSFW：不置位
-            PostCandidate {
-                tweet_id: 2,
-                retweeted_user_id: Some(99),
-                retweeted_tweet_id: Some(20),
-                nsfw_author_phoenix: Some(true),
-                ..Default::default()
-            },
-            // 原创帖 + 数据源缺失：不置位
-            PostCandidate {
-                tweet_id: 3,
-                ..Default::default()
-            },
-            // 原创帖 + 明确未命中：不置位
-            PostCandidate {
-                tweet_id: 4,
-                nsfw_author_phoenix: Some(false),
-                ..Default::default()
-            },
-        ];
-
-        let scored = scorer.score(&query, &candidates).await;
-        assert!(scored.iter().all(|r| r.is_ok()));
-
-        let seen = seen_lock(&client.seen);
-        let masks: Vec<u64> = seen.iter().map(|c| c.safety_label_mask).collect();
-        assert_eq!(
-            masks,
-            vec![x_algorithm_proto::SAFETY_BIT_AUTHOR_NSFW, 0, 0, 0]
-        );
     }
 
     #[test]
