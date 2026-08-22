@@ -114,13 +114,13 @@ labels: [B, C, num_actions]
 
 两者都做了 L2 归一化，因此训练目标一定会围绕“拉近正样本、推远负样本”的相似度学习展开。
 
-### 5.2 训练推断
+### 5.2 召回训练（已落地的演示脚本）
 
-在没有显式训练代码的情况下，最合理的召回训练方式是双塔常见范式：
+`scripts/train_retrieval.py` 已经按双塔常见范式实现：
 
-- 正样本：用户真实互动过的内容。
-- 负样本：同曝光未互动内容、随机内容或 hard negatives。
-- 损失：点积相似度上的 softmax / 对比学习 / sampled softmax。
+- 正样本：batch 内该用户对应的候选。
+- 负样本：同一 batch 里其他样本（in-batch negatives）。
+- 损失：温度缩放点积上的对比学习，见 `scripts/train_retrieval.py`。
 
 ```mermaid
 graph LR
@@ -189,12 +189,7 @@ flowchart TD
 - `dwell_time` 归一化方法
 - 推荐的 Parquet 结构
 
-它解决的是“训练样本怎么抽、字段怎么落”的问题，但还没有解决：
-
-- 损失函数怎么写
-- 优化器怎么配
-- 多目标权重怎么调
-- retrieval 的负采样怎么做
+它解决的是“训练样本怎么抽、字段怎么落”的问题。演示栈已经有损失和优化器：`train_ranker.py` 是前 18 维 BCE + dwell MSE、`optax.adam`；`train_retrieval.py` 是 in-batch negatives。生产训练配方（AdamW / Muon）见 `phoenix/TRAINING.md`，不要和演示脚本混成一套。仍缺的是多目标权重调参、评估集和发版例行化。
 
 ## 9. 可以推断出的训练产物链路
 
@@ -223,7 +218,7 @@ graph TD
 
 ## 11. 对当前仓库最合理的训练侧判断
 
-Phoenix 目前不是“训练框架”，而是“训练接口已经隐含在推理结构里的模型原型”。  
+Phoenix 演示栈已经有可跑的训练脚本；生产引擎另有一套配方。这篇文档讲的是训练契约的“为什么”，不是“没有训练代码”。  
 它已经把训练时最难改的几件事固定住了：
 
 - 输入张量契约

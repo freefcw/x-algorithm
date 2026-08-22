@@ -157,7 +157,7 @@ Phoenix 现在更像“可训练的框架样例 + 服务原型”，而不是完
 
 - 训练入口已有（`scripts/train_ranker.py` / `scripts/train_retrieval.py`，含损失函数与 Parquet 数据管道），但持续训练、评估与发版的例行化仍需自建。
 - 没有真实 embedding lookup 服务，`services/feature_store.py` 主要是 mock。
-- 没有真实 ANN 检索集成，`retrieval_service.py` 中 FAISS 仍是预留接口；gRPC 网关（`services/grpc_gateway.py`）的候选池是启动时合成的演示数据。
+- 没有真实 ANN 检索集成。`retrieval_service.py` 有可选 `faiss.read_index` 分支，未装 faiss 或没有索引文件时回退 mock；gRPC 网关的候选池是启动时合成的演示数据。
 - 服务接口是可运行原型（HTTP + gRPC），但还不是生产级部署形态。
 
 这些边界不是缺陷描述，而是阅读后续文档时必须带着的前提。

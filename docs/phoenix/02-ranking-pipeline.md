@@ -91,13 +91,15 @@ flowchart LR
 
 ## 6. Phoenix 真正使用的注意力规则
 
-当前代码并不是“用户和历史全双向注意力”，而是更严格的时序规则：
+这组文档讲的是演示链路 `grok.py`，不是生产 `xrex/`。
+
+演示 `make_recsys_attn_mask` 的规则：
 
 - 用户和历史部分使用下三角因果 mask。
 - 候选能看到所有更早位置，也就是用户和全部历史。
 - 候选之间互相看不到，只能看自己。
 
-这正是 `grok.py` 中 `make_recsys_attn_mask` 的真实行为。
+生产引擎 `xrex` 的 ranker attention 是 user+history 双向、明确不支持因果 mask。不要把下面这张图当成两套栈的共同事实。
 
 ```mermaid
 graph TD

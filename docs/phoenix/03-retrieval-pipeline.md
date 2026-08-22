@@ -185,4 +185,4 @@ graph TD
 
 - 当前没有真实 ANN 引擎接入。
 - 当前候选池是随机生成，不代表真实内容分布。
-- 当前测试覆盖了召回前向、归一化和 runner 调用，但没有服务级集成测试。
+- 当前测试覆盖了召回前向、归一化、runner，以及 gRPC 网关契约（`tests/test_grpc_gateway_contract.py`）。HTTP `/v1/retrieve` 仍无集成测试。

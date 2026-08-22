@@ -11,17 +11,21 @@ production-scale recipe. Supply those parts for your own deployment.
 
 ## Optimizers and training step
 
-The dense-parameter optimizer in this export is **standard Optax AdamW**. The
-internal deployment uses a tuned RMS-normalized-Adam derivative in that
-optimizer slot. AdamW is the validated equivalent for the released recipes;
-every shipped config trains with it end to end.
+The dense-parameter optimizer slot supports two shipped settings. The default
+`optim="adam"` maps to **standard Optax AdamW** and is what the nano configs
+(the QUICKSTART path) train with end to end. The shipped production configs
+`home_direct_packed` (H100) and `home_direct_packed_gb300` instead set
+`optim="muon"`, dispatched to the included Muon implementation
+(`xrex/optimizers/`). The internal deployment uses a tuned RMS-normalized-Adam
+derivative in that optimizer slot; AdamW and Muon are the validated
+equivalents for the released recipes.
 
 Embedding tables use a separate sparse rowwise AdaGrad optimizer. At a high
 level, each step:
 
 1. looks up and deduplicates the embedding rows used by the batch;
 2. computes the loss and gradients for dense parameters and embeddings;
-3. applies AdamW to dense parameters and rowwise AdaGrad to the referenced
+3. applies the configured dense optimizer and rowwise AdaGrad to the referenced
    embedding rows; and
 4. skips updates when gradients are non-finite.
 

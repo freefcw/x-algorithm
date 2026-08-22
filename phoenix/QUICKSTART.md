@@ -9,7 +9,7 @@ Run every command from this directory (the export root).
 
 ## Requirements
 
-- Linux with an NVIDIA GPU and CUDA 12
+- Linux with an NVIDIA GPU. JAX wheels are CUDA 12 (`jax[cuda12]`); the walkthrough is also exercised on a CUDA 13.2 base image.
 - `uv` and Python 3.11 or newer
 - A Rust toolchain and `protoc` 3.15 or newer
 

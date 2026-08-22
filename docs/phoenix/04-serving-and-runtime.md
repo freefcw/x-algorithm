@@ -110,8 +110,11 @@ graph LR
 - `RANKER_PORT`
 - `RETRIEVAL_PORT`
 - `RANKER_CHECKPOINT_PATH`
+- `RETRIEVAL_CHECKPOINT_PATH`
 - `FAISS_INDEX_PATH`
 - `ENABLE_METRICS`
+- `PHOENIX_GRPC_PORT` / `PHOENIX_ARTIFACTS_DIR`（gRPC 网关）
+- 生产引擎另有 `PHOENIX_INDEX_BASE`，见 `phoenix/QUICKSTART.md`
 
 这样做的意义是把“模型结构”和“部署行为”分开管理。
 
@@ -148,10 +151,12 @@ graph TD
 ```mermaid
 flowchart TD
     A[checkpoint_path] --> B{路径类型}
+    B -->|npz| N[np.load 展平 dict]
     B -->|pkl/pickle| C[pickle.load]
     B -->|npy| D[np.load]
     B -->|目录| E[逐文件加载]
-    C --> F[convert_to_jax]
+    N --> F[convert_to_jax]
+    C --> F
     D --> F
     E --> F
     F --> G[current_params]

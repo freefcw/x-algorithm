@@ -65,20 +65,14 @@
 ### 3.3 哈希函数实现
 
 ```python
-import hashlib
+from data_preprocessor import hash_id_to_ints
 
-def hash_id(entity_id, num_hashes: int = 2, table_size: int = 100_000) -> list[int]:
-    """
-    将任意整数或字符串 ID 映射为 num_hashes 个嵌入表索引。
-    结果值域 [1, table_size]，0 保留给 padding。
-    """
-    if isinstance(entity_id, str):
-        # 字符串 ID：先用 MD5 转为整数
-        entity_id = int(hashlib.md5(entity_id.encode()).hexdigest(), 16)
-    return [hash((entity_id, seed)) % table_size + 1 for seed in range(num_hashes)]
+# 与训练预处理器同一套：MD5("{id}_hash{i}") % table_size + 1
+# 不要用 Python 内置 hash()——结果依赖 PYTHONHASHSEED，也和训练表对不齐
+user_hashes = hash_id_to_ints("10001")
 ```
 
-> 与 [../training/training_data_spec.md](../training/training_data_spec.md) §4.1 中的 MD5 版本等价，两种写法均可，保持训练与推理一致即可。
+> 训练和推理必须调用 `data_preprocessor.hash_id_to_ints`（或 [../training/training_data_spec.md](../training/training_data_spec.md) §4.1 的等价 MD5）。`run_real_data_demo.py` 里的 `hash((id, seed))` 只用于演示，不能拿去造训练样本。
 
 ### 3.4 嵌入表的两种状态
 
@@ -142,7 +136,7 @@ RecsysEmbeddings（查表结果）
 | 15 | `block_author` | 屏蔽作者 | 0/1 |
 | 16 | `mute_author` | 静音作者 | 0/1 |
 | 17 | `report` | 举报 | 0/1 |
-| 18 | `dwell_time` | 归一化停留时长 | 连续值，建议 `log1p(s)/log1p(300)` |
+| 18 | `dwell_time` | 归一化停留时长 | 连续值，`data_preprocessor.py` 用 `seconds / 300` 压到 [0, 1] |
 
 ### 4.3 完整构造代码
 
@@ -173,7 +167,7 @@ history_post_embeddings = post_emb_table[history_post_hashes]  # [B, 32, 2, 128]
 |---|---|
 | 哈希值不能为 0 | 0 是 padding 标记，模型用 `hash[:,:,0] != 0` 判断有效位 |
 | 历史不足 32 条时末尾补 0 | 所有字段（哈希、actions、surface）对应位置均填 0 |
-| 候选必须恰好 8 个 | `candidate_seq_len` 固定，不足时用虚拟候选补位 |
+| 演示训练张量候选位是 8 | `train_ranker.py` 的 `candidate_seq_len=8`，不足补零；在线 gRPC 网关按 32 分块，不要按 8 去裁 Predict 请求 |
 | 嵌入表第 0 行必须全零 | 确保 padding 位查表后得到零向量 |
 
 ---
@@ -333,7 +327,7 @@ def train_step(params, opt_state, batch, embeddings, labels):
 | 输出全相同分数 | 嵌入表第 0 行没有置零，padding 位被赋了随机向量 | `emb_table[0] = 0.0` |
 | 历史被完全忽略 | `history_post_hashes` 全为 0 | 检查哈希函数是否返回了 0 |
 | 形状不匹配报错 | 忘记多哈希维度，写成 `[B, S, D]` 而非 `[B, S, 2, D]` | 查表结果是 `[..., num_hashes, D]` |
-| 候选评分异常 | 候选数不足 8 个 | 不足时补虚拟候选（哈希值为任意非 0 整数，label 全 0）|
+| 候选评分异常 | 演示训练候选位不足 8 个 | 训练侧补虚拟候选（哈希非 0，label 全 0）；在线请求由网关分块，不必先裁成 8 |
 
 **调试代码片段**：
 

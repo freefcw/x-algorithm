@@ -22,9 +22,10 @@ predicted engagement).
 > infrastructure (production data feeds, cluster orchestration, internal
 > telemetry) — every such seam is replaced by a documented local equivalent,
 > and synthetic data generators are included so the whole system runs end to
-> end with nothing external. One training-recipe exception is disclosed in
-> [TRAINING.md](TRAINING.md): the dense-optimizer slot ships as standard
-> AdamW rather than production's tuned internal variant.
+> end with nothing external. One training-recipe difference is disclosed in
+> [TRAINING.md](TRAINING.md): the dense-optimizer slot ships standard AdamW
+> for the nano/default configs and Muon for the shipped production configs,
+> rather than production's tuned internal variant.
 
 ## Table of Contents
 
