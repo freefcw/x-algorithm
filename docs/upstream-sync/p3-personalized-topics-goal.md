@@ -1,5 +1,7 @@
 # Goal Document: P3 个性化话题召回改造
 
+> 文档性质：本文件记录该改造阶段的目标、决策和完成时证据；“阶段完成时证据”是不可变历史快照，不代表仓库当前累计测试数。最新回归结果单列在“当前回归证据”，跨阶段权威汇总见 [`e414c17-to-mp-capability-inventory.md`](./e414c17-to-mp-capability-inventory.md) 的 `EV-*` 与 Final Validation。
+
 ## Go / No-Go
 - **Judgment**: Go
 - **Reason**: 现有候选流水线已支持 Query Hydrator、可注入 Client 和多来源并行执行，能够在不新增服务的前提下完成改造。
@@ -107,13 +109,29 @@
 - Query Hydrator 失败时流水线会保留原查询，适合复用为补充话题读取降级路径。
 - 真实生产 Adapter 依赖尚未提供的远端协议；本轮完成公开装配入口，但不虚构网络实现。
 
-## Completion Evidence
+## 阶段完成时证据（历史快照）
+
+以下数字只描述 P3 个性化话题改造完成当时的工作树，不作为当前累计结果：
+
 - `cargo test --workspace`：13 个套件、106 项通过。
 - `cargo test -p home-mixer`：91 项通过。
 - `cargo test -p xai_candidate_pipeline`：12 项通过。
-- `cargo clippy -p home-mixer --all-targets`：0 error；18 条 warning 均为现有代码或并行改动中的存量问题。
+- `cargo clippy -p home-mixer --all-targets`：0 error；18 条 warning 均为当时已有代码或并行改动中的存量问题。
 - 本次触及的 Rust 文件通过独立 `rustfmt --check`，`git diff --check` 通过。
-- `cargo fmt --all -- --check` 仍会被 `thunder/kafka/tweet_events_listener.rs` 中既有的 Rust 2024 let-chain 阻塞；该文件不属于本次改动。
+- 当时 `cargo fmt --all -- --check` 会被 `thunder/kafka/tweet_events_listener.rs` 中既有的 Rust 2024 let-chain 阻塞；该文件不属于该阶段改动。
+
+## 当前回归证据（2026-08-15）
+
+- `cargo test --workspace`：220 项通过。
+- `cargo test -p home-mixer --all-targets`：185 项通过。
+- `cargo test -p xai_candidate_pipeline`：21 项通过。
+- `cargo test -p home-mixer --test p4_final_feed`：25 项通过。
+- `cargo clippy -p home-mixer --all-targets -- -W clippy::all`：0 error，0 warning。
+- `cargo clippy --workspace --all-targets`：0 error，1 warning；唯一告警位于上游逐字节保留的 `thunder/strato_client.rs`（`new_without_default`）。
+- 默认 ScoredPosts Demo：35 条（4 网内 + 31 网外）。
+- ForYou Demo：35 条（4 网内 + 31 网外）。
+- 显式话题 Demo：35 条 `Phoenix 话题`（0 网内 + 35 网外）。
+- 显式缓存 Demo：8 条 `请求缓存`（0 网内 + 8 网外）。
 
 ## Final Validation
 - `cargo test --workspace`

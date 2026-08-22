@@ -32,7 +32,7 @@ A difference without one of these classifications is drift and should be removed
 
 ## Candidate Pipeline anchor
 
-The Candidate Pipeline is the compatibility layer for later Home Mixer components. Its portable API is now tracked against the absorbed `c65aa17` semantic anchor:
+The Candidate Pipeline is the compatibility layer for later Home Mixer components. Its portable API was last re-tracked at the `c65aa17` semantic anchor (the most recent change to the crate, `candidate-pipeline: adopt 47c1bcd per-request stage summary and cached-hydrator extensions`); later snapshots through `d0cef2f` did not touch the crate. Diff newer anchors against it with the sync procedure below before assuming the table is stale.
 
 | Surface | Current rule | Delta class |
 |---|---|---|
@@ -72,7 +72,7 @@ For each later upstream snapshot, compare upstream changes before comparing fina
 
 ```bash
 # What upstream changed after the currently anchored snapshot.
-git diff --find-renames c65aa179db7bdd61e2c2821eac87f208a105c053..<new-upstream> -- <module>
+git diff --find-renames d0cef2f943084ee0d4310378031c9c2c37d67f12..<new-upstream> -- <module>
 
 # How the local implementation intentionally differs from the new anchor.
 git diff --find-renames <new-upstream> -- <module>

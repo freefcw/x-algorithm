@@ -52,9 +52,9 @@
 
 Phoenix 子项目内还有一套操作向文档（训练指引、真实数据接入等），入口在 [../phoenix/docs/](../phoenix/docs/)；两边的分工是：`docs/phoenix/` 讲代码怎么实现，`phoenix/docs/` 讲手上怎么操作。
 
-最新上游同步结果见 [`update/20260814.md`](./update/20260814.md)：记录 `c65aa17` 的 Cold Start、Phoenix 输入修复、明确不迁移项和 U3 重入条件。
+最新上游同步结果见 [`update/20260820.md`](./update/20260820.md)：记录 `d0cef2f` 的 emb_table 可测试性拆分，以及 AI 趋势 / slate context 等维持 U3 的项。能力清点入口是 [d0cef2f capability inventory](./upstream-sync/d0cef2f-capability-inventory.md)。
 
-上游同步以 [upstream-first maintenance policy](./upstream-sync/upstream-first-maintenance.md) 为维护规则，以 [entrypoint migration map](./upstream-sync/entrypoint-migration-map.md) 为执行顺序，以最新 snapshot report 和 [e414c17 capability inventory](./upstream-sync/e414c17-to-mp-capability-inventory.md) 为能力状态和验收证据入口。
+上游同步以 [upstream-first maintenance policy](./upstream-sync/upstream-first-maintenance.md) 为维护规则，以 [entrypoint migration map](./upstream-sync/entrypoint-migration-map.md) 为执行顺序。
 
 ## 维护原则
 

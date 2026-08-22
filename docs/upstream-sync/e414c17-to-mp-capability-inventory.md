@@ -5,7 +5,7 @@
 > 上游功能提交：`e414c171ed68266341193330bc4864bf3f3534e3`
 > 上游模型产物提交：`0bfc2795d308f90032544322747caacd535f75ae`
 > 上游新快照：`47c1bcdadfe4911568fd6db4f8838b194325beab`（2026-08-13）
-> 当前语义同步锚点：`c65aa179db7bdd61e2c2821eac87f208a105c053`；本文件保留 `e414c17`/`0bfc279` 能力编号与历史验收，`47c1bcd` 重构见 [`../update/20260813.md`](../update/20260813.md)，`c65aa17` 最终迁移与 U3 重入条件见 [`../update/20260814.md`](../update/20260814.md)
+> 当前语义同步锚点：`d0cef2f943084ee0d4310378031c9c2c37d67f12`（2026-08-20；快照序列 `c65aa17`→`b089ce6`→`11a71f8`→`aad7179`→`d0cef2f` 见 [`upstream-first-maintenance.md`](./upstream-first-maintenance.md)）；本文件保留 `e414c17`/`0bfc279` 能力编号与历史验收，`47c1bcd` 重构见 [`../update/20260813.md`](../update/20260813.md)，`c65aa17` 最终迁移与 U3 重入条件见 [`../update/20260814.md`](../update/20260814.md)
 > 本地目标分支：`mp`（`3e492095613b2a008de5d9f8295d5b6e0c07c777`）
 > 后续同步规则：[`upstream-first-maintenance.md`](./upstream-first-maintenance.md)
 > 入口执行顺序：[`entrypoint-migration-map.md`](./entrypoint-migration-map.md)
@@ -84,15 +84,15 @@
 
 P0 基线回归：`cargo test --workspace` 通过（11 个套件、24 项测试）；Phoenix 全套 72 项测试通过；`./scripts/run_demo.sh` 返回 50 条 Feed（网内 12、网外 38），三个服务正常退出并清理。
 
-### 当前执行状态（2026-08-08）
+### 当前执行状态（2026-08-15 复验）
 
 | 阶段 | 状态 | 已交付能力 | 验收证据 |
 |---|---|---|---|
-| P0 | **完成** | Rust/Python/gRPC/Demo 行为基线 | 基线测试与 12 网内 + 38 网外 Feed 已记录 |
+| P0 | **完成** | Rust/Python/gRPC/Demo 行为基线 | 迁移批次的 12 网内 + 38 网外历史基线已记录；当前行为统一见 `EV-P3` |
 | P1 | **完成** | 正式 ranker/retrieval 语义、统一 NPZ loader、离线 pipeline、发布 artifact gRPC、Git LFS 合同 | 最新 2,903,518,802 字节对象 SHA-256 为 `fbc6017d...a83dac`；真实离线 retrieval→ranking 成功；真实 gRPC Retrieve + Predict 成功并返回连续 dwell |
 | P2 | **完成** | Query/Candidate 最小合同、dependent hydration、同步 Filter、缓存 Hydrator、selected/non-selected、失败隔离、逐组件耗时/数量、空结果短路、能力开关接口 | Candidate Pipeline 与 Home Mixer 框架/业务测试通过；Source/Filter 失败、缓存命中、过滤清空、截断均有测试 |
-| P3 | **P3-A 完成 / P3-B 暂缓** | ScoredPosts 边界、扩展 Query/Candidate、缓存/Phoenix/Phoenix MoE/话题/Thunder 来源、主要 Hydrator/Filter、组合 Ranking | 默认 Demo 恢复 12 网内 + 38 网外；话题 Demo 返回 50 条 `Phoenix 话题`；缓存 Demo 返回 8 条 `请求缓存`；生产数据面见独立 Integration Backlog |
-| P4 | **P4-A 完成 / P4-B 暂缓** | 独立 FeedItem/ForYou RPC、ScoredPosts bridge、模块混排、Safe-gap/Partition-organic 规则、disabled Ads port | P4/P5 定向 25 项通过；最终 Feed Demo 返回 12 网内 + 38 网外；没有安全 verdict 时不插广告 |
+| P3 | **P3-A 完成 / P3-B 暂缓** | ScoredPosts 边界、扩展 Query/Candidate、缓存/Phoenix/Phoenix MoE/话题/Thunder 来源、主要 Hydrator/Filter、组合 Ranking | 默认 Demo 返回 35 条（4 网内 + 31 网外）；显式话题 Demo 返回 35 条 `Phoenix 话题`；缓存 Demo 返回 8 条 `请求缓存`；生产数据面见独立 Integration Backlog |
+| P4 | **P4-A 完成 / P4-B 暂缓** | 独立 FeedItem/ForYou RPC、ScoredPosts bridge、模块混排、Safe-gap/Partition-organic 规则、disabled Ads port | P4/P5 定向 25 项通过；ForYou Demo 返回 35 条（4 网内 + 31 网外）；没有安全 verdict 时不插广告 |
 | P5 | **P5-A 完成 / P5-B 暂缓** | 全局/单用户双重有界内存状态、响应前本地一致性提交、构成/位置统计、非阻塞外部 SideEffect | 无等待连续请求、用户淘汰、状态截断、统计记录和 sink 失败隔离测试通过；Kafka/Redis 保留待集成 |
 | P6 | **P6-A 完成 / P6-B 暂缓** | 独立 eligibility-gated DAG、skip/failure 信封、环检测、Source/Sink port、本地 JSON Demo | Grox 10 项通过；CLI 输出文本元数据，不生成模型/安全/embedding 结论 |
 
@@ -129,9 +129,9 @@ P3 仍未完成且不能伪造的条件能力：
 
 | 证据 | 可复核内容 |
 |---|---|
-| `EV-CP` | `cargo test -p xai_candidate_pipeline`：18 项通过；覆盖上游执行包装、逐候选 Hydrator/Scorer 失败隔离、长度保护、缓存只写成功结果、同步 Filter、selected/non-selected、post-selection underfill 不绕过过滤、单 Source 失败保留其他来源候选和 SideEffect 输入。 |
-| `EV-PHX` | Phoenix 88 项测试通过；offline JSON/proto UAS tensor parity、固定 impression-time age parity、共享 orchestration、transport-neutral inference values、O(1) topic lookup、preloaded params 和 action mapping 均有回归。真实 artifact SHA/shape、离线 retrieval→ranking 和真实 gRPC Retrieve/Predict 的历史验收见 Final Validation。 |
-| `EV-P3` | `cargo test -p home-mixer --all-targets`：166 项通过；`cargo test --workspace`：201 项通过（2026-08-14 复验，含 vm-ranker 10 项）。ScoredPosts/ForYou Demo 返回 35 条（4 网内 + 31 网外）——采用上游 47c1bcd 真值 `RESULT_SIZE=35` 后的规模，此前 50 条（10 + 40）为本地自拟 `result_size` 时期的记录；显式缓存 Demo 返回 8 条。Debug 默认 `Unavailable`，错误 token 为 `PermissionDenied`，授权 wire 验收为 600/4/50 stage counts。Viewer/VF fail-safe、所有关键外部调用 deadline、Phoenix endpoint fallback、跨用户 UAS/Strato/TES 隔离、非持久 adapter 写入拒绝、post-selection profile 装配、underfill 不绕过安全、unsigned cache 拒绝、运行模式、全 ID checked conversion 和 portable assembly 均有测试。 |
+| `EV-CP` | `cargo test -p xai_candidate_pipeline`：21 项通过；覆盖上游执行包装、逐候选 Hydrator/Scorer 失败隔离、长度保护、缓存只写成功结果、同步 Filter、selected/non-selected、post-selection underfill 不绕过过滤、单 Source 失败保留其他来源候选和 SideEffect 输入。 |
+| `EV-PHX` | Phoenix 92 项测试通过（2026-08-22 复验）；offline JSON/proto UAS tensor parity、固定 impression-time age parity、共享 orchestration、transport-neutral inference values、O(1) topic lookup、preloaded params 和 action mapping 均有回归。真实 artifact SHA/shape、离线 retrieval→ranking 和真实 gRPC Retrieve/Predict 的历史验收见 Final Validation。 |
+| `EV-P3` | `cargo test -p home-mixer --all-targets`：185 项通过；`cargo test --workspace`：220 项通过（2026-08-22 复验，含 vm-ranker）。默认 ScoredPosts 与 ForYou Demo 均返回 35 条（4 网内 + 31 网外），显式话题 Demo 返回 35 条 `Phoenix 话题`，显式缓存 Demo 返回 8 条 `请求缓存`；35 条规模来自上游真值 `RESULT_SIZE=35`，此前 50 条结果仅是历史记录。Debug 默认 `Unavailable`，错误 token 为 `PermissionDenied`，授权 wire 验收为 600/4/50 stage counts。Viewer/VF fail-safe、所有关键外部调用 deadline、Phoenix endpoint fallback、跨用户 UAS/Strato/TES 隔离、非持久 adapter 写入拒绝、post-selection profile 装配、underfill 不绕过安全、unsigned cache 拒绝、运行模式、全 ID checked conversion 和 portable assembly 均有测试。 |
 | `EV-RANK` | Phoenix 预留离散槽位 19/20、发布 profile 缺槽位兼容、引用帖 VQV 时长门槛和 `not_dwelled` 负权重均有 Rust 回归测试；`click_dwell_time` 因协议尚无对应连续动作而保持 `None`。 |
 | `EV-P4` | `cargo test -p home-mixer --test p4_final_feed`：25 项通过；覆盖独立 FeedItem、ScoredPosts bridge、两种上游广告规则、默认关闭和 ForYou RPC。 |
 | `EV-P5` | 同一 P4/P5 集成测试覆盖连续请求、单用户/全局状态截断、构成统计和 sink 失败隔离。 |
@@ -716,7 +716,21 @@ cd ..
 ./scripts/run_demo.sh
 ```
 
-当前验证结果（2026-08-14，`47c1bcd` 迁移进行中）：
+最新文档一致性复验（2026-08-22）：
+
+- `cargo test --workspace`：220 项通过，0 失败。
+- `cargo test -p home-mixer --all-targets`：185 项通过。
+- `cargo test -p xai_candidate_pipeline`：21 项通过。
+- `cargo test -p home-mixer --test p4_final_feed`：25 项通过。
+- `cd phoenix && uv run pytest`：92 项通过。
+- `cargo clippy -p home-mixer --all-targets -- -W clippy::all`：0 error，0 warning。
+- `cargo clippy --workspace --all-targets`：0 error，1 warning；唯一告警位于上游逐字节保留的 `thunder/strato_client.rs`（`new_without_default`）。
+- `./scripts/run_demo.sh`：35 条（4 网内 + 31 网外）。
+- `./scripts/run_demo.sh --final-feed`：35 条（4 网内 + 31 网外）。
+- `./scripts/run_demo.sh --topic-id 10`：35 条 `Phoenix 话题`（0 网内 + 35 网外）。
+- `./scripts/run_demo.sh --cached-posts 8`：8 条 `请求缓存`（0 网内 + 8 网外）。
+
+完整迁移验收结果（2026-08-14，`47c1bcd` 迁移进行中）：
 
 - `cargo test --workspace`：201 项通过，0 失败。
 - `cargo test -p home-mixer --all-targets`：166 项通过。
@@ -745,7 +759,7 @@ cd ..
 - `cargo fmt --all -- --check` 已能解析全仓，但仍报告多个既有 Thunder 文件的 rustfmt 差异；未批量格式化这些无关用户改动。
 - `cargo check -p thunder --all-targets --all-features` 仍被 legacy listener 的私有 `xai_kafka`、`xai_thunder_proto` 和 `crate::schema` 依赖阻塞；受支持的默认 `cargo test -p thunder` 为 3 个套件、2 项通过。
 
-- Phoenix 当前代码验证：`uv run pytest -q` 88 项通过；变更文件通过 Ruff；shared orchestration、length mismatch、offline JSON/proto UAS、固定 impression timestamp 和 O(1) topic lookup 均有回归。
+- Phoenix 当前代码验证（2026-08-22 复验）：`uv run pytest -q` 92 项通过；变更文件通过 Ruff；shared orchestration、length mismatch、offline JSON/proto UAS、固定 impression timestamp 和 O(1) topic lookup 均有回归。
 - 当前工作树中的 2.9 GB artifact 仅为 LFS pointer（OID `fbc6017d...a83dac`），本轮未重复执行真实 artifact；下列历史验收仍对应同一 OID。
 
 需要模型 artifact 或完整外部运行环境的最近一次历史验收（2026-07-22）：

@@ -169,7 +169,7 @@ Exit evidence: generated server traits compile; wrapper validation rejects missi
 
 Status: **completed**, now **legacy**. `phoenix/run_pipeline.py::main` remains the canonical offline entry and keeps upstream argument names: `artifacts_dir`, `sequence_file`, `corpus_file`, `top_k_retrieval`, and `top_k_display`. Local `impression_timestamp` is explicitly additive and makes post-age features reproducible.
 
-`47c1bcd:` upstream replaced this demo pipeline wholesale with a training framework (`xrex/`, `crates/`, `reference/`) and deleted `run_pipeline.py` along with the artifact zip. Locally both tracks coexist: the published-artifact inference chain described here still serves Home Mixer and keeps its 88 tests, while the upstream framework landed verbatim beside it. `PHX-E1/E2` therefore describe the **legacy track** (background in `phoenix/docs/legacy-pipeline.md`); the new framework is not an entrypoint replacement until a locally trained artifact is validated against the inference chain.
+`47c1bcd:` upstream replaced this demo pipeline wholesale with a training framework (`xrex/`, `crates/`, `reference/`) and deleted `run_pipeline.py` along with the artifact zip. Locally both tracks coexist: the published-artifact inference chain described here still serves Home Mixer and keeps its test suite (92 tests as of the 2026-08-22 recheck), while the upstream framework landed verbatim beside it. `PHX-E1/E2` therefore describe the **legacy track** (background in `phoenix/docs/legacy-pipeline.md`); the new framework is not an entrypoint replacement until a locally trained artifact is validated against the inference chain.
 
 The CLI now owns only argument/path parsing and presentation. `services/published_artifacts.py` owns config, NPZ params/embeddings, hashing, model config, and Snowflake age features; `services/published_pipeline.py` owns retrieval-to-ranking execution and output mapping.
 
@@ -185,7 +185,7 @@ Status: **completed for code and fixture parity**. The local `scripts/run_grpc_g
 4. Published corpus topics use a startup-built post index rather than one full corpus scan per displayed candidate.
 5. Random/demo, individual local checkpoint, and published artifact modes remain explicit in the gRPC CLI.
 
-Exit evidence: Phoenix 88 tests pass; shared retrieval-to-ranking orchestration, length mismatch, offline/proto preprocessing, fixed-time parity, and indexed topic lookup have fixtures. Consolidated files pass Ruff. The 2.9 GB artifact is an LFS pointer in this working tree, so current-turn real-artifact execution remains unavailable; the exact OID `fbc6017d...a83dac` has historical offline and gRPC validation recorded in the capability inventory.
+Exit evidence: Phoenix tests pass (88 at phase exit; 92 as of the 2026-08-22 recheck); shared retrieval-to-ranking orchestration, length mismatch, offline/proto preprocessing, fixed-time parity, and indexed topic lookup have fixtures. Consolidated files pass Ruff. The 2.9 GB artifact is an LFS pointer in this working tree, so current-turn real-artifact execution remains unavailable; the exact OID `fbc6017d...a83dac` has historical offline and gRPC validation recorded in the capability inventory.
 
 ## 5. Thunder boundary
 
