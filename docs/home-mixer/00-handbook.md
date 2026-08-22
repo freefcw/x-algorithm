@@ -41,7 +41,7 @@ flowchart LR
 
 ## 3. 一次请求怎么流动
 
-请求入口在 `home-mixer/server.rs`，核心流程固定：
+请求入口的 tonic 实现在 `home-mixer/scored_posts_server.rs`（装配 facade 在 `server.rs`），核心流程固定：
 
 1. `QueryBuilder` 校验并映射 proto 请求
 2. 调用内层 `PhoenixCandidatePipeline::execute()`

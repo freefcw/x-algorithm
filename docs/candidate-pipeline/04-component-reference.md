@@ -6,17 +6,14 @@
 
 `PhoenixCandidatePipeline` 里存在几条关键依赖链。由于同一 stage 的 hydrator 并行执行、彼此看不到本轮新写入的字段（语义见 [02-execution-semantics](./02-execution-semantics.md)），跨 stage 的先后关系是调整装配顺序时必须核对的约束：
 
-1. `UserActionSeqQueryHydrator` -> `PhoenixSource`
-2. `UserActionSeqQueryHydrator` -> `PhoenixScorer`
-3. `UserFeaturesQueryHydrator` -> `ThunderSource`
-4. `UserFeaturesQueryHydrator` -> `InNetworkCandidateHydrator`
-5. `CoreDataCandidateHydrator` -> `CoreDataHydrationFilter`
-6. `CoreDataCandidateHydrator` -> `RetweetDeduplicationFilter`
-7. `CoreDataCandidateHydrator` -> `MutedKeywordFilter`
-8. `VideoDurationCandidateHydrator` -> `WeightedScorer`
-9. `InNetworkCandidateHydrator` -> `OONScorer`
-10. `InNetworkCandidateHydrator` -> `VFCandidateHydrator`
-11. `VFCandidateHydrator` -> `VFFilter`
+1. `RetrievalSequenceQueryHydrator`（底层共享 `UserActionSeqQueryHydrator` provider） -> `PhoenixSource`
+2. `ScoringSequenceQueryHydrator`（同一 provider） -> `PhoenixScorer`
+3. `FollowedUserIdsQueryHydrator`（底层共享 `UserFeaturesQueryHydrator` provider） -> `ThunderSource` / `InNetworkCandidateHydrator`
+4. `CoreDataCandidateHydrator` -> `CoreDataHydrationFilter` / `RetweetDeduplicationFilter`
+5. `QuoteHydrator` -> `ViewerMutedKeywordFilter`（引用文）
+6. `VideoDurationCandidateHydrator` -> `RankingScorer`（内部 VQV 时长权重） / `VideoFilter`
+7. `InNetworkCandidateHydrator` -> `RankingScorer`（内部 OON 调整） / `VFCandidateHydrator`
+8. `VFCandidateHydrator` -> `VFFilter`
 
 ## 两个容易踩的实现事实
 

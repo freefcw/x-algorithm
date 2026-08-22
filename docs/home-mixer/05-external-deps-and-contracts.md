@@ -6,9 +6,10 @@
 
 | proto | 作用 | `home-mixer` 如何使用 |
 | --- | --- | --- |
-| `home_mixer.proto` | 对外服务协议 | 接请求、回结果 |
-| `in_network.proto` | Thunder 协议 | 请求网内候选 |
-| `recsys.proto` | Phoenix 协议 | 做网外召回与精排预测 |
+| `home_mixer.proto` | 对外服务协议 | `ScoredPostsService.GetScoredPosts` / `DebugScoredPosts`；`ForYouFeedService.GetForYouFeed` / `GetForYouFeedV2` |
+| `in_network.proto` | Thunder 协议 | `InNetworkPostsService.GetInNetworkPosts` |
+| `recsys.proto` | Phoenix 协议 | `PhoenixRetrievalService.Retrieve`、`PhoenixPredictionService.PredictNextActions` |
+| `vm_ranker.proto`（可选） | VM Ranker 二次重排 | `VmRankerService.Rank`；默认不装配 |
 
 ```mermaid
 flowchart LR
@@ -28,7 +29,7 @@ flowchart LR
 | `country_code` / `language_code` | 地域与语言上下文 | VF viewer context |
 | `seen_ids` | 已看过帖子 | `PreviouslySeenPostsFilter` |
 | `served_ids` | 已下发帖子 | `PreviouslyServedPostsFilter` |
-| `in_network_only` | 仅网内 | `PhoenixSource.enable()` |
+| `in_network_only` | 仅网内 | `PhoenixSource.enable()`（还要求无 cached posts、非 strict/cold-start topic） |
 | `is_bottom_request` | 是否翻页 | `PreviouslyServedPostsFilter.enable()` |
 | `bloom_filter_entries` | 客户端布隆过滤器 | `PreviouslySeenPostsFilter` |
 
@@ -97,7 +98,7 @@ Phoenix 在 `home-mixer` 中扮演两种角色。
 
 - `user_id`
 - `UserActionSequence`
-- 候选 `TweetInfo[]`
+- 候选 `TweetInfo[]`（当前只填 `tweet_id` / `author_id`，`safety_label_mask` 恒为 0；作者 NSFW 接线已回退）
 
 输出：
 
@@ -161,8 +162,10 @@ sequenceDiagram
 | Debug RPC | `HOME_MIXER_ENABLE_DEBUG_RPC=1` | `HOME_MIXER_DEBUG_TOKEN`、受控调用方和日志/数据保留策略 | 默认返回 `Unavailable`；启用后 token 不匹配返回 `PermissionDenied` |
 | 未签名 cached posts | `HOME_MIXER_ENABLE_UNSIGNED_CACHED_POSTS=1` | 仅本地 fixture，不构成生产缓存合同 | 只允许 `HOME_MIXER_MODE=demo`；其他模式拒绝启动或拒绝请求 |
 | VM Ranker 二次重排 | `HOME_MIXER_ENABLE_VM_RANKER=1` | `VM_RANKER_GRPC_ADDR`（本仓库 `vm-ranker` 服务实例）、value model 产物、容量与超时 | 不装配 `VMRanker` Scorer；`RankingScorer` 的分数直接进入 Selector |
+| 作者冷启动 | `HOME_MIXER_ENABLE_AUTHOR_COLD_START=1` | 仅 demo；缺 `view_count` 或粉丝数的候选不参与 | 不装配 `AuthorColdStartScorer`，也不在预选补粉丝数 |
+| 冷启动 Thompson Sampling | `HOME_MIXER_ENABLE_COLD_START_THOMPSON_SAMPLING=1` | 必须同时开 Author Cold Start | 冷启动仍用确定性槽位，不做 Beta 采样 |
 
-禁止仅设置开关就把能力标为“已接入”。开关是人工批准入口，真实完成状态仍以能力台账中的合同和环境验收证据为准。尚无公开服务信息的 Ads、Prompt、WhoToFollow、PushToHome、Kafka/Redis 和 Grox 模型组件不会进入默认装配。
+禁止仅设置开关就把能力标为“已接入”。开关是人工批准入口，真实完成状态仍以能力台账中的合同和环境验收证据为准。Ads、Prompt、WhoToFollow、PushToHome 已挂进 ForYou 外层 pipeline，但 source 的 `enable()` 恒为 false，默认跑不到；Kafka/Redis 和 Grox 模型组件不会进入默认装配。
 
 Viewer policy 属于请求主边界，不作为可选旁路开关。只有 `ViewerEligibility::Allowed` 才允许网外候选；`Denied`、`Unknown`、真实服务错误或超过 200 ms 时都强制仅网内。VF 结果使用 `Allowed / Restricted / Unchecked / Unavailable` 明确区分；未知结果不再等价于审核通过。
 

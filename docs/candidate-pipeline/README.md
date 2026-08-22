@@ -6,7 +6,7 @@
 
 - `candidate-pipeline` 是一个通用的候选流编排框架，负责阶段顺序、并发策略、结果合并和容错。
 - 业务策略不在框架里，而是在 `home-mixer/candidate_pipeline/phoenix_candidate_pipeline.rs` 中通过组件列表装配出来。
-- 当前开源仓库里的多个外部客户端仍然是 stub，这意味着框架是完整的，但默认业务链路更接近“骨架实现”，不是可直接产出完整 Feed 的生产版。
+- Thunder 是真 gRPC；Phoenix 配了地址后也是真 gRPC。UAS / Strato / TES / Gizmoduck / VF 在 Demo 或 Disabled 之间切换。框架完整，默认业务链路在 `HOME_MIXER_MODE=demo` 下可跑通，不是纯 stub。
 
 ## 推荐阅读顺序
 

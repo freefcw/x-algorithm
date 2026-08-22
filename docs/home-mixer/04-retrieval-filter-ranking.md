@@ -33,8 +33,8 @@ flowchart LR
 
 输出特点：
 
-- `served_type = ForYouInNetwork`
-- 初步填 `ancestors`
+- `served_type`：普通请求是 `ForYouInNetwork`；`in_network_only` 时是 `RankedFollowing`
+- 初步填 `ancestors`，以及 `retweeted_tweet_id` / `retweeted_user_id`（来自 Thunder `source_post_id` / `source_user_id`）
 - 为后续 `in_network` 和会话去重打基础
 
 ### 1.2 `PhoenixSource`
@@ -67,8 +67,8 @@ flowchart LR
 | `InNetworkCandidateHydrator` | 判断作者是否在关注网络内 | `RankingScorer` 内部 OON 阶段、`VFCandidateHydrator` |
 | `CoreDataCandidateHydrator` | 补文本、转推关系、回复关系 | 多个 filter 和 scorer 依赖 |
 | `QuoteHydrator` | 补引用帖 | quote-aware 过滤 / Ranking |
-| `VideoDurationCandidateHydrator` | 补视频时长 | VQV 权重判断 |
-| `HasMediaHydrator` | 补是否有媒体 | `VideoFilter` / 响应 |
+| `VideoDurationCandidateHydrator` | 补视频时长 | `VideoFilter`（看 `video_duration_ms`）、VQV 权重 |
+| `HasMediaHydrator` | 补是否有媒体 | 展示信号，当前无过滤消费 |
 | `SubscriptionHydrator` | 补订阅作者信息 | 订阅过滤 |
 | `FilteredTopicsHydrator` / `LanguageCodeHydrator` | 补话题和语言 | 话题过滤 |
 | `GizmoduckCandidateHydrator` | 补作者 screen_name、粉丝数 | 默认在 post-selection；冷启动打开时预选再跑一次 |
@@ -86,8 +86,9 @@ flowchart TD
     F4 --> F5["RetweetDeduplication"]
     F5 --> F6["IneligibleSubscription"]
     F6 --> F7["PreviouslySeenPosts"]
-    F7 --> F8["PreviouslyServedPosts<br/>仅 bottom request"]
-    F8 --> F9["MutedKeyword"]
+    F7 --> F7B["SeenPostsBackup<br/>seen_ids 缺失时用 impressed_post_ids"]
+    F7B --> F8["PreviouslyServedPosts<br/>仅 bottom request"]
+    F8 --> F9["ViewerMutedKeyword"]
     F9 --> F10["AuthorSocialgraph"]
     F10 --> F11["Video / TopicIds / NewUserTopic"]
     F11 --> B["进入打分"]
@@ -103,7 +104,7 @@ flowchart TD
 | 不该给自己看 | `SelfTweetFilter` |
 | 权限不匹配 | `IneligibleSubscriptionFilter` |
 | 已经看过 / 已下发过 | `PreviouslySeenPostsFilter`、`PreviouslySeenPostsBackupFilter`、`PreviouslyServedPostsFilter` |
-| 用户明确不想看 | `MutedKeywordFilter`、`AuthorSocialgraphFilter` |
+| 用户明确不想看 | `ViewerMutedKeywordFilter`、`AuthorSocialgraphFilter` |
 | 请求不要视频 / 话题约束 | `VideoFilter`、`TopicIdsFilter`、`NewUserTopicIdsFilter` |
 
 ### 3.2 为什么 `PreviouslyServedPostsFilter` 只在 bottom request 启用
@@ -126,7 +127,7 @@ flowchart LR
     R --> S["TopKScoreSelector"]
 ```
 
-`WeightedScorer`、`AuthorDiversityScorer` 和 `OONScorer` 仍保留为可测试的本地行为实现，但生产 pipeline 只注册同名上游边界 `RankingScorer`，由它按原顺序组合三段逻辑。
+上游 47c1bcd 已把 Weighted、Author Diversity、OON 三段逻辑合并进唯一的 `RankingScorer`，仓库中不再存在 `WeightedScorer`、`AuthorDiversityScorer`、`OONScorer` 这三个独立类型；下面 4.2–4.4 介绍的是 `RankingScorer` 内部按序执行的三个阶段。
 
 ### 4.1 `PhoenixScorer`
 
@@ -178,9 +179,9 @@ weighted_score
 
 VQV 还有一个额外条件：
 
-- 只有 `video_duration_ms > MIN_VIDEO_DURATION_MS` 才应用 `VQV_WEIGHT`
+- 只有 `video_duration_ms > MIN_VIDEO_DURATION_MS`，且 viewer `follower_count` 未达 10000（缺粉丝数时不触发该门槛）才应用 `VQV_WEIGHT`
 
-### 4.3 `AuthorDiversityScorer`
+### 4.3 作者多样性（`RankingScorer` 内部阶段）
 
 作用：
 
@@ -198,7 +199,7 @@ VQV 还有一个额外条件：
 - `AUTHOR_DIVERSITY_DECAY = 0.5`
 - `AUTHOR_DIVERSITY_FLOOR = 0.25`（第 2、3 条大约 ×0.625、×0.4375）
 
-### 4.4 `OONScorer`
+### 4.4 OON 降权（`RankingScorer` 内部阶段）
 
 作用：
 
@@ -229,9 +230,11 @@ VQV 还有一个额外条件：
 
 ```mermaid
 flowchart TD
-    A["排序后的 Top 50"] --> B["VFCandidateHydrator"]
+    A["排序后的 Top 50"] --> G["GizmoduckCandidateHydrator"]
+    G --> B["VFCandidateHydrator"]
     B --> C["VFFilter"]
-    C --> D["DedupConversationFilter"]
+    C --> A2["AncillaryVFFilter"]
+    A2 --> D["DedupConversationFilter"]
     D --> E["truncate 到 35"]
     E --> F["返回响应"]
 ```

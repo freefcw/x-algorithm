@@ -29,8 +29,10 @@
 以下阶段使用 `futures::future::join_all`：
 
 - `hydrate_query`
+- `hydrate_dependent_query`
 - `fetch_candidates`
 - `run_hydrators`
+- `hydrate_post_selection`
 - `run_side_effects`
 
 这意味着这些阶段里的每个组件都会同时启动异步任务，但是否真正并行取决于具体运行时和组件内部是否做了 IO。

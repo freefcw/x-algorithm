@@ -10,7 +10,7 @@
 | `degraded` | 注入显式 `Disabled*` adapter；Viewer/VF 未知时采用保守降级，主服务可以启动但不声称生产可用 | 默认模式 |
 | `production_ready` | 当前拒绝启动 | 调用方身份、Viewer、UAS、Strato、TES、Gizmoduck、VF、Phoenix、Thunder 权威合同尚未全部闭合 |
 
-`HomeMixerConfig` 是 mode 的唯一入口。`HomeMixerServer::build` 把已校验 mode 直接传给 `PhoenixCandidatePipeline::assemble_for_mode`，Pipeline 不再重新读取环境变量决定依赖，避免程序化配置与实际装配不一致。
+`HomeMixerConfig` 是 mode 的唯一入口。`HomeMixerServer::build` 把已校验 mode 和 `HomeMixerFeatures` 传给 `PhoenixCandidatePipeline::assemble_for_mode`，Demo/Disabled adapter 不再由 pipeline 自己读 `HOME_MIXER_MODE`。旁路地址仍读环境变量：`VM_RANKER_GRPC_ADDR`、`PHOENIX_MOE_GRPC_ADDR`。
 
 ## 2. Degraded 模式的真实行为
 

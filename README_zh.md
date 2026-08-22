@@ -25,7 +25,7 @@ X 开源的是核心算法，不是完整的生产系统。原版依赖的内部
 
 ```bash
 # 一条命令：编译、启动三个服务、请求一次 Feed、打印结果
-cd phoenix && uv sync --group service && cd ..
+cd phoenix && uv sync --dev --group service && cd ..
 ./scripts/run_demo.sh
 ```
 
@@ -95,7 +95,7 @@ cd phoenix && uv sync --group service && cd ..
 
 **位置：** [`phoenix/`](phoenix/)
 
-机器学习组件（Python 3.11 / JAX），两大功能：
+机器学习组件（Python ≥ 3.11 / JAX），两大功能：
 
 1. **召回（双塔模型）**：用户塔把用户编码成向量，物品塔把帖子编码成向量，点积相似度取 Top-K，从全网发现相关内容。
 2. **精排（候选隔离 Transformer）**：输入用户行为历史和候选帖子，输出每条帖子上各种行为（点赞、回复、转发、举报等）的概率；特殊的注意力掩码保证候选之间互不影响。
@@ -133,7 +133,7 @@ Phoenix 模型预测多种互动行为的概率，**RankingScorer** 把它们合
 | `PreviouslySeenPostsFilter` | 移除已经看过的帖子 |
 | `PreviouslySeenPostsBackupFilter` | 请求只有曝光 ID、没有 seen_ids 时的备份去重 |
 | `PreviouslyServedPostsFilter` | 移除本会话已投递过的帖子 |
-| `MutedKeywordFilter` | 移除包含屏蔽词的帖子 |
+| `ViewerMutedKeywordFilter` | 移除主文或引用文命中 viewer 屏蔽词的帖子 |
 | `AuthorSocialgraphFilter` | 移除被拉黑/静音作者的帖子 |
 | `VideoFilter` | 请求带 `exclude_videos` 时去掉视频帖 |
 | `TopicIdsFilter` / `NewUserTopicIdsFilter` | 话题请求只保留对题的帖 |

@@ -25,7 +25,7 @@ Prerequisites: [Rust](https://rustup.rs/), `protoc` (`brew install protobuf`), a
 
 ```bash
 # One command: builds, starts all three services, requests a feed, prints it
-cd phoenix && uv sync --group service && cd ..
+cd phoenix && uv sync --dev --group service && cd ..
 ./scripts/run_demo.sh
 ```
 
@@ -98,14 +98,8 @@ The full walkthrough (environment setup → model demo → serving → training 
 │   │               │                                                                     │   │
 │   │               ▼                                                                     │   │
 │   │  ┌──────────────────────────┐                                                       │   │
-│   │  │  Weighted Scorer         │    Weighted Score = Σ (weight × P(action))            │   │
-│   │  │  (Combine predictions)   │                                                       │   │
-│   │  └──────────────────────────┘                                                       │   │
-│   │               │                                                                     │   │
-│   │               ▼                                                                     │   │
-│   │  ┌──────────────────────────┐                                                       │   │
-│   │  │  Author Diversity        │    Attenuate repeated author scores                   │   │
-│   │  │  Scorer                  │    to ensure feed diversity                           │   │
+│   │  │  Ranking Scorer          │    Weighted Score = Σ (weight × P(action))            │   │
+│   │  │  (one component)         │    then author diversity and OON attenuation          │   │
 │   │  └──────────────────────────┘                                                       │   │
 │   └─────────────────────────────────────────────────────────────────────────────────────┘   │
 │                                              │                                              │
@@ -167,7 +161,7 @@ Thunder enables sub-millisecond lookups for in-network content without hitting a
 
 **Location:** [`phoenix/`](phoenix/)
 
-The ML component (Python 3.11 / JAX) with two main functions:
+The ML component (Python ≥ 3.11 / JAX) with two main functions:
 
 #### 1. Retrieval (Two-Tower Model)
 Finds relevant out-of-network posts:
@@ -254,7 +248,7 @@ Predictions:
 ├── P(not_interested)
 ├── P(block_author)
 ├── P(mute_author)
-└── P(report)
+└── P(report)  (+ share_via_dm, share_via_copy_link, quoted_click; demo model: 18 discrete heads + continuous dwell_time)
 ```
 
 The **Ranking Scorer** combines these into a final score:
@@ -281,7 +275,7 @@ Filters run at two stages:
 | `PreviouslySeenPostsFilter` | Remove posts user has already seen |
 | `PreviouslySeenPostsBackupFilter` | Backup seen-id filter when the request only has impression IDs |
 | `PreviouslyServedPostsFilter` | Remove posts already served in session |
-| `MutedKeywordFilter` | Remove posts with user's muted keywords |
+| `ViewerMutedKeywordFilter` | Remove posts whose main or quoted text hits the viewer's muted keywords |
 | `AuthorSocialgraphFilter` | Remove posts from blocked/muted authors |
 | `VideoFilter` | Drop video posts when the request sets `exclude_videos` |
 | `TopicIdsFilter` / `NewUserTopicIdsFilter` | Keep topic-constrained requests on-topic |

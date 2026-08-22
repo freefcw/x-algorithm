@@ -65,18 +65,19 @@ flowchart TD
     S --> H2["CoreDataHydrator<br/>补 text / retweet / reply 关系"]
     S --> H3["VideoDurationHydrator<br/>补 video_duration_ms"]
     S --> H4["SubscriptionHydrator<br/>补 subscription_author_id"]
-    S --> H5["GizmoduckHydrator<br/>补 screen_name / followers_count"]
+    S --> HQ["QuoteHydrator<br/>补 quoted_*"]
 
     H1 --> F["Pre-selection Filters"]
     H2 --> F
     H3 --> F
     H4 --> F
-    H5 --> F
+    HQ --> F
 
     F --> P["PhoenixScorer<br/>补 phoenix_scores"]
     P --> R["RankingScorer<br/>组合 weighted / diversity / OON"]
     R --> SEL["TopKSelector"]
-    SEL --> VFH["VFCandidateHydrator<br/>补 visibility_decision"]
+    SEL --> GIZ["GizmoduckHydrator<br/>补 screen_name / followers"]
+    GIZ --> VFH["VFCandidateHydrator<br/>补 visibility_decision"]
     VFH --> PSEL["Post-selection Filters"]
 ```
 
@@ -113,6 +114,7 @@ flowchart TD
 6. `SubscriptionHydrator`
 7. `FilteredTopicsHydrator`（topic request / excluded topics）
 8. `LanguageCodeHydrator`
+9. 仅 demo 且 `HOME_MIXER_ENABLE_AUTHOR_COLD_START` 时再加一个 `GizmoduckCandidateHydrator`（探索前补粉丝数）
 
 ### 3.4 Pre-selection Filters
 
@@ -125,7 +127,7 @@ flowchart TD
 7. `PreviouslySeenPostsFilter`
 8. `PreviouslySeenPostsBackupFilter`
 9. `PreviouslyServedPostsFilter`
-10. `MutedKeywordFilter`
+10. `ViewerMutedKeywordFilter`
 11. `AuthorSocialgraphFilter`
 12. `VideoFilter`
 13. `TopicIdsFilter`
@@ -171,7 +173,8 @@ graph LR
 | --- | --- |
 | `scoring_sequence` / `retrieval_sequence`（各自缺失时都回退 `user_action_sequence`） | `PhoenixScorer` / `PhoenixSource` |
 | `user_features.followed_user_ids` | `ThunderSource`、`InNetworkCandidateHydrator` |
-| `tweet_text` | `CoreDataHydrationFilter`、`MutedKeywordFilter` |
+| `tweet_text` | `CoreDataHydrationFilter`、`ViewerMutedKeywordFilter` |
+| `quoted_tweet_text`（`QuoteHydrator` 写回） | `ViewerMutedKeywordFilter` |
 | `retweeted_tweet_id` | `RetweetDeduplicationFilter`、`PhoenixScorer` |
 | `video_duration_ms` | `RankingScorer` 内部 VQV 权重 |
 | `in_network` | `RankingScorer` 内部 OON 调整、`VFCandidateHydrator` |

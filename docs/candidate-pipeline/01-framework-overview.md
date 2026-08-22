@@ -133,7 +133,7 @@ flowchart LR
 - `Selector`
 - `SideEffect`
 
-selector 和 side effect 同样有框架级 stage 日志（`select()` 输出 `input/selected/non_selected/elapsed_ms`，`run_side_effects()` 逐个记录成功/失败），`pipeline_summary.rs` 的每请求聚合摘要覆盖全部 10 个变体。
+selector 和 side effect 同样有框架级 stage 日志（`select()` 输出 `input/selected/non_selected/elapsed_ms`，`run_side_effects()` 逐个记录成功/失败）。`pipeline_summary.rs` 的每请求聚合摘要只覆盖实际调用了 `StageStats::begin` 的阶段（query / source / hydrate / filter / score）；`select()` 只打独立 `info!`，side effect 在 summary `emit()` 之后才 spawn，进不了这份摘要。
 
 ## 6. 运行时假设
 

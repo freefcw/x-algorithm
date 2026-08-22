@@ -40,9 +40,12 @@
 
 ### 2.2 请求入口/出口日志
 
-`server.rs` 会记录：
+`server.rs` 记录入口：
 
 - `Scored Posts request - request_id ...`
+
+`scored_posts_server.rs` 记录出口：
+
 - `Scored Posts response - request_id ... - N posts (X ms)`
 
 这两条日志回答的是：

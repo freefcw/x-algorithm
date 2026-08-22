@@ -22,7 +22,7 @@ gRPC trait 实现在 `home-mixer/server.rs`，公共 proto 到 domain query 的�
 
 ## 2. 当前装配入口
 
-`HomeMixerServer::build(config)` 把 `HomeMixerMode` 和 typed features 直接传给 `PhoenixCandidatePipeline::assemble_for_mode()`。Pipeline 不再重新读取环境变量选择依赖。
+`HomeMixerServer::build(config)` 把 `HomeMixerMode` 和 typed features 直接传给 `PhoenixCandidatePipeline::assemble_for_mode()`。Demo/Disabled adapter 不再由 pipeline 自己读 `HOME_MIXER_MODE`；旁路仍读 `VM_RANKER_GRPC_ADDR` / `PHOENIX_MOE_GRPC_ADDR`。
 
 `prod()`、`prod_with_features()`、`prod_with_topic_clients()` 仅保留为上游兼容 facade；新的 application 代码应使用显式 mode 装配。
 
@@ -63,8 +63,9 @@ UAS 与 Strato 各使用一个 request-scoped provider；多个字段 owner 共�
 6. `SubscriptionHydrator`
 7. `FilteredTopicsHydrator`
 8. `LanguageCodeHydrator`
+9. 仅 demo 且 `HOME_MIXER_ENABLE_AUTHOR_COLD_START` 时再加 `GizmoduckCandidateHydrator`
 
-TES 相关 hydrator 共享一个 request-scoped `TesHydrationProvider`，避免重复 core/media batch。
+TES 相关 hydrator 里 CoreData / Quote / VideoDuration / HasMedia / FilteredTopics / LanguageCode 共享一个 request-scoped `TesHydrationProvider`。`SubscriptionHydrator` 直接拿 `TESClient`，不经该 provider。
 
 ### 3.4 Pre-selection Filters
 
@@ -77,7 +78,7 @@ TES 相关 hydrator 共享一个 request-scoped `TesHydrationProvider`，避免�
 7. `PreviouslySeenPostsFilter`
 8. `PreviouslySeenPostsBackupFilter`
 9. `PreviouslyServedPostsFilter`
-10. `MutedKeywordFilter`
+10. `ViewerMutedKeywordFilter`
 11. `AuthorSocialgraphFilter`
 12. `VideoFilter`
 13. `TopicIdsFilter`
@@ -107,7 +108,7 @@ TES 相关 hydrator 共享一个 request-scoped `TesHydrationProvider`，避免�
 | UAS | `DemoUserActionSequenceFetcher` | `DisabledUserActionSequenceFetcher` | 空序列会关闭 Phoenix 个性化输入 |
 | Strato | `DemoStratoClient` | `DisabledStratoClient` | Degraded 返回空特征；两者都拒绝未配置的持久化写入 |
 | TES | `DemoTESClient` | `DisabledTESClient` | Degraded 缺少 core data，候选可能被过滤 |
-| Gizmoduck | `DemoGizmoduckClient` | `DisabledGizmoduckClient` | 未知 viewer policy 强制仅网内 |
+| Gizmoduck（QueryBuilder viewer） | `DemoGizmoduckClient`（Allow 网外） | `DisabledGizmoduckClient`（未知 → 仅网内） | 作者资料 hydrator 默认仍用 Disabled；只有再开冷启动才给 pipeline 注入 Demo 粉丝数 |
 | VF | `DemoVisibilityFilteringClient` | `DisabledVisibilityFilteringClient` | Unavailable 时删除网外、保留网内；附属内容保守删除 |
 | Thunder | 真实简化 gRPC client | 同左 | 500 ms timeout，seen IDs 下推 |
 | Phoenix retrieval | 配置地址后真实 gRPC | 同左 | 标准/MoE 调用上限 3 s |

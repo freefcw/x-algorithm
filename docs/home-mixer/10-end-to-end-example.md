@@ -86,23 +86,24 @@ flowchart LR
     C --> D["Age: 5"]
     D --> E["SelfTweet: 5"]
     E --> F["RetweetDeduplication: 5"]
-    F --> G["IneligibleSubscription: 5 -> 4"]
-    G --> H["PreviouslySeenPosts: 4 -> 3"]
-    H --> I["PreviouslyServedPosts: 3"]
-    I --> J["MutedKeywordFilter: 3"]
-    J --> K["AuthorSocialgraph: 3 -> 2"]
+    F --> G["IneligibleSubscription: 5"]
+    G --> H["PreviouslySeenPosts: 5 -> 4"]
+    H --> I["PreviouslyServedPosts: 4"]
+    I --> J["ViewerMutedKeyword: 4"]
+    J --> K["AuthorSocialgraph: 4 -> 3"]
 ```
 
-被移除的原因：
+过滤结果：
 
-- `71001`：订阅内容，但 viewer 没订阅作者 `3003`
-- `90001`：命中 `seen_ids`
-- `71002`：作者 `4004` 在 `blocked_user_ids`
+- `71001`：订阅内容且 viewer 已订阅作者 `3003`，**保留**（`IneligibleSubscriptionFilter` 只丢掉未订阅的付费帖）
+- `90001`：命中 `seen_ids`，移除
+- `71002`：作者 `4004` 在 `blocked_user_ids`，移除
 
 剩余候选：
 
 - `70001`
 - `70002`
+- `71001`
 
 ### 3.3 Scoring 后
 
@@ -112,18 +113,20 @@ flowchart LR
 | --- | --- | --- | --- | --- | --- |
 | `70001` | 0.30 | 0.02 | 0.01 | 0.00 | 0.00 |
 | `70002` | 0.10 | 0.08 | 0.02 | 0.00 | 0.00 |
+| `71001` | 0.20 | 0.04 | 0.02 | 0.01 | 0.00 |
 
 则：
 
-- `RankingScorer` 的 Weighted 阶段得到两个 `weighted_score`
-- 两位作者不同，AuthorDiversity 阶段几乎不衰减
-- 两条都是 `in_network = true`，OON 阶段不生效
+- `RankingScorer` 的 Weighted 阶段得到三个 `weighted_score`
+- 三位作者不同，AuthorDiversity 阶段几乎不衰减
+- `70001` / `70002` 是网内，OON 不生效；`71001` 是网外，分数再乘 `OON_WEIGHT_FACTOR`（0.75）
 
 假设最后：
 
 | tweet_id | weighted_score | score |
 | --- | --- | --- |
 | `70002` | `3.12` | `3.12` |
+| `71001` | `1.20` | `0.90` |
 | `70001` | `0.74` | `0.74` |
 
 ### 3.4 Post-selection 后
@@ -136,7 +139,8 @@ flowchart LR
 则最终响应顺序：
 
 1. `70002`
-2. `70001`
+2. `71001`
+3. `70001`
 
 ## 4. 示例 A：最终响应长什么样
 
@@ -157,6 +161,22 @@ flowchart LR
       "ancestors": [69990],
       "screen_names": {
         "2002": "bob"
+      }
+    },
+    {
+      "tweet_id": 71001,
+      "author_id": 3003,
+      "retweeted_tweet_id": 0,
+      "retweeted_user_id": 0,
+      "in_reply_to_tweet_id": 0,
+      "score": 0.90,
+      "in_network": false,
+      "served_type": 2,
+      "last_scored_timestamp_ms": 1712840000000,
+      "prediction_request_id": 871234567890123,
+      "ancestors": [],
+      "screen_names": {
+        "3003": "creator_pro"
       }
     },
     {

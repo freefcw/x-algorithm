@@ -202,6 +202,8 @@ flowchart TD
 - `tweet_id = post_id`
 - `author_id = author_id`
 - `in_reply_to_tweet_id = in_reply_to_post_id`
+- `retweeted_tweet_id = source_post_id`
+- `retweeted_user_id = source_user_id`
 - `ancestors` 由 `in_reply_to_post_id + conversation_id` 推导
 
 也就是说：
