@@ -11,7 +11,7 @@
 #
 # 前置条件：
 #   - 已安装 Rust 工具链（cargo）与 uv
-#   - 已执行过 cd phoenix && uv sync --group service
+#   - 已执行过 cd phoenix && uv sync --dev --group service
 #
 # 端口占用：50051 (home-mixer) / 50052 (thunder) / 50053 (phoenix gateway)
 

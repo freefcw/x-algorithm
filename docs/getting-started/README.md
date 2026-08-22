@@ -17,5 +17,5 @@
 急性子版本：装好 Rust/protoc/uv 后，在仓库根目录执行
 
 ```bash
-cd phoenix && uv sync --group service && cd .. && ./scripts/run_demo.sh
+cd phoenix && uv sync --dev --group service && cd .. && ./scripts/run_demo.sh
 ```
