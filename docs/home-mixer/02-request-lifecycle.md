@@ -12,7 +12,7 @@
 4. 构造共享 `QueryBuilder`、内层 `PhoenixCandidatePipeline`、`ScoredPostsServer`
 5. 构造外层 `ForYouCandidatePipeline` 与 `ForYouFeedServer`
 6. 通过 `HomeMixerServer::register` 注册两个 gRPC 服务、reflection、压缩和消息限制
-7. 启动 gRPC 与 health/metrics HTTP 监听
+7. 启动 gRPC，以及空的 health/metrics HTTP 监听（端口开着，没有 `/health` 或 `/metrics` 路由）
 
 ```mermaid
 sequenceDiagram
@@ -114,7 +114,7 @@ flowchart TD
     E -->|"串行"| E1["Scorer1 -> Scorer2 -> ..."]
     E --> F["select"]
     F --> G["post-selection hydrate"]
-    G -->|"并行"| G1["VFCandidateHydrator"]
+    G -->|"并行"| G1["GizmoduckCandidateHydrator / VFCandidateHydrator"]
     G --> H["post-selection filters"]
     H -->|"串行"| H1["VFFilter -> AncillaryVFFilter -> DedupConversationFilter"]
     H --> I["run_side_effects"]
@@ -152,7 +152,7 @@ flowchart TD
 
 ## 6. 返回路径：最终响应是如何拼出来的
 
-`server.rs` 最后会把 `selected_candidates` 映射为 `ScoredPost`：
+`scored_posts_server.rs` 最后会把 `selected_candidates` 映射为 `ScoredPost`：
 
 - `tweet_id`
 - `author_id`
@@ -167,6 +167,8 @@ flowchart TD
 - `ancestors`
 - `screen_names`
 - `visibility_reason`
+- `brand_safety_verdict`
+- `tweet_text`
 
 这里有两个要点：
 

@@ -87,7 +87,7 @@ Phoenix 两个主服务地址通常同时指向 `phoenix/scripts/run_grpc_gatewa
 2. 开关只代表操作员批准启用，不代表外部服务已经完成接入。
 3. 启用前必须人工确认服务 owner、公开 schema、认证、超时、错误语义、降级、测试环境和数据保留策略。
 4. 开关开启但必要地址缺失时，装配层记录告警并跳过组件，不能阻断主链启动。
-5. 当前没有公开 adapter 的 Ads、Prompt、WhoToFollow、PushToHome、Kafka/Redis 和 Grox 模型能力不提供伪开关；它们保持不装配，完成合同和实现后再增加 typed flag。
+5. Ads、Prompt、WhoToFollow、PushToHome 已挂进 ForYou 外层，但 `enable()` 恒 false；Kafka/Redis 和 Grox 模型能力不提供伪开关。
 
 请求缓存 SideEffect 即使显式开启，当前 `DisabledStratoClient` 和 `DemoStratoClient` 也会明确拒绝持久化写入。必须完成人工接入和持久化验收后，才能把它视为生产数据闭环。
 
@@ -157,6 +157,8 @@ flowchart LR
 | `THUNDER_MAX_RESULTS` | `1200` | `ThunderSource` | 网内召回上限 |
 | `PHOENIX_MAX_RESULTS` | `1000` | `PhoenixSource` | 网外召回上限 |
 | `TOPIC_MAX_RESULTS` | `100` | `PhoenixTopicsSource` | 话题源单次上限 |
+| `TWEET_MIXER_MAX_RESULTS` | `800` | `TweetMixerSource`（端口已定义，默认不装配） | TweetMixer 召回上限 |
+| `PHOENIX_MOE_MAX_RESULTS` | `200` | —（已定义未消费） | MoE 专家召回上限；本地 `PhoenixMoeSource` 当前实际使用 `PHOENIX_MAX_RESULTS` |
 
 Thunder + Phoenix 决定主链进入补全前的候选池规模；话题源另计。
 
@@ -182,6 +184,7 @@ Thunder + Phoenix 决定主链进入补全前的候选池规模；话题源另�
 | `DWELL_WEIGHT` | `0.0` | 二值停留 |
 | `QUOTE_WEIGHT` | `5.0` | 引用转发 |
 | `QUOTED_CLICK_WEIGHT` | `0.05` | 点击引用帖 |
+| `QUOTED_VQV_WEIGHT` | `0.0` | 点击引用帖视频（当前恒零） |
 | `FOLLOW_AUTHOR_WEIGHT` | `4.0` | 关注作者 |
 
 ### 6.2 连续行为
@@ -189,6 +192,16 @@ Thunder + Phoenix 决定主链进入补全前的候选池规模；话题源另�
 | 常量 | 值 | 含义 |
 | --- | --- | --- |
 | `CONT_DWELL_TIME_WEIGHT` | `0.004` | 连续停留时间 |
+| `CONT_CLICK_DWELL_TIME_WEIGHT` | `0.0` | 点击后停留（协议尚无对应连续动作，恒 `None`） |
+| `CONT_ACTIVE_SECS_5M_RESIDUAL_NORM_WEIGHT` | `0.0` | 5 分钟活跃残差（同上，恒 `None`） |
+
+低探索帖加分还有一个乘法变体开关组（默认走加法路径）：
+
+| 常量 | 值 | 含义 |
+| --- | --- | --- |
+| `ENABLE_MULTIPLICATIVE_POST_UNEXPLORED` | `false` | 改用乘法形式的低探索调整 |
+| `MULTIPLICATIVE_POST_UNEXPLORED_ALPHA` | `0.0` | 乘法强度 |
+| `POST_UNEXPLORED_WEIGHT_IN_NETWORK_ONLY` | `true` | 低探索加分只作用于网内候选 |
 
 ### 6.3 负向行为
 
@@ -208,35 +221,76 @@ Thunder + Phoenix 决定主链进入补全前的候选池规模；话题源另�
 
 正负权重和在 `ScoringWeights::from_defaults()` 里现场求和，不再单独维护 `WEIGHTS_SUM` / `NEGATIVE_WEIGHTS_SUM`。
 
+### 6.5 双向关注加成（数据未接入，暂不触发）
+
+| 常量 | 值 | 含义 |
+| --- | --- | --- |
+| `BIDIRECTIONAL_FOLLOW_REPLY_WEIGHT_BOOST` | `15.0` | 互关作者回复概率加成 |
+| `BIDIRECTIONAL_FOLLOW_DWELL_WEIGHT_BOOST` | `0.0` | 互关作者停留加成 |
+
+候选 `is_mutual_follow_author` 由上游 `BidirectionalFollowHydrator` 写入，本地无该数据端口（U3），`None` 时加成不触发。
+
+### 6.6 点击停留低点赞率惩罚（默认关闭）
+
+| 常量 | 值 | 含义 |
+| --- | --- | --- |
+| `ENABLE_CLICK_DWELL_LOW_FAV_RATE_PENALTY` | `false` | 总开关 |
+| `CLICK_DWELL_LOW_FAV_RATE_PENALTY_BASELINE` | `0.01` | 点赞率基线 |
+| `CLICK_DWELL_LOW_FAV_RATE_PENALTY_ALPHA` | `0.5` | 惩罚强度 |
+| `CLICK_DWELL_LOW_FAV_RATE_PENALTY_FLOOR` | `0.01` | 惩罚下限 |
+| `CLICK_DWELL_LOW_FAV_RATE_PENALTY_CAP` | `1.0` | 惩罚上限 |
+
 ## 7. 多样性与网外降权参数
 
 | 常量 | 值 | 影响组件 | 作用 |
 | --- | --- | --- | --- |
 | `OON_WEIGHT_FACTOR` | `0.75` | `RankingScorer` | 网外降权；网内回复/转发默认也乘（`ENABLE_OON_RESCORE_FOR_IN_NETWORK_REPLIES_RETWEETS`） |
 | `TOPIC_OON_WEIGHT_FACTOR` | `0.5` | `RankingScorer` | 话题请求的网外降权 |
+| `ENABLE_AUTHOR_DIVERSITY` | `true` | `RankingScorer` | 作者多样性总开关 |
 | `AUTHOR_DIVERSITY_DECAY` | `0.5` | `RankingScorer` | 同作者重复衰减 |
 | `AUTHOR_DIVERSITY_FLOOR` | `0.25` | `RankingScorer` | 衰减地板 |
+| `NEW_USER_OON_WEIGHT_FACTOR` | `0.00001` | —（已定义未消费） | 新用户网外强降权；上游特判本地未实现 |
+| `NEW_USER_MIN_FOLLOWING` | `5` | —（已定义未消费） | 新用户特判最少关注数；同上 |
+| `NEW_USER_AGE_THRESHOLD_SECS` | `0` | —（已定义未消费） | 新用户账号年龄门槛；`0` 表示关闭，本地也无账号创建时间数据源 |
 
-## 8. UAS 参数
+## 8. 冷启动探索参数（默认关闭）
+
+对应 `AuthorColdStartScorer`，需同时设置 `HOME_MIXER_ENABLE_AUTHOR_COLD_START`（仅 demo）：
+
+| 常量 | 值 | 含义 |
+| --- | --- | --- |
+| `ENABLE_VIEWER_COLD_START` | `false` | 只是 `ColdStartConfig::default()`；生产装配以 `HOME_MIXER_ENABLE_AUTHOR_COLD_START` 为准，会覆盖这个常量 |
+| `ENABLE_COLD_START_THOMPSON_SAMPLING` | `false` | 同上，装配以 `HOME_MIXER_ENABLE_COLD_START_THOMPSON_SAMPLING` 为准 |
+| `COLD_START_IMPRESSION_THRESHOLD` | `1000` | 低于该曝光数的作者进入探索池 |
+| `COLD_START_SLOT_MIN` / `COLD_START_SLOT_MAX` | `15` / `16` | 探索槽位区间 |
+| `COLD_START_FOLLOWER_CAP` | `1000` | 作者粉丝数上限 |
+| `LOW_IMPRESSIONS_MAX_POSITION_RATIO` | `0.85` | 低曝光候选最大位次比例 |
+| `COLD_START_BETA_ALPHA0` / `COLD_START_BETA_BETA0` | `0.75` / `49.25` | Beta 先验参数 |
+| `COLD_START_TS_TOP_K` | `5` | Thompson Sampling 取 Top-K |
+| `COLD_START_IMPRESSION_SCALE` | `1.0` | 曝光量缩放 |
+
+## 9. UAS 参数
 
 | 常量 | 值 | 使用点 | 作用 |
 | --- | --- | --- | --- |
 | `UAS_WINDOW_TIME_MS` | `7 天` | `UserActionSeqQueryHydrator` | 聚合时间窗口 |
 | `UAS_MAX_SEQUENCE_LENGTH` | `300` | `UserActionSeqQueryHydrator` | 序列截断上限 |
 
-## 9. 过滤参数
+## 10. 过滤参数
 
 | 常量 | 值 | 影响组件 | 作用 |
 | --- | --- | --- | --- |
 | `MAX_POST_AGE` | `48 小时` | `AgeFilter` | 帖子年龄限制 |
 | `MIN_VIDEO_DURATION_MS` | `10000` | `RankingScorer` | 是否启用 VQV 权重 |
+| `ENABLE_QUOTED_VQV_DURATION_CHECK` | `false` | `RankingScorer` | 引用帖 VQV 是否检查时长门槛 |
 
-## 10. 输出参数
+## 11. 输出参数
 
 | 常量 | 值 | 影响组件 | 作用 |
 | --- | --- | --- | --- |
 | `TOP_K_CANDIDATES_TO_SELECT` | `50` | `TopKScoreSelector` | 选择阶段保留数量 |
 | `RESULT_SIZE` | `35` | pipeline 最终裁剪 | 最终响应上限 |
+| `WHO_TO_FOLLOW_POSITION` | `6` | —（已定义未消费） | 上游插入位次常量未被引用；`BlenderConfig` 默认位次是 10，但 `WhoToFollowSource.enable()` 恒 false，当前插不进去 |
 
 两个值取自上游 `47c1bcd` 的真实配置，取代了此前本地自拟的 100 / 50。
 
@@ -248,7 +302,17 @@ flowchart LR
     D --> E["最终 truncate<br/>保留 35"]
 ```
 
-## 11. 当前配置体系的现实评价
+## 12. 本地状态常量（U2，无上游对应）
+
+ForYou 本地有界内存状态适配器的容量上限（生产持久化策略在集成阶段确定）：
+
+| 常量 | 值 | 含义 |
+| --- | --- | --- |
+| `LOCAL_SERVED_HISTORY_LIMIT` | `500` | 每用户保留的最近已下发帖子数 |
+| `LOCAL_REQUEST_TIMESTAMP_LIMIT` | `50` | 每用户保留的最近请求时间戳数 |
+| `LOCAL_STATE_USER_LIMIT` | `10,000` | 全局最多保留的用户数 |
+
+## 13. 当前配置体系的现实评价
 
 当前配置体系是“骨架完整、动态化不足”的状态：
 
