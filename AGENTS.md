@@ -14,9 +14,11 @@
 - `cargo run -p home-mixer --bin demo-client`：请求一次推荐 Feed 并打印结果。
 - `./scripts/run_demo.sh`：一键跑通端到端演示链路。
 - `cargo fmt --all` 和 `cargo clippy --workspace --all-targets`：格式化与静态检查。
+- `cd phoenix && uv sync --dev --group service`：安装演示推理、测试与 gRPC 服务依赖。
 - `cd phoenix && uv run scripts/run_ranker.py`：运行排序模型示例。
 - `cd phoenix && uv run scripts/run_retrieval.py`：运行检索模型示例。
 - `cd phoenix && uv run scripts/train_ranker.py`：训练精排模型。
+- `cd phoenix && uv run scripts/train_retrieval.py`：训练召回模型。
 - `cd phoenix && uv run scripts/run_grpc_gateway.py`：启动供 home-mixer 调用的 gRPC 模型服务。
 - `cd phoenix && uv run pytest`：运行 Python 测试（测试位于 `phoenix/tests/`）。
 
@@ -27,7 +29,7 @@ Rust 使用 Edition 2021，遵循 `rustfmt` 默认风格，使用 4 空格缩进
 `phoenix/` 使用 `pytest`，现有测试以 `test_*.py` 命名，覆盖张量形状、attention mask、检索、gRPC 契约和策略装配。`home-mixer`、`candidate-pipeline`、`vm-ranker` 已有成体系 Rust 单测；`thunder` 仍偏少。修改 pipeline、proto 或服务装配时，至少运行 `cargo test --workspace`。如果改动影响排序、过滤或协议字段，补充最接近变更点的单测或回归测试。
 
 ## 提交与 Pull Request 规范
-当前 Git 历史几乎只有初始化提交，尚未形成稳定提交规范。建议采用简洁的 scope 前缀：`home-mixer: add author diversity scorer`、`phoenix: fix retrieval normalization`。PR 需说明影响的模块、行为变化、验证命令和结果；若改动涉及接口、排序输出或文档图示，附示例输出或截图，并链接相关 issue / 设计文档。
+提交历史已采用稳定的简洁 scope 前缀（`home-mixer: ...`、`phoenix: ...`、`thunder: ...`、`docs: ...`），新提交请沿用，例如 `home-mixer: add author diversity scorer`、`phoenix: fix retrieval normalization`。PR 需说明影响的模块、行为变化、验证命令和结果；若改动涉及接口、排序输出或文档图示，附示例输出或截图，并链接相关 issue / 设计文档。
 
 ## 配置与安全提示
 协议定义优先修改 `proto/definitions/`，不要手改生成代码。涉及 Kafka、gRPC 或外部依赖的改动，应把配置入口放在显式参数或配置结构中，避免把环境相关值硬编码到源码里。

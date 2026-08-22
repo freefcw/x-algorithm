@@ -49,15 +49,15 @@
 
 | 组件 | 要求 | 备注 |
 | :-- | :-- | :-- |
-| Kafka 集群 | topic `tweet_events` 或 `in-network-events`（v2 管道） | 分区数与 `--tweet-events-num-partitions`（默认 64）匹配 |
+| Kafka 集群 | topic `in-network-events`（当前 serving 只走 v2） | 默认硬编码订阅该 topic；v1 `tweet_events` 需 `legacy` feature，默认不编译 |
 | Kafka 保留期 | ≥ Thunder 保留期 + 安全冗余 | 建议 **≥ 3–4 天**（Thunder 默认 2 天） |
 | Strato（或替代） | 提供 `fetch_following_list(user_id)` | 仅在请求未带 `following_user_ids` 时回退使用 |
 
 **Topic schema 约束：**
 
 - 消息 payload 为 protobuf（见 [../../proto/definitions/in_network.proto](../../proto/definitions/in_network.proto)）。
-- v1 消费原始 `TweetCreateEvent / TweetDeleteEvent`（[../../thunder/kafka/tweet_events_listener.rs](../../thunder/kafka/tweet_events_listener.rs)）。
-- v2 消费已经筛选好的 `InNetworkEvent`（[../../thunder/kafka/tweet_events_listener_v2.rs](../../thunder/kafka/tweet_events_listener_v2.rs)），订阅固定 topic `in-network-events`。
+- 当前 serving 只消费 v2：`InNetworkEvent`（[../../thunder/kafka/tweet_events_listener_v2.rs](../../thunder/kafka/tweet_events_listener_v2.rs)），订阅固定 topic `in-network-events`。
+- v1 `tweet_events_listener.rs` 需同时打开 `legacy` feature 与内部依赖，默认不编译，不要按它建 topic。
 
 **容量规划：**
 
@@ -70,30 +70,30 @@
 
 ```bash
 # 1. 确认 Kafka topic 已创建并有足够保留期
-kafka-topics --describe --topic tweet_events
-kafka-configs --describe --entity-type topics --entity-name tweet_events \
+kafka-topics --describe --topic in-network-events
+kafka-configs --describe --entity-type topics --entity-name in-network-events \
   | grep retention.ms   # 期望 >= 259200000 (3天)
 
 # 2. 起 Thunder 进程（典型生产参数）
+# gRPC 默认 50052，与 home-mixer 的 THUNDER_GRPC_ADDR 一致；不要绑到 50051（那是 home-mixer）
 cargo run --release -p thunder -- \
-  --grpc-port 50051 \
+  --grpc-port 50052 \
   --http-port 8080 \
   --post-retention-seconds 172800 \
   --kafka-brokers kafka-1:9092,kafka-2:9092,kafka-3:9092 \
   --kafka-group-id thunder-prod \
   --kafka-num-threads 8 \
   --kafka-batch-size 1000 \
-  --tweet-events-num-partitions 64 \
   --auto-offset-reset earliest \
   --is-serving true
 ```
 
 **启动过程关键路径**（见 [../../thunder/main.rs](../../thunder/main.rs)）：
 
-1. `kafka_utils::start_kafka` 拉起 N 个 consumer 线程。
-2. 每个线程 replay 到最新 offset 后向 `mpsc::channel` 发送"初始化完成"信号。
+1. gRPC / HTTP 先监听；`kafka_utils::start_kafka` 在 `--is-serving true`（默认）时拉起 N 个 v2 consumer 线程。
+2. 每个线程处理完**第一个满批次**（`--kafka-batch-size`，默认 1000）后发一次 init 信号，不是等到 Kafka 追平。流量不够一个 batch 时，`Server ready` 可能一直不出现。
 3. 主线程等 N 个信号到齐 → 调用 `post_store.finalize_init()` → 启动 stats logger 和 auto-trim 任务（每 2 分钟）。
-4. `Server ready` 日志出现后才允许接外部流量。
+4. `Server ready` 日志出现前端口已开，查询只返回已摄入的部分数据。`--skip-to-latest` 已暴露但当前未接线。
 
 **冷启动时长估算**：`Kafka replay 速度 ≈ Deserialized msgs/sec 日志` × 保留期内消息总数。典型值：千万级消息、8 线程、几分钟到十几分钟。
 
@@ -110,10 +110,10 @@ cargo run --release -p thunder -- \
 
 | 现象 | 根因排查顺序 | 处理 |
 | :-- | :-- | :-- |
-| `GetInNetworkPosts` 返回空 | 1. Kafka lag 2. PostStore size 3. following 列表是否为空 | 查 metrics `POST_STORE_TOTAL_POSTS` / `KAFKA_PARTITION_LAG` |
-| 启动慢 | Kafka 消息堆积、replay 瓶颈 | 临时调大 `--kafka-num-threads` / 用 `--skip-to-latest=true` 跳过历史（代价是召回不足直到稳态） |
-| 内存飙升 | 保留期过长 / 某作者异常高产 | 先降 `--post-retention-seconds`，再看 `MAX_*_POSTS_PER_AUTHOR` 是否需要收紧 |
-| 老帖召回不到 | `MAX_POST_AGE = 48h` 过滤 | 这是预期行为，老帖属于网外链路 |
+| `GetInNetworkPosts` 返回空 | 1. 是否已 `Server ready` 2. PostStore 是否有数据 3. following 列表是否为空 | HTTP `/metrics` 尚未暴露；看日志里的 PostStore 统计。`KAFKA_PARTITION_LAG` 只在未编译的 v1 listener 里更新，不要当可查项 |
+| 启动后一直没有 `Server ready` | 默认要攒满 `--kafka-batch-size`（1000）才发 init | 小流量环境把 batch 调小；`--skip-to-latest` 当前未接线 |
+| 内存飙升 | 保留期过长 / 某作者异常高产 | 先降 `--post-retention-seconds`；每作者 200/50/50 是查询返回上限，不是写入封顶 |
+| 老帖召回不到 | `MAX_POST_AGE = 48h` 在预选过滤网内网外候选 | 这是预期行为，超窗帖（含网外）都会被 AgeFilter 丢掉 |
 
 **一条黄金法则**：Thunder 出问题**优先滚动重启**，Kafka replay 是最可靠的自愈机制。
 
@@ -172,15 +172,15 @@ uv run scripts/build_training_samples.py \
 # 2. 从零训练召回模型（首次全量新训练）
 cd phoenix
 uv run scripts/train_retrieval.py \
-  --data s3://your-bucket/training_data/ \
-  --output s3://your-bucket/checkpoints/retrieval/v20260422/ \
-  --from-scratch
+  --data-dir ./data/training_samples \
+  --ckpt-dir ./checkpoints_retrieval \
+  --steps 2000
 
 # 3. 从零训练精排模型
 uv run scripts/train_ranker.py \
-  --data s3://your-bucket/training_data/ \
-  --output s3://your-bucket/checkpoints/ranker/v20260422/ \
-  --from-scratch
+  --data-dir ./data/training_samples \
+  --ckpt-dir ./checkpoints \
+  --steps 2000
 
 # 4. 离线 encode 活跃窗口内所有帖子
 uv run scripts/encode_corpus.py \
@@ -198,18 +198,18 @@ echo "v20260422" > s3://your-bucket/registry/retrieval_active.txt
 # —— 启动在线服务 ——
 
 # 7. 启动 retrieval_service
-PHOENIX_CHECKPOINT_PATH=s3://your-bucket/checkpoints/retrieval/v20260422/ \
-PHOENIX_VECTOR_INDEX_PATH=s3://your-bucket/vector_index/retrieval/v20260422/ann.index \
-uv run scripts/run_services.py --service retrieval
+RETRIEVAL_CHECKPOINT_PATH=./checkpoints_retrieval/retrieval_params_step2000.npz \
+FAISS_INDEX_PATH=s3://your-bucket/vector_index/retrieval/v20260422/ann.index \
+uv run scripts/run_services.py retrieval
 
 # 8. 启动 ranker_service
-PHOENIX_CHECKPOINT_PATH=s3://your-bucket/checkpoints/ranker/v20260422/ \
-uv run scripts/run_services.py --service ranker
+RANKER_CHECKPOINT_PATH=./checkpoints/model_params_step2000.npz \
+uv run scripts/run_services.py ranker
 
 # 9. 启动增量 encode job（见 §2.3）
 ```
 
-> 注：步骤 1、4、5、9 中的脚本名是**建议命名**，仓库里目前只有 `scripts/train_retrieval.py`、`scripts/train_ranker.py`、`scripts/run_services.py`，其他脚本属于生产化时需要补齐的工程资产，文档这里先留出接口。
+> 注：步骤 1、4、5、9 中的脚本名是**建议命名**，仓库里目前没有。步骤 2、3、7、8 用的是现成脚本和真实 CLI：`train_*.py` 认 `--data-dir` / `--ckpt-dir` / `--resume-params`，`run_services.py` 的服务名是位置参数 `ranker|retrieval|all`，权重环境变量是 `RANKER_CHECKPOINT_PATH` / `RETRIEVAL_CHECKPOINT_PATH`，索引是 `FAISS_INDEX_PATH`。当前训练脚本读本地 Parquet，不直接写 S3。
 
 ### 2.3 持续运行的三条流水线
 
@@ -286,9 +286,9 @@ with DAG("phoenix_retrieval_daily", schedule="0 2 * * *") as dag:
 
     t2 = BashOperator("retrain_retrieval",
         bash_command="""uv run phoenix/scripts/train_retrieval.py \
-            --data s3://.../training_data/ \
-            --warm-start s3://.../checkpoints/retrieval/$(cat active.txt)/ \
-            --output s3://.../checkpoints/retrieval/v{{ ds_nodash }}/""")
+            --data-dir s3://.../training_data/ \
+            --ckpt-dir s3://.../checkpoints/retrieval/v{{ ds_nodash }}/ \
+            --resume-params s3://.../checkpoints/retrieval/$(cat active.txt)/retrieval_params_step200.npz""")
 
     t3 = BashOperator("encode_corpus",
         bash_command="""uv run scripts/encode_corpus.py \
@@ -369,9 +369,9 @@ with DAG("phoenix_ann_cleanup_hourly", schedule="0 * * * *") as dag:
 with DAG("phoenix_ranker_daily", schedule="0 3 * * *") as dag:
     t1 = BashOperator("retrain_ranker",
         bash_command="""uv run phoenix/scripts/train_ranker.py \
-            --data s3://.../training_data/ \
-            --warm-start s3://.../checkpoints/ranker/$(cat ranker_active.txt)/ \
-            --output s3://.../checkpoints/ranker/v{{ ds_nodash }}/""")
+            --data-dir s3://.../training_data/ \
+            --ckpt-dir s3://.../checkpoints/ranker/v{{ ds_nodash }}/ \
+            --resume-params s3://.../checkpoints/ranker/$(cat ranker_active.txt)/model_params_step200.npz""")
 
     t2 = BashOperator("publish_active",
         bash_command="""echo "v{{ ds_nodash }}" > s3://.../registry/ranker_active.txt""")

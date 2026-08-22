@@ -46,10 +46,10 @@
 `thunder` 是**进程内内存缓存**，承担"用户关注账号的最近帖子"这一单一职责。
 
 - **保留窗口**：`thunder/args.rs` 中 `post_retention_seconds` 默认 `172800s = 2 天`；`thunder/posts/post_store.rs` 的 `insert_posts` 强制丢弃 `created_at` 超出窗口的记录。
-- **每作者上限**：`MAX_ORIGINAL_POSTS_PER_AUTHOR / MAX_REPLY_POSTS_PER_AUTHOR / MAX_VIDEO_POSTS_PER_AUTHOR`，防止高产作者撑爆内存。
-- **下游再收窄**：`home-mixer/params/` 的 `MAX_POST_AGE = 48h` 会过滤 48 小时以上的候选；Thunder 保留 2 天只是为了容忍重启和偶发消费延迟。
-- **增量方式**：Kafka 实时消费 `TweetCreateEvent` / `TweetDeleteEvent`，见 `thunder/kafka/tweet_events_listener.rs`。
-- **冷启动**：`auto_offset_reset = "earliest"`，重启时从 Kafka 保留期内最老 offset 一路 replay 到 now，`PostStore::finalize_init` 再做一次排序和修剪。
+- **每作者查询上限**：`MAX_ORIGINAL_POSTS_PER_AUTHOR / MAX_REPLY_POSTS_PER_AUTHOR / MAX_VIDEO_POSTS_PER_AUTHOR` 只在查询 `take` 时生效；写入不按条数封顶，只靠 retention trim。
+- **下游再收窄**：`home-mixer/params/` 的 `MAX_POST_AGE = 48h` 会过滤 48 小时以上的候选（网内网外都滤）；Thunder 保留 2 天只是为了容忍重启和偶发消费延迟。
+- **增量方式**：当前 serving 只走 v2，订阅硬编码 topic `in-network-events`，消费 `InNetworkEvent`（见 `thunder/kafka/tweet_events_listener_v2.rs`）。v1 `tweet_events_listener.rs` 默认不编译。
+- **冷启动**：`auto_offset_reset = "earliest"`；每个消费线程处理完第一个满批次（默认 1000 条）后发 init 信号，不是等到 Kafka 追平。`PostStore::finalize_init` 再做一次排序和修剪。
 
 ### 2.2 生产建议
 
@@ -102,7 +102,7 @@ flowchart LR
 
 关键实现点：
 
-- **入口复用 Kafka**：`thunder/kafka/tweet_events_listener.rs` 的同一份事件流可以 fork 一条给 "embedding indexer" 任务使用，或直接消费上游原始 topic。
+- **入口复用 Kafka**：当前 Thunder serving 消费的是 v2 topic `in-network-events`。增量 encode 可以订阅同一份业务发帖流，或单独的帖子事件 topic；不要默认去接未编译的 v1 listener。
 - **物品塔调用**：对应 `phoenix/recsys_retrieval_model.py` 的 `CandidateTower`；服务端接口是 `RecsysRetrievalInferenceRunner.encode_candidates`（见 `docs/phoenix/03-retrieval-pipeline.md` §7）。
 - **入库原子性**：用 `post_id` 作为主键 upsert，删除事件立即 `delete by id`。
 - **批大小**：推荐分钟级聚合到 batch（如 1000 条）再过物品塔，平衡吞吐和时效。
@@ -122,7 +122,7 @@ flowchart LR
 
 用户向量**请求时实时算**，不落盘：
 
-- `home-mixer/sources/phoenix_source.rs:20-32` 调用 `retrieve(user_id, sequence, max_results)` 时把 UAS 序列一并传入；
+- `home-mixer/sources/phoenix_source.rs` 的 `source()` 调用 `retrieve_with_timeout(...)` 时把 retrieval/UAS 序列一并传入；
 - 服务端 `encode_user(batch, embeddings)` 即时跑用户塔；
 - 因此"用户历史"的更新等于 UAS 拉取的更新，和 ANN 索引无关。
 
@@ -326,7 +326,7 @@ vector_index/
 
 | 场景 | 降级动作 |
 | :-- | :-- |
-| Phoenix retrieval 服务不可用 | 全量回退到 Thunder 网内候选（`query.in_network_only = true`，见 `home-mixer/sources/phoenix_source.rs:16-18`） |
+| Phoenix retrieval 服务不可用 | Source 失败被 pipeline 隔离丢弃，Thunder 网内候选仍可出结果（不会改 `query.in_network_only`；该 flag 只让 `PhoenixSource::enable()` 跳过网外召回） |
 | 新 checkpoint 训出来指标恶化 | Model Registry 回滚到上一版本，对应 ANN 索引也回滚 |
 | ANN 增量任务挂掉 | 服务仍用最近一次全量重建的索引；监控告警后手动拉起 |
 | encode_corpus 失败 | 跳过本次 checkpoint 发布，继续用旧版本 |

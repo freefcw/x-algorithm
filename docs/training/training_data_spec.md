@@ -132,26 +132,30 @@ Phoenix 是一个 **Transformer 精排模型**，输入由两部分组成：
 import hashlib
 
 def id_to_hashes(id_val: int, num_hashes: int = 2, table_size: int = 100_000) -> list[int]:
+    # 与 data_preprocessor.py 的 _hash_id_cached 保持同一构造：
+    # 种子串为 "{id}_hash{i}"，取 MD5 全量整数后取模
+    id_str = str(id_val)
     hashes = []
-    for seed in range(num_hashes):
-        raw = hashlib.md5(f"{seed}:{id_val}".encode()).digest()
-        h = int.from_bytes(raw[:4], "little") % table_size
+    for i in range(num_hashes):
+        raw = hashlib.md5((id_str + f"_hash{i}").encode("utf-8")).digest()
+        h = int.from_bytes(raw, "big") % table_size
         hashes.append(h + 1)  # 0 保留为 padding，所以从 1 开始
     return hashes
 ```
 
-> 注意：推理侧演示脚本 `phoenix/scripts/run_real_data_demo.py` 的 `hash_id` 用的是 `hash((entity_id, seed))` 实现，与本节 MD5 实现产出的哈希值不同。训练数据准备与推理输入构造必须使用同一种实现，否则嵌入表查找会错位。
+> 注意 1：本节示例是 `data_preprocessor.py::_hash_id_cached` 的等价写法，以预处理器的构造为准；两者都是 MD5、2 路、`+1` 偏移、`table_size = 100_000`。
+> 注意 2：推理侧演示脚本 `phoenix/scripts/run_real_data_demo.py` 的 `hash_id` 用的是 `hash((entity_id, seed))` 实现，与本节 MD5 实现产出的哈希值不同。训练数据准备与推理输入构造必须使用同一种实现，否则嵌入表查找会错位。
 
 ### 4.2 `dwell_time`（索引 18）的归一化
 
-`dwell_time` 是一个连续值而非 0/1，建议用对数归一化后压缩到 [0, 1]：
+`dwell_time` 是一个连续值而非 0/1。训练样本以 `data_preprocessor.py::normalize_dwell` 为准，线性压到 [0, 1]：
 
 ```python
-import math
-
 def normalize_dwell(seconds: float, max_seconds: float = 300.0) -> float:
-    return min(math.log1p(seconds) / math.log1p(max_seconds), 1.0)
+    return min(seconds / max_seconds, 1.0)
 ```
+
+`train_ranker.py` 里另有一个 log1p 工具函数，**不会**改写预处理器已经写进 Parquet 的标签。自己造样本时不要混用两套公式。
 
 ### 4.3 历史序列截断与 Padding
 
@@ -161,8 +165,8 @@ def normalize_dwell(seconds: float, max_seconds: float = 300.0) -> float:
 
 ### 4.4 候选集大小
 
-- 单次推理固定为 **8 个候选**（`candidate_seq_len=8`）。
-- 如果召回的候选不足 8 个，剩余位置同样补零。
+- 演示训练/本地 `train_ranker.py` 的张量固定为 **8 个候选**（`candidate_seq_len=8`）；不足补零。
+- 在线 gRPC 网关按 32 分块，home-mixer 可以一次送多于 8 条，不要按训练几何去裁在线请求。
 
 ---
 

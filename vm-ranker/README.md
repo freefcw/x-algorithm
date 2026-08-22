@@ -4,10 +4,10 @@
 
 home-mixer 要同时设置 `HOME_MIXER_ENABLE_VM_RANKER=1` 和 `VM_RANKER_GRPC_ADDR` 才会装配。缺地址时主链继续跑，只打一条告警。
 
-默认 gRPC 端口是 `9090`，和 home-mixer 的 metrics HTTP 端口撞车。演示已经在跑时，换一个端口：
+默认 gRPC 端口是 `9090`，和 home-mixer 的 metrics HTTP 端口撞车。HTTP 默认 `--http-port 8080`，和 Thunder 空 HTTP 口也可能撞。演示已经在跑时，换一个 gRPC 口：
 
 ```bash
-cargo run -p vm-ranker -- --grpc-port 50054
+cargo run -p xai-vm-ranker -- --grpc-port 50054
 ```
 
 然后：
