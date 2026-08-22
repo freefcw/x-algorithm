@@ -76,8 +76,8 @@ flowchart LR
 5. 立即启动 gRPC server。
 6. 立即启动 HTTP server。
 7. 根据运行模式二选一：
-   - **演示模式**（`--demo-seed-posts N > 0`）：调用 `demo_seed::generate_demo_posts` 生成 N 条模拟帖子直接灌入 `PostStore`，不启动 Kafka。用于没有 Kafka 环境时快速跑通链路（作者固定为 101~105，与 home-mixer 演示模式的关注列表一致）。
-   - **正常模式**：启动 Kafka 消费线程；在 `is_serving=true` 时，等待每个 Kafka 线程发送一次初始化信号（每线程需先消费满一个 batch，默认 1000 条）。
+   - **演示模式**（`--demo-seed-posts N > 0`）：调用 `demo_seed::generate_demo_posts` 生成 N 条模拟帖子直接灌入 `PostStore`，不启动 Kafka。作者固定 101~105，Snowflake ID，`created_at` 落在过去 24h（且必须在 retention 内），约 1/5 回复、1/7 视频。少了 Snowflake 或时间窗口，AgeFilter 会把种子全丢掉。
+   - **正常模式**：gRPC/HTTP 已经在听。`--is-serving true`（默认）才启动 v2 Kafka 并等待 init；`false` 会跳过消费和 trim，仓库为空，但查询口仍开着。init 信号是每线程第一个满 batch，不是追平。
 8. 调用 `post_store.finalize_init()`，随后开启统计日志和自动裁剪。
 9. 打印 `Server ready`。
 

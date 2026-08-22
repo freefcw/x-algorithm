@@ -37,7 +37,7 @@ flowchart LR
 
     B1[补 /metrics 和 /readyz] --> B
     B2[接入真实 Strato/关系服务] --> B
-    B3[修正端口/配置默认值] --> B
+    B3[改端口时对齐 THUNDER_GRPC_ADDR<br/>默认已是 50052] --> B
 
     C1[引入 lag monitor] --> C
     C2[支持更细的 query 策略] --> C

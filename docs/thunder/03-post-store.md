@@ -140,10 +140,12 @@ flowchart LR
 5. 过滤掉已删除帖子。
 6. 过滤掉“转发了请求用户自己内容”的 retweet。
 7. 如果这是 secondary 阶段，再套 reply/retweet 过滤规则。
-8. 单作者最多保留：
+8. 单作者本次查询最多返回（不是存储上限）：
    - original 200 条
    - secondary 50 条
    - video 50 条
+
+original 与 secondary 共用同一次 `start_time`。默认扫描超时 500ms（`--request-timeout-ms`）用完后，secondary 可能整段为空。
 
 ## 9. secondary 过滤规则
 
@@ -176,7 +178,7 @@ flowchart TD
 - 一旦超时，就停止继续扫描后续作者
 - 已经收集到的结果不会丢弃，而是直接作为部分结果返回
 
-这意味着 Thunder 的超时语义不是“整请求失败”，而是“扫描中止，返回已经找到的候选”。
+这意味着 Thunder 的超时语义不是“整请求失败”，而是“扫描中止，返回已经找到的候选”。默认 `--request-timeout-ms 500`。original 与 secondary 共用同一次时钟，不是每阶段单独 500ms。
 
 ## 11. 自动裁剪
 
@@ -186,6 +188,8 @@ flowchart TD
 
 - 裁剪判断基于 `TinyPost.created_at`
 - original / secondary / video 裁剪走同一闭包，都会同步 `posts.remove(post_id)`（video 裁剪时该帖通常已被原路径删过）
+- `trim_old_posts` 返回值不含 video deque 弹出次数；auto-trim 日志会对不上视频表
+- 间隔硬编码 2 分钟，无 CLI
 - 处理 `DELETE_EVENT_KEY` 时，还会顺手删除对应 tombstone
 - 如果某个作者时间线空了，会把该作者键一起删掉
 

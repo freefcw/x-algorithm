@@ -15,7 +15,7 @@ Thunder 当前对外只有一个接口：
 |---|---|
 | `user_id` | 用于过滤“转发了请求用户自己内容”的 retweet，也用于必要时查 following list |
 | `following_user_ids` | 最关键输入，决定要从哪些作者的时间线里取帖 |
-| `max_results` | 为 0 时使用默认值：普通请求 1000，视频请求 200 |
+| `max_results` | 为 0 时使用默认值：普通请求 1000，视频请求 200。当前 `ThunderSource` 恒传 `THUNDER_MAX_RESULTS=1200`，Thunder 按请求值截断，不会再压回 1000 |
 | `exclude_tweet_ids` | 查询前先转成 `HashSet`，用于排除已曝光帖子 |
 | `algorithm` | 当前未使用 |
 | `debug` | 控制日志；并且当前实现里还意外影响了 Strato fallback 是否触发 |
@@ -126,12 +126,13 @@ flowchart LR
 
 `home-mixer/sources/thunder_source.rs` 当前的调用方式非常直接：
 
-- 总是显式把 `query.user_features.followed_user_ids` 传给 Thunder
+- `has_cached_posts=true` 时 `ThunderSource.enable()` 为 false，根本不打 Thunder
+- 否则显式把 `query.user_features.followed_user_ids` 传给 Thunder，`max_results=1200`
 - `debug=false`
 - `exclude_tweet_ids=query.seen_ids`
 - `is_video_request=false`
 - `algorithm="default"`
-- Home Mixer 对 RPC 设置 500 ms timeout；超时/Status 错误作为 Source 错误记录，由 Candidate Pipeline 保留其他来源候选
+- Home Mixer 对 RPC 设置 500 ms timeout；Thunder 扫描也默认 `--request-timeout-ms 500`，两端在抢同一预算。超时/Status 错误作为 Source 错误记录，由 Candidate Pipeline 保留其他来源候选
 
 ```mermaid
 sequenceDiagram

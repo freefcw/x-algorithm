@@ -131,12 +131,12 @@ sequenceDiagram
 
 但当前实现里，这个信号的触发条件不是“线程已经追平 Kafka”，而是：
 
-- 该线程第一次成功处理完一个满批次 batch。
+- 该线程第一次处理完一个满批次 batch（无论该批消息是否全部反序列化成功——批次解析失败只记日志、不写 `PostStore`，但提交 offset 和 init signal 照常执行）。
 
 ```mermaid
 stateDiagram-v2
     [*] --> WaitingBatch
-    WaitingBatch --> FirstBatchDone: buffer.len >= batch_size\nand batch processed
+    WaitingBatch --> FirstBatchDone: buffer.len >= batch_size\nand batch consumed<br/>(deserialization may fail)
     FirstBatchDone --> InitSignalSent
     InitSignalSent --> SteadyRunning
 ```
@@ -160,6 +160,8 @@ stateDiagram-v2
 | `in_network_events_consumer_dest` | 未使用 |
 | `lag_monitor_interval_secs` | 未使用，v2 没有 lag monitor |
 | `sasl_mechanism` / `sasl_username` / `sasl_password` | v2 没用，反而用了 producer 侧 SASL 参数 |
+| `enable_profiling` | 未使用 |
+| `tweet_events_num_partitions` | 只对未编译的 v1 有意义 |
 
 ## 10. 这一层要记住的核心结论
 

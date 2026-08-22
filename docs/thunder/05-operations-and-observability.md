@@ -98,6 +98,8 @@ flowchart TD
 | `post_retention_seconds` 是否与产品召回窗口匹配 | 决定缓存占用和候选时间范围 |
 | 是否真的需要内部 Strato fallback | 当前既受 `debug` 控制，又是 stub |
 | 是否补上 `/metrics` 与 `/readyz` | 否则只能看日志，无法做标准运维接入 |
+| `--request-timeout-ms`（默认 500）是否与 `THUNDER_REQUEST_TIMEOUT_MS` 叠套 | 扫描超时返回部分结果，Home Mixer RPC 也是 500ms |
+| `--grpc-port` 默认 50052、`--http-port` 默认 8080、`--post-retention-seconds` 172800、`--kafka-num-threads` 4、`--max-concurrent-requests` 100 | 启动参数以 `thunder/args.rs` 为准 |
 
 ## 8. 日志能帮你看到什么
 
