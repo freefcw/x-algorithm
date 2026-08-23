@@ -416,7 +416,9 @@ MODEL_CFGS = {
     "home_direct_packed_nano": _make_cfg(
         {
             **_home_direct_packed_base(),
-            "learning_rate": 2e-3,
+            "learning_rate": _GB300_OVERRIDES["learning_rate"],
+            "optim_config": _GB300_OVERRIDES["optim_config"],
+            "emb_optim_config": _GB300_OVERRIDES["emb_optim_config"],
             "bs_per_device": 64,
             "ep": 1,
             "dp": 1,
@@ -638,10 +640,14 @@ for config in configs:
             mask_candidate_positive_when_negative_action_present=mparams.get(
                 "mask_candidate_positive_when_negative_action_present", False
             ),
+            train_view_through_heads=mparams.get("train_view_through_heads", False),
+            mact_in_app_loss_weight=mparams.get("mact_in_app_loss_weight", 1.0),
+            split_head_training_by_source=mparams.get("split_head_training_by_source", False),
             condition_search_relevance_on_prompt=mparams.get(
                 "condition_search_relevance_on_prompt", False
             ),
             metric_group=mparams.get("metric_group", "default"),
+            metric_mask_keys=mparams.get("metric_mask_keys"),
             continuous_metrics_mae_mean=mparams.get("continuous_metrics_mae_mean", False),
             emb_table_width=mparams["emb_table_width"],
             history_seq_len=mparams["history_seq_len"],

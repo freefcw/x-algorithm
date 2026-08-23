@@ -22,6 +22,7 @@ from serde import serde
 from serde.json import from_dict, from_json, to_json
 
 from xrex import settings
+from xrex.utils.checkpoint_cloud import ORBAX_TMP_DIR_SUFFIX
 from xrex.utils.launch_env import CHECKPOINT_DIR, XAI_USER
 
 logger = logging.getLogger(__name__)
@@ -238,9 +239,38 @@ def guess_checkpoint_format(path):
         return "orbax"
     if (path / "ckpt-0" / "tensor00000_000").exists():
         return "pickle"
-    if any(path.glob("orbax-ckpt*")):
+    if any(ORBAX_TMP_DIR_SUFFIX not in p.name for p in path.glob("orbax-ckpt*")):
         return "orbax"
     raise ValueError(f"Could not determine format of checkpoint at {path}")
+
+
+def _has_committed_payload(checkpoint_path: Path) -> bool:
+    if (checkpoint_path / "ckpt-0" / "tensor00000_000").exists():
+        return True
+    final_names = set()
+    tmp_names = []
+    for entry in checkpoint_path.glob("orbax-ckpt*"):
+        if ORBAX_TMP_DIR_SUFFIX in entry.name:
+            tmp_names.append(entry.name)
+        else:
+            final_names.add(entry.name)
+    if not final_names:
+        return False
+    return all(name.split(ORBAX_TMP_DIR_SUFFIX, 1)[0] in final_names for name in tmp_names)
+
+
+def _is_loadable_checkpoint(checkpoint_path: Path) -> bool:
+    if not (checkpoint_path / COMPLETED_FILENAME).exists():
+        return False
+    if _has_committed_payload(checkpoint_path):
+        return True
+    logger.warning(
+        "Ignoring checkpoint at %s: it has a %r marker but its Orbax data was never"
+        " committed (crash between the marker write and the tmp-dir rename?)",
+        checkpoint_path,
+        COMPLETED_FILENAME,
+    )
+    return False
 
 
 class MetadataProvider(ABC):
@@ -290,13 +320,13 @@ def _search_for_latest_path_manual(search_dir: Path):
     if not m1:
         return None
     if m2 := PATH2_RE.search(str(search_dir)):
-        if (search_dir / COMPLETED_FILENAME).exists():
+        if _is_loadable_checkpoint(search_dir):
             return m2["run_id"], search_dir, int(m1["samples"])
         return None
 
     candidates: list[tuple[int, str, Path]] = []
     for candidate, m2 in _matching_subdirs(search_dir, PATH2_RE):
-        if (candidate / COMPLETED_FILENAME).exists():
+        if _is_loadable_checkpoint(candidate):
             candidates.append((int(m1["samples"]), m2["run_id"], candidate))
 
     if candidates:
@@ -315,14 +345,14 @@ def _search_for_latest_path(search_dir: Path) -> Optional[tuple[str, Path, int]]
         path = (search_dir / "latest").resolve()
         m2 = PATH2_RE.match(path.name)
         m1 = PATH1_RE.match(path.parent.name)
-        if m1 and m2 and (path / COMPLETED_FILENAME).exists():
+        if m1 and m2 and _is_loadable_checkpoint(path):
             logger.info("Found via symlink %s", path)
             return m2["run_id"], path, int(m1["samples"])
 
     candidates: list[tuple[int, str, Path]] = []
     for path1, m1 in _matching_subdirs(search_dir, PATH1_RE):
         for candidate, m2 in _matching_subdirs(path1, PATH2_RE):
-            if (candidate / COMPLETED_FILENAME).exists():
+            if _is_loadable_checkpoint(candidate):
                 candidates.append((int(m1["samples"]), m2["run_id"], candidate))
 
     if candidates:

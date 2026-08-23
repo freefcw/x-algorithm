@@ -123,6 +123,7 @@ def _ranking_aggregated_kafka(mparams, hash_table, use_post_sid, sid_num_levels,
         sid_num_levels=sid_num_levels,
         compute_post_unexplored_label=mparams.get("compute_post_unexplored_label", False),
         enable_stale_post=mparams.get("enable_stale_post", False),
+        exclude_required_columns=mparams.get("exclude_required_columns", ""),
     )
 
 
@@ -148,6 +149,7 @@ def _ranking_rust_kafka(mparams, hash_table, use_post_sid, sid_num_levels, confi
         sid_num_levels=sid_num_levels,
         compute_post_unexplored_label=mparams.get("compute_post_unexplored_label", False),
         enable_stale_post=mparams.get("enable_stale_post", False),
+        exclude_required_columns=mparams.get("exclude_required_columns", ""),
     )
 
 

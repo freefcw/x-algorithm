@@ -254,8 +254,8 @@ class RetrievalDataset(Enum):
     )
     EVERGREEN = (
         5,
-        _idx("post_sid_v5_256x6_snapshots/evergreen_video_1825day.parquet"),
-        _idx("post_sid_v5_256x6_snapshots_backup/evergreen_video_1825day.parquet"),
+        _idx("post_sid_v5_256x6_snapshots/video_4to14day.parquet"),
+        _idx("post_sid_v5_256x6_snapshots_backup/video_4to14day.parquet"),
     )
     IMMERSIVENSFW = (
         6,

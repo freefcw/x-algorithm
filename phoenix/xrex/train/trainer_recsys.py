@@ -603,6 +603,8 @@ class RecsysTrainer(Trainer):
                     dummy,
                     dummy,
                     enable_platform_metrics=self.model_config.enable_platform_metrics,
+                    split_head_training_by_source=self.model_config.split_head_training_by_source,
+                    metric_mask_keys=self.model_config.metric_mask_keys,
                 ).keys()
             )
             rce_ema = {
@@ -2332,6 +2334,8 @@ class RecsysTrainer(Trainer):
                     dummy,
                     dummy,
                     enable_platform_metrics=self.model_config.enable_platform_metrics,
+                    split_head_training_by_source=self.model_config.split_head_training_by_source,
+                    metric_mask_keys=self.model_config.metric_mask_keys,
                 ).keys()
             )
             loaded_rce = self.state.rce_ema
@@ -3395,35 +3399,54 @@ class RecsysTrainer(Trainer):
             )
         else:
             combined_hashes_shard = author_hashes_shard
-        combined_hashes_jax = jax.make_array_from_process_local_data(
-            self.data_sharding, np.asarray(combined_hashes_shard)
-        )
-        post_author_embeddings = self._lookup(self.state.emb_table, combined_hashes_jax)
-
         post_sids_raw_shard = post_sids_raw[start_idx:end_idx]
         if _use_post_sid:
             post_sids_u16_shard = (post_sids_raw_shard + 1).astype(np.uint16)
         else:
             post_sids_u16_shard = np.zeros_like(post_sids_raw_shard, dtype=np.uint16)
-        post_sids_jax = jax.make_array_from_process_local_data(
-            self.data_sharding, post_sids_u16_shard
-        )
-        post_hashes_jax = jax.make_array_from_process_local_data(
-            self.data_sharding, np.asarray(post_hashes_shard)
-        )
 
         rng, _new_rng = jax.random.split(self.state.rng)
 
+        combined_hashes_np = np.asarray(combined_hashes_shard)
+        post_hashes_np = np.asarray(post_hashes_shard)
+        _shard_rows = combined_hashes_np.shape[0]
+        if total_samples % self.data_world_size == 0:
+            _chunk_rows = min(_shard_rows, 65536)
+        else:
+            _chunk_rows = _shard_rows
+
+        def _forward_chunked(head_index: int) -> jax.Array:
+            outs: list[np.ndarray] = []
+            for _start in range(0, _shard_rows, _chunk_rows):
+                _sl = slice(_start, min(_start + _chunk_rows, _shard_rows))
+                _hashes_jax = jax.make_array_from_process_local_data(
+                    self.data_sharding, combined_hashes_np[_sl]
+                )
+                _pae = self._lookup(self.state.emb_table, _hashes_jax)
+                _sids_jax = jax.make_array_from_process_local_data(
+                    self.data_sharding, post_sids_u16_shard[_sl]
+                )
+                _ph_jax = jax.make_array_from_process_local_data(
+                    self.data_sharding, post_hashes_np[_sl]
+                )
+                _out = self.candidate_tower_forward_jit(
+                    self.state.params,
+                    rng,
+                    _pae.x,
+                    _sids_jax,
+                    _ph_jax,
+                    head_index,
+                )
+                _local_shards = sorted(_out.addressable_shards, key=lambda s: s.index[0].start or 0)
+                outs.append(np.concatenate([np.asarray(s.data) for s in _local_shards], axis=0))
+                del _out, _pae
+            return jax.make_array_from_process_local_data(
+                self.data_sharding, np.concatenate(outs, axis=0)
+            )
+
         head_dataset_mapping = getattr(self.model_config, "head_dataset_mapping", None)
         num_heads = self.model_config.candidate_tower_config.num_candidate_heads
-        candidate_embeddings = self.candidate_tower_forward_jit(
-            self.state.params,
-            rng,
-            post_author_embeddings.x,
-            post_sids_jax,
-            post_hashes_jax,
-            0,
-        )
+        candidate_embeddings = _forward_chunked(0)
         if head_dataset_mapping is not None and num_heads > 1:
             dataset_to_head: dict[int, int] = {}
             for ds_name, head_idx in head_dataset_mapping.items():
@@ -3437,26 +3460,10 @@ class RecsysTrainer(Trainer):
                 head_indices_shard,
             )
             for h in range(1, num_heads):
-                emb_h = self.candidate_tower_forward_jit(
-                    self.state.params,
-                    rng,
-                    post_author_embeddings.x,
-                    post_sids_jax,
-                    post_hashes_jax,
-                    h,
-                )
+                emb_h = _forward_chunked(h)
                 mask_h = post_head_jax == h
                 candidate_embeddings = jnp.where(mask_h, emb_h, candidate_embeddings)
                 del emb_h
-        else:
-            candidate_embeddings = self.candidate_tower_forward_jit(
-                self.state.params,
-                rng,
-                post_author_embeddings.x,
-                post_sids_jax,
-                post_hashes_jax,
-                0,
-            )
 
         global_post_ids = multihost_utils.host_local_array_to_global_array(
             self.int64_to_two_int32(post_ids), self.mesh, P(None)

@@ -759,7 +759,8 @@ def _unify_record_batch_schemas(
                         raise
                 new_columns.append(col)
             else:
-                logger.warning(f"Column {name} not found in batch")
+                if name in required_columns:
+                    logger.warning(f"Column {name} not found in batch")
                 new_columns.append(pa.nulls(num_rows, type=target_type))
         result.append(pa.RecordBatch.from_arrays(new_columns, names=col_names))
 
@@ -866,17 +867,23 @@ class PhoenixKafkaDataset(PhoenixDataset):
 
     compute_post_unexplored_label: bool = False
 
+    exclude_required_columns: str = ""
+
     def kafka_to_training_batch(
         self, batch: list[pa.RecordBatch], batch_size: int, shard_index: int = 0
     ) -> RecsysFeaturesBatch:
         del batch_size
         start_time = time.time()
 
+        required_columns: list[str] = list(REQUIRED_COLUMNS)
+        if self.exclude_required_columns:
+            excluded = {c.strip() for c in self.exclude_required_columns.split(",") if c.strip()}
+            required_columns = [c for c in required_columns if c not in excluded]
+
         if not self._logged_schema and batch:
             first_rb = batch[0]
             available_cols = first_rb.schema.names
-            expected_cols = REQUIRED_COLUMNS
-            missing_cols = [col for col in expected_cols if col not in available_cols]
+            missing_cols = [col for col in required_columns if col not in available_cols]
             if missing_cols:
                 rank_logger.error(
                     f"Schema mismatch! Missing required columns: {missing_cols}. "
@@ -886,7 +893,6 @@ class PhoenixKafkaDataset(PhoenixDataset):
                 rank_logger.info(f"Schema validated. Available columns: {available_cols}")
             self._logged_schema = True
 
-        required_columns: list[str] = list(REQUIRED_COLUMNS)
         if self.multimodal_embedding_type is not None:
             embedding_col_name, _ = EMBEDDING_CONFIG[self.multimodal_embedding_type]
             if batch and embedding_col_name in batch[0].schema.names:

@@ -213,6 +213,7 @@ class PostSeq(TypedDict):
     continuous_actions: npt.NDArray[np.float32]
     promoted_ids: npt.NDArray[np.int64] | None
     line_item_objective: npt.NDArray[np.int16] | None
+    conversion_keep_mask: NotRequired[npt.NDArray[np.bool_] | None]
     safety_label_mask: npt.NDArray[np.int64] | None
     embedding: npt.NDArray[np.float32] | jax.Array | None
     search_query_embeddings: npt.NDArray[np.float32] | None
@@ -306,6 +307,7 @@ class RecsysFeaturesBatch(TypedDict):
     user_installed_apps_multihot: npt.NDArray[np.bool_]
     num_positive_candidates: npt.NDArray[np.int32] | None
     sample_weights: NotRequired[npt.NDArray[np.float32] | None]
+    sample_source: NotRequired[npt.NDArray[np.bool_] | None]
     packing_layout: NotRequired[SequencePackedLayout | None]
 
 
@@ -407,6 +409,14 @@ def from_record_batch(
     else:
         seq_len = actions.shape[1]
         client_app_id = np.zeros((batch_size, seq_len), dtype=np.int32)
+    if "conversionKeepMask" in record_batch.schema.names:
+        conversion_keep = _col(record_batch, "conversionKeepMask", batch_size, np.bool_)
+        null_rows = ~record_batch.column("conversionKeepMask").is_valid().to_numpy(
+            zero_copy_only=False
+        )
+        conversion_keep[null_rows] = True
+    else:
+        conversion_keep = None
 
     post_creation_ts_sec = (((tweet_ids >> 22) + TWITTER_EPOCH_MS) // 1000).astype(np.int32)
     post_creation_ts_sec = np.where(tweet_ids == 0, 0, post_creation_ts_sec)
@@ -571,6 +581,7 @@ def from_record_batch(
     candidate_impr_ts = np.zeros(cand_shape_2d, dtype=np.int32)
     candidate_product_surface = np.zeros(cand_shape_2d, dtype=np.int32)
     candidate_client_app_id = np.zeros(cand_shape_2d, dtype=np.int32)
+    candidate_conversion_keep = np.ones(cand_shape_2d, dtype=np.bool_)
     candidate_post_creation_ts_sec = np.zeros(cand_shape_2d, dtype=np.int32)
     candidate_actions = np.zeros(cand_shape_3d, dtype=actions.dtype)
     candidate_continuous_actions = np.zeros(
@@ -730,6 +741,8 @@ def from_record_batch(
             candidate_impr_ts[*cslice] = ts_values.astype(np.int32)
             candidate_product_surface[*cslice] = product_surface[*dslice]
             candidate_client_app_id[*cslice] = client_app_id[*dslice]
+            if conversion_keep is not None:
+                candidate_conversion_keep[*cslice] = conversion_keep[*dslice]
             candidate_post_creation_ts_sec[*cslice] = post_creation_ts_sec[*dslice]
             candidate_actions[*cslice] = actions[*dslice, :]
             candidate_continuous_actions[*cslice] = continuous_actions[*dslice, :]
@@ -909,6 +922,7 @@ def from_record_batch(
         product_surface=candidate_product_surface,
         client_app_id=candidate_client_app_id,
         post_ids=candidate_post_ids if include_candidate_post_ids else None,
+        conversion_keep_mask=candidate_conversion_keep,
         continuous_actions=candidate_continuous_actions,
         promoted_ids=candidate_promoted_ids,
         line_item_objective=candidate_line_item_objective,
@@ -966,6 +980,15 @@ def from_record_batch(
             if "sampleWeight" in record_batch.schema.names
             else np.ones((batch_size, 1), dtype=np.float32)
         ),
+        sample_source=(
+            record_batch.column("is_delayed_feedback")
+            .fill_null(False)
+            .to_numpy(zero_copy_only=False)
+            .astype(np.bool_)
+            .reshape(-1, 1)
+            if "is_delayed_feedback" in record_batch.schema.names
+            else np.zeros((batch_size, 1), dtype=np.bool_)
+        ),
     )
     batch["num_positive_candidates"] = (
         num_positive_per_user.reshape(-1, 1)
@@ -994,6 +1017,7 @@ def apply_negative_sampling(
     post_ids = post_seq["post_ids"]
     product_surface = post_seq["product_surface"]
     client_app_id = post_seq["client_app_id"]
+    conversion_keep = post_seq.get("conversion_keep_mask")
     post_creation_ts_sec = post_seq["post_creation_ts_sec"]
     continuous_actions = post_seq["continuous_actions"]
     promoted_ids = post_seq["promoted_ids"]
@@ -1043,6 +1067,7 @@ def apply_negative_sampling(
     )
     new_product_surface = np.zeros((batch_size, total_candidate_slots), dtype=product_surface.dtype)
     new_client_app_id = np.zeros((batch_size, total_candidate_slots), dtype=client_app_id.dtype)
+    new_conversion_keep = np.ones((batch_size, total_candidate_slots), dtype=np.bool_)
     new_post_creation_ts_sec = np.zeros(
         (batch_size, total_candidate_slots), dtype=post_creation_ts_sec.dtype
     )
@@ -1073,6 +1098,8 @@ def apply_negative_sampling(
     new_ip_hashes[:, positive_slice, :] = ip_hashes
     new_product_surface[:, positive_slice] = product_surface
     new_client_app_id[:, positive_slice] = client_app_id
+    if conversion_keep is not None:
+        new_conversion_keep[:, positive_slice] = conversion_keep
     new_post_creation_ts_sec[:, positive_slice] = post_creation_ts_sec
     if new_post_sids is not None and _post_sids is not None:
         new_post_sids[:, positive_slice, :] = _post_sids
@@ -1239,6 +1266,7 @@ def apply_negative_sampling(
         product_surface=new_product_surface,
         client_app_id=new_client_app_id,
         post_ids=new_post_ids,
+        conversion_keep_mask=new_conversion_keep,
         continuous_actions=new_continuous_actions,
         promoted_ids=new_promoted_ids,
         line_item_objective=new_line_item_objective,
@@ -1310,6 +1338,8 @@ def apply_global_negative_sampling(
         (batch_size, expanded_candidate_slots),
         dtype=client_app_id.dtype,
     )
+    _gn_conversion_keep = post_seq.get("conversion_keep_mask")
+    new_gn_conversion_keep = np.ones((batch_size, expanded_candidate_slots), dtype=np.bool_)
     new_post_creation_ts_sec = np.zeros(
         (batch_size, expanded_candidate_slots),
         dtype=post_creation_ts_sec.dtype,
@@ -1343,6 +1373,8 @@ def apply_global_negative_sampling(
     new_ip_hashes[:, original_slice, :] = ip_hashes
     new_product_surface[:, original_slice] = product_surface
     new_client_app_id[:, original_slice] = client_app_id
+    if _gn_conversion_keep is not None:
+        new_gn_conversion_keep[:, original_slice] = _gn_conversion_keep
     new_post_creation_ts_sec[:, original_slice] = post_creation_ts_sec
     new_continuous_actions[:, original_slice, :] = continuous_actions
     if categorical_features.shape[2] > 0:
@@ -1466,6 +1498,7 @@ def apply_global_negative_sampling(
         product_surface=new_product_surface,
         client_app_id=new_client_app_id,
         post_ids=new_post_ids,
+        conversion_keep_mask=new_gn_conversion_keep,
         continuous_actions=new_continuous_actions,
         promoted_ids=new_promoted_ids,
         line_item_objective=new_line_item_objective,

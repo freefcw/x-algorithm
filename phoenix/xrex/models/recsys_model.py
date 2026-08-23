@@ -21,8 +21,11 @@ from xai_proto import recsys_pb2
 from xrex.data.recsys.constants import (
     CLICK_ACTION_INDEX,
     CLICK_CONDITIONED_ACTION_INDICES,
+    MACT_IN_APP_LOSS_ACTION_INDICES,
     NEGATIVE_FEEDBACK_HEAD_INDICES,
     SEARCH_RELEVANCE_ACTION_INDICES,
+    SOURCE_SPLIT_CONVERSION_HEAD_INDICES,
+    VIEW_THROUGH_ACTION_INDICES,
     action_type_map,
     engagement_to_ids,
 )
@@ -525,6 +528,8 @@ class RecsysAggregatedModelConfig(Config):
 
     metric_group: str = "default"
 
+    metric_mask_keys: list[str] | None = None
+
     multimodal_embedding_type: EmbeddingType | None = None
 
     search_query_embedding_dim: int = 0
@@ -549,6 +554,12 @@ class RecsysAggregatedModelConfig(Config):
     mask_neg_feedback_on_negatives: bool = True
 
     condition_conversion_on_click: bool = False
+
+    train_view_through_heads: bool = False
+
+    split_head_training_by_source: bool = False
+
+    mact_in_app_loss_weight: float = 1.0
 
     condition_search_relevance_on_prompt: bool = False
 
@@ -1262,10 +1273,13 @@ def build_metric_masks(
     line_item_objective: jax.Array | None = None,
     no_history_mask: jax.Array | None = None,
     dpa_product_key: jax.Array | None = None,
+    delayed_sample_mask: jax.Array | None = None,
     *,
     condition_conversion_on_click: bool = False,
     condition_search_relevance_on_prompt: bool = False,
     enable_platform_metrics: bool = False,
+    split_head_training_by_source: bool = False,
+    metric_mask_keys: list[str] | None = None,
 ) -> dict[str, jax.Array]:
     promoted_mask = mask * (promoted_ids != 0) if promoted_ids is not None else jnp.zeros_like(mask)
 
@@ -1354,6 +1368,20 @@ def build_metric_masks(
         masks["clicked"] = mask * click_mask
         masks["non_negative_clicked"] = mask * (1 - negative_sample_mask) * click_mask
 
+    if split_head_training_by_source:
+        assert condition_conversion_on_click, (
+            "split_head_training_by_source metric slices require condition_conversion_on_click"
+        )
+        delayed = (
+            jnp.zeros_like(mask)
+            if delayed_sample_mask is None
+            else delayed_sample_mask.astype(mask.dtype)
+        )
+        click_mask = raw_targets[:, :, CLICK_ACTION_INDEX].astype(mask.dtype)
+        masks["fresh"] = mask * (1 - delayed)
+        masks["delayed_clicked"] = mask * delayed * click_mask
+        masks["delayed_non_clicked"] = mask * delayed * (1 - click_mask)
+
     if condition_search_relevance_on_prompt:
         prompt_mask = jnp.any(
             raw_targets[:, :, jnp.array(SEARCH_RELEVANCE_ACTION_INDICES)] == 1, axis=-1
@@ -1366,6 +1394,15 @@ def build_metric_masks(
         masks["android"] = android_mask
         masks["ios_non_negative"] = ios_mask * (1 - negative_sample_mask)
         masks["android_non_negative"] = android_mask * (1 - negative_sample_mask)
+
+    if metric_mask_keys:
+        keep = set(metric_mask_keys)
+        unknown = keep - masks.keys()
+        if unknown:
+            raise ValueError(
+                f"metric_mask_keys entries {sorted(unknown)} not in available masks {sorted(masks)}"
+            )
+        masks = {k: v for k, v in masks.items() if k in keep}
 
     return masks
 
@@ -1555,6 +1592,7 @@ class RecsysAggregatedModel(hk.Module):
         line_item_objective: jax.Array | None = None,
         no_history_mask: jax.Array | None = None,
         dpa_product_key: jax.Array | None = None,
+        delayed_sample_mask: jax.Array | None = None,
     ) -> dict[str, jax.Array]:
         return build_metric_masks(
             mask,
@@ -1567,9 +1605,12 @@ class RecsysAggregatedModel(hk.Module):
             line_item_objective,
             no_history_mask,
             dpa_product_key,
+            delayed_sample_mask,
             condition_conversion_on_click=self.config.condition_conversion_on_click,
             condition_search_relevance_on_prompt=self.config.condition_search_relevance_on_prompt,
             enable_platform_metrics=self.config.enable_platform_metrics,
+            split_head_training_by_source=self.config.split_head_training_by_source,
+            metric_mask_keys=self.config.metric_mask_keys,
         )
 
     def compute_recsys_metrics(
@@ -1585,6 +1626,7 @@ class RecsysAggregatedModel(hk.Module):
         line_item_objective: jax.Array | None = None,
         no_history_mask: jax.Array | None = None,
         dpa_product_key: jax.Array | None = None,
+        delayed_sample_mask: jax.Array | None = None,
         stats: dict | None = None,
         rce_ema: dict[str, jax.Array] | None = None,
         rce_alpha: jax.Array | None = None,
@@ -1606,6 +1648,7 @@ class RecsysAggregatedModel(hk.Module):
             line_item_objective,
             no_history_mask,
             dpa_product_key,
+            delayed_sample_mask,
         )
 
         return self._compute_metrics_after_masks(
@@ -2850,6 +2893,23 @@ class RecsysAggregatedModel(hk.Module):
             else:
                 raw_weights = jnp.broadcast_to(sample_weights, targets.shape[:2])
 
+        delayed_mask: jax.Array | None = None
+        sample_source = batch.get("sample_source")
+        if sample_source is not None:
+            sample_source = cast_jax(sample_source).astype(jnp.float32)
+            if self.config.use_seqpack:
+                delayed_mask = jnp.repeat(
+                    sample_source.squeeze(-1), packed_candidate_seq_len, axis=1
+                )
+            else:
+                delayed_mask = sample_source
+        if self.config.split_head_training_by_source:
+            assert delayed_mask is not None, (
+                "split_head_training_by_source=True requires the sample_source batch "
+                "field (from the is_delayed_feedback column); training unsplit "
+                "silently would defeat the flag"
+            )
+
         if self.config.log_q_correction:
             tweet_counts = get_candidate_tweet_counts(
                 batch, self.config.log_q_num_bins, negative_sample_mask
@@ -2994,6 +3054,11 @@ class RecsysAggregatedModel(hk.Module):
                 )
 
             target_padding_mask = padding_mask[:, candidate_start_offset:]
+            conversion_keep_mask = batch["candidate_seq"].get("conversion_keep_mask")
+            if conversion_keep_mask is not None:
+                keep = cast_jax(conversion_keep_mask)
+                pad_len = target_padding_mask.shape[1] - keep.shape[1]
+                target_padding_mask = target_padding_mask & jnp.pad(keep, ((0, 0), (0, pad_len)))
 
             history_padding = padding_mask[
                 :,
@@ -3060,6 +3125,21 @@ class RecsysAggregatedModel(hk.Module):
             conv_zero_mask = no_click[:, :, None] * conv_head_mask
             loss_mask = loss_mask * (1 - conv_zero_mask)
 
+        vt_head_mask = jnp.zeros(num_actions).at[jnp.array(VIEW_THROUGH_ACTION_INDICES)].set(1.0)
+        if self.config.train_view_through_heads:
+            vt_zero = targets[:, :, CLICK_ACTION_INDEX][:, :, None] * vt_head_mask
+        else:
+            vt_zero = vt_head_mask
+        loss_mask = loss_mask * (1 - vt_zero)
+
+        if self.config.mact_in_app_loss_weight != 1.0:
+            mact_w = (
+                jnp.ones(num_actions)
+                .at[jnp.array(MACT_IN_APP_LOSS_ACTION_INDICES)]
+                .set(self.config.mact_in_app_loss_weight)
+            )
+            loss_mask = loss_mask * mact_w
+
         if self.config.condition_search_relevance_on_prompt:
             prompt_shown = jnp.any(targets[:, :, SEARCH_RELEVANCE_ACTION_INDICES], axis=-1)
             no_prompt = 1 - prompt_shown
@@ -3068,6 +3148,15 @@ class RecsysAggregatedModel(hk.Module):
             )
             search_zero_mask = no_prompt[:, :, None] * search_head_mask
             loss_mask = loss_mask * (1 - search_zero_mask)
+
+        if self.config.split_head_training_by_source and delayed_mask is not None:
+            conv_head_split_mask = (
+                jnp.zeros(num_actions).at[jnp.array(SOURCE_SPLIT_CONVERSION_HEAD_INDICES)].set(1.0)
+            )
+            eng_head_mask = 1.0 - conv_head_split_mask
+            is_delayed = delayed_mask[:, :, None]
+            loss_mask = loss_mask * (1 - is_delayed * eng_head_mask)
+            loss_mask = loss_mask * (1 - (1 - is_delayed) * conv_head_split_mask)
 
         safety_stats = safety_filter_stats(
             candidate_safety_mask,
@@ -3103,6 +3192,7 @@ class RecsysAggregatedModel(hk.Module):
             1.0 if self.config.safety_filter_mode != "off" else 0.0
         )
         stats["origin-loss"] = loss
+        stats["mact-in-app-loss-weight"] = jnp.float32(self.config.mact_in_app_loss_weight)
 
         stats = self.compute_recsys_metrics(
             raw_targets=targets,
@@ -3116,6 +3206,7 @@ class RecsysAggregatedModel(hk.Module):
             line_item_objective=line_item_objective,
             no_history_mask=no_history_mask,
             dpa_product_key=dpa_product_key[..., 0] if dpa_product_key is not None else None,
+            delayed_sample_mask=delayed_mask,
             stats=stats,
             rce_ema=rce_ema,
             rce_alpha=rce_alpha,
@@ -3151,14 +3242,21 @@ class RecsysAggregatedModel(hk.Module):
                 new_user_mask=new_user_mask,
                 no_history_mask=no_history_mask,
                 dpa_product_key=dpa_product_key[..., 0] if dpa_product_key is not None else None,
+                delayed_sample_mask=delayed_mask,
             )
+
+            continuous_base_mask = target_padding_mask
+            if self.config.split_head_training_by_source and delayed_mask is not None:
+                continuous_base_mask = continuous_base_mask * (
+                    1 - delayed_mask.astype(continuous_base_mask.dtype)
+                )
 
             for loss_config in self.config.continuous_action_losses:
                 if loss_config.loss_weight > 0 and loss_config.action_index < data_num_continuous:
                     gt_raw = candidate_continuous_actions[:, :, loss_config.action_index]
                     pred_raw = candidate_continuous_preds[:, :, loss_config.action_index]
 
-                    head_valid_mask = target_padding_mask
+                    head_valid_mask = continuous_base_mask
                     if loss_config.product_surfaces or loss_config.exclude_product_surfaces:
                         head_surface_mask = _get_surface_mask(loss_config, product_surface)
                         head_valid_mask = head_valid_mask * head_surface_mask.astype(

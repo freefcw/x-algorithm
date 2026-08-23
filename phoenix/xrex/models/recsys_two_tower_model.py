@@ -1582,8 +1582,6 @@ class RecsysTwoTowerModelConfig(Config):
 
     ads_only_candidates: bool = False
 
-    num_continuous_actions: int = 0
-
     multimodal_embedding_type: EmbeddingType | None = None
 
     user_features: UserFeaturesConfig = UserFeaturesConfig()

@@ -376,6 +376,7 @@ def run(
     runner.hotswap_download_max_concurrent = args.hotswap_download_max_concurrent
     runner.hotswap_stage_rate_limit_gbps = args.hotswap_stage_rate_limit_gib_per_s
     runner.hotswap_stage_chunk_mib = args.hotswap_stage_chunk_mib
+    runner.hotswap_malloc_trim = args.hotswap_malloc_trim
     if args.worker_id is not None:
         runner.worker_id = args.worker_id
     if args.num_workers is not None:
@@ -714,6 +715,14 @@ if __name__ == "__main__":
         help="Cap the live-swap host->GPU staging bandwidth in GiB/s so staging "
         "does not starve per-request embedding H2D. None = unlimited / single "
         "device_put per leaf (default). Only used by the live swap path.",
+    )
+    parser.add_argument(
+        "--hotswap_malloc_trim",
+        type=str2bool,
+        default=True,
+        help="glibc malloc_trim(0) on the coordinator thread after each applied "
+        "hotswap; returns the cycle's freed pages (glibc slots otherwise "
+        "ratchet ~196 MiB/cycle). No-op under jemalloc.",
     )
     parser.add_argument(
         "--hotswap_stage_chunk_mib",
