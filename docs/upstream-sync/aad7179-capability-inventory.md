@@ -58,9 +58,9 @@
 | 编号 | 能力 | 分类 | 处置 |
 |---|---|---|---|
 | H1 | `muted_keyword_filter` → `viewer_muted_keyword_filter` 改名（结构体同步改名） | **U0**（命名对齐） | 采用：本地实现语义已等价，仅做文件/类型改名与装配点更新 |
-| H2 | `FollowingViewerMutedKeywordFilter`（追加 `ancestor_texts` 匹配） | **U3** | 依附会话间隔线路（`ancestor_texts` 字段 + `conversation_gap_ancestor_hydrator` 本地均不存在）；数据源就位前退化为 H1 |
+| H2 | `FollowingViewerMutedKeywordFilter`（追加 `ancestor_texts` 匹配） | **U3** | 阻塞点不是数据源：本地 TES core-data 通道（含文本）与 `ancestors` 字段均已有生产者；真正阻塞是**本地无 Following 链路**（`candidate_pipeline/` 仅 for_you/phoenix 两条），过滤器无装配点，且按上游语义 For You 的 viewer 过滤器本就不匹配祖先文本。重入条件：Following 链路落地 |
 | H3 | `QuotedPostTextHydrator`（TES 拉取引用帖文本） | **已覆盖** | 本地 `CoreDataCandidateHydrator` 已从 TES core-data 填充 `quoted_tweet_text`（测试锁定）；不重复引入 |
-| H4 | `conversation_gap_ancestor_hydrator` 改进（`ancestor_texts` 填充 + 扩展失败时回落原祖先列表） | **U3** | 本地无该 hydrator（会话间隔线路整体未引入）；失败回落语义随线路重入一并采用 |
+| H4 | `conversation_gap_ancestor_hydrator` 改进（`ancestor_texts` 填充 + 扩展失败时回落原祖先列表） | **U3** | 本地无该 hydrator（同 H2：装配点在 Following 链路）；失败回落语义随线路重入一并采用 |
 | H5 | `candidate.rs`：`ancestor_texts` 字段 + `quoted_tweet_text` 改 `Option<String>` | **U3** | 依附 H2/H4 线路；Option 化有本地 ripple（filters/hydrators/query_builder），随线路一起做 |
 
 ### G. grox（U3，P6-B deferred）
