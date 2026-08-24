@@ -18,10 +18,11 @@
 
 ## 我想继续建设生产链路
 
-1. [getting-started/06-从演示到真实系统](./getting-started/06-从演示到真实系统.md)：缺口清单和推进顺序（先读这个）。
-2. [training/](./training/)：训练数据规格与离线链路的目标设计。
-3. [operations/](./operations/)：数据持续更新、索引切版、发布运维建议。
-4. [research/](./research/)：双塔、冷启动等算法背景调研。
+1. [推荐服务外部依赖梳理与 MVP 建设建议](./recommendation-service-mvp-assessment.md)：从业务角度判断首版保留、延后和不复制的能力，适合立项与范围决策时先读。
+2. [getting-started/06-从演示到真实系统](./getting-started/06-从演示到真实系统.md)：当前演示链路的真实数据缺口和推进顺序。
+3. [training/](./training/)：训练数据规格与离线链路的目标设计。
+4. [operations/](./operations/)：数据持续更新、索引切版、发布运维建议。
+5. [research/](./research/)：双塔、冷启动等算法背景调研。
 
 ## 文档状态标签
 
@@ -38,6 +39,7 @@
 | 目录 | 状态 | 说明 |
 | --- | --- | --- |
 | [getting-started/](./getting-started/) | `current-code` | 从零跑通主线（推荐入口）。 |
+| [recommendation-service-mvp-assessment.md](./recommendation-service-mvp-assessment.md) | `design` | 面向业务决策的外部依赖评估、MVP 边界和三阶段演进建议。 |
 | [home-mixer/](./home-mixer/) | `current-code` | 首页 Feed 编排服务、请求生命周期、组件和字段字典。 |
 | [candidate-pipeline/](./candidate-pipeline/) | `current-code` | 通用候选流框架及 `PhoenixCandidatePipeline` 当前装配。 |
 | [thunder/](./thunder/) | `current-code` | Kafka 摄入、内存索引、gRPC 查询和运维缺口。 |
