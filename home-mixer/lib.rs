@@ -7,6 +7,7 @@
 //   4. 返回最终排序后的 Feed 流
 
 pub mod ads;
+pub mod business_feed;
 pub mod candidate_hydrators;
 pub mod candidate_pipeline;
 pub mod clients;

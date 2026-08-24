@@ -1,8 +1,12 @@
+use crate::business_feed::RuleBasedBusinessFeedServer;
 use crate::clients::gizmoduck_client::{
     DemoGizmoduckClient, DisabledGizmoduckClient, GizmoduckClient,
 };
 #[cfg(test)]
 use crate::clients::gizmoduck_client::{ViewerData, ViewerEligibility};
+use crate::clients::mrpyq_recommendation_data_client::{
+    client_from_config, DisabledMrpyqRecommendationDataClient, MrpyqRecommendationDataConfig,
+};
 #[cfg(test)]
 use crate::feature_policy::HomeMixerFeatures;
 use crate::for_you_server::ForYouFeedServer;
@@ -25,6 +29,7 @@ pub use crate::runtime_config::{HomeMixerConfig, HomeMixerMode};
 pub struct HomeMixerServer {
     scored_posts_server: Arc<ScoredPostsServer>,
     for_you_feed_server: Arc<ForYouFeedServer>,
+    business_feed_server: Arc<RuleBasedBusinessFeedServer>,
 }
 
 impl HomeMixerServer {
@@ -51,7 +56,12 @@ impl HomeMixerServer {
         let scored_posts_server = Arc::new(
             ScoredPostsServer::new(query_builder, pipeline).with_debug_access(debug_access),
         );
-        Ok(Self::with_scored_posts_server(scored_posts_server))
+        let mrpyq_config = MrpyqRecommendationDataConfig::from_env()?;
+        let business_feed_server = Arc::new(RuleBasedBusinessFeedServer::new(client_from_config(
+            mrpyq_config,
+        )?));
+        Ok(Self::with_scored_posts_server(scored_posts_server)
+            .with_business_feed_server(business_feed_server))
     }
 
     pub async fn new() -> anyhow::Result<Self> {
@@ -67,7 +77,18 @@ impl HomeMixerServer {
         HomeMixerServer {
             scored_posts_server,
             for_you_feed_server,
+            business_feed_server: Arc::new(RuleBasedBusinessFeedServer::new(Arc::new(
+                DisabledMrpyqRecommendationDataClient,
+            ))),
         }
+    }
+
+    pub fn with_business_feed_server(
+        mut self,
+        business_feed_server: Arc<RuleBasedBusinessFeedServer>,
+    ) -> Self {
+        self.business_feed_server = business_feed_server;
+        self
     }
 
     pub fn register(self: Arc<Self>, routes: &mut RoutesBuilder) {
@@ -85,6 +106,17 @@ impl HomeMixerServer {
         routes.add_service(
             pb::for_you_feed_service_server::ForYouFeedServiceServer::from_arc(Arc::clone(
                 &self.for_you_feed_server,
+            ))
+            .max_decoding_message_size(crate::params::MAX_GRPC_MESSAGE_SIZE)
+            .max_encoding_message_size(crate::params::MAX_GRPC_MESSAGE_SIZE)
+            .accept_compressed(CompressionEncoding::Gzip)
+            .accept_compressed(CompressionEncoding::Zstd)
+            .send_compressed(CompressionEncoding::Gzip)
+            .send_compressed(CompressionEncoding::Zstd),
+        );
+        routes.add_service(
+            pb::business_feed_service_server::BusinessFeedServiceServer::from_arc(Arc::clone(
+                &self.business_feed_server,
             ))
             .max_decoding_message_size(crate::params::MAX_GRPC_MESSAGE_SIZE)
             .max_encoding_message_size(crate::params::MAX_GRPC_MESSAGE_SIZE)
@@ -207,9 +239,11 @@ mod tests {
     fn application_servers_own_their_rpc_interfaces() {
         fn assert_scored<T: pb::scored_posts_service_server::ScoredPostsService>() {}
         fn assert_for_you<T: pb::for_you_feed_service_server::ForYouFeedService>() {}
+        fn assert_business<T: pb::business_feed_service_server::BusinessFeedService>() {}
 
         assert_scored::<ScoredPostsServer>();
         assert_for_you::<ForYouFeedServer>();
+        assert_business::<RuleBasedBusinessFeedServer>();
     }
 
     enum ViewerResponse {
