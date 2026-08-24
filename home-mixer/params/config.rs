@@ -50,6 +50,7 @@ pub const PHOENIX_RETRIEVAL_TIMEOUT_MS: u64 = 3_000;
 pub const PHOENIX_PREDICTION_TIMEOUT_MS: u64 = 5_000;
 pub const TOPIC_RETRIEVAL_TIMEOUT_MS: u64 = 500;
 pub const VM_RANKER_TIMEOUT_MS: u64 = 500;
+pub const MRPYQ_RECOMMENDATION_DATA_TIMEOUT_MS: u64 = 500;
 
 /// 显式话题和新用户冷启动话题的单次候选上限（本地话题适配器参数）。
 pub const TOPIC_MAX_RESULTS: usize = 100;

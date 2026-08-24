@@ -20,6 +20,7 @@
 pub mod gizmoduck_client;
 pub mod impressed_posts_client;
 pub mod impression_bloom_filter_client;
+pub mod mrpyq_recommendation_data_client;
 pub mod phoenix_prediction_client;
 pub mod phoenix_retrieval_client;
 pub mod s2s;
