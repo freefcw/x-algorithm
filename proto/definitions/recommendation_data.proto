@@ -1,0 +1,89 @@
+syntax = "proto3";
+
+package feed.service.v1;
+
+option go_package = "sencent.com/api/feed/service/v1;v1";
+
+// RecommendationDataService exposes authoritative feed-side inputs for an
+// internal recommendation pipeline. It does not aggregate Account, Relation,
+// block/not-see policy, and its eligibility result is not a final exposure or
+// safety decision. A later viewer/eligibility adapter must apply those rules.
+service RecommendationDataService {
+  rpc ListRecommendationCandidates(ListRecommendationCandidatesReq)
+      returns (ListRecommendationCandidatesReply);
+  rpc BatchGetRecommendationContents(BatchGetRecommendationContentsReq)
+      returns (BatchGetRecommendationContentsReply);
+}
+
+enum RecommendationCandidateSource {
+  RECOMMENDATION_CANDIDATE_SOURCE_UNSPECIFIED = 0;
+  RECOMMENDATION_CANDIDATE_SOURCE_NETWORK = 1;
+  RECOMMENDATION_CANDIDATE_SOURCE_FALLBACK = 2;
+}
+
+enum RecommendationIneligibleReason {
+  RECOMMENDATION_INELIGIBLE_REASON_UNSPECIFIED = 0;
+  RECOMMENDATION_INELIGIBLE_REASON_DELETED = 1;
+  RECOMMENDATION_INELIGIBLE_REASON_BUSINESS_NOT_PUBLIC = 2;
+  RECOMMENDATION_INELIGIBLE_REASON_TEXT_AUDIT_NOT_PUBLIC = 3;
+  RECOMMENDATION_INELIGIBLE_REASON_VIDEO_AUDIT_NOT_PUBLIC = 4;
+}
+
+message ListRecommendationCandidatesReq {
+  // Required for NETWORK; ignored for FALLBACK.
+  string account_id = 1;
+  RecommendationCandidateSource source = 2;
+  // Defaults to 50 and is capped at 200.
+  int32 page_size = 3;
+  // Opaque source cursor. Callers must return it unchanged.
+  string page_token = 4;
+}
+
+message RecommendationCandidate {
+  string feed_id = 1;
+  RecommendationCandidateSource source = 2;
+  int64 source_score = 3;
+}
+
+message ListRecommendationCandidatesReply {
+  repeated RecommendationCandidate candidates = 1;
+  string next_page_token = 2;
+  // NETWORK is false when its inbox has not been initialized. FALLBACK is
+  // always ready when the underlying read succeeds.
+  bool source_ready = 3;
+}
+
+message BatchGetRecommendationContentsReq {
+  // At most 200 IDs. Duplicate IDs are hydrated once in first-seen order.
+  repeated string feed_ids = 1;
+}
+
+message RecommendationContent {
+  string feed_id = 1;
+  string creator_account_id = 2;
+  string creator_member_id = 3;
+  string creator_user_id = 4;
+  int32 creator_user_no = 5;
+  int64 created_at_ms = 6;
+  string text = 7;
+  repeated string tag_ids = 8;
+  string room_id = 9;
+  repeated string section_ids = 10;
+  int32 like_count = 11;
+  int32 comment_count = 12;
+  int32 gift_value = 13;
+  bool has_image = 14;
+  bool has_video = 15;
+  // FeedVideo.duration is stored and consumed as milliseconds.
+  int32 video_duration_ms = 16;
+  // This first-stage check only covers deletion, business visibility, text
+  // audit visibility, and video audit visibility. It is not a final safety or
+  // viewer-specific eligibility decision.
+  bool recommendation_eligible = 17;
+  RecommendationIneligibleReason ineligible_reason = 18;
+}
+
+message BatchGetRecommendationContentsReply {
+  // Contents follow de-duplicated request order. Missing feeds are omitted.
+  repeated RecommendationContent contents = 1;
+}

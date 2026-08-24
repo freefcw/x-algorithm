@@ -6,6 +6,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let proto_files = &[
         proto_dir.join("in_network.proto"),
         proto_dir.join("home_mixer.proto"),
+        proto_dir.join("recommendation_data.proto"),
         proto_dir.join("recsys.proto"),
         proto_dir.join("vm_ranker.proto"),
     ];

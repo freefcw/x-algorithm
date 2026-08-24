@@ -32,6 +32,11 @@ pub mod home_mixer {
     pub const FILE_DESCRIPTOR_SET: &[u8] = tonic::include_file_descriptor_set!("proto_descriptor");
 }
 
+/// mrpyq Feed Service 推荐数据聚合协议。
+pub mod recommendation_data {
+    tonic::include_proto!("feed.service.v1");
+}
+
 /// Recsys/Phoenix 服务协议 —— 精排预测与双塔召回
 pub mod recsys {
     tonic::include_proto!("recsys");
