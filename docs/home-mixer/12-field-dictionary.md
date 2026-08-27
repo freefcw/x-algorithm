@@ -148,8 +148,8 @@
 | --- | --- | --- | --- |
 | `visibility_decision` | `VisibilityDecision` | `VFCandidateHydrator` | `VFFilter`、响应映射 |
 | `subscription_author_id` | `Option<u64>` | `SubscriptionHydrator` | `IneligibleSubscriptionFilter` |
-| `author_blocks_viewer` | `Option<bool>` | `BlockedByHydrator`（CH-09，默认不装配） | 反向屏蔽标记，过滤预留 |
-| `quoted_author_blocks_viewer` | `Option<bool>` | 预留，当前无写入方（U3） | `AuthorSocialgraphFilter` 读到 `None` 时中立 |
+| `author_blocks_viewer` | `Option<bool>` | `BlockedByHydrator`（CH-09，真实 Adapter 未接入） | 普通作者或转推原作者反向屏蔽标记；`AuthorSocialgraphFilter` 消费 |
+| `quoted_author_blocks_viewer` | `Option<bool>` | `BlockedByHydrator`（CH-09，真实 Adapter 未接入） | 引用作者反向屏蔽标记；`AuthorSocialgraphFilter` 消费，`None` 时中立 |
 | `drop_ancillary_posts` | `Option<bool>` | `VFCandidateHydrator` | `AncillaryVFFilter` |
 | `brand_safety_verdict` | `Option<BrandSafetyVerdict>` | 预留（本地无 V2 标签数据源） | 响应输出、ads 混排预留 |
 | `safety_labels` | `Vec<SafetyLabelInfo>` | 预留（当前无写入方） | 安全标签展示预留 |

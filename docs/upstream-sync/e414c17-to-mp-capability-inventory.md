@@ -227,7 +227,7 @@ P1.4/P1.5 的量化口径（2026-08-14 实测）：上游 home-mixer 共 215 个
 | `CH-01..06`, `CH-09..11`, `CH-13..14`, `CH-16` | 完成：本地合同/实现 | 按候选数据启用；VF 未知时网外拒绝、网内保留 | TES、作者资料、关系和 VF 真实服务待集成；缺失时 `production_ready` 拒绝启动 | `EV-P3` |
 | `CH-10`（字段所有权） | 完成：由 `CoreDataCandidateHydrator` 拥有 | 启用 | 公开 TES adapter 把互动数打包在 core data 内，独立 counts 组件只会重复同一批请求；上游拆分的前提是它有专用 counts API | `EV-P3` |
 | `CH-07..08` | 部分：显式安全 verdict 边界 | 关闭 | 待广告安全 Hydrator 和供应商 | `EV-P4`, Integration Backlog |
-| `CH-09`（候选级反向屏蔽） | 部分：`SocialGraphClientOps` 端口与上游同构 `BlockedByHydrator` 已迁移；`AuthorSocialgraphFilter` 已按上游消费候选级信号（未补全时中立） | 关闭（未装配）；Query 级 blocked-by 列表仍是当前生效路径 | 待真实社交图 Adapter（认证、超时、批量上限） | `EV-PORT` |
+| `CH-09`（候选级反向屏蔽） | 部分：`SocialGraphClientOps` 端口与 `BlockedByHydrator` 已迁移；当前 Hydrator 一次查询普通作者、转推原作者和引用作者，并由 `AuthorSocialgraphFilter` 消费候选级信号（未补全时中立） | 关闭（未装配）；Query 级 blocked-by 列表仍是当前生效路径 | 待真实社交图 Adapter（认证、超时、批量上限）；代码和 fake-backed 测试已完成 | `EV-PORT` |
 | `CH-12`, `CH-15`, `CH-17` | 未开始 | 关闭 | 待社交图端口或统计出口；CH-12/15 依赖 QH-15 minhash 数据合同，先于端口定义 | Integration Backlog |
 | `FLT-01..17` | 完成 | 默认或按请求条件启用 | 过滤逻辑已完成；部分输入数据随 P3-B 接入 | `EV-P3` |
 | `RANK-01..02` | 完成 | 启用 | Phoenix 生产部署仍需环境验收 | `EV-PHX`, `EV-P3`, `EV-RANK` |

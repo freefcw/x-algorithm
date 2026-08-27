@@ -65,7 +65,7 @@
 | `PreviouslySeenPostsBackupFilter` | `filters/previously_seen_posts_backup_filter.rs` | `seen_ids` 为空且带了 `impressed_post_ids` | `impressed_post_ids` | 主 seen 列表缺失时，用曝光 ID 做备份去重 |
 | `PreviouslyServedPostsFilter` | `filters/previously_served_posts_filter.rs` | `query.is_bottom_request` | `served_ids` `related_post_ids` | 下翻请求里命中已下发帖子 |
 | `ViewerMutedKeywordFilter` | `filters/viewer_muted_keyword_filter.rs` | 默认启用 | `tweet_text` `quoted_tweet_text` + `user_features.muted_keywords` | 主文或引用文命中 viewer 屏蔽关键词 |
-| `AuthorSocialgraphFilter` | `filters/author_socialgraph_filter.rs` | 默认启用 | `author_id` `blocked_user_ids` `blocked_by_user_ids` `muted_user_ids`；候选级 `author_blocks_viewer` 未装配时中立 | 作者在拉黑、被拉黑或静音列表 |
+| `AuthorSocialgraphFilter` | `filters/author_socialgraph_filter.rs` | 默认启用 | `author_id` `blocked_user_ids` `blocked_by_user_ids` `muted_user_ids`；候选级反向屏蔽字段未装配时中立 | 作者、转推原作者或引用作者在拉黑、被拉黑或静音列表 |
 | `VideoFilter` | `filters/video_filter.rs` | `query.exclude_videos` | `video_duration_ms` | 请求不要视频时，丢掉带时长的候选 |
 | `TopicIdsFilter` | `filters/topic_ids_filter.rs` | strict topic 或 excluded topics | topic fields | strict topic 不匹配或命中排除项 |
 | `NewUserTopicIdsFilter` | `filters/new_user_topic_ids_filter.rs` | cold-start topics | `new_user_topic_ids` `filtered_topic_ids` `in_network` | 网外且不匹配 cold-start topic |
@@ -179,6 +179,6 @@ flowchart TD
 | `ImpressedPostsQueryHydrator` | `query_hydrators/impressed_posts_query_hydrator.rs` |
 | `ImpressionBloomFilterQueryHydrator` | `query_hydrators/impression_bloom_filter_query_hydrator.rs` |
 | `TweetMixerSource` | `sources/tweet_mixer_source.rs` |
-| `BlockedByHydrator` | `candidate_hydrators/blocked_by_hydrator.rs`（BlockedBy 仍为 U3） |
+| `BlockedByHydrator` | `candidate_hydrators/blocked_by_hydrator.rs`（候选作者、转推原作者、引用作者反向屏蔽；真实 Adapter 未接入） |
 | `PublishSeenIdsToKafkaSideEffect` | `side_effects/publish_seen_ids_to_kafka_side_effect.rs` |
 | `ServedCandidatesKafkaSideEffect` | `side_effects/served_candidates_kafka_side_effect.rs` |
