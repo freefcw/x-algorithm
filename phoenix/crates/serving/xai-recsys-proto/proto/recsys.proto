@@ -110,6 +110,14 @@ message PredictNextActionsRequest {
   optional uint64 seedTweetId = 16;
 
   repeated uint32 requestedContinuousActionIndices = 17;
+
+  repeated ConvAssetIds conv_asset_ids = 18;
+}
+
+message ConvAssetIds {
+  repeated int64 impressed_time_ms = 1;
+  repeated int64 author_id = 2;
+  repeated int64 asset_id = 3;
 }
 
 message PredictNextActionsResponse {
@@ -408,6 +416,9 @@ enum ActionName {
   ADS_SESSION_CONVERSION_VIEW_THROUGH = 188;
   ADS_LANDING_PAGE_VIEW_CONVERSION_VIEW_THROUGH = 189;
   ADS_UPPER_FUNNEL_CONVERSION_VIEW_THROUGH = 190;
+  ADS_PIXEL_FIRE = 191;
+  ADS_LONG_DWELL_AND_PIXEL_FIRE = 192;
+  P_LONG_DWELL_AND_PIXEL_FIRE = 193;
   ADS_PURCHASE_CONVERSION = 200;
   ADS_MID_FUNNEL_CONVERSION = 201;
   ADS_ADD_TO_CART_CONVERSION = 202;
@@ -1240,6 +1251,7 @@ message SlateContext {
   optional uint32 sidGap1 = 10;
   optional uint32 sidGap2 = 11;
   optional uint32 sidGap3 = 12;
+  optional uint32 reconCosMilli = 13;
 }
 
 message ActionInfo {
