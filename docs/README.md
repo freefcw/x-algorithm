@@ -4,7 +4,8 @@
 
 ## 我想把系统跑起来
 
-直接进 **[getting-started/](./getting-started/)**：从装环境到端到端跑通完整推荐链路，循序渐进六步，每条命令都验证过。
+- **[bootstrap/](./bootstrap/)**：从本地环境、模块编译、模型训练、端到端 Demo，到真实数据接入、能力屏蔽和生产验收的完整启动手册。
+- **[getting-started/](./getting-started/)**：更短的当前代码快速上手教程，适合先用最少步骤跑通 Demo。
 
 ## 我想理解当前代码
 
@@ -38,6 +39,7 @@
 
 | 目录 | 状态 | 说明 |
 | --- | --- | --- |
+| [bootstrap/](./bootstrap/) | `runbook` / `current-code` | 从环境、编译、模型、Demo 到真实数据和生产验收的完整启动手册。 |
 | [getting-started/](./getting-started/) | `current-code` | 从零跑通主线（推荐入口）。 |
 | [recommendation-service-mvp-assessment.md](./recommendation-service-mvp-assessment.md) | `design` | 面向业务决策的外部依赖评估、MVP 边界和三阶段演进建议。 |
 | [home-mixer/](./home-mixer/) | `current-code` | 首页 Feed 编排服务、请求生命周期、组件和字段字典。 |
@@ -54,7 +56,7 @@
 
 Phoenix 子项目内还有一套操作向文档（训练指引、真实数据接入等），入口在 [../phoenix/docs/](../phoenix/docs/)；两边的分工是：`docs/phoenix/` 讲代码怎么实现，`phoenix/docs/` 讲手上怎么操作。
 
-最新上游同步结果见 [`update/20260823.md`](./update/20260823.md)：记录 `28e414f` 的引擎拒绝计数修复、proto 合同扩展与默认关闭的广告训练能力落地，xai-o2 crate 记为 U3。能力清点入口是 [28e414f capability inventory](./upstream-sync/28e414f-capability-inventory.md)。
+最新上游同步结果见 [`update/20260826.md`](./update/20260826.md)：记录 `d011592`–`45b48ba` 的相关作者反向屏蔽补全、Phoenix proto 合同同步，以及 checkpoint、SlateContext、grox/VF 等线路的延期或不适用结论。能力清点入口是 [45b48ba capability inventory](./upstream-sync/45b48ba-capability-inventory.md)。
 
 上游同步以 [upstream-first maintenance policy](./upstream-sync/upstream-first-maintenance.md) 为维护规则，以 [entrypoint migration map](./upstream-sync/entrypoint-migration-map.md) 为执行顺序。
 

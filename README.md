@@ -309,6 +309,7 @@ The `candidate-pipeline` crate provides a flexible framework for building recomm
 
 ## Documentation
 
+- **[docs/bootstrap/](docs/bootstrap/)** — comprehensive bootstrap runbook: environment, builds, models, end-to-end demo, real data, capability gates, and production readiness (Chinese)
 - **[docs/getting-started/](docs/getting-started/)** — step-by-step: environment → model demo → serving → training → full pipeline → production gaps (Chinese)
 - **[docs/README.md](docs/README.md)** — documentation hub with per-module deep dives
 - **[README_zh.md](README_zh.md)** — this document in Chinese
