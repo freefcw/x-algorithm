@@ -2,10 +2,10 @@
 
 > Status: current-code / design rule
 > Upstream common base: `aaa167b3de8a674587c53545a43c90eaad360010`
-> Absorbed upstream anchor: `28e414f535e4b5a50ca12ee87674e7649e50c7ad` (2026-08-21 snapshot; inventory in [`28e414f-capability-inventory.md`](./28e414f-capability-inventory.md), outcome in [`../update/20260823.md`](../update/20260823.md); local is now level with the main head)
-> Upstream head: `28e414f535e4b5a50ca12ee87674e7649e50c7ad`
+> Absorbed upstream anchor: `45b48ba6baa40e212f6dcbaf8fe9fdc8d9da722e` (2026-08-26 snapshot; range inventory in [`45b48ba-capability-inventory.md`](./45b48ba-capability-inventory.md), outcome in [`../update/20260826.md`](../update/20260826.md); portable business contracts landed and deferred lanes have explicit re-entry conditions)
+> Upstream head: `45b48ba6baa40e212f6dcbaf8fe9fdc8d9da722e`
 >
-> Previous anchors: `d0cef2f943084ee0d4310378031c9c2c37d67f12` (2026-08-20, [`../update/20260820.md`](../update/20260820.md)); `aad7179773944e17eb8798bbbf0231d6cd6c1ffc` (2026-08-19, [`../update/20260819.md`](../update/20260819.md)); `11a71f87d6a7fc4c1e8159dad8f3c5ff90a0f7ed` (2026-08-18, no portable deltas, [`../update/20260818.md`](../update/20260818.md)); `b089ce64891f9c50fab73aa00dbe65acb82f198f` (2026-08-17, [`../update/20260817.md`](../update/20260817.md))
+> Previous anchors: `28e414f535e4b5a50ca12ee87674e7649e50c7ad` (2026-08-21, [`../update/20260823.md`](../update/20260823.md)); `d0cef2f943084ee0d4310378031c9c2c37d67f12` (2026-08-20, [`../update/20260820.md`](../update/20260820.md)); `aad7179773944e17eb8798bbbf0231d6cd6c1ffc` (2026-08-19, [`../update/20260819.md`](../update/20260819.md)); `11a71f87d6a7fc4c1e8159dad8f3c5ff90a0f7ed` (2026-08-18, no portable deltas, [`../update/20260818.md`](../update/20260818.md)); `b089ce64891f9c50fab73aa00dbe65acb82f198f` (2026-08-17, [`../update/20260817.md`](../update/20260817.md))
 >
 > Previous anchor: `c65aa179db7bdd61e2c2821eac87f208a105c053` (2026-08-14 semantic migration; portable changes landed and U3 lanes recorded in [`../update/20260814.md`](../update/20260814.md))
 >
@@ -32,7 +32,7 @@ A difference without one of these classifications is drift and should be removed
 
 ## Candidate Pipeline anchor
 
-The Candidate Pipeline is the compatibility layer for later Home Mixer components. Its portable API was last re-tracked at the `c65aa17` semantic anchor (the most recent change to the crate, `candidate-pipeline: adopt 47c1bcd per-request stage summary and cached-hydrator extensions`); later snapshots through `d0cef2f` did not touch the crate. Diff newer anchors against it with the sync procedure below before assuming the table is stale.
+The Candidate Pipeline is the compatibility layer for later Home Mixer components. Its portable API was last re-tracked at the `c65aa17` semantic anchor (the most recent change to the crate, `candidate-pipeline: adopt 47c1bcd per-request stage summary and cached-hydrator extensions`); later snapshots through `45b48ba` did not touch the crate. Diff newer anchors against it with the sync procedure below before assuming the table is stale.
 
 | Surface | Current rule | Delta class |
 |---|---|---|
@@ -72,7 +72,7 @@ For each later upstream snapshot, compare upstream changes before comparing fina
 
 ```bash
 # What upstream changed after the currently anchored snapshot.
-git diff --find-renames d0cef2f943084ee0d4310378031c9c2c37d67f12..<new-upstream> -- <module>
+git diff --find-renames 45b48ba6baa40e212f6dcbaf8fe9fdc8d9da722e..<new-upstream> -- <module>
 
 # How the local implementation intentionally differs from the new anchor.
 git diff --find-renames <new-upstream> -- <module>
