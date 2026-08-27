@@ -13,10 +13,10 @@ use tonic::async_trait;
 
 #[async_trait]
 pub trait SocialGraphClientOps: Send + Sync {
-    /// 返回 `author_ids` 中反向屏蔽了 `viewer_id` 的作者集合。
+    /// 返回 `user_ids` 中反向屏蔽了 `viewer_id` 的用户集合。
     async fn check_blocked_by(
         &self,
         viewer_id: u64,
-        author_ids: &[u64],
+        user_ids: &[u64],
     ) -> Result<HashSet<u64>, String>;
 }

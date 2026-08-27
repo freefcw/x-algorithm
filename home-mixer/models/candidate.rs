@@ -42,9 +42,9 @@ pub struct PostCandidate {
     /// Request-local lookup marker for the original author of a retweet.
     #[doc(hidden)]
     pub retweeted_profile_looked_up_for_user_id: Option<u64>,
-    /// 作者是否反向屏蔽 viewer；由 `BlockedByHydrator`（CH-09）负责写入。
+    /// 候选作者或转推原作者是否反向屏蔽 viewer；由 `BlockedByHydrator`（CH-09）负责写入。
     pub author_blocks_viewer: Option<bool>,
-    /// 引用帖作者是否反向屏蔽 viewer；随引用补全的社交图数据写入。
+    /// 引用帖作者是否反向屏蔽 viewer；由 `BlockedByHydrator` 写入。
     pub quoted_author_blocks_viewer: Option<bool>,
     pub visibility_decision: vf::VisibilityDecision,
     pub drop_ancillary_posts: Option<bool>,
