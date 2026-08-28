@@ -1,6 +1,6 @@
 # Entrypoint migration map
 
-> Status: Home Mixer `HM-E1..E6` and Phoenix `PHX-E1/E2` portable contracts completed; later portable deltas are absorbed through `c65aa17`; remaining work requires explicit production integration contracts
+> Status: Home Mixer `HM-E1..E6` and Phoenix `PHX-E1/E2` portable contracts completed; later portable deltas are absorbed through `24c60942`; remaining work requires explicit production integration contracts
 > Upstream anchor: `c65aa179db7bdd61e2c2821eac87f208a105c053` (2026-08-14 semantic anchor，本文审计范围的时代锚点；**当前活锚点已前移**，最新值见 [`upstream-first-maintenance.md`](./upstream-first-maintenance.md) 头部)
 > Snapshot reports: [`../update/20260813.md`](../update/20260813.md) for the `47c1bcd` restructuring and [`../update/20260814.md`](../update/20260814.md) for `c65aa17` migration outcomes. Entrypoint shapes below retain the established For You scope; later multi-Feed products remain unassembled U3 capabilities.
 > Local branch: `feature/migrate-20260515`
