@@ -61,6 +61,30 @@ impl Filter<ScoredPostsQuery, PostCandidate> for ViewerMutedKeywordFilter {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::models::user_features::UserFeatures;
+
+    fn create_test_candidate(tweet_id: u64, tweet_text: &str) -> PostCandidate {
+        PostCandidate {
+            tweet_id,
+            tweet_text: tweet_text.to_string(),
+            author_id: 12345,
+            ..Default::default()
+        }
+    }
+
+    fn create_test_query(muted_keywords: Vec<String>) -> ScoredPostsQuery {
+        ScoredPostsQuery {
+            user_features: UserFeatures {
+                muted_keywords,
+                ..Default::default()
+            },
+            ..Default::default()
+        }
+    }
+
+    fn removed_ids(result: &FilterResult<PostCandidate>) -> Vec<u64> {
+        result.removed.iter().map(|c| c.tweet_id).collect()
+    }
 
     #[test]
     fn removes_candidate_when_quoted_text_matches_muted_keyword() {
@@ -85,5 +109,212 @@ mod tests {
 
         assert_eq!(result.kept[0].tweet_id, 2);
         assert_eq!(result.removed[0].tweet_id, 1);
+    }
+
+    #[test]
+    fn test_no_muted_keywords() {
+        let result = ViewerMutedKeywordFilter::new().filter(
+            &create_test_query(vec![]),
+            vec![
+                create_test_candidate(1, "This is spam content"),
+                create_test_candidate(2, "This is good content"),
+            ],
+        );
+
+        assert_eq!(result.kept.len(), 2);
+        assert_eq!(result.removed.len(), 0);
+    }
+
+    #[test]
+    fn test_simple_keyword_match() {
+        let result = ViewerMutedKeywordFilter::new().filter(
+            &create_test_query(vec!["spam".to_string()]),
+            vec![
+                create_test_candidate(1, "This is spam content"),
+                create_test_candidate(2, "This is good content"),
+            ],
+        );
+
+        assert_eq!(removed_ids(&result), [1]);
+        assert_eq!(result.kept[0].tweet_id, 2);
+    }
+
+    #[test]
+    fn test_hashtag_keyword_without_hash() {
+        let result = ViewerMutedKeywordFilter::new().filter(
+            &create_test_query(vec!["widget".to_string()]),
+            vec![
+                create_test_candidate(1, "#widget launch event"),
+                create_test_candidate(2, "widget speaks at summit"),
+                create_test_candidate(3, "unrelated product news"),
+            ],
+        );
+
+        assert_eq!(removed_ids(&result), [1, 2]);
+        assert_eq!(result.kept[0].tweet_id, 3);
+    }
+
+    #[test]
+    fn test_hashtag_keyword_with_hash() {
+        let result = ViewerMutedKeywordFilter::new().filter(
+            &create_test_query(vec!["#launch".to_string()]),
+            vec![
+                create_test_candidate(1, "#LAUNCH day"),
+                create_test_candidate(2, "support launch movement"),
+                create_test_candidate(3, "unrelated tweet"),
+            ],
+        );
+
+        assert_eq!(removed_ids(&result), [1]);
+        assert_eq!(result.kept.len(), 2);
+    }
+
+    #[test]
+    fn test_mention_keyword() {
+        let result = ViewerMutedKeywordFilter::new().filter(
+            &create_test_query(vec!["exampleuser".to_string()]),
+            vec![
+                create_test_candidate(1, "Hey @exampleuser check this out"),
+                create_test_candidate(2, "exampleuser posted something"),
+                create_test_candidate(3, "different user posting"),
+            ],
+        );
+
+        assert_eq!(removed_ids(&result), [1, 2]);
+        assert_eq!(result.kept[0].tweet_id, 3);
+    }
+
+    #[test]
+    fn test_multi_word_phrase() {
+        let result = ViewerMutedKeywordFilter::new().filter(
+            &create_test_query(vec!["crypto scam".to_string()]),
+            vec![
+                create_test_candidate(1, "This is a crypto scam warning"),
+                create_test_candidate(2, "crypto is great, scam artists are bad"),
+                create_test_candidate(3, "unrelated content"),
+            ],
+        );
+
+        assert_eq!(removed_ids(&result), [1]);
+        assert_eq!(result.kept.len(), 2);
+    }
+
+    #[test]
+    fn test_multiple_muted_keywords() {
+        let result = ViewerMutedKeywordFilter::new().filter(
+            &create_test_query(vec![
+                "spam".to_string(),
+                "scam".to_string(),
+                "#blocked".to_string(),
+            ]),
+            vec![
+                create_test_candidate(1, "This is spam content"),
+                create_test_candidate(2, "This is a scam alert"),
+                create_test_candidate(3, "#blocked user posting"),
+                create_test_candidate(4, "This is good content"),
+            ],
+        );
+
+        assert_eq!(removed_ids(&result), [1, 2, 3]);
+        assert_eq!(result.kept[0].tweet_id, 4);
+    }
+
+    #[test]
+    fn test_case_insensitive_matching() {
+        let result = ViewerMutedKeywordFilter::new().filter(
+            &create_test_query(vec!["SPAM".to_string()]),
+            vec![
+                create_test_candidate(1, "This is SPAM content"),
+                create_test_candidate(2, "This is spam content"),
+                create_test_candidate(3, "This is SpAm content"),
+                create_test_candidate(4, "This is good content"),
+            ],
+        );
+
+        assert_eq!(removed_ids(&result), [1, 2, 3]);
+        assert_eq!(result.kept[0].tweet_id, 4);
+    }
+
+    #[test]
+    fn test_unicode_and_accents() {
+        let result = ViewerMutedKeywordFilter::new().filter(
+            &create_test_query(vec!["café".to_string()]),
+            vec![
+                create_test_candidate(1, "I love café culture"),
+                create_test_candidate(2, "I love cafe culture"),
+                create_test_candidate(3, "I love coffee culture"),
+            ],
+        );
+
+        assert_eq!(removed_ids(&result), [1, 2]);
+        assert_eq!(result.kept[0].tweet_id, 3);
+    }
+
+    #[test]
+    fn test_empty_candidates() {
+        let result = ViewerMutedKeywordFilter::new()
+            .filter(&create_test_query(vec!["spam".to_string()]), vec![]);
+
+        assert_eq!(result.kept.len(), 0);
+        assert_eq!(result.removed.len(), 0);
+    }
+
+    #[test]
+    fn test_all_candidates_removed() {
+        let result = ViewerMutedKeywordFilter::new().filter(
+            &create_test_query(vec!["spam".to_string()]),
+            vec![
+                create_test_candidate(1, "spam spam spam"),
+                create_test_candidate(2, "more spam here"),
+            ],
+        );
+
+        assert_eq!(result.kept.len(), 0);
+        assert_eq!(result.removed.len(), 2);
+    }
+
+    #[test]
+    fn test_cjk_keyword_whole_token_only() {
+        let result = ViewerMutedKeywordFilter::new().filter(
+            &create_test_query(vec!["京都".to_string()]),
+            vec![
+                create_test_candidate(1, "東京都に行くのが楽しみ"),
+                create_test_candidate(2, "I visited 京都 last week"),
+                create_test_candidate(3, "unrelated content"),
+            ],
+        );
+
+        assert_eq!(removed_ids(&result), [2]);
+        assert_eq!(result.kept.len(), 2);
+    }
+
+    #[test]
+    fn test_punctuation_handling() {
+        let result = ViewerMutedKeywordFilter::new().filter(
+            &create_test_query(vec!["bitcoin".to_string()]),
+            vec![
+                create_test_candidate(1, "Buy bitcoin! It's great!!!"),
+                create_test_candidate(2, "bitcoin, ethereum, and more"),
+                create_test_candidate(3, "(bitcoin is volatile)"),
+                create_test_candidate(4, "stocks and bonds"),
+            ],
+        );
+
+        assert_eq!(removed_ids(&result), [1, 2, 3]);
+        assert_eq!(result.kept[0].tweet_id, 4);
+    }
+
+    #[test]
+    fn substring_of_a_longer_word_is_not_muted() {
+        let result = ViewerMutedKeywordFilter::new().filter(
+            &create_test_query(vec!["art".to_string()]),
+            vec![
+                create_test_candidate(1, "party time"),
+                create_test_candidate(2, "the art desk"),
+            ],
+        );
+
+        assert_eq!(removed_ids(&result), [2]);
+        assert_eq!(result.kept[0].tweet_id, 1);
     }
 }
