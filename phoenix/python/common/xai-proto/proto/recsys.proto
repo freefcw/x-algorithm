@@ -329,7 +329,7 @@ enum ActionName {
   CLIENT_TWEET_VIDEO_MRC_VIEW = 81;
   CLIENT_TWEET_VIDEO_VIEW = 82;
   CLIENT_TWEET_VIDEO_VIEW_THRESHOLD = 83;
-  PLACE_HOLDER_84 = 84;
+  CLIENT_TWEET_VIDEO_6SEC_VIEW = 84;
   CLIENT_TWEET_VIDEO_WATCH_TIME = 85;
   CLIENT_EXTERNAL_LINK_SESSION_LESS_THAN_3_SEC = 86;
   CLIENT_EXTERNAL_LINK_SESSION_LESS_THAN_5_SEC = 87;
@@ -1252,6 +1252,8 @@ message SlateContext {
   optional uint32 sidGap2 = 11;
   optional uint32 sidGap3 = 12;
   optional uint32 reconCosMilli = 13;
+  optional uint32 reconCountAbove = 14;
+  optional uint32 reconGapAbove = 15;
 }
 
 message ActionInfo {
@@ -1601,7 +1603,7 @@ enum UserActionAggregationType {
   DENSE_WITH_NOT_INTERESTED_IN = 7;
   DENSE_WITH_LIMITED_QUOTED_ACTION = 8;
   UPSAMPLED_ADS = 9 [deprecated = true];
-  DENSE_WITH_PROFILE_SHORT_DWELL = 10;
+  DENSE_WITH_PROFILE_LONG_DWELL = 10;
   NOTIFICATIONS = 11;
   DENSE_WITH_CONTEXT_FEATURES = 12;
   NOTIFICATIONS_MORE = 13;

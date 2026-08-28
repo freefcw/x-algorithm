@@ -84,6 +84,23 @@ mod tests {
     }
 
     #[test]
+    fn latest_action_and_slate_fields_match_wire_contract() {
+        assert_eq!(ActionName::ClientTweetVideo6secView as i32, 84);
+        assert_eq!(
+            UserActionAggregationType::DenseWithProfileLongDwell as i32,
+            10
+        );
+        let slate = SlateContext {
+            recon_count_above: Some(7),
+            recon_gap_above: Some(3),
+            ..Default::default()
+        };
+        assert_eq!(slate.recon_count_above, Some(7));
+        assert_eq!(slate.recon_gap_above, Some(3));
+        assert_eq!(prost::Message::encode_to_vec(&slate), [0x70, 7, 0x78, 3]);
+    }
+
+    #[test]
     fn test_language_code_string_to_enum() {
         assert_eq!(language_code_string_to_enum("en"), LanguageCode::LangEn);
         assert_eq!(language_code_string_to_enum("fr"), LanguageCode::LangFr);
