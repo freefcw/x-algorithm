@@ -315,7 +315,7 @@ toolchain, `cmake`, `pkg-config`, RDMA verbs headers, bindgen's `libclang`, and
 `numa_num_possible_nodes` warning) — on Debian/Ubuntu:
 
 ```shell
-apt update && apt install build-essential cmake pkg-config unzip \
+apt update && apt install build-essential ca-certificates cmake curl pkg-config unzip \
     libibverbs-dev libnl-3-dev libnl-route-3-dev libclang-dev libnuma-dev
 ```
 
