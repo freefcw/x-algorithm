@@ -233,6 +233,16 @@ async fn connect_and_list(
 type TransferFuture = BoxFuture<'static, (usize, u32)>;
 type DenseDownloadPlan = (Vec<TransferFuture>, Vec<usize>, Vec<u8>);
 
+async fn join_transfers(
+    futures: impl IntoIterator<Item = TransferFuture>,
+) -> Result<Vec<(usize, u32)>, CopyPortError> {
+    join_all(futures.into_iter().map(tokio::task::spawn))
+        .await
+        .into_iter()
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|e| CopyPortError::Other(format!("copy_port download task join: {e}")))
+}
+
 async fn run_downloads(
     futures: Vec<TransferFuture>,
     rate_limit_bytes_per_sec: Option<u64>,
@@ -248,7 +258,7 @@ async fn run_downloads(
                 .max(1);
             join_rate_limited(futures, limit, max_c).await
         }
-        _ => Ok(join_all(futures).await),
+        _ => join_transfers(futures).await,
     }
 }
 
@@ -268,7 +278,7 @@ async fn join_rate_limited(
             break;
         }
         let batch_size = batch.len();
-        let batch_results = join_all(batch).await;
+        let batch_results = join_transfers(batch).await?;
         let failed = batch_results
             .iter()
             .filter(|r| r.0 == TRANSFER_FAILED_SENTINEL)

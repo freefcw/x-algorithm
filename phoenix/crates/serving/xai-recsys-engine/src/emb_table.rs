@@ -610,6 +610,45 @@ pub(crate) async fn expand_replicated_channels(
     );
 }
 
+struct JoinOnDrop<T> {
+    handle: Option<tokio::task::JoinHandle<T>>,
+}
+
+impl<T> JoinOnDrop<T> {
+    fn new(handle: tokio::task::JoinHandle<T>) -> Self {
+        Self {
+            handle: Some(handle),
+        }
+    }
+
+    async fn join(mut self) -> Result<T, tokio::task::JoinError> {
+        self.handle.take().expect("join").await
+    }
+}
+
+impl<T> Drop for JoinOnDrop<T> {
+    fn drop(&mut self) {
+        let Some(handle) = self.handle.take() else {
+            return;
+        };
+        let _ = tokio::task::block_in_place(|| tokio::runtime::Handle::current().block_on(handle));
+    }
+}
+
+fn install_grpc_chunk(dest: &mut [u8], pos: &mut usize, checksum: &mut u32, chunk: &[u8]) {
+    let n = chunk.len();
+    if *pos + n <= dest.len() {
+        #[cfg(target_arch = "x86_64")]
+        unsafe {
+            copy_nontemporal(&mut dest[*pos..*pos + n], chunk);
+        }
+        #[cfg(not(target_arch = "x86_64"))]
+        dest[*pos..*pos + n].copy_from_slice(chunk);
+    }
+    *pos += n;
+    adler32_combine(checksum, adler32(&chunk), n);
+}
+
 pub(crate) async fn send_entries(
     mut channel: transport::Channel,
     names: Vec<Vec<u8>>,
@@ -636,23 +675,33 @@ pub(crate) async fn send_entries(
     };
     let body = freeze(bytes);
 
-    let mut pos = 0;
-    let mut checksum = 1;
+    const GRPC_COPY_PIECE: usize = 4 << 20;
+    let dest_ptr = buf.as_mut_ptr() as usize;
+    let dest_len = buf.len();
+    let (tx, rx) = std::sync::mpsc::sync_channel::<bytes::Bytes>(2);
+    let copy_join = JoinOnDrop::new(tokio::task::spawn_blocking(move || {
+        let dest = unsafe { std::slice::from_raw_parts_mut(dest_ptr as *mut u8, dest_len) };
+        let mut pos = 0;
+        let mut checksum = 1u32;
+        while let Ok(chunk) = rx.recv() {
+            install_grpc_chunk(dest, &mut pos, &mut checksum, &chunk);
+        }
+        (pos, checksum)
+    }));
     let mut endpoints = Vec::new();
     let mut rmrs = Vec::new();
     let mut use_rdma = Vec::new();
     let proto = proto![
-        (1, |_, data: &[u8]| {
-            if pos + data.len() <= buf.len() {
-                #[cfg(target_arch = "x86_64")]
-                unsafe {
-                    copy_nontemporal(&mut buf[pos..pos + data.len()], data);
+        (1, move |_, data: &[u8]| {
+            let mut off = 0;
+            while off < data.len() {
+                let n = (data.len() - off).min(GRPC_COPY_PIECE);
+                let piece = bytes::Bytes::copy_from_slice(&data[off..off + n]);
+                if tx.send(piece).is_err() {
+                    break;
                 }
-                #[cfg(not(target_arch = "x86_64"))]
-                buf[pos..pos + data.len()].copy_from_slice(data);
+                off += n;
             }
-            pos += data.len();
-            adler32_combine(&mut checksum, adler32(&data), data.len());
         }),
         (2, repeated_bytes(&mut endpoints)),
         (3, repeated_bytes(&mut rmrs)),
@@ -660,8 +709,13 @@ pub(crate) async fn send_entries(
     ];
     if let Err(e) = ready_call_parse(SEND, proto, body, &mut channel).await {
         log::error!("gRPC error: {e}");
+        let _ = copy_join.join().await;
         return (TRANSFER_FAILED_SENTINEL, 0);
     }
+    let Ok((pos, checksum)) = copy_join.join().await else {
+        return (TRANSFER_FAILED_SENTINEL, 0);
+    };
+
     use_rdma.resize(sizes.len(), 0);
     let f = |acc, (&x, &y)| if y != 0 { acc + x } else { acc };
     let size = sizes.iter().zip(&use_rdma).fold(0, f);
@@ -673,7 +727,20 @@ pub(crate) async fn send_entries(
     .await
     {
         Ok(_) => {
-            adler32_combine(&mut checksum, adler32(&&buf[pos..]), size);
+            let Ok(checksum) = JoinOnDrop::new(tokio::task::spawn_blocking(move || {
+                if size == 0 || pos >= dest_len {
+                    return checksum;
+                }
+                let dest = unsafe { std::slice::from_raw_parts(dest_ptr as *const u8, dest_len) };
+                let mut c = checksum;
+                adler32_combine(&mut c, adler32(&&dest[pos..]), size);
+                c
+            }))
+            .join()
+            .await
+            else {
+                return (TRANSFER_FAILED_SENTINEL, 0);
+            };
             (pos + size, checksum)
         }
         Err(e) => {
