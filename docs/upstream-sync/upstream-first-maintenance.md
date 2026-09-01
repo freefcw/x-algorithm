@@ -2,10 +2,10 @@
 
 > Status: current-code / design rule
 > Upstream common base: `aaa167b3de8a674587c53545a43c90eaad360010`
-> Absorbed upstream anchor: `24c60942c5c5fdad3a6addffb4c6e6d2f228f04f` (2026-08-28 snapshot; range inventory in [`24c60942-capability-inventory.md`](./24c60942-capability-inventory.md), outcome in [`../update/20260828.md`](../update/20260828.md); Phoenix protocol and gRPC correctness deltas landed, and deferred lanes have explicit re-entry conditions)
-> Upstream head: `24c60942c5c5fdad3a6addffb4c6e6d2f228f04f`
+> Absorbed upstream anchor: `6384ca7d2c8570fbc645c20c3291730739ac00ce` (2026-09-01 snapshot; range inventory in [`6384ca7-capability-inventory.md`](./6384ca7-capability-inventory.md), outcome in [`../update/20260901.md`](../update/20260901.md); Phoenix copy-port, parser, embedding-table and multimodal-cache deltas landed, and deferred lanes have explicit re-entry conditions)
+> Upstream head: `6384ca7d2c8570fbc645c20c3291730739ac00ce`
 >
-> Previous anchors: `45b48ba6baa40e212f6dcbaf8fe9fdc8d9da722e` (2026-08-26, [`../update/20260826.md`](../update/20260826.md)); `28e414f535e4b5a50ca12ee87674e7649e50c7ad` (2026-08-21, [`../update/20260823.md`](../update/20260823.md)); `d0cef2f943084ee0d4310378031c9c2c37d67f12` (2026-08-20, [`../update/20260820.md`](../update/20260820.md)); `aad7179773944e17eb8798bbbf0231d6cd6c1ffc` (2026-08-19, [`../update/20260819.md`](../update/20260819.md)); `11a71f87d6a7fc4c1e8159dad8f3c5ff90a0f7ed` (2026-08-18, no portable deltas, [`../update/20260818.md`](../update/20260818.md)); `b089ce64891f9c50fab73aa00dbe65acb82f198f` (2026-08-17, [`../update/20260817.md`](../update/20260817.md))
+> Previous anchors: `24c60942c5c5fdad3a6addffb4c6e6d2f228f04f` (2026-08-28, [`../update/20260828.md`](../update/20260828.md)); `45b48ba6baa40e212f6dcbaf8fe9fdc8d9da722e` (2026-08-26, [`../update/20260826.md`](../update/20260826.md)); `28e414f535e4b5a50ca12ee87674e7649e50c7ad` (2026-08-21, [`../update/20260823.md`](../update/20260823.md)); `d0cef2f943084ee0d4310378031c9c2c37d67f12` (2026-08-20, [`../update/20260820.md`](../update/20260820.md)); `aad7179773944e17eb8798bbbf0231d6cd6c1ffc` (2026-08-19, [`../update/20260819.md`](../update/20260819.md)); `11a71f87d6a7fc4c1e8159dad8f3c5ff90a0f7ed` (2026-08-18, no portable deltas, [`../update/20260818.md`](../update/20260818.md)); `b089ce64891f9c50fab73aa00dbe65acb82f198f` (2026-08-17, [`../update/20260817.md`](../update/20260817.md))
 >
 > Previous anchor: `c65aa179db7bdd61e2c2821eac87f208a105c053` (2026-08-14 semantic migration; portable changes landed and U3 lanes recorded in [`../update/20260814.md`](../update/20260814.md))
 >
