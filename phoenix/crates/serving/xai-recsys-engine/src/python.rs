@@ -1877,7 +1877,7 @@ impl PrepareBatch<PredictRequestBatch> for RankingBatchPrep {
         let output_vocab_size = model_config.hash_table.output_vocab_size;
         let num_continuous_actions = model_config.hash_table.num_continuous_actions;
         let embedding_dim = model_config.multimodal_embedding_dim;
-        let search_query_embedding_dim = model_config.hash_table.search_query_embedding_dim;
+        let search_query_embedding_dim = model_config.search_query_embedding_dim;
         let sid_num_levels = model_config.sid_num_levels;
 
         py.detach(|| {

@@ -356,7 +356,7 @@ impl InputBuffer {
         let num_author_hashes = model_config.hash_table.num_author_hashes();
         let num_item_hashes = model_config.hash_table.num_item_hashes();
         let candidate_seq_len = model_config.candidate_seq_len;
-        let search_query_embedding_dim = model_config.hash_table.search_query_embedding_dim;
+        let search_query_embedding_dim = model_config.search_query_embedding_dim;
 
         let mut candidate_post_hashes = vec![0i32; candidate_seq_len * num_item_hashes];
         let mut candidate_auth_hashes = vec![0i32; candidate_seq_len * num_author_hashes];
@@ -433,6 +433,10 @@ impl InputBuffer {
                         [base_idx..base_idx + search_query_embedding_dim]
                         .copy_from_slice(&candidate_set.search_query_embedding);
                 }
+            } else {
+                log::error!(
+                    "search_query_embedding dim {provided_dim} != model {search_query_embedding_dim}; leaving zeros"
+                );
             }
         }
 
@@ -1555,7 +1559,6 @@ mod tests {
                 ip_modulus: 1_073_741_789,
                 output_vocab_size: 64,
                 num_continuous_actions: 2,
-                search_query_embedding_dim: 0,
                 num_user_categorical_features: 0,
                 num_user_bool_features: 0,
                 num_user_float_features: 0,

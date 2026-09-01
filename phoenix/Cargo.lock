@@ -5104,6 +5104,7 @@ dependencies = [
  "crc32fast",
  "half",
  "lazy_static",
+ "log",
  "prometheus 0.14.0",
  "xai-recsys-proto",
 ]
@@ -5189,6 +5190,7 @@ dependencies = [
  "parquet",
  "prometheus 0.14.0",
  "pyo3",
+ "rayon",
  "tempfile",
  "thrift",
  "tokio",
