@@ -2024,6 +2024,7 @@ impl PrepareBatch<PredictRequestBatch> for RankingBatchPrep {
                     .par_chunks(chunk_size)
                     .zip(candidate_embeddings_slices.par_iter_mut())
                     .for_each(|(items_chunk, shard_slice)| {
+                        shard_slice.fill(f16::ZERO);
                         shard_slice
                             .par_chunks_exact_mut(row_size)
                             .zip(items_chunk.par_iter())
@@ -2031,7 +2032,10 @@ impl PrepareBatch<PredictRequestBatch> for RankingBatchPrep {
                                 if let Some(ref input_buffer) = item.input_buffer {
                                     let src = &input_buffer.candidate_embeddings;
                                     let copy_len = embedding_row.len().min(src.len());
-                                    embedding_row[..copy_len].copy_from_slice(&src[..copy_len]);
+                                    if copy_len > 0 {
+                                        embedding_row[..copy_len]
+                                            .copy_from_slice(&src[..copy_len]);
+                                    }
                                 }
                             });
                     });
@@ -2040,14 +2044,23 @@ impl PrepareBatch<PredictRequestBatch> for RankingBatchPrep {
             if search_query_embedding_dim > 0
                 && let Some(sq_slice) = candidate_search_query_embeddings_slice
             {
+                sq_slice.fill(0.0);
                 sq_slice
                     .par_chunks_exact_mut(candidate_seq_len * search_query_embedding_dim)
                     .take(length_of_input)
                     .zip(request.items.par_iter())
                     .for_each(|(search_query_emb_row, item)| {
                         if let Some(ref input_buffer) = item.input_buffer {
-                            search_query_emb_row
-                                .copy_from_slice(&input_buffer.candidate_search_query_embeddings);
+                            let src = &input_buffer.candidate_search_query_embeddings;
+                            if src.len() == search_query_embedding_dim {
+                                let n_rep = input_buffer
+                                    .num_real_candidates(num_item_hashes, candidate_seq_len);
+                                xai_recsys::util::repeat_query_into(
+                                    search_query_emb_row,
+                                    src,
+                                    n_rep,
+                                );
+                            }
                         }
                     });
             }

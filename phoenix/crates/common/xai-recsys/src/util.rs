@@ -329,6 +329,30 @@ pub struct InputBuffer {
     pub num_history: usize,
 }
 
+pub fn repeat_query_into(dest: &mut [f32], query: &[f32], n_slots: usize) {
+    let dim = query.len();
+    if dim == 0 || dest.is_empty() || n_slots == 0 {
+        return;
+    }
+    let max_slots = dest.len() / dim;
+    let n = n_slots.min(max_slots);
+    for i in 0..n {
+        let off = i * dim;
+        dest[off..off + dim].copy_from_slice(query);
+    }
+}
+
+impl InputBuffer {
+    pub fn num_real_candidates(&self, num_item_hashes: usize, cap: usize) -> usize {
+        let w = num_item_hashes.max(1);
+        self.candidate_post_hashes
+            .chunks(w)
+            .take(cap)
+            .take_while(|ch| ch.first().is_some_and(|&h| h != 0))
+            .count()
+    }
+}
+
 struct CandidateData {
     post_hashes: Vec<i32>,
     auth_hashes: Vec<i32>,
@@ -422,23 +446,19 @@ impl InputBuffer {
             record_sid_coverage("candidate", present, candidates_to_process as u64);
         }
 
-        let mut candidate_search_query_embeddings =
-            vec![0.0f32; candidate_seq_len * search_query_embedding_dim];
-        if search_query_embedding_dim > 0 && !candidate_set.search_query_embedding.is_empty() {
-            let provided_dim = candidate_set.search_query_embedding.len();
-            if provided_dim == search_query_embedding_dim {
-                for j in 0..candidates_to_process {
-                    let base_idx = j * search_query_embedding_dim;
-                    candidate_search_query_embeddings
-                        [base_idx..base_idx + search_query_embedding_dim]
-                        .copy_from_slice(&candidate_set.search_query_embedding);
-                }
-            } else {
+        let candidate_search_query_embeddings = if search_query_embedding_dim > 0
+            && candidate_set.search_query_embedding.len() == search_query_embedding_dim
+        {
+            candidate_set.search_query_embedding.clone()
+        } else {
+            if search_query_embedding_dim > 0 && !candidate_set.search_query_embedding.is_empty() {
                 log::error!(
-                    "search_query_embedding dim {provided_dim} != model {search_query_embedding_dim}; leaving zeros"
+                    "search_query_embedding dim {} != model {search_query_embedding_dim}; leaving empty",
+                    candidate_set.search_query_embedding.len()
                 );
             }
-        }
+            Vec::new()
+        };
 
         let n_post_cat = model_config.hash_table.num_post_categorical_features;
         let n_post_bool = model_config.hash_table.num_post_bool_features;
@@ -1782,6 +1802,40 @@ mod tests {
                 "padding product_surfaces[{j}] should be zero"
             );
         }
+    }
+
+    #[test]
+    fn search_query_stays_one_vector() {
+        let mut model_config = test_model_config(1);
+        model_config.search_query_embedding_dim = 4;
+        let query = vec![1.0f32, 2.0, 3.0, 4.0];
+        let candidate_set = pb::CandidateSet {
+            search_query_embedding: query.clone(),
+            candidates: vec![
+                pb::TweetInfo {
+                    tweet_id: 1000,
+                    author_id: 2000,
+                    ..Default::default()
+                },
+                pb::TweetInfo {
+                    tweet_id: 1001,
+                    author_id: 2001,
+                    ..Default::default()
+                },
+            ],
+            ..Default::default()
+        };
+        let cand = InputBuffer::new_with_candidates(&model_config, &candidate_set, None);
+        assert_eq!(cand.search_query_embeddings, query);
+        assert_eq!(cand.search_query_embeddings.len(), 4);
+    }
+
+    #[test]
+    fn repeat_query_into_writes_prefix_and_keeps_tail() {
+        let query = [1.0f32, 2.0];
+        let mut dest = vec![9.0f32; 8];
+        repeat_query_into(&mut dest, &query, 2);
+        assert_eq!(dest, vec![1.0, 2.0, 1.0, 2.0, 9.0, 9.0, 9.0, 9.0]);
     }
 
     fn test_user_action_sequence(actions: &[(u64, u64)]) -> pb::UserActionSequence {
