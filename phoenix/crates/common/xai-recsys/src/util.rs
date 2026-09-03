@@ -1831,6 +1831,45 @@ mod tests {
     }
 
     #[test]
+    fn num_real_candidates_counts_non_padding_slots() {
+        let model_config = test_history_model_config();
+        let num_item_hashes = model_config.hash_table.num_item_hashes();
+        let candidate_seq_len = model_config.candidate_seq_len;
+
+        let count_for = |n: u64| {
+            let candidates = (0..n)
+                .map(|i| pb::TweetInfo {
+                    tweet_id: 1000 + i,
+                    author_id: 2000 + i,
+                    ..Default::default()
+                })
+                .collect();
+            InputBuffer::compute_for_item(
+                &model_config,
+                &None,
+                &pb::CandidateSet {
+                    candidates,
+                    ..Default::default()
+                },
+                None,
+                None,
+                None,
+                None,
+            )
+            .num_real_candidates(num_item_hashes, candidate_seq_len)
+        };
+
+        assert_eq!(0, count_for(0));
+        assert_eq!(2, count_for(2));
+        assert_eq!(candidate_seq_len, count_for(candidate_seq_len as u64));
+        assert_eq!(
+            candidate_seq_len,
+            count_for(candidate_seq_len as u64 + 2),
+            "candidates past candidate_seq_len are dropped, not counted"
+        );
+    }
+
+    #[test]
     fn repeat_query_into_writes_prefix_and_keeps_tail() {
         let query = [1.0f32, 2.0];
         let mut dest = vec![9.0f32; 8];

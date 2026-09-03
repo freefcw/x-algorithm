@@ -34,6 +34,8 @@
 
 改动面：`InputBuffer::candidate_search_query_embeddings` 在本地只有 `python.rs` 一个消费点。上游随附 `search_query_stays_one_vector`、`repeat_query_into_writes_prefix_and_keeps_tail` 两个单测。
 
+上游两个单测只覆盖零件，不覆盖批准备阶段的接线，而 `num_real_candidates` 决定有多少候选拿得到 query 向量，上游没有为它留测试。本地补 `num_real_candidates_counts_non_padding_slots`，覆盖空候选、少于 `candidate_seq_len`、恰好填满、超出被截断四种形态。批准备阶段本身（`RankingBatchPrep`）仍无测试，需要 Python 解释器与 numpy 缓冲，脚手架成本高于收益，且该文件本来就没有这类测试，不在本轮处理。
+
 ### P2：多模态 embedding 拷贝改为返回错误
 
 吸收文件：`phoenix/crates/serving/xai-recsys-mm-server/src/mm_embedding_client.rs`
@@ -78,7 +80,7 @@
 - 根 workspace：`cargo fmt --all -- --check` 通过。
 - 根 workspace：`cargo test --workspace`，255 通过。
 - Phoenix：`cargo fmt --all -- --check` 通过。
-- Phoenix：`PYO3_PYTHON="$PWD/.venv/bin/python3" cargo test --workspace`，127 通过、3 ignored（较上一锚点 +2，为 P1 随附的两个上游单测）。
+- Phoenix：`PYO3_PYTHON="$PWD/.venv/bin/python3" cargo test --workspace`，128 通过、3 ignored（较上一锚点 +3：P1 随附的两个上游单测，加本地补的 `num_real_candidates` 单测）。
 - Phoenix：`.venv/bin/python3 -m pytest tests/ -q`，92 通过。
 - `git diff --check` 通过。
 - `xrex/utils/checkpointing.py` 与 `xrex/driver/hooks.py` 只做到 `py_compile` 校验：venv 内 orbax 与 jax 版本不匹配（`orbax.checkpoint` 导入时触发 `jax.lib.xla_extension.XlaRuntimeError` 缺失），该问题在本轮改动之前已存在。
