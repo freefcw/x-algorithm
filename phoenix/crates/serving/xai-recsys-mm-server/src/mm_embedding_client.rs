@@ -216,23 +216,28 @@ impl MmEmbeddingsClient {
         }
     }
 
-    pub fn fetch_mm_embeddings_sync(
+    pub fn fetch_mm_embeddings_into(
         &self,
-        post_ids: Vec<u64>,
+        post_ids: &[u64],
         emb_dim: usize,
-        candidate_seq_len: usize,
-    ) -> Result<Vec<f16>> {
+        dest: &mut [f16],
+    ) -> Result<()> {
         use rayon::prelude::*;
         use std::sync::atomic::{AtomicUsize, Ordering};
 
+        anyhow::ensure!(emb_dim > 0, "emb_dim must be > 0");
+        anyhow::ensure!(
+            dest.len().is_multiple_of(emb_dim),
+            "dest len {} is not a multiple of emb_dim {}",
+            dest.len(),
+            emb_dim
+        );
         let start_time = std::time::Instant::now();
-        assert!(emb_dim > 0);
         let total_posts = post_ids.len();
-        let processed = candidate_seq_len.min(total_posts);
-        let mut results = vec![f16::ZERO; emb_dim * processed];
+        let processed = total_posts.min(dest.len() / emb_dim);
         let missing = AtomicUsize::new(0);
 
-        results
+        dest[..processed * emb_dim]
             .par_chunks_mut(emb_dim)
             .zip(post_ids.par_iter().take(processed))
             .for_each(|(dst, &post_id)| {
@@ -255,6 +260,18 @@ impl MmEmbeddingsClient {
         }
 
         FETCH_MM_EMBEDDINGS_DURATION.observe(start_time.elapsed().as_secs_f64());
+        Ok(())
+    }
+
+    pub fn fetch_mm_embeddings_sync(
+        &self,
+        post_ids: Vec<u64>,
+        emb_dim: usize,
+        candidate_seq_len: usize,
+    ) -> Result<Vec<f16>> {
+        let processed = candidate_seq_len.min(post_ids.len());
+        let mut results = vec![f16::ZERO; emb_dim.saturating_mul(processed)];
+        self.fetch_mm_embeddings_into(&post_ids, emb_dim, &mut results)?;
         Ok(results)
     }
 
@@ -417,6 +434,14 @@ mod tests {
         assert_eq!(hit.len(), 8);
         assert_eq!(f32::from(hit[0]), 0.5);
         assert_eq!(f32::from(hit[4]), 0.0);
+
+        let mut dest = vec![f16::from_f32(9.0); 12];
+        client
+            .fetch_mm_embeddings_into(&[hit_id, miss_id], 4, &mut dest)
+            .unwrap();
+        assert_eq!(f32::from(dest[0]), 0.5);
+        assert_eq!(f32::from(dest[4]), 9.0);
+        assert_eq!(f32::from(dest[8]), 9.0);
     }
 
     #[tokio::test]
