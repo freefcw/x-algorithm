@@ -81,9 +81,15 @@
 - 根 workspace：`cargo test --workspace`，255 通过。
 - Phoenix：`cargo fmt --all -- --check` 通过。
 - Phoenix：`PYO3_PYTHON="$PWD/.venv/bin/python3" cargo test --workspace`，128 通过、3 ignored（较上一锚点 +3：P1 随附的两个上游单测，加本地补的 `num_real_candidates` 单测）。
-- Phoenix：`.venv/bin/python3 -m pytest tests/ -q`，92 通过。
+- Phoenix：`.venv/bin/python3 -m pytest tests/ -q`，100 通过（较上一锚点 +8：`_should_keep` 六个保留判定单测，加两个 checkpoint 模块独立导入回归测试）。
 - `git diff --check` 通过。
-- `xrex/utils/checkpointing.py` 与 `xrex/driver/hooks.py` 只做到 `py_compile` 校验：venv 内 orbax 与 jax 版本不匹配（`orbax.checkpoint` 导入时触发 `jax.lib.xla_extension.XlaRuntimeError` 缺失），该问题在本轮改动之前已存在。
+
+原先记录的「`xrex/utils/checkpointing.py` 与 `xrex/driver/hooks.py` 只做到 `py_compile` 校验」判断有误，本轮已查清并修复：
+
+- 根因不是 orbax 与 jax 版本不匹配，而是 `xrex/utils/checkpointing.py` 少了 `from xai_checkpointing import fix_jax`。`fix_jax` 是仓库内既有补丁，把 jax 0.8.1 移除的 `jax.lib.xla_extension.XlaRuntimeError` 映射回 `jax.errors.JaxRuntimeError`；另外两处导入 orbax 的文件（`xai_checkpointing/load.py`、`reference/repack_checkpoint.py`）都先导入了它，只有这一处漏了。`orbax-checkpoint==0.9.1` 与 `jax==0.8.1` 是上游有意组合，依赖声明无需改动。
+- 训练主路径未受影响：`trainer.py` 先导入 `xai_checkpointing.load`，补丁在导入 `checkpointing` 之前已生效。受影响的只有单独导入这两个模块，也就是单测与隔离验证本身。
+- 已补齐该导入，`xrex/utils/checkpointing.py` 与 `xrex/train/checkpoint_write.py` 现均可单独导入，并加子进程回归测试守护（这个导入看似未使用，容易被当成冗余删除）。
+- `xrex/driver/hooks.py` 不依赖 orbax，原说明把它一并归因是错的；本轮改动的 `_should_keep` 无外部依赖，已补单测。
 
 ## 6. 锚点结论
 

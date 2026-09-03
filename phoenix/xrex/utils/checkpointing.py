@@ -3,6 +3,8 @@
 import logging
 import os
 
+from xai_checkpointing import fix_jax
+
 import jax
 import jax.numpy as jnp
 import numpy as np
