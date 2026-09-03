@@ -123,4 +123,5 @@ def save_checkpoint(
 
 
 def wait_until_finished():
-    get_checkpointer().wait_until_finished()
+    if _CHECKPOINTER is not None:
+        _CHECKPOINTER.wait_until_finished()
