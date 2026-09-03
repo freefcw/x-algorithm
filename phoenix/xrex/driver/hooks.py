@@ -57,6 +57,10 @@ def _filter_wandb_metrics(metrics: Mapping[str, Any]) -> dict[str, Any]:
     return {k: v for k, v in metrics.items() if not _should_omit_wandb_metric(k)}
 
 
+def _write_filtered_wandb_metrics(metrics: Mapping[str, Any]) -> None:
+    write_wandb_log(_filter_wandb_metrics(metrics))
+
+
 _CLICKHOUSE_HOST = settings.CLICKHOUSE_HOST
 _CLICKHOUSE_RUN_URL = settings.CLICKHOUSE_RUN_URL
 
@@ -405,10 +409,7 @@ class WandbHook(DriverHook):
     @log_elapsed_time
     def on_step(self, metrics: Mapping[str, Any]):
         self.future.result()
-
-        metrics = _filter_wandb_metrics(metrics)
-
-        self.future = self.threadpool.submit(write_wandb_log, metrics=metrics)
+        self.future = self.threadpool.submit(_write_filtered_wandb_metrics, metrics)
 
     def on_train_rollback(self):
         wandb = _import_wandb()
