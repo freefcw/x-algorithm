@@ -384,8 +384,6 @@ def run(
     runner.log_rotate = args.log_rotate
     runner.log_rotate_max_bytes = args.log_rotate_max_bytes
     runner.log_rotate_backup_count = args.log_rotate_backup_count
-    if args.sid_endpoint is not None:
-        runner.sid_endpoint = args.sid_endpoint
     if hasattr(runner, "beam_width") and args.beam_width != 1:
         runner.beam_width = args.beam_width
     if hasattr(runner, "decode_levels") and args.decode_levels != 0:
@@ -802,15 +800,6 @@ if __name__ == "__main__":
             "first N levels. 0 (default) = full decode (cfg.sid_num_levels, "
             "typically 6). Smaller N speeds up beam decode roughly linearly "
             "but makes each beam SID a prefix matching many corpus posts."
-        ),
-    )
-    parser.add_argument(
-        "--sid_endpoint",
-        type=str,
-        default=None,
-        help=(
-            "Optional leftover SID lookup endpoint. History SIDs are parsed "
-            "from the request; this is not required for use_post_sid=True."
         ),
     )
     parser.add_argument(

@@ -62,7 +62,6 @@ tonic-reflection = { workspace = true }
 xai-recsys = { workspace = true }
 xai-recsys-proto = { workspace = true }
 xai-recsys-server = { workspace = true }
-xai-recsys-sid-proto = { workspace = true }
 xai-recsys-mm-server = { workspace = true }
 
 [target.'cfg(target_os = "linux")'.dependencies]

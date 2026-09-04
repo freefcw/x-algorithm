@@ -479,8 +479,6 @@ class BaseModelRunner(RecsysTrainer, Generic[RequestBatch, ModelConfig], ABC):
     readiness_port: int | None = None
     max_inflight_requests: int = 4096
 
-    sid_endpoint: str | None = None
-
     channel_size: int = 2048
     enqueue_timeout_ms: int = 1000
     queue_max_staleness_ms: int = 1200
@@ -4700,24 +4698,8 @@ class RetrievalModelRunner(
         assert isinstance(self.model_config, RecsysTwoTowerModelConfig)
         hash_keys = self.dataset.hash_table.hash_keys
 
-        sid_client = None
-        _use_post_sid = self.model_config.user_tower_config.use_post_sid
-        sid_num_levels = self.model_config.user_tower_config.sid_num_levels if _use_post_sid else 0
-        if _use_post_sid and self.sid_endpoint and sid_num_levels > 0:
-            sid_client = xai_recsys_engine.PySemanticIdClient(
-                self.sid_endpoint,
-                sid_num_levels,
-            )
-            logger.info(
-                "SID client connected: endpoint=%s, sid_num_levels=%d",
-                self.sid_endpoint,
-                sid_num_levels,
-            )
-        elif _use_post_sid:
-            logger.info(
-                "Parsing history SIDs from the request (sid_num_levels=%d); no sid_endpoint",
-                sid_num_levels,
-            )
+        user_tower = self.model_config.user_tower_config
+        sid_num_levels = user_tower.sid_num_levels if user_tower.use_post_sid else 0
 
         return create_recsys_server(
             xai_recsys_engine.RecsysRetrievalPredictorServer,
@@ -4736,7 +4718,6 @@ class RetrievalModelRunner(
             service_time_ewma_alpha=self.service_time_ewma_alpha,
             pipeline_depth=1 if self.use_pipelining else 0,
             mm_client=mm_client,
-            sid_client=sid_client,
             user_id_table_size=hash_keys.user_id_table_size,
             user_hash_scales=hash_keys.user_hash_scales,
             user_biases=hash_keys.user_biases,

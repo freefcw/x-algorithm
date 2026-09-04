@@ -116,20 +116,16 @@ uv run python reference/train_synth.py \
 The retrieval checkpoint contains the candidate index built from the generated
 synthetic snapshots.
 
-Start the SID service and both model servers:
+Start both model servers:
 
 ```bash
 RANK_CKPT=$(ls -d "$PWD"/checkpoints/home_direct_packed_nano_offline_kafka_dump/elapsed_samples_*/*/ | sort | tail -1)
 RETR_CKPT=$(ls -d "$PWD"/checkpoints/xrecsys_two_tower_nano_offline_kafka_dump/elapsed_samples_*/*/ | sort | tail -1)
 
-uv run python reference/sid_index_server.py \
-  --parquet ./synth_index/sid_snapshot/post_sid_v5_256x6.parquet --port 50061 &
-
 XLA_PYTHON_CLIENT_MEM_FRACTION=0.30 uv run python xrex/inference/launch_inference.py \
   --driver local --service_type retrieval \
   --config_name xrecsys_two_tower_nano_offline_kafka_dump \
   --checkpoint_path "$RETR_CKPT" --grpc_port 9990 \
-  --sid_endpoint localhost:50061 \
   --num_devices_per_process 1 --bs_per_device 1 \
   --history_seq_len 128 --candidate_seq_len 8 \
   --max_inflight_requests 16 --allow_random_init false --fake_mm_embeddings true \

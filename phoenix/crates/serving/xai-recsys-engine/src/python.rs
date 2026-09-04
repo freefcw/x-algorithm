@@ -895,8 +895,6 @@ struct RecsysPredictorImpl {
     reload_directive: Arc<StdMutex<Option<ReloadDirective>>>,
     enqueue_timeout_ms: u64,
     mm_embeddings_client: Option<MmEmbeddingsClient>,
-    #[allow(dead_code)]
-    sid_client: Option<Arc<crate::sid_client::SemanticIdClient>>,
     admission: Arc<AdmissionController>,
     #[allow(dead_code)]
     prefetch_mm_query_config: Option<Arc<PrefetchMmQueryConfig>>,
@@ -2734,8 +2732,6 @@ struct RecsysRetrievalPredictorImpl {
     reload_directive: Arc<StdMutex<Option<ReloadDirective>>>,
     enqueue_timeout_ms: u64,
     mm_embeddings_client: Option<MmEmbeddingsClient>,
-    #[allow(dead_code)]
-    sid_client: Option<Arc<crate::sid_client::SemanticIdClient>>,
     admission: Arc<AdmissionController>,
     prefetch_mm_query_config: Option<Arc<PrefetchMmQueryConfig>>,
 }
@@ -3113,7 +3109,6 @@ macro_rules! server_impl {
                         enqueue_timeout_ms = ENQUEUE_TIMEOUT_MS,
                         queue_max_staleness_ms = QUEUE_MAX_STALENESS_MS,
                         mm_client = None,
-                        sid_client = None,
                         user_id_table_size = 100_000,
                         user_hash_scales = vec![196742702, 1852108266],
                         user_biases = vec![1935840681, 167407236],
@@ -3178,7 +3173,6 @@ macro_rules! server_impl {
                         enqueue_timeout_ms: u64,
                         queue_max_staleness_ms: u64,
                         mm_client: Option<&PyMmEmbeddingsClient>,
-                        sid_client: Option<&crate::sid_client::PySemanticIdClient>,
                         user_id_table_size: usize,
                         user_hash_scales: Vec<i64>,
                         user_biases: Vec<i64>,
@@ -3328,7 +3322,6 @@ macro_rules! server_impl {
                         let _guard = runtime.enter();
 
                         let mm_embeddings_client = mm_client.map(|c| c.client().clone());
-                        let sid_client_arc = sid_client.map(|c| c.build());
 
                         let prefetch_mm_query_config: Option<Arc<PrefetchMmQueryConfig>> =
                             if prefetch_mm_query_for_retrieval && mm_embeddings_client.is_some() {
@@ -3367,7 +3360,6 @@ macro_rules! server_impl {
                             reload_directive: reload_directive.clone(),
                             enqueue_timeout_ms,
                             mm_embeddings_client,
-                            sid_client: sid_client_arc,
                             admission: admission.clone(),
                             prefetch_mm_query_config,
                         };
@@ -3706,7 +3698,6 @@ pub fn xai_recsys_engine(_py: Python<'_>, m: &Bound<PyModule>) -> PyResult<()> {
     m.add_class::<RankingBatchPrep>()?;
     m.add_class::<RetrievalBatchPrep>()?;
     m.add_class::<PyMmEmbeddingsClient>()?;
-    m.add_class::<crate::sid_client::PySemanticIdClient>()?;
     m.add_class::<RecsysPredictorServer>()?;
     m.add_class::<RecsysRetrievalPredictorServer>()?;
     m.add_class::<PredictRequestBatch>()?;

@@ -136,8 +136,10 @@ embedding. What ships is the *entire* loop:
   reads every post as "no SID" — no error, and no gradient to the SID tables.
 - *Serve:* `sid_index_server.py --parquet <snapshot>` answers the production
   `SidLookupService` gRPC contract from that parquet;
-  `sid_mock_server.py` answers it with on-the-fly synthetic codes. The
-  serving engine's `PySemanticIdClient` speaks to either, unchanged.
+  `sid_mock_server.py` answers it with on-the-fly synthetic codes. Neither is
+  needed to serve the model: the inference engine reads history SIDs straight
+  off the request, so these are for callers that have to resolve codes
+  themselves.
 
 Wire convention note: servers speak 0-indexed codes (`[0, 256)`); the model's
 input buffer is 1-indexed `uint16` (`0` = missing). `oss_recsys_synth.py`
