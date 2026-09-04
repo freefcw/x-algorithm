@@ -78,7 +78,7 @@ cd phoenix && uv sync --dev --group service && cd ..
 | 选择后过滤 | 最终的可见性和去重检查 |
 | 副作用 (Side Effects) | 缓存请求信息以供未来使用 |
 
-服务器对外暴露 `ScoredPostsService`（排序帖子）和 `ForYouFeedService`（最终 Feed）。上游依赖（用户资料、帖子内容、行为日志、内容安全）通过 `home-mixer/clients/` 下的 trait 抽象——当前是带演示模式（`HOME_MIXER_MODE=demo`；`HOME_MIXER_DEMO=1` 是旧别名）的桩实现，设计上就是留给你替换为自己平台服务的。
+服务器对外暴露 `ScoredPostsService`（排序帖子）、`ForYouFeedService`（最终 Feed），以及独立垂直链路的 `BusinessFeedService`（`GetBusinessFeed`）。上游依赖（用户资料、帖子内容、行为日志、内容安全）通过 `home-mixer/clients/` 下的 trait 抽象——当前是带演示模式（`HOME_MIXER_MODE=demo`；`HOME_MIXER_DEMO=1` 是旧别名）的桩实现，设计上就是留给你替换为自己平台服务的。
 
 ### Thunder
 

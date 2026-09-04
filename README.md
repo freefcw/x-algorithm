@@ -142,7 +142,7 @@ The orchestration layer that assembles the For You feed. It leverages the `Candi
 | Post-Selection Filters | Final visibility and dedup checks |
 | Side Effects | Cache request info for future use |
 
-The server exposes `ScoredPostsService` (ranked posts) and `ForYouFeedService` (final feed). Upstream dependencies (user profiles, post content, engagement logs, trust & safety) are abstracted behind traits in `home-mixer/clients/` — currently stubs with a demo mode (`HOME_MIXER_MODE=demo`; `HOME_MIXER_DEMO=1` is a legacy alias), designed to be replaced with your platform's services.
+The server exposes `ScoredPostsService` (ranked posts) and `ForYouFeedService` (final feed), plus a separate vertical `BusinessFeedService` (`GetBusinessFeed`). Upstream dependencies (user profiles, post content, engagement logs, trust & safety) are abstracted behind traits in `home-mixer/clients/` — currently stubs with a demo mode (`HOME_MIXER_MODE=demo`; `HOME_MIXER_DEMO=1` is a legacy alias), designed to be replaced with your platform's services.
 
 ### Thunder
 
@@ -240,7 +240,7 @@ Predictions:
 ├── P(quote)
 ├── P(click)
 ├── P(profile_click)
-├── P(video_view)
+├── P(video_quality_view)  (vqv_score in code)
 ├── P(photo_expand)
 ├── P(share)
 ├── P(dwell)
