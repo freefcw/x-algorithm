@@ -2,13 +2,16 @@
 
 `home-mixer` 本质上是一个“协议和依赖拼接器”。要理解它，必须同时看 proto 和客户端抽象。
 
-## 1. 三份最关键的 proto
+## 1. 最关键的几份 proto
+
+`proto/definitions/` 共五份协议，全部会被 `home-mixer` 使用：
 
 | proto | 作用 | `home-mixer` 如何使用 |
 | --- | --- | --- |
-| `home_mixer.proto` | 对外服务协议 | `ScoredPostsService.GetScoredPosts` / `DebugScoredPosts`；`ForYouFeedService.GetForYouFeed` / `GetForYouFeedV2` |
+| `home_mixer.proto` | 对外服务协议 | `ScoredPostsService.GetScoredPosts` / `DebugScoredPosts`；`ForYouFeedService.GetForYouFeed` / `GetForYouFeedV2`；`BusinessFeedService.GetBusinessFeed` |
 | `in_network.proto` | Thunder 协议 | `InNetworkPostsService.GetInNetworkPosts` |
 | `recsys.proto` | Phoenix 协议 | `PhoenixRetrievalService.Retrieve`、`PhoenixPredictionService.PredictNextActions` |
+| `recommendation_data.proto` | BusinessFeed 数据服务协议 | `clients/mrpyq_recommendation_data_client.rs` 消费，支撑 `GetBusinessFeed` |
 | `vm_ranker.proto`（可选） | VM Ranker 二次重排 | `VmRankerService.Rank`；默认不装配 |
 
 ```mermaid

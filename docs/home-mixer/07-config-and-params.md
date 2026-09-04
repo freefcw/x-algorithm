@@ -73,6 +73,8 @@ flowchart TD
 | `HOME_MIXER_ENABLE_COLD_START_THOMPSON_SAMPLING` | `feature_policy.rs` | 在冷启动候选中启用 Beta Thompson Sampling | 默认关闭；只有 Author Cold Start 同时开启才生效 |
 | `VM_RANKER_GRPC_ADDR` | `candidate_pipeline/phoenix_candidate_pipeline.rs` | VM Ranker 服务地址；只提供地址不会自动启用 | 未设置时不装配 `VMRanker` Scorer |
 | `VM_RANKER_VALUE_MODEL_ID` | `candidate_pipeline/phoenix_candidate_pipeline.rs` | 选择 value model；上游从 feature switch 读取，本地由装配显式配置 | 未设置时服务端按 `unknown` 记账并使用默认权重 |
+| `MRPYQ_RECOMMENDATION_DATA_ADDR` | `clients/mrpyq_recommendation_data_client.rs` | BusinessFeed 数据服务（MRPYQ）gRPC 地址 | 未设置时装配 Disabled client，BusinessFeed 请求返回 FailedPrecondition |
+| `MRPYQ_RECOMMENDATION_DATA_TIMEOUT_MS` | `clients/mrpyq_recommendation_data_client.rs` | BusinessFeed 数据服务调用超时（毫秒） | 默认 `500`（`params/config.rs`） |
 | `HOME_MIXER_DEMO` | `demo.rs` | `HOME_MIXER_MODE=demo` 的旧兼容别名 | 仅兼容已有脚本；新配置使用 `HOME_MIXER_MODE` |
 
 Phoenix 两个主服务地址通常同时指向 `phoenix/scripts/run_grpc_gateway.py` 启动的网关（默认 `http://localhost:50053`）。完整启动组合见 [getting-started 第四步](../getting-started/05-第四步-跑通完整推荐链路.md)。
@@ -132,6 +134,7 @@ Phoenix 两个主服务地址通常同时指向 `phoenix/scripts/run_grpc_gatewa
 | `TOPIC_RETRIEVAL_TIMEOUT_MS` | `500` | Topic 召回上限 |
 | `VF_REQUEST_TIMEOUT_MS` | `500` | 单组可见性检查上限 |
 | `VM_RANKER_TIMEOUT_MS` | `500` | 可选 VM Ranker 二次重排上限 |
+| `MRPYQ_RECOMMENDATION_DATA_TIMEOUT_MS` | `500` | BusinessFeed 数据服务调用上限 |
 
 ### 4.2 对外监听结构
 
@@ -142,6 +145,7 @@ flowchart LR
 
     G --> S["ScoredPostsService"]
     G --> F["ForYouFeedService"]
+    G --> B["BusinessFeedService"]
     H --> R["空 axum Router"]
 ```
 

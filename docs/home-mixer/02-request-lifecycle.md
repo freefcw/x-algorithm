@@ -6,12 +6,12 @@
 
 启动入口在 `home-mixer/main.rs`。运行模式与启动不变量位于 `runtime_config.rs`，协议映射位于 `query_builder.rs`，gRPC 装配 facade 位于 `server.rs`。流程如下：
 
-1. 解析 `HomeMixerConfig`
-2. 初始化日志
+1. 初始化日志（`env_logger::init()`）
+2. 解析 CLI 参数，再从环境变量解析 `HomeMixerConfig`
 3. `HomeMixerServer::build(config).await`
 4. 构造共享 `QueryBuilder`、内层 `PhoenixCandidatePipeline`、`ScoredPostsServer`
-5. 构造外层 `ForYouCandidatePipeline` 与 `ForYouFeedServer`
-6. 通过 `HomeMixerServer::register` 注册两个 gRPC 服务、reflection、压缩和消息限制
+5. 构造外层 `ForYouCandidatePipeline`、`ForYouFeedServer` 与 `RuleBasedBusinessFeedServer`
+6. `main.rs` 构造 gRPC reflection 服务；`HomeMixerServer::register` 注册三个 gRPC 服务（`ScoredPostsService`/`ForYouFeedService`/`BusinessFeedService`，带压缩和消息大小限制），随后 `main.rs` 把 reflection 加入 routes
 7. 启动 gRPC，以及空的 health/metrics HTTP 监听（端口开着，没有 `/health` 或 `/metrics` 路由）
 
 ```mermaid

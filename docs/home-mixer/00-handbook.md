@@ -25,7 +25,7 @@ flowchart LR
 
 ### 2.1 `home-mixer` 负责什么
 
-- 接收 `ScoredPostsService` 的 Get/Debug 请求和 `ForYouFeedService` 的 legacy/V2 请求
+- 接收 `ScoredPostsService` 的 Get/Debug 请求和 `ForYouFeedService` 的 legacy/V2 请求（另有独立商业链路的 `BusinessFeedService.GetBusinessFeed`，本组文档聚焦推荐主链）
 - 由 `QueryBuilder` 构造内部 `ScoredPostsQuery` 与请求/预测身份
 - 通过上游命名 Query Hydrator owners 获取 scoring/retrieval sequence 和 user feature fields
 - 从 Thunder / Phoenix 取候选
@@ -41,7 +41,7 @@ flowchart LR
 
 ## 3. 一次请求怎么流动
 
-请求入口的 tonic 实现在 `home-mixer/scored_posts_server.rs`（装配 facade 在 `server.rs`），核心流程固定：
+请求入口的 tonic trait 实现在 `home-mixer/server.rs`（`impl ScoredPostsService for ScoredPostsServer`、`impl ForYouFeedService for ForYouFeedServer`），打分与响应映射在 `scored_posts_server.rs`，核心流程固定：
 
 1. `QueryBuilder` 校验并映射 proto 请求
 2. 调用内层 `PhoenixCandidatePipeline::execute()`

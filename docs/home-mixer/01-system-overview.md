@@ -2,7 +2,7 @@
 
 ## 1. `home-mixer` 在整套系统里的位置
 
-`home-mixer` 对外暴露两个 gRPC 服务：`ScoredPostsService` 提供 Get/Debug，`ForYouFeedService` 提供 legacy ScoredPostsQuery 与 additive `ForYouFeedQuery` V2。它本身不存帖子、不训练模型、不消费 Kafka，而是把多个上游系统的能力拼成同步 Feed 请求链路。
+`home-mixer` 对外暴露三个 gRPC 服务：`ScoredPostsService` 提供 Get/Debug，`ForYouFeedService` 提供 legacy ScoredPostsQuery 与 additive `ForYouFeedQuery` V2，`BusinessFeedService` 提供 `GetBusinessFeed`（独立的商业 Feed 垂直链路，本组文档聚焦前两个推荐主链服务）。它本身不存帖子、不训练模型、不消费 Kafka，而是把多个上游系统的能力拼成同步 Feed 请求链路。
 
 ```mermaid
 flowchart TB
