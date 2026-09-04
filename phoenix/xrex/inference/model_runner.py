@@ -491,7 +491,7 @@ class BaseModelRunner(RecsysTrainer, Generic[RequestBatch, ModelConfig], ABC):
     _service_timer: Timer | None = field(default=None, init=False)
     use_pipelining: bool = True
     embedding_gather_threads: int = 16
-    use_pinned_d2h: bool = False
+    use_pinned_d2h: bool = True
     pinned_d2h_num_buffers: int = 3
 
     log_rotate: bool = False

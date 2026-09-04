@@ -647,9 +647,9 @@ if __name__ == "__main__":
     parser.add_argument(
         "--use_pinned_d2h",
         type=str2bool,
-        default=False,
+        default=True,
         help="Use CUDA pinned host memory for D2H transfer (~50 GB/s vs JAX's ~3 GB/s). "
-        "Saves ~29ms/inference.",
+        "Saves ~29ms/inference. Default True; pass False to opt out.",
     )
     parser.add_argument(
         "--pinned_d2h_num_buffers",
