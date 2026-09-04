@@ -469,6 +469,16 @@ fn parse_window_mib(v: Option<&str>, default_mib: u32) -> Option<u32> {
     (mib > 0).then(|| mib.min(1024) << 20)
 }
 
+pub(crate) fn apply_copy_port_http2(endpoint: transport::Endpoint) -> transport::Endpoint {
+    let mut endpoint = endpoint
+        .initial_connection_window_size(*H2_CONN_WINDOW)
+        .initial_stream_window_size(*H2_STREAM_WINDOW);
+    if *H2_ADAPTIVE_WINDOW {
+        endpoint = endpoint.http2_adaptive_window(true);
+    }
+    endpoint
+}
+
 pub(crate) async fn get_channels(target: String) -> Result<Vec<transport::Channel>, Status> {
     if target.is_empty() {
         return Ok(Vec::new());
@@ -491,13 +501,8 @@ pub(crate) async fn get_channels(target: String) -> Result<Vec<transport::Channe
             .map(|(endpoint, target)| {
                 let t = target.to_string();
                 async move {
-                    let mut endpoint = endpoint
-                        .connect_timeout(*CONNECT_TIMEOUT)
-                        .initial_connection_window_size(*H2_CONN_WINDOW)
-                        .initial_stream_window_size(*H2_STREAM_WINDOW);
-                    if *H2_ADAPTIVE_WINDOW {
-                        endpoint = endpoint.http2_adaptive_window(true);
-                    }
+                    let endpoint =
+                        apply_copy_port_http2(endpoint).connect_timeout(*CONNECT_TIMEOUT);
                     (endpoint.connect().await, t)
                 }
             }),
