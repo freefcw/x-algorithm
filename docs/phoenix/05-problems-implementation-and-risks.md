@@ -111,7 +111,7 @@ Phoenix 的处理方式：
 flowchart TD
     A[测试覆盖] --> B[test_recsys_model.py]
     A --> C[test_recsys_retrieval_model.py]
-    B --> D[重点验证 mask 结构]
+    B --> D[重点验证 mask 结构与位置/分桶工具函数]
     C --> E[验证 CandidateTower 形状和归一化]
     C --> F[验证召回前向输出形状]
     C --> G[验证 runner 初始化与 retrieve]

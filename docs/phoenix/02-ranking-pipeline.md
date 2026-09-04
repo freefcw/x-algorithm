@@ -157,13 +157,14 @@ flowchart TD
 
 ## 9. 输出层和排序逻辑
 
-精排模型本体 `PhoenixModel.__call__` 的输出是：
+精排模型本体 `PhoenixModel.__call__` 返回 `RecsysModelOutput`（NamedTuple），其中：
 
 ```text
-logits: [B, C, num_actions]
+output.logits: [B, C, num_actions]  # 离散行为头
+output.continuous_preds             # 可选连续头（如 dwell_time）
 ```
 
-之后 `RecsysInferenceRunner` 做了业务后处理：
+之后 `RecsysInferenceRunner` 对 `output.logits` 做业务后处理：
 
 1. `sigmoid(logits)` 转概率。
 2. 取 `probs[:, :, 0]` 作为主排序分数。
@@ -205,5 +206,5 @@ Phoenix 在实现上做了几件偏工程化的处理：
 ### 边界
 
 - 当前排序逻辑只用 `favorite_score`。
-- 没有完整精排前向单元测试，主要只测了 attention mask。
+- 没有完整精排前向单元测试；`test_recsys_model.py` 目前覆盖 attention mask、right-anchored RoPE 位置、post-age 分桶、连续值归一化与连续行为配置等工具函数。
 - 训练期的 label 定义、损失函数和多目标融合方式见 `scripts/train_ranker.py` 的 `loss_fn`（前 18 个行为 BCE + dwell_time MSE）与 `docs/training/training_data_spec.md`。

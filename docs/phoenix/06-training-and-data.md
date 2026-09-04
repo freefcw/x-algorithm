@@ -43,7 +43,7 @@ Phoenix 的训练输入契约由模型结构固定，`scripts/train_ranker.py` /
 
 - 原始离散特征通过 `RecsysBatch` 进入模型。
 - 连续 embedding 通过 `RecsysEmbeddings` 进入模型。
-- 输出是 `[B, C, num_actions]` 的多目标 logits。
+- 输出是 `RecsysModelOutput`，其 `logits` 字段为 `[B, C, num_actions]` 的多目标 logits（另有可选 `continuous_preds` 连续头）。
 
 ### 3.2 召回模型输入契约
 
