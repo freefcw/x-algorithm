@@ -247,6 +247,8 @@ graph TD
     F --> L[retrieval_service 热加载]
 ```
 
+> 现状提醒：策略化重构后，`ranker_service` 的 Phoenix 策略只在启动时加载一次 checkpoint（`phoenix_strategy.py`），重训后需要重启进程才能生效；`retrieval_service` 会在 health 与请求路径重新 `create_model_registry(...)`，能感知新 checkpoint。编排上图的“ranker 热加载”前，需先确认服务已支持或改为重启发布。
+
 ### 6.3 关键编排约束
 
 - `encode_corpus` 必须**在 retrieval_service 切换到新 checkpoint 之前**完成，否则服务会跑 "新用户塔 × 旧物品向量"。
