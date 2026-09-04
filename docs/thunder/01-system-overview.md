@@ -78,8 +78,8 @@ flowchart LR
 7. 根据运行模式二选一：
    - **演示模式**（`--demo-seed-posts N > 0`）：调用 `demo_seed::generate_demo_posts` 生成 N 条模拟帖子直接灌入 `PostStore`，不启动 Kafka。作者固定 101~105，Snowflake ID，`created_at` 落在过去 24h（且必须在 retention 内），约 1/5 回复、1/7 视频。少了 Snowflake 或时间窗口，AgeFilter 会把种子全丢掉。
    - **正常模式**：gRPC/HTTP 已经在听。`--is-serving true`（默认）才启动 v2 Kafka 并等待 init；`false` 会跳过消费和 trim，仓库为空，但查询口仍开着。init 信号是每线程第一个满 batch，不是追平。
-8. 调用 `post_store.finalize_init()`，随后开启统计日志和自动裁剪。
-9. 打印 `Server ready`。
+8. 演示模式或 `--is-serving true` 的正常模式：调用 `post_store.finalize_init()`，随后开启统计日志和自动裁剪（`thunder/main.rs` 中这三步都在演示分支或 `if args.is_serving` 块内）；`--is-serving false` 时三步全部跳过。
+9. 打印 `Server ready`（两种模式都会打印）。
 
 > 注意：正常模式下如果没有可用的 Kafka（或消息量不足一个 batch），启动会一直停在等待初始化信号，这是"没有 Kafka 就起不来"的根因。本地演示请用 `--demo-seed-posts`。
 
@@ -98,6 +98,7 @@ sequenceDiagram
     Main->>HTTP: spawn serve()
     Main->>Kafka: start_kafka(...)
     Kafka-->>Main: 每线程一次 init signal
+    Note over Main,Store: 以下三步仅演示模式或 --is-serving true 时执行
     Main->>Store: finalize_init()
     Main->>Store: start_stats_logger()
     Main->>Store: start_auto_trim()
