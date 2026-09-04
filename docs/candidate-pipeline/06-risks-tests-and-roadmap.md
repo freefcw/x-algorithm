@@ -7,7 +7,7 @@
 - 同 stage Hydrator 的快照语义已被明确记录；Home Mixer 将依赖 CoreData 的 Gizmoduck profile hydration 移到 post-selection，避免读取未写回的 retweet author。
 - Pipeline 对每个 stage 输出 request-scoped component、耗时、输入/输出规模和错误日志；SideEffect 失败不会静默丢失。
 - Selector 后的 underfill 会输出 `result_underfilled` 告警，包含 target、actual、post-selection 删除数量和未选候选数量，但不会绕过安全过滤进行补量。
-- Query Hydrator、Source 和 Candidate Hydrator 的长度保护与逐候选错误隔离由框架统一处理。
+- Candidate Hydrator 和 Scorer 的等长保护与逐候选错误隔离（`hydrator.rs` / `scorer.rs` 中长度不匹配时整份转为逐候选 `Err`）、Query Hydrator 和 Source 的逐组件失败隔离（失败后忽略该组件输出）由框架统一处理。
 
 ## 2. 仍然可达的风险
 
