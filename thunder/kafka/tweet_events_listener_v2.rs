@@ -1,4 +1,4 @@
-use anyhow::Result;
+use anyhow::{anyhow, Result};
 use log::{info, warn};
 use rdkafka::config::ClientConfig;
 use rdkafka::consumer::{CommitMode, Consumer, StreamConsumer};
@@ -26,24 +26,42 @@ pub async fn start_tweet_event_processing_v2(
     post_store: Arc<PostStore>,
     tx: tokio::sync::mpsc::Sender<i64>,
 ) {
-    let kafka_num_threads = args.kafka_num_threads;
+    // A zero thread/batch configuration would either start no consumers or flush
+    // every message unexpectedly. Keep the service live even with malformed CLI
+    // values (clap validation may be bypassed by programmatic callers).
+    let kafka_num_threads = args.kafka_num_threads.max(1);
 
     info!(
         "Starting {} Kafka v2 consumer threads (brokers: {})",
         kafka_num_threads, args.kafka_brokers
     );
 
+    // All consumers must share one group so Kafka assigns partitions among them.
+    // Giving each thread a distinct group causes every event to be consumed N times.
+    let group_id = format!("{}-v2", args.kafka_group_id);
+    let topic = if args.in_network_events_consumer_dest.is_empty() {
+        "in-network-events".to_owned()
+    } else {
+        args.in_network_events_consumer_dest.clone()
+    };
+
     for thread_id in 0..kafka_num_threads {
         let post_store_clone = Arc::clone(&post_store);
         let brokers = args.kafka_brokers.clone();
-        let group_id = format!("{}-{}-{}", args.kafka_group_id, "v2", thread_id);
-        let batch_size = args.kafka_batch_size;
+        let batch_size = args.kafka_batch_size.max(1);
         let tx_clone = tx.clone();
         let security_protocol = args.security_protocol.clone();
-        let sasl_mechanism = args.producer_sasl_mechanism.clone();
-        let sasl_username = args.producer_sasl_username.clone();
-        let sasl_password = args.producer_sasl_password.clone();
-        let auto_offset_reset = args.auto_offset_reset.clone();
+        let sasl_mechanism = args.sasl_mechanism.clone();
+        let sasl_username = args.sasl_username.clone();
+        let sasl_password = args.sasl_password.clone();
+        let auto_offset_reset = if args.skip_to_latest {
+            "latest".to_owned()
+        } else {
+            args.auto_offset_reset.clone()
+        };
+        let fetch_timeout_ms = args.fetch_timeout_ms;
+        let topic = topic.clone();
+        let group_id = group_id.clone();
 
         tokio::spawn(async move {
             info!("Starting v2 consumer thread {}", thread_id,);
@@ -55,7 +73,8 @@ pub async fn start_tweet_event_processing_v2(
                 .set("group.id", &group_id)
                 .set("auto.offset.reset", &auto_offset_reset)
                 .set("enable.auto.commit", "false")
-                .set("security.protocol", &security_protocol);
+                .set("security.protocol", &security_protocol)
+                .set("fetch.wait.max.ms", fetch_timeout_ms.to_string());
 
             if security_protocol != "PLAINTEXT" {
                 config.set("sasl.mechanism", &sasl_mechanism);
@@ -70,7 +89,7 @@ pub async fn start_tweet_event_processing_v2(
 
             // Subscribe to in-network events topic
             consumer
-                .subscribe(&["in-network-events"])
+                .subscribe(&[topic.as_str()])
                 .expect("Failed to subscribe to topic");
 
             if let Err(e) =
@@ -159,7 +178,7 @@ async fn process_tweet_events_v2(
                     let messages = std::mem::take(&mut message_buffer);
                     let post_store_clone = Arc::clone(&post_store);
 
-                    let _ = tokio::task::spawn_blocking(move || {
+                    tokio::task::spawn_blocking(move || {
                         match deserialize_batch(messages) {
                             Err(e) => warn!("Error processing batch: {:#}", e),
                             Ok((light_posts, delete_posts)) => {
@@ -168,7 +187,8 @@ async fn process_tweet_events_v2(
                             }
                         };
                     })
-                    .await;
+                    .await
+                    .map_err(|e| anyhow!("batch processing task failed: {e}"))?;
 
                     // Commit offsets after processing
                     if let Err(e) = consumer.commit_consumer_state(CommitMode::Async) {

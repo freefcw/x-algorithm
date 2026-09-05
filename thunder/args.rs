@@ -102,7 +102,10 @@ pub struct Args {
 
     // ─── 运行模式 ───
     /// 是否为 serving 模式（消费 v2 管道，提供 gRPC 查询）
-    #[arg(long, default_value_t = true)]
+    // `SetTrue` (clap's default for bools) cannot express `false` when the
+    // default is true. Use value-based parsing so deployments can disable
+    // serving explicitly with `--is-serving=false`.
+    #[arg(long, default_value_t = true, action = clap::ArgAction::Set)]
     pub is_serving: bool,
 
     /// 是否启用性能分析
@@ -125,5 +128,12 @@ mod tests {
         let args = Args::parse_from(["thunder"]);
         assert_eq!(args.grpc_port, 50052);
         assert_eq!(args.request_timeout_ms, 500);
+        assert!(args.is_serving);
+    }
+
+    #[test]
+    fn serving_mode_can_be_disabled_explicitly() {
+        let args = Args::parse_from(["thunder", "--is-serving=false"]);
+        assert!(!args.is_serving);
     }
 }

@@ -91,7 +91,7 @@ impl PostStore {
             .as_secs() as i64;
         posts.retain(|p| {
             p.created_at < current_time
-                && current_time - p.created_at <= (self.retention_seconds as i64)
+                && current_time.saturating_sub(p.created_at).max(0) as u64 <= self.retention_seconds
         });
 
         // Sort remaining posts by created_at timestamp
@@ -417,8 +417,8 @@ impl PostStore {
         tokio::task::spawn_blocking(move || {
             let current_time = std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
-                .unwrap()
-                .as_secs();
+                .unwrap_or_default()
+                .as_secs() as i64;
 
             let mut total_trimmed = 0;
 
@@ -435,7 +435,12 @@ impl PostStore {
                     let user_posts = entry.value_mut();
 
                     while let Some(oldest_post) = user_posts.front() {
-                        if current_time - (oldest_post.created_at as u64) > retention_seconds {
+                        // Future-dated events are retained until their timestamp ages out;
+                        // casting to u64 before subtraction would underflow and evict them
+                        // immediately when `created_at > current_time`.
+                        let age_seconds =
+                            current_time.saturating_sub(oldest_post.created_at).max(0) as u64;
+                        if age_seconds > retention_seconds {
                             let trimmed_post = user_posts.pop_front().unwrap();
                             posts_map.remove(&trimmed_post.post_id);
 
@@ -514,6 +519,9 @@ impl PostStore {
         self.original_posts_by_user.clear();
         self.secondary_posts_by_user.clear();
         self.video_posts_by_user.clear();
+        // Deletion tombstones must be cleared together with posts. Otherwise a post
+        // re-ingested after a reset is silently discarded forever.
+        self.deleted_posts.clear();
         info!("PostStore cleared");
     }
 }
@@ -522,5 +530,48 @@ impl Default for PostStore {
     fn default() -> Self {
         // Default to 2 days retention, no timeout
         Self::new(2 * 24 * 60 * 60, 0)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use x_algorithm_proto::thunder::{LightPost, TweetDeleteEvent};
+
+    fn post(post_id: i64, author_id: i64) -> LightPost {
+        LightPost {
+            post_id,
+            author_id,
+            created_at: std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_secs() as i64
+                - 1,
+            in_reply_to_post_id: None,
+            in_reply_to_user_id: None,
+            is_retweet: false,
+            is_reply: false,
+            source_post_id: None,
+            source_user_id: None,
+            has_video: false,
+            conversation_id: None,
+        }
+    }
+
+    #[test]
+    fn clear_removes_delete_tombstones() {
+        let store = PostStore::new(3600, 0);
+        store.mark_as_deleted(vec![TweetDeleteEvent {
+            post_id: 7,
+            deleted_at: 1,
+        }]);
+
+        // A post deleted before a feeder restart must be accepted after an explicit reset.
+        store.clear();
+        store.insert_posts(vec![post(7, 42)]);
+
+        let posts = store.get_all_posts_by_users(&[42], &HashSet::new(), Instant::now(), 0);
+        assert_eq!(posts.len(), 1);
+        assert_eq!(posts[0].post_id, 7);
     }
 }

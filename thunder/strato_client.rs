@@ -9,6 +9,12 @@ use log::warn;
 
 pub struct StratoClient;
 
+impl Default for StratoClient {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl StratoClient {
     pub fn new() -> Self {
         StratoClient

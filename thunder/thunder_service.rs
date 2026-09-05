@@ -38,6 +38,7 @@ impl ThunderServiceImpl {
         strato_client: Arc<StratoClient>,
         max_concurrent_requests: usize,
     ) -> Self {
+        let max_concurrent_requests = max_concurrent_requests.max(1);
         info!(
             "Initializing ThunderService with max_concurrent_requests={}",
             max_concurrent_requests
@@ -66,7 +67,7 @@ impl ThunderServiceImpl {
 
         let now = SystemTime::now()
             .duration_since(UNIX_EPOCH)
-            .unwrap()
+            .unwrap_or_default()
             .as_secs() as i64;
 
         // Time since most recent post
@@ -145,6 +146,12 @@ impl ThunderServiceImpl {
     }
 }
 
+/// Determine whether the request needs a relationship-service fallback.
+/// Logging/debug flags must not change data retrieval semantics.
+fn should_fetch_following_list(request: &GetInNetworkPostsRequest) -> bool {
+    request.following_user_ids.is_empty()
+}
+
 #[tonic::async_trait]
 impl InNetworkPostsService for ThunderServiceImpl {
     /// Get posts from users in the network
@@ -181,6 +188,12 @@ impl InNetworkPostsService for ThunderServiceImpl {
 
         let req = request.into_inner();
 
+        // PostStore uses signed IDs while the public protobuf contract uses
+        // uint64. Reject values that cannot be represented instead of
+        // silently wrapping them into unrelated negative IDs.
+        let request_user_id = i64::try_from(req.user_id)
+            .map_err(|_| Status::invalid_argument("user_id exceeds signed 64-bit range"))?;
+
         if req.debug {
             info!(
                 "Received GetInNetworkPosts request: user_id={}, following_count={}, exclude_tweet_ids={}",
@@ -191,7 +204,7 @@ impl InNetworkPostsService for ThunderServiceImpl {
         }
 
         // If following_user_id list is empty, fetch it from Strato
-        let following_user_ids = if req.following_user_ids.is_empty() && req.debug {
+        let following_user_ids = if should_fetch_following_list(&req) {
             info!(
                 "Following list is empty, fetching from Strato for user {}",
                 req.user_id
@@ -199,7 +212,7 @@ impl InNetworkPostsService for ThunderServiceImpl {
 
             match self
                 .strato_client
-                .fetch_following_list(req.user_id as i64, MAX_INPUT_LIST_SIZE as i32)
+                .fetch_following_list(request_user_id, MAX_INPUT_LIST_SIZE as i32)
                 .await
             {
                 Ok(following_list) => {
@@ -208,7 +221,13 @@ impl InNetworkPostsService for ThunderServiceImpl {
                         following_list.len(),
                         req.user_id
                     );
-                    following_list.into_iter().map(|id| id as u64).collect()
+                    let mut ids = Vec::with_capacity(following_list.len());
+                    for id in following_list {
+                        ids.push(u64::try_from(id).map_err(|_| {
+                            Status::internal("Strato returned an invalid negative user ID")
+                        })?);
+                    }
+                    ids
                 }
                 Err(e) => {
                     warn!(
@@ -250,11 +269,13 @@ impl InNetworkPostsService for ThunderServiceImpl {
                 following_count, MAX_INPUT_LIST_SIZE, req.user_id
             );
         }
-        let following_user_ids: Vec<i64> = following_user_ids
-            .into_iter()
-            .take(MAX_INPUT_LIST_SIZE)
-            .map(|id| id as i64)
-            .collect();
+        let mut following_user_ids_i64 = Vec::with_capacity(following_user_ids.len());
+        for id in following_user_ids.into_iter().take(MAX_INPUT_LIST_SIZE) {
+            following_user_ids_i64.push(i64::try_from(id).map_err(|_| {
+                Status::invalid_argument("following_user_ids contains an invalid ID")
+            })?);
+        }
+        let following_user_ids = following_user_ids_i64;
 
         let exclude_count = req.exclude_tweet_ids.len();
         if exclude_count > MAX_INPUT_LIST_SIZE {
@@ -263,21 +284,19 @@ impl InNetworkPostsService for ThunderServiceImpl {
                 exclude_count, MAX_INPUT_LIST_SIZE, req.user_id
             );
         }
-        let exclude_tweet_ids: Vec<u64> = req
-            .exclude_tweet_ids
-            .into_iter()
-            .take(MAX_INPUT_LIST_SIZE)
-            .collect();
+        let mut exclude_tweet_ids = Vec::with_capacity(exclude_count.min(MAX_INPUT_LIST_SIZE));
+        for id in req.exclude_tweet_ids.into_iter().take(MAX_INPUT_LIST_SIZE) {
+            exclude_tweet_ids.push(i64::try_from(id).map_err(|_| {
+                Status::invalid_argument("exclude_tweet_ids contains an invalid ID")
+            })?);
+        }
 
         // Clone Arc references needed inside spawn_blocking
         let post_store = Arc::clone(&self.post_store);
-        let request_user_id = req.user_id as i64;
-
         // Use spawn_blocking to avoid blocking tokio's async runtime
         let proto_posts = tokio::task::spawn_blocking(move || {
             // Create exclude tweet IDs set for efficient filtering of previously seen posts
-            let exclude_tweet_ids: HashSet<i64> =
-                exclude_tweet_ids.iter().map(|&id| id as i64).collect();
+            let exclude_tweet_ids: HashSet<i64> = exclude_tweet_ids.into_iter().collect();
 
             let start_time = Instant::now();
 
@@ -334,4 +353,22 @@ fn score_recent(mut light_posts: Vec<LightPost>, max_results: usize) -> Vec<Ligh
 
     // Limit to max results
     light_posts.into_iter().take(max_results).collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::should_fetch_following_list;
+    use x_algorithm_proto::thunder::GetInNetworkPostsRequest;
+
+    #[test]
+    fn following_fallback_is_independent_of_debug_flag() {
+        let mut request = GetInNetworkPostsRequest::default();
+        assert!(should_fetch_following_list(&request));
+
+        request.debug = true;
+        assert!(should_fetch_following_list(&request));
+
+        request.following_user_ids.push(42);
+        assert!(!should_fetch_following_list(&request));
+    }
 }
