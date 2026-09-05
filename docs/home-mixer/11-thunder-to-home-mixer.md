@@ -73,8 +73,7 @@ Thunder 对外返回的不是完整帖子，而是 `LightPost`。
 
 这里有两个重要结论：
 
-1. `home-mixer` 当前默认不依赖 Thunder 自己回查 following list。  
-   因为 `debug=false`，Thunder 里的“following 为空时从 Strato 回查”逻辑不会触发。
+1. `home-mixer` 当前通常会直接传入 following list；如果上游没有提供，Thunder 会回查 Strato。`debug=false` 只表示关闭调试日志，不会禁用这条回退。
 
 2. `home-mixer` 把 `query.seen_ids` 下推到 Thunder 的 `exclude_tweet_ids`。
    它把去重主要放在自己后面的 filter 链里。

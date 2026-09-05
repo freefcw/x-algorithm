@@ -9,7 +9,6 @@
 | P0 | Kafka 多线程重复消费 | 每线程使用不同 `group.id` | Kafka 开销按线程数重复，初始化语义也被放大 |
 | P0 | 初始化信号不等于 catch up | 每线程处理完首个满 batch 就发信号 | 可能在 backlog 还很大时就开始对外服务 |
 | P0 | 小流量场景可能卡住初始化 | 只有满 `kafka_batch_size` 才处理 batch | 消息不足一个 batch 时永远不发 init signal |
-| P1 | Following fallback 语义错误 | 只有 `following_user_ids` 为空且 `debug=true` 才查 Strato | 非调试请求缺少 following 时直接空查 |
 | P1 | Strato 仍是 stub | `fetch_following_list()` 永远返回空 | Thunder 内部无法独立补齐关系图 |
 | P1 | HTTP 观测面未接通 | 只有空 Router，没有 metrics/health | 指标抓不到，也没有 readiness |
 | P1 | v2 SASL 参数用错 | v2 代码读取的是 producer 侧 SASL 配置 | 消费端认证配置容易失效 |

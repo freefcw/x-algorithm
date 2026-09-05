@@ -4,7 +4,7 @@
 
 `thunder` 默认只走 v2 管道：
 
-- Topic: `in-network-events`
+- Topic: `in-network-events`（可通过 `--in-network-events-consumer-dest` 覆盖）
 - 编码: Protobuf
 - 事件包裹: `InNetworkEvent`
 - 事件类型:
@@ -33,38 +33,28 @@ v2 的好处是语义非常直接：消费端不需要先做复杂 Thrift 解码
 ```mermaid
 flowchart TD
     A[start_tweet_event_processing_v2] --> B[for thread_id in 0..kafka_num_threads]
-    B --> C[group.id = {base}-v2-{thread_id}]
+    B --> C[group.id = {base}-v2（所有线程共享）]
     C --> D[create StreamConsumer]
-    D --> E[subscribe in-network-events]
+    D --> E[subscribe configured topic]
     E --> F[process_tweet_events_v2 loop]
 ```
 
-这里有一个必须明确写出来的事实：
-
-- 当前每个线程都使用不同的 `group.id`
-- 这不是“同一消费者组内分片消费”
-- 而是“多个独立消费者组各自完整消费同一 topic”
-
-也就是说，当前实现不是把分区分给多个线程，而是把整条流重复消费多次，只是依靠 `PostStore.posts.insert(post_id, ...)` 的去重避免重复写入最终状态。
+所有线程共享同一个 `{kafka_group_id}-v2` 消费者组，Kafka 会在组内按分区分配消息；因此线程数增加不会导致整条流重复消费。
 
 ## 4. 当前线程拓扑的真实语义
 
 ```mermaid
 flowchart LR
-    T[Kafka Topic] --> G0[consumer group thunder-consumer-v2-0]
-    T --> G1[consumer group thunder-consumer-v2-1]
-    T --> G2[consumer group thunder-consumer-v2-2]
-    G0 --> S[同一个 PostStore]
-    G1 --> S
-    G2 --> S
+    T[Kafka Topic] --> G[consumer group thunder-consumer-v2]
+    G --> P0[分区 0..N]
+    P0 --> S[同一个 PostStore]
 ```
 
 这会带来几个直接后果：
 
-- Kafka 流量、反序列化 CPU 和批处理开销按线程数重复
-- 删除事件会重复打 tombstone
-- 初始化信号会被每个独立组各自触发一次
-- “多线程”并没有换来真正的 topic 水平扩展
+- 分区由 Kafka 在组内消费者之间重新均衡
+- 同一事件只由组内一个消费者处理
+- 初始化信号仍表示“首个满 batch 完成”，不等同于追平 backlog
 
 ## 5. 批处理循环
 
@@ -154,12 +144,12 @@ stateDiagram-v2
 
 | 参数 | 当前状态 |
 |---|---|
-| `fetch_timeout_ms` | 未使用 |
-| `skip_to_latest` | 未使用 |
+| `fetch_timeout_ms` | 映射到 rdkafka `fetch.wait.max.ms` |
+| `skip_to_latest` | 为 true 时覆盖 `auto.offset.reset=latest` |
 | `kafka_tweet_events_v2_num_partitions` | 未使用 |
-| `in_network_events_consumer_dest` | 未使用 |
+| `in_network_events_consumer_dest` | 消费 topic；为空时使用 `in-network-events` |
 | `lag_monitor_interval_secs` | 未使用，v2 没有 lag monitor |
-| `sasl_mechanism` / `sasl_username` / `sasl_password` | v2 没用，反而用了 producer 侧 SASL 参数 |
+| `sasl_mechanism` / `sasl_username` / `sasl_password` | v2 consumer 的 SASL 配置 |
 | `enable_profiling` | 未使用 |
 | `tweet_events_num_partitions` | 只对未编译的 v1 有意义 |
 

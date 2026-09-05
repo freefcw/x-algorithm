@@ -156,7 +156,7 @@ Phoenix 模型预测多种互动行为的概率，**RankingScorer** 把它们合
 
 ## 文档
 
-- **[docs/bootstrap/](docs/bootstrap/)** —— 完整启动手册：环境、编译、模型、端到端、真实数据、能力屏蔽与生产验收
+- **[docs/bootstrap/](docs/bootstrap/)** —— 分阶段启动手册：环境、编译、模型、端到端、真实数据、能力屏蔽与生产验收
 - **[docs/getting-started/](docs/getting-started/)** —— 最短上手路径：装环境 → 模型演示 → 起服务 → 训练 → 端到端
 - **[docs/README.md](docs/README.md)** —— 文档总入口，含各模块深入解读
 - **[README.md](README.md)** —— 英文版（含完整架构图）

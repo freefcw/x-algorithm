@@ -255,7 +255,7 @@ uv run pytest
 
 ### Going Further
 
-- Train your own weights: `uv run scripts/train_ranker.py` (see [docs/训练指引.md](docs/训练指引.md))
-- Serve over HTTP: `uv run scripts/run_services.py all` (see [services/README.md](services/README.md))
+- Train your own weights: `uv run scripts/train_ranker.py` (see [docs/训练指引.md](训练指引.md))
+- Serve over HTTP: `uv run scripts/run_services.py all` (see [services/README.md](../services/README.md))
 - Serve over gRPC for home-mixer: `uv run scripts/run_grpc_gateway.py`
 - Run the full end-to-end pipeline: `../scripts/run_demo.sh` from the repo root

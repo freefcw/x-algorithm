@@ -18,8 +18,10 @@ Thunder 当前对外只有一个接口：
 | `max_results` | 为 0 时使用默认值：普通请求 1000，视频请求 200。当前 `ThunderSource` 恒传 `THUNDER_MAX_RESULTS=1200`，Thunder 按请求值截断，不会再压回 1000 |
 | `exclude_tweet_ids` | 查询前先转成 `HashSet`，用于排除已曝光帖子 |
 | `algorithm` | 当前未使用 |
-| `debug` | 控制日志；并且当前实现里还意外影响了 Strato fallback 是否触发 |
+| `debug` | 仅控制请求日志；不影响数据查询语义 |
 | `is_video_request` | 选择走 `get_videos_by_users()` 还是 `get_all_posts_by_users()` |
+
+`user_id`、`following_user_ids` 和 `exclude_tweet_ids` 会在进入内存存储前校验是否能表示为有符号 64 位 ID；超出范围的请求直接返回 `INVALID_ARGUMENT`，避免整数溢出造成错误匹配。
 
 ## 3. 请求处理总流程
 
@@ -36,7 +38,7 @@ sequenceDiagram
         S-->>HM: RESOURCE_EXHAUSTED
     else 继续处理
         S->>S: 记录 in-flight / duration metrics
-        alt following_user_ids 为空且 debug=true
+        alt following_user_ids 为空
             S->>ST: fetch_following_list(user_id)
             ST-->>S: Vec<i64> 或错误
         end
@@ -70,20 +72,9 @@ sequenceDiagram
 
 ## 5. Strato fallback 的真实语义
 
-代码注释写的是：
+当请求没有带 `following_user_ids` 时，Thunder 会调用 `StratoClient` 获取关注列表；`debug` 只控制日志，不会改变这一回退条件。
 
-- 如果请求没有带 `following_user_ids`，就从 Strato 拉。
-
-但当前实现的真实条件是：
-
-- `following_user_ids.is_empty() && req.debug`
-
-也就是说：
-
-- `debug=false` 且 following 为空时，不会去查 Strato
-- 只有 debug 打开时，才走 fallback
-
-再加上 `StratoClient` 本身当前总是返回空列表，所以这条路径现在更像“调试占位逻辑”，不是一个可依赖的生产能力。
+`StratoClient` 当前仍是 stub，始终返回空列表，因此这条路径暂时只是接入点，不能替代真实关系服务。生产接入时应替换该实现，并为失败配置明确的超时与降级策略。
 
 ## 6. 查询阶段真正做了哪些过滤
 
