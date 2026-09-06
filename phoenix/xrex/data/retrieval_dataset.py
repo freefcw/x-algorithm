@@ -50,8 +50,17 @@ def _bridge_o2_env() -> None:
 _bridge_o2_env()
 
 
+_SID_SNAPSHOTS = "post_sid_v8_256x6_snapshots"
+
+
+def _sid_window(filename: str) -> tuple[str, str]:
+    return (
+        str(PHOENIX_INDEX_BASE / _SID_SNAPSHOTS / filename),
+        str(PHOENIX_INDEX_BASE / f"{_SID_SNAPSHOTS}_backup" / filename),
+    )
+
+
 def _idx(sub: str) -> str:
-    sub = sub.replace("post_sid_v5_256x6_snapshots", "post_sid_v8_256x6_snapshots")
     return str(PHOENIX_INDEX_BASE / sub)
 
 
@@ -232,16 +241,8 @@ def _load_from_o2(
 
 class RetrievalDataset(Enum):
     PAD = (0, None, None)
-    HOME = (
-        1,
-        _idx("post_sid_v5_256x6_snapshots/1fav_1day.parquet"),
-        _idx("post_sid_v5_256x6_snapshots_backup/1fav_1day.parquet"),
-    )
-    IMMERSIVE2Day = (
-        2,
-        _idx("post_sid_v5_256x6_snapshots/video_2day.parquet"),
-        _idx("post_sid_v5_256x6_snapshots_backup/video_2day.parquet"),
-    )
+    HOME = (1, *_sid_window("1fav_1day.parquet"))
+    IMMERSIVE2Day = (2, *_sid_window("video_2day.parquet"))
     RELEVANT_ADS = (
         3,
         _idx("relevant_ads/v6/post_id_author_id_pair.parquet"),
@@ -252,31 +253,15 @@ class RetrievalDataset(Enum):
         _idx("relevant_ads/carousel/post_id_author_id_pair.parquet"),
         _idx("relevant_ads/carousel/post_id_author_id_pair.parquet"),
     )
-    EVERGREEN = (
-        5,
-        _idx("post_sid_v5_256x6_snapshots/video_4to14day.parquet"),
-        _idx("post_sid_v5_256x6_snapshots_backup/video_4to14day.parquet"),
-    )
-    IMMERSIVENSFW = (
-        6,
-        _idx("post_sid_v5_256x6_snapshots/nsfw_video_2day.parquet"),
-        _idx("post_sid_v5_256x6_snapshots_backup/nsfw_video_2day.parquet"),
-    )
+    EVERGREEN = (5, *_sid_window("video_4to14day.parquet"))
+    IMMERSIVENSFW = (6, *_sid_window("nsfw_video_2day.parquet"))
     ACTIVE_ADS = (
         7,
         settings.ADS_INDEX_URI,
         settings.ADS_INDEX_URI,
     )
-    IMMERSIVE4Day = (
-        8,
-        _idx("post_sid_v5_256x6_snapshots/video_4day.parquet"),
-        _idx("post_sid_v5_256x6_snapshots_backup/video_4day.parquet"),
-    )
-    IMAGINE = (
-        9,
-        _idx("post_sid_v5_256x6_snapshots/imagine_4day.parquet"),
-        _idx("post_sid_v5_256x6_snapshots_backup/imagine_4day.parquet"),
-    )
+    IMMERSIVE4Day = (8, *_sid_window("video_4day.parquet"))
+    IMAGINE = (9, *_sid_window("imagine_4day.parquet"))
     TAIL = (
         10,
         _idx("post_sid_v5_256x6_tail_snapshots/tail_1day.parquet"),
