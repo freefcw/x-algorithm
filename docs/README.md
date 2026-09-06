@@ -56,7 +56,7 @@
 
 Phoenix 子项目内还有一套操作向文档（训练指引、真实数据接入等），入口在 [../phoenix/docs/](../phoenix/docs/)；两边的分工是：`docs/phoenix/` 讲代码怎么实现，`phoenix/docs/` 讲手上怎么操作。
 
-最新上游同步结果见 [`update/20260826.md`](./update/20260826.md)：记录 `d011592`–`45b48ba` 的相关作者反向屏蔽补全、Phoenix proto 合同同步，以及 checkpoint、SlateContext、grox/VF 等线路的延期或不适用结论。能力清点入口是 [45b48ba capability inventory](./upstream-sync/45b48ba-capability-inventory.md)。
+最新上游同步结果见 [`update/20260907.md`](./update/20260907.md)：记录 `9b0dc31`–`902a06f` 的两项行为中性 Phoenix 对齐（SID 快照路径构造、结构化日志渲染），以及 MoE 共分流实验、StableHLO bundle 导出、加密 checkpoint 等线路的延期或不适用结论。能力清点入口是 [902a06f capability inventory](./upstream-sync/902a06f-capability-inventory.md)。
 
 上游同步以 [upstream-first maintenance policy](./upstream-sync/upstream-first-maintenance.md) 为维护规则，以 [entrypoint migration map](./upstream-sync/entrypoint-migration-map.md) 为执行顺序。
 
