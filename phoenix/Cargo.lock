@@ -5167,7 +5167,6 @@ dependencies = [
  "xai-recsys-mm-server",
  "xai-recsys-proto",
  "xai-recsys-server",
- "xai-recsys-sid-proto",
  "zstd",
 ]
 
