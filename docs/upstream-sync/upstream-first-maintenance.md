@@ -30,6 +30,26 @@ Every intentional difference from upstream belongs to one class:
 
 A difference without one of these classifications is drift and should be removed or documented before more code is built on it.
 
+## Structural adoption ceilings
+
+Two upstream facts cap how much of `home-mixer` can ever be adopted, independent of effort. Apply both when triaging a candidate file list, before estimating any work.
+
+**`xai_candidate_pipeline::component_library` is not published.** 86 upstream `home-mixer` files import it. The open-sourced `candidate-pipeline/` crate contains no such module, and the name appears in no `Cargo.toml` — it is stripped from the open-source release, not merely undocumented. It supplies `component_library::clients::` (Kafka publisher, Phoenix prediction, Phoenix retrieval, Redis, …) and `component_library::utils::` (`is_prod`, `quality_factor`, `duration_since_creation_opt`, `client_utils`, …). Any upstream file importing it is `U3` by construction: the local equivalent must be a `U1` substitution written against a local port, never a port of the upstream file. This is the single largest cap on upstream adoption and the first filter to apply to any candidate list.
+
+**A portable leaf utility is not automatically worth adopting.** `home-mixer/util/` leaf modules look zero-blocker — no private imports, self-contained, already tested — but the capability that consumes them may be blocked or absent, in which case adopting the leaf only adds unreachable code. Verified 2026-09-07:
+
+| Upstream file | Only consumer | Local status |
+|---|---|---|
+| `util/rescore.rs` | none — `pub mod rescore;` in `util/mod.rs` is its only reference upstream too | dead upstream; do not adopt |
+| `util/url.rs` | `util/urt/feedback.rs` | URT is contract-blocked (see §Next comparison order item 4) |
+| `util/string_case.rs` | `update_served_history_side_effect.rs`, `util/urt/client_event.rs` | no local side effect; URT blocked |
+| `util/tweet_type_metrics.rs` | `client_events_kafka_side_effect.rs` | no local side effect |
+| `util/conversation_grouping.rs` | `invalid_conversation_module_filter.rs`, assembled only in `following_candidate_pipeline` | no local Following pipeline |
+
+`conversation_grouping.rs` is not a capability gap: upstream's Phoenix pipeline uses `DedupConversationFilter`, the same filter the local Phoenix pipeline assembles. Only the Following timeline needs conversation-module semantics.
+
+Triage a candidate file by its consumer's assembly path, not by its own import list. Adopting a leaf whose consumer is absent is the `U3` "no production-looking stub" rule violated one level down.
+
 ## Candidate Pipeline anchor
 
 The Candidate Pipeline is the compatibility layer for later Home Mixer components. Its portable API was last re-tracked at the `c65aa17` semantic anchor (the most recent change to the crate, `candidate-pipeline: adopt 47c1bcd per-request stage summary and cached-hydrator extensions`); later snapshots through `902a06f` did not touch the crate. Diff newer anchors against it with the sync procedure below before assuming the table is stale.
@@ -98,7 +118,7 @@ The concrete entry graphs, work packages, and acceptance sequence are maintained
 1. **Completed:** Home Mixer model and module layout now uses canonical upstream `models::{query,candidate,candidate_features}` paths; compatibility re-exports remain for downstream cleanup.
 2. **Completed:** `PhoenixCandidatePipeline` portable Query Hydrator, Source, Hydrator, Filter, Scorer, and request-cache SideEffect boundaries now follow upstream names/order; unavailable services remain tagged `U3`.
 3. **Completed:** outer ForYou server/pipeline paths, state Query Hydrators, disabled Source entries, Blender/Ads boundaries, and response stats SideEffect now match upstream (`HM-E5`).
-4. **Completed:** additive `ForYouFeedQuery`/V2 and typed DebugScoredPosts RPCs preserve existing wire methods. URT/trace are still unmigrated, but no longer for lack of a contract: `47c1bcd` open-sourced `home-mixer/util/urt/`, so `HM-E6` is now a sizing question rather than a deferral.
+4. **Completed:** additive `ForYouFeedQuery`/V2 and typed DebugScoredPosts RPCs preserve existing wire methods. URT/trace remain unmigrated and contract-blocked: `47c1bcd` open-sourced the `home-mixer/util/urt/` marshalling code, but all 17 files import `xai_urt_thrift`, which exists nowhere in the upstream tree and in no `Cargo.toml`. Migrating URT would mean inventing the wire schema locally, which `U3` forbids, so `HM-E6` is not a sizing question. Authoritative disposition: [`entrypoint-migration-map.md`](./entrypoint-migration-map.md) §4.
 5. **Completed:** Phoenix offline and published gRPC entries share artifact loading, preprocessing, model runners, and output mapping (`PHX-E1/PHX-E2`).
 6. **Completed:** Thunder public gRPC boundary, checked ID conversion, timeout/exclusions, default port, readiness, and Demo fixtures are revalidated; Kafka remains outside this upstream diff.
 7. **Contract-gated next:** P3-B/P4-B/P5-B external clients and SideEffects require schema, authentication, timeout, error, retention, and ownership decisions.

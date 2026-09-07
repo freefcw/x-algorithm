@@ -64,7 +64,7 @@
 - `mp` 已实现完整 Rust workspace、公共 proto、Phoenix HTTP/gRPC 服务、训练脚本、Demo 客户端和一键端到端脚本。
 - `mp` 与上游共同修改 27 个文件；三方模拟合并有 24 个内容冲突。
 - `mp` 已将 Candidate Pipeline 的 portable contract 重新锚定到 `e414c17`：Source/QueryHydrator/Selector/SideEffect 保留上游实现点与 `run` 包装，Hydrator/Scorer 恢复逐候选 `Vec<Result<...>>` 和长度保护，同步 Filter 恢复 `filter -> FilterResult`；私有 metrics/config 由本地接口替代，Filter 失败恢复作为 additive `try_run` 扩展保留。
-- `mp` 已恢复 Home Mixer 的上游 service composition、`QueryBuilder`、`crate::models::*` canonical path、`u64` domain ID 合同，以及 `HM-E4/HM-E5` 内外层 portable assembly；`HM-E6` 以 additive ForYou wrapper/V2 和 typed DebugScoredPosts 扩展公共 RPC。Debug 默认关闭并要求 token，未签名 cached posts 默认拒绝且只允许显式 Demo；URT/trace 仍未迁移——47c1bcd 已开源 `home-mixer/util/urt/`（17 个文件），"缺公开合同"的理由不再成立，改为按工作量排入 P1 后续批次。
+- `mp` 已恢复 Home Mixer 的上游 service composition、`QueryBuilder`、`crate::models::*` canonical path、`u64` domain ID 合同，以及 `HM-E4/HM-E5` 内外层 portable assembly；`HM-E6` 以 additive ForYou wrapper/V2 和 typed DebugScoredPosts 扩展公共 RPC。Debug 默认关闭并要求 token，未签名 cached posts 默认拒绝且只允许显式 Demo；URT/trace 仍未迁移，且仍是合同阻塞：47c1bcd 开源的是 `home-mixer/util/urt/`（17 个文件）的编解码逻辑，不是 wire schema——17 个文件全部 `use xai_urt_thrift`，该 crate 在上游树里不存在、也未出现在任何 `Cargo.toml`，迁入等于本地自己发明 URT thrift 合同，正是 `U3` 禁止的做法。这不是排期问题；口径以 [`entrypoint-migration-map.md`](./entrypoint-migration-map.md) §4 为准。
 - `mp` 已将右对齐位置、帖子年龄 embedding、连续行为输入/预测头接入可选模型 forward；旧模型配置默认关闭，发布模型配置按 checkpoint shape 启用。
 - `mp` 已新增统一 NPZ loader、离线 `run_pipeline.py`、发布 artifact gRPC 适配器、独立 `ScoredPostsServer`，以及 additive-compatible 的 `ForYouFeedService`。当前 offline/gRPC published 模式通过 `PublishedArtifact -> PublishedPipeline -> shared engines` 使用同一 loader、hash/preprocessing、model runner 和 output mapping；随机/本地 checkpoint 模式保持显式分支。
 - P4-A 已完成独立 `FeedItem`、ScoredPosts bridge、disabled-first Ads port，并将 `SafeGap`、`PartitionOrganic` 的间距、分组、BSR/账号/关键词规避重新锚定到上游 `e414c17`；本地仅保留缺失 verdict fail-closed、真实 `non_selected` 和公开协议适配。真实广告、Who to Follow、Prompt、Push-to-Home 来源仍属于 P4-B。
@@ -153,7 +153,7 @@ P3 仍未完成且不能伪造的条件能力：
 | P1.3 | side_effects 布局对齐与 `cache_request_info_side_effect` 删除 | 完成 |
 | P1.4 | 修改过的 filters / sources / hydrators / clients 逐个对照迁移 | 完成（67 文件逐个分类；5 项正确性修复已迁入，其余为多 Feed 或依赖阻塞，见下） |
 | P1.5 | 主链 scorers 重组（`value_model_gate`、`author_cold_start`、`phoenix_scores_ranking_scorer`） | 完成分类：三个均**不可迁**，理由见下 |
-| P1.6 | `util/urt/` 与新 Feed 产品家族 | **未开始**（合同已公开，按工作量排期） |
+| P1.6 | `util/urt/` 与新 Feed 产品家族 | **不可迁**：`util/urt/` 缺 `xai_urt_thrift` wire schema（合同阻塞，见 [`entrypoint-migration-map.md`](./entrypoint-migration-map.md) §4）；新 Feed 家族本地无产品入口 |
 | P2 | Phoenix 训练框架并轨引入 | 完成（macOS 只验证到合成数据与 CPU 导入；训练/服务需 Linux + GPU） |
 | P3.1 | Thunder schema | 完成 |
 | P3.2 | vm-ranker 服务 + `VMRanker` Scorer 装配 | 完成（默认关闭） |

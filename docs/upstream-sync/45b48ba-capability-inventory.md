@@ -58,8 +58,27 @@
 | V1 | visibility-filtering `reference_compare.rs`、dark traffic、TES hydrator/server deps | N/A | 本地已剥离 visibility-filtering。staging 双调用对照方法保留为迁移验证思路，不新增无执行入口的框架 |
 | B1 | Brazil 2026 election filter 名单扩充 | N/A | 延续既有产品决定：本地不迁移该国家/选举专项规则 |
 | AE1 | abuse-enforcement-service facts/rules/generic actions/GrowthBook | N/A | 本地无该服务；处罚执行属于独立业务边界，不放进 Feed 推荐域 |
-| R1 | phoenix-rankall store、配置与集成测试 | N/A | 本地无该 crate 和调用入口 |
+| R1 | phoenix-rankall store、配置与集成测试 | **U3** | 完成评估：**不引入**，理由见 §4.1 |
 | U1 | `util/urt`、reverse-chron、night-owl 等无本地入口的装配改动 | N/A | 当前仓库没有对应响应/数据入口；只迁一段会形成无人调用代码 |
+
+### 4.1 R1 phoenix-rankall 的 Go / No-Go（2026-09-07 补评）
+
+原先"本地无该 crate 和调用入口"是循环论证——本地没有正是因为没迁，说明不了该不该迁。按 P3.3（visibility-filtering）同一口径重评：
+
+**这是什么业务能力。** 离线全量排序物料链：消费帖子创建、互动（fav/indexing/metadata）Kafka 事件，经 `sid_processor` / `topic_processor` / `metadata_processor` 落进 SID store 与 parquet，供全库候选（而非召回后候选）打分使用。它不在请求链路上，主干只消费其产物。
+
+**能不能迁。** 不能，且比 visibility-filtering 更硬：
+
+| 阻塞项 | 事实 |
+|---|---|
+| 无构建清单 | 上游 `phoenix-rankall/` 共 35 个文件，**没有 `Cargo.toml`**。上游并非不发清单——`phoenix/` 下 7 个 crate 和 `bdsm/rust/` 下 2 个都带清单，共 10 份。这里的缺失是有意义的：它不是一个可构建的开源 crate。 |
+| 核心领域类型未开源 | `xai_recsys_rankall` 被引用 27 次，承载全部记录/评分结构，上游树中不存在。 |
+| 基础设施依赖未开源 | `xai_wily`、`xai_kafka` 均无 Rust 实现（只有 `grox/libs/wily_cli` 的 Python 版）。 |
+| 数据面绑定内部部署 | 事件流与 store 定义在 `phoenix-rankall-strato/`，Strato 是 X 内部部署环境，本地无对应设施（口径同 [`b089ce6-capability-inventory.md`](./b089ce6-capability-inventory.md) B2）。 |
+
+迁进来只能得到一层调不通的 processor 骨架：thrift 类型要自己发明，Kafka topic 与 SID store 合同要自己发明，正是 `U3` 禁止的"看起来能跑的桩"。
+
+**结论：No-Go（U3）。** 重入条件是两件事同时成立：(1) 产品目标出现"全库候选全量排序"而不是现有的"召回后候选打分"；(2) `xai_recsys_rankall` 记录结构、Kafka 事件与 SID store 三段数据合同可独立验证。当前本地离线训练数据走 parquet 生成器，不消费该流，两条都不成立。
 
 ## 5. 设计说明
 
