@@ -47,6 +47,8 @@ pub struct PostCandidate {
     /// 引用帖作者是否反向屏蔽 viewer；由 `BlockedByHydrator` 写入。
     pub quoted_author_blocks_viewer: Option<bool>,
     pub visibility_decision: vf::VisibilityDecision,
+    /// VF 的处理动作独立于解释原因保存，避免下游从原因反推展示策略。
+    pub visibility_action: Option<vf::Action>,
     pub drop_ancillary_posts: Option<bool>,
     pub subscription_author_id: Option<u64>,
     pub retrieval_topic_ids: Vec<i64>,

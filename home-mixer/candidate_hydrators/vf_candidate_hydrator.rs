@@ -1,7 +1,7 @@
 use crate::models::candidate::PostCandidate;
 use crate::models::query::ScoredPostsQuery;
 use crate::params;
-use crate::visibility::models::{FilteredReason, VisibilityDecision};
+use crate::visibility::models::{Action, FilteredReason, VisibilityDecision};
 use crate::visibility::vf_client::{
     GetTwitterContextViewer, SafetyLevel, SafetyLevel::TimelineHome,
     SafetyLevel::TimelineHomeRecommendations, TwitterContextViewer, VisibilityFilteringClient,
@@ -112,6 +112,7 @@ impl Hydrator<ScoredPostsQuery, PostCandidate> for VFCandidateHydrator {
                     &oon_result
                 };
                 let visibility_decision = decision_for(direct_result, candidate.tweet_id);
+                let visibility_action = action_for_decision(&visibility_decision);
                 let drop_ancillary_posts = ancillary_must_drop(
                     &ancillary_result,
                     [candidate.retweeted_tweet_id, candidate.quoted_tweet_id]
@@ -120,6 +121,7 @@ impl Hydrator<ScoredPostsQuery, PostCandidate> for VFCandidateHydrator {
                 );
                 Ok(PostCandidate {
                     visibility_decision,
+                    visibility_action,
                     drop_ancillary_posts: Some(drop_ancillary_posts),
                     ..Default::default()
                 })
@@ -148,6 +150,7 @@ impl Hydrator<ScoredPostsQuery, PostCandidate> for VFCandidateHydrator {
 
     fn update(&self, candidate: &mut PostCandidate, hydrated: PostCandidate) {
         candidate.visibility_decision = hydrated.visibility_decision;
+        candidate.visibility_action = hydrated.visibility_action;
         candidate.drop_ancillary_posts = hydrated.drop_ancillary_posts;
     }
 }
@@ -163,6 +166,19 @@ fn decision_for(
             None => VisibilityDecision::Unavailable("visibility response omitted post".to_string()),
         },
         Err(error) => VisibilityDecision::Unavailable(error.clone()),
+    }
+}
+
+fn action_for_decision(decision: &VisibilityDecision) -> Option<Action> {
+    match decision {
+        VisibilityDecision::Allowed => Some(Action::Allow),
+        VisibilityDecision::Restricted(FilteredReason::SafetyResult(result)) => {
+            Some(result.action.clone())
+        }
+        VisibilityDecision::Restricted(FilteredReason::GenericFiltered(_)) => {
+            Some(Action::Drop(Default::default()))
+        }
+        VisibilityDecision::Unchecked | VisibilityDecision::Unavailable(_) => None,
     }
 }
 

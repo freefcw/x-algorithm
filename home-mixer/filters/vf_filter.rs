@@ -19,6 +19,9 @@ impl Filter<ScoredPostsQuery, PostCandidate> for VFFilter {
 }
 
 fn should_drop_candidate(candidate: &PostCandidate) -> bool {
+    if let Some(action) = &candidate.visibility_action {
+        return matches!(action, Action::Drop(_));
+    }
     match &candidate.visibility_decision {
         VisibilityDecision::Allowed => false,
         VisibilityDecision::Restricted(reason) => should_drop_reason(reason),
@@ -63,5 +66,23 @@ mod tests {
 
         assert_eq!(result.kept[0].tweet_id, 1);
         assert_eq!(result.removed[0].tweet_id, 2);
+    }
+
+    #[test]
+    fn explicit_action_is_used_independently_from_reason() {
+        let candidate = PostCandidate {
+            visibility_decision: VisibilityDecision::Restricted(FilteredReason::SafetyResult(
+                crate::visibility::models::SafetyResult {
+                    action: Action::Drop(Default::default()),
+                    description: None,
+                },
+            )),
+            visibility_action: Some(Action::Allow),
+            ..Default::default()
+        };
+
+        let result = VFFilter.filter(&ScoredPostsQuery::default(), vec![candidate]);
+        assert_eq!(result.kept.len(), 1);
+        assert!(result.removed.is_empty());
     }
 }
