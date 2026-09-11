@@ -101,9 +101,9 @@ uv run scripts/run_services.py ranker --ranker-checkpoint ./checkpoints/model_pa
 uv run scripts/run_services.py retrieval --retrieval-checkpoint ./checkpoints/retrieval_params_step200.npz
 ```
 
-## gRPC 网关（供 home-mixer 调用）
+## gRPC 网关（供 recommendation-service 调用）
 
-上面的 HTTP 服务面向人工调试和外部系统。推荐主链路中，home-mixer（Rust）通过
+上面的 HTTP 服务面向人工调试和外部系统。推荐主链路中，recommendation-service（Rust）通过
 `proto/definitions/recsys.proto` 定义的 gRPC 协议调用 Phoenix，对应服务是：
 
 ```bash
@@ -115,7 +115,7 @@ uv run scripts/run_grpc_gateway.py \
 
 实现见 `services/grpc_gateway.py`：真正消费请求里的用户行为序列构造模型输入，
 候选池在启动时合成并用候选塔编码（生产环境应替换为离线向量索引）。
-端到端用法见 [docs/getting-started 第四步](../../docs/getting-started/05-第四步-跑通完整推荐链路.md)。
+端到端用法见仓库的 [极简 Phoenix 执行计划](../../docs/implementation/slim-phoenix-recommendation.md)。
 
 ## API 接口
 

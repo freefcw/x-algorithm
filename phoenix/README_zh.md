@@ -1,6 +1,6 @@
 # Phoenix: 推荐系统
 
-> **本地仓库说明**：本目录有两套代码。英文 [`README.md`](README.md) 描述上游生产框架（`xrex/`、`crates/`，需 Linux + CUDA）。home-mixer 演示走的是本机 Python 链路（`scripts/`、`services/`），macOS 可跑，操作见 [getting-started](../docs/getting-started/) 和 [`docs/legacy-pipeline.md`](docs/legacy-pipeline.md)。下面正文是旧的示例说明，命令仍可用于演示链路。
+> **本地仓库说明**：本目录有两套代码。英文 [`README.md`](README.md) 描述上游生产框架（`xrex/`、`crates/`，需 Linux + CUDA）。recommendation-service 使用本机 Python 链路（`scripts/`、`services/`），macOS 可跑，操作见仓库执行计划和 [`docs/legacy-pipeline.md`](docs/legacy-pipeline.md)。
 
 本仓库包含了 Phoenix 推荐系统的 JAX 示例代码，该系统负责内容的排序（Ranking）和检索（Retrieval）。Phoenix 使用基于 Transformer 的架构来实现**检索**（从数百万个项目中查找相关候选）和**排序**（根据预测的参与度对较小的一组候选进行排序）。
 
@@ -210,5 +210,5 @@ uv run pytest
 
 - 训练自己的权重：`uv run scripts/train_ranker.py`（见 [docs/训练指引.md](docs/训练指引.md)）
 - HTTP 服务：`uv run scripts/run_services.py all`（见 [services/README.md](services/README.md)）
-- 供 home-mixer 调用的 gRPC 服务：`uv run scripts/run_grpc_gateway.py`
-- 端到端完整链路：在仓库根目录执行 `../scripts/run_demo.sh`
+- 供 recommendation-service 调用的 gRPC 服务：`uv run scripts/run_grpc_gateway.py`
+- 本地纯帖子链路：在仓库根目录执行 `../scripts/run_recommendation_demo.sh`
