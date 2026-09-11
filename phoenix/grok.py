@@ -11,8 +11,10 @@
 # 请参阅许可证以了解管理权限和限制的特定语言。
 
 import logging
+import math
+from collections.abc import Sequence
 from dataclasses import dataclass
-from typing import NamedTuple, Optional, Sequence, Union
+from typing import NamedTuple
 
 import haiku as hk
 import jax
@@ -140,7 +142,7 @@ class TransformerConfig:
 
     attn_output_multiplier: float = 1.0
 
-    name: Optional[str] = None
+    name: str | None = None
 
     def make(self) -> "Transformer":
         """根据当前配置实例化 Transformer 模块。"""
@@ -176,7 +178,7 @@ class Linear(hk.Linear):
         self,
         output_size: int,
         with_bias: bool = True,
-        name: Optional[str] = None,
+        name: str | None = None,
     ):
         super().__init__(
             output_size=output_size,
@@ -197,9 +199,13 @@ class Linear(hk.Linear):
         input_size = inputs.shape[-1]
         output_size = self.output_size
 
-        # 获取或创建权重参数 W
+        # 获取或创建权重参数 W。从零训练时必须随机初始化：全零权重会让整层输出与梯度
+        # 恒为 0，Transformer 永远无法离开初始点（加载 checkpoint 时初始值会被覆盖）。
         w = hk.get_parameter(
-            "w", [input_size, output_size], jnp.float32, init=hk.initializers.Constant(0)
+            "w",
+            [input_size, output_size],
+            jnp.float32,
+            init=hk.initializers.TruncatedNormal(stddev=1.0 / math.sqrt(input_size)),
         )
 
         # 执行矩阵乘法，将权重转换为计算精度
@@ -222,9 +228,9 @@ class RMSNorm(hk.RMSNorm):
     """
     def __init__(
         self,
-        axis: Union[int, Sequence[int], slice],
+        axis: int | Sequence[int] | slice,
         eps: float = 1e-5,
-        name: Optional[str] = None,
+        name: str | None = None,
         create_scale: bool = True,
     ):
         super().__init__(axis, eps, create_scale=create_scale, name=name)
@@ -239,7 +245,7 @@ class RMSNorm(hk.RMSNorm):
                 "scale",
                 param_shape,
                 dtype=jnp.float32,
-                init=hk.initializers.Constant(0),
+                init=hk.initializers.Constant(1),
             )
             scale = jnp.broadcast_to(scale.astype(jnp.float32), inputs.shape)
         else:
@@ -282,7 +288,7 @@ class RotaryEmbedding(hk.Module):
     def __init__(
         self,
         dim: int,
-        name: Optional[str] = None,
+        name: str | None = None,
         base_exponent: int = 10000,
     ):
         super().__init__(name)
@@ -295,8 +301,8 @@ class RotaryEmbedding(hk.Module):
         x: jax.Array,
         seq_dim: int,
         offset: jax.Array,
-        const_position: Optional[int] = None,
-        t: Optional[jax.Array] = None,
+        const_position: int | None = None,
+        t: jax.Array | None = None,
     ) -> jax.Array:
         fprop_dtype = x.dtype
         # 1. 计算每个维度的频率系数
@@ -349,10 +355,10 @@ class MultiHeadAttention(hk.Module):
         key_size: int,
         *,
         with_bias: bool = True,
-        value_size: Optional[int] = None,
-        model_size: Optional[int] = None,
+        value_size: int | None = None,
+        model_size: int | None = None,
         attn_output_multiplier: float = 1.0,
-        name: Optional[str] = None,
+        name: str | None = None,
     ):
         super().__init__(name=name)
         self.num_q_heads = num_q_heads
@@ -369,7 +375,7 @@ class MultiHeadAttention(hk.Module):
         key: jax.Array,
         value: jax.Array,
         mask: jax.Array,
-        positions: Optional[jax.Array] = None,
+        positions: jax.Array | None = None,
     ) -> MHAOutput:
         projection = self._linear_projection
 
@@ -443,7 +449,7 @@ class MultiHeadAttention(hk.Module):
         x: jax.Array,
         head_size: int,
         num_heads: int,
-        name: Optional[str] = None,
+        name: str | None = None,
     ) -> jax.Array:
         """内部辅助函数：执行线性映射并调整张量形状。"""
         y = Linear(num_heads * head_size, with_bias=False, name=name)(x)
@@ -466,7 +472,7 @@ class MHABlock(hk.Module):
         self,
         inputs: jax.Array,  # [B, T, D]
         mask: jax.Array,  # [B, 1, T, T]
-        positions: Optional[jax.Array] = None,
+        positions: jax.Array | None = None,
     ) -> MHAOutput:
         _, _, model_size = inputs.shape
         assert mask.ndim == 4
@@ -536,17 +542,17 @@ class DecoderLayer(hk.Module):
     num_kv_heads: int
     key_size: int
     num_layers: int
-    layer_index: Optional[int] = None
+    layer_index: int | None = None
     widening_factor: float = 4.0
-    name: Optional[str] = None
+    name: str | None = None
     attn_output_multiplier: float = 1.0
 
     def __call__(
         self,
         inputs: jax.Array,
         mask: jax.Array,
-        padding_mask: Optional[jax.Array],
-        positions: Optional[jax.Array] = None,
+        padding_mask: jax.Array | None,
+        positions: jax.Array | None = None,
     ) -> DecoderOutput:
         del padding_mask # 尚未使用的变量
 
@@ -603,14 +609,14 @@ class Transformer(hk.Module):
     widening_factor: float
     attn_output_multiplier: float
     num_layers: int
-    name: Optional[str] = None
+    name: str | None = None
 
     def __call__(
         self,
         embeddings: jax.Array,
         mask: jax.Array,
-        candidate_start_offset: Optional[int] = None,
-        positions: Optional[jax.Array] = None,
+        candidate_start_offset: int | None = None,
+        positions: jax.Array | None = None,
     ) -> TransformerOutput:
         """
         参数说明:
