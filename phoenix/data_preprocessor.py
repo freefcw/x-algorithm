@@ -20,12 +20,12 @@
 """
 
 import argparse
+import bisect
 import functools
 import hashlib
 import logging
 import random
 from pathlib import Path
-from typing import Dict, List, Optional, Set, Tuple
 
 import numpy as np
 import pandas as pd
@@ -46,6 +46,7 @@ NUM_ACTIONS = len(ACTIONS)  # 19种行为
 NUM_HASHES = 2             # 每个ID的哈希数量
 TABLE_SIZE = 100_000       # 哈希表大小（与训练脚本一致）
 SURFACE_VOCAB = 16         # 场景词汇表大小
+MAX_AGE_DAYS = 7           # 负样本候选的最大帖龄（与 recommendation-service MAX_AGE_MS 一致）
 
 # 行为字段名映射（输入日志字段 -> 内部使用）
 BEHAVIOR_FIELDS = [
@@ -74,19 +75,19 @@ BEHAVIOR_FIELDS = [
 # ── 核心工具函数 ───────────────────────────────────────────────────────────────
 
 @functools.lru_cache(maxsize=2_000_000)
-def _hash_id_cached(id_str: str, num_hashes: int, table_size: int) -> Tuple[int, ...]:
+def _hash_id_cached(id_str: str, num_hashes: int, table_size: int) -> tuple[int, ...]:
     """lru_cache 友好的内部实现，返回 tuple 以便 hashable。"""
     id_bytes = id_str.encode("utf-8")
     hashes = []
     for i in range(num_hashes):
-        seed_bytes = id_bytes + f"_hash{i}".encode("utf-8")
+        seed_bytes = id_bytes + f"_hash{i}".encode()
         hash_val = int(hashlib.md5(seed_bytes).hexdigest(), 16)
         # 映射到 [1, table_size]，0 留给 padding
         hashes.append((hash_val % table_size) + 1)
     return tuple(hashes)
 
 
-def hash_id_to_ints(id_str: str, num_hashes: int = NUM_HASHES, table_size: int = TABLE_SIZE) -> List[int]:
+def hash_id_to_ints(id_str: str, num_hashes: int = NUM_HASHES, table_size: int = TABLE_SIZE) -> list[int]:
     """
     将字符串ID哈希成多个整数（用于嵌入表查询）。
 
@@ -98,7 +99,7 @@ def hash_id_to_ints(id_str: str, num_hashes: int = NUM_HASHES, table_size: int =
     return list(_hash_id_cached(str(id_str), num_hashes, table_size))
 
 
-def pad_sequence(seq: List, target_len: int, pad_value) -> List:
+def pad_sequence(seq: list, target_len: int, pad_value) -> list:
     """将序列padding或截断到目标长度。"""
     if len(seq) >= target_len:
         return seq[:target_len]
@@ -178,7 +179,7 @@ def encode_actions_vectorized(df: pd.DataFrame, dwell_max_seconds: float = 300.0
 
 # ── 数据加载 ───────────────────────────────────────────────────────────────────
 
-def load_behavior_logs(behavior_dir: str, date_str: Optional[str] = None) -> pd.DataFrame:
+def load_behavior_logs(behavior_dir: str, date_str: str | None = None) -> pd.DataFrame:
     """
     加载行为日志。
     
@@ -208,7 +209,7 @@ def load_behavior_logs(behavior_dir: str, date_str: Optional[str] = None) -> pd.
             df = pq.read_table(str(f)).to_pandas()
             dfs.append(df)
             logger.debug(f"加载 {f}: {len(df)} 行")
-        except Exception as e:
+        except (OSError, pa.ArrowException) as e:
             logger.warning(f"跳过 {f}: {e}")
 
     df = pd.concat(dfs, ignore_index=True)
@@ -250,15 +251,34 @@ def load_post_metadata(post_meta_path: str) -> pd.DataFrame:
     return df
 
 
-def build_post_to_author_map(post_meta_df: pd.DataFrame) -> Dict[str, str]:
+def build_post_to_author_map(post_meta_df: pd.DataFrame) -> dict[str, str]:
     """构建 post_id -> author_id 映射。"""
     return dict(zip(post_meta_df["post_id"], post_meta_df["author_id"]))
 
 
-def build_active_post_set(post_meta_df: pd.DataFrame) -> Set[str]:
+def build_active_post_set(post_meta_df: pd.DataFrame) -> set[str]:
     """获取在线帖子集合（is_active=1）。"""
     active_df = post_meta_df[post_meta_df.get("is_active", 1) == 1]
     return set(active_df["post_id"])
+
+
+def build_negative_pool(post_meta_df: pd.DataFrame) -> tuple[list[int], list[str]]:
+    """构建按 create_time 升序排列的负样本池 (create_times, post_ids)。
+
+    负采样时按事件时刻用二分切出 [event_time - MAX_AGE, event_time] 窗口，保证负例都是
+    “该时刻线上真的可能被推荐”的帖子：未来才发布的帖子在训练期没有任何互动，采进来会让
+    模型和热度基线学到“没见过的 ID = 负例”这种线上不存在的规律。
+    缺少 create_time 列时退化为全池（create_time 视为 0，且不做时间过滤）。
+    """
+    active_df = post_meta_df[post_meta_df.get("is_active", 1) == 1]
+    if "create_time" in active_df.columns:
+        times = pd.to_numeric(active_df["create_time"], errors="coerce").fillna(0).astype(np.int64)
+    else:
+        logger.warning("post_metadata 缺少 create_time，负样本池不做时间过滤")
+        times = pd.Series(np.zeros(len(active_df), dtype=np.int64), index=active_df.index)
+    order = np.argsort(times.to_numpy(), kind="stable")
+    posts = active_df["post_id"].to_numpy()[order]
+    return times.to_numpy()[order].tolist(), posts.tolist()
 
 
 # ── 训练样本构造 ───────────────────────────────────────────────────────────────
@@ -276,18 +296,25 @@ class TrainingSampleBuilder:
     
     def __init__(
         self,
-        post_to_author: Dict[str, str],
-        active_posts: Set[str],
+        post_to_author: dict[str, str],
+        active_posts: set[str],
         history_len: int = HISTORY_SEQ_LEN,
         candidate_len: int = CANDIDATE_SEQ_LEN,
         num_actions: int = NUM_ACTIONS,
         neg_sample_ratio: int = 7,  # 负样本数
+        negative_pool: tuple[list[int], list[str]] | None = None,
+        max_age_seconds: int = MAX_AGE_DAYS * 86400,
     ):
         self.post_to_author = post_to_author
-        # active_posts 冻结为 frozenset 以支持高效成员判断；
-        # sorted list 用于可复现采样（set 迭代顺序随 PYTHONHASHSEED 变化）
+        # active_posts 冻结为 frozenset 以支持高效成员判断
         self.active_posts: frozenset[str] = frozenset(active_posts)
-        self._active_posts_sorted: List[str] = sorted(self.active_posts)
+        # 负样本池按 create_time 升序；未提供 create_time 时全池时间为 0（不做过滤）
+        if negative_pool is None:
+            posts = sorted(self.active_posts)
+            negative_pool = ([0] * len(posts), posts)
+        self._pool_times, self._pool_posts = negative_pool
+        self._time_filter = any(t > 0 for t in self._pool_times)
+        self.max_age_seconds = max_age_seconds
         self.history_len = history_len
         self.candidate_len = candidate_len
         self.num_actions = num_actions
@@ -311,31 +338,41 @@ class TrainingSampleBuilder:
             return 0
         return int(val)
 
+    def _pool_window(self, event_time: int) -> tuple[int, int]:
+        """返回事件时刻可作为负例的池下标区间 [lo, hi)：create_time ∈ [t - max_age, t]。"""
+        if not self._time_filter:
+            return 0, len(self._pool_posts)
+        lo = bisect.bisect_left(self._pool_times, event_time - self.max_age_seconds)
+        hi = bisect.bisect_right(self._pool_times, event_time)
+        return lo, hi
+
     def _sample_negative_posts(
         self,
         user_interacted_posts: frozenset,
         positive_post: str,
         n: int,
         rng: random.Random,
-    ) -> List[str]:
+        event_time: int,
+    ) -> list[str]:
         """
-        从用户未交互过的在线帖子中均匀采样负样本。
+        从用户未交互过、且在事件时刻已发布且未过期的在线帖子中均匀采样负样本。
 
-        实现：直接从整个在线池采 n 个，冲突时补采。用户交互帖子远少于在线池，
+        实现：按时间窗口二分出池区间，直接采 n 个，冲突时补采。用户交互帖子远少于池，
         碰撞率极低，均匀分布与原实现一致。
 
         不足 n 个时（用户已交互帖子占据池近饱和）返回能采到的全部；
         空池返回空列表，调用方应据此决定是否放弃样本。
         """
-        pool = self._active_posts_sorted
-        pool_size = len(pool)
-        if pool_size == 0:
+        lo, hi = self._pool_window(event_time)
+        pool = self._pool_posts
+        pool_size = hi - lo
+        if pool_size <= 0:
             return []
 
         exclude = user_interacted_posts | {positive_post}
         # 池几乎被 exclude 占光时撤退到全池差集（稀见路径）
         if len(exclude) >= pool_size - n:
-            available = [p for p in pool if p not in exclude]
+            available = [p for p in pool[lo:hi] if p not in exclude]
             if not available:
                 return []
             if len(available) <= n:
@@ -343,7 +380,7 @@ class TrainingSampleBuilder:
             return rng.sample(available, n)
 
         # 主路径：直接采 n 个 + 冲突补采，不受 exclude 规模影响
-        picked: List[str] = []
+        picked: list[str] = []
         seen: set = set()
         # 最多尝试 5 轮，下限是 O(n)，上限极端不超过 5n
         for _ in range(5):
@@ -352,7 +389,7 @@ class TrainingSampleBuilder:
                 break
             # 过采 1.5 倍减少循环轮数（碰撞率极低，一般 1~2 轮就够）
             batch_size = min(need + max(need // 2, 1), pool_size)
-            for idx in rng.sample(range(pool_size), batch_size):
+            for idx in rng.sample(range(lo, hi), batch_size):
                 post = pool[idx]
                 if post in exclude or post in seen:
                     continue
@@ -369,7 +406,7 @@ class TrainingSampleBuilder:
         user_behavior_df: pd.DataFrame,
         rng: random.Random,
         user_actions: np.ndarray,
-    ) -> List[Dict]:
+    ) -> list[dict]:
         """
         为单个用户构造训练样本。
 
@@ -387,10 +424,10 @@ class TrainingSampleBuilder:
         Returns:
             样本列表，每个样本是一个字典
         """
-        samples: List[Dict] = []
+        samples: list[dict] = []
 
         df = user_behavior_df.reset_index(drop=True)
-        records: List[Dict] = df.to_dict("records")
+        records: list[dict] = df.to_dict("records")
         N = len(records)
         if N == 0:
             return samples
@@ -399,11 +436,11 @@ class TrainingSampleBuilder:
         user_hash = hash_id_to_ints(user_id)
 
         # ── per-record 预计算（关键：同一事件作为历史最多出现 history_len 次，只算一次）──
-        rec_post_hash: List[List[int]] = [hash_id_to_ints(r["post_id"]) for r in records]
-        rec_author_hash: List[List[int]] = [hash_id_to_ints(r["author_id"]) for r in records]
-        rec_surface: List[int] = [int(r["product_surface"]) % SURFACE_VOCAB for r in records]
+        rec_post_hash: list[list[int]] = [hash_id_to_ints(r["post_id"]) for r in records]
+        rec_author_hash: list[list[int]] = [hash_id_to_ints(r["author_id"]) for r in records]
+        rec_surface: list[int] = [int(r["product_surface"]) % SURFACE_VOCAB for r in records]
         # numpy → Python list-of-list（pyarrow 接受原生 Python list）
-        rec_actions: List[List[float]] = user_actions.tolist()
+        rec_actions: list[list[float]] = user_actions.tolist()
 
         history_len = self.history_len
         num_actions = self.num_actions
@@ -424,6 +461,7 @@ class TrainingSampleBuilder:
                 positive_post,
                 self.neg_sample_ratio,
                 rng,
+                int(rec["event_time"]),
             )
             if not negative_posts:
                 continue
@@ -447,11 +485,11 @@ class TrainingSampleBuilder:
 
             # ── 候选集：正样本查表 + 负样本哈希 + 尾部 padding ──
             surface_id = rec_surface[pos]
-            cand_post_hashes: List[List[int]] = [rec_post_hash[pos]]
-            cand_author_hashes: List[List[int]] = [rec_author_hash[pos]]
-            cand_surfaces: List[int] = [surface_id]
+            cand_post_hashes: list[list[int]] = [rec_post_hash[pos]]
+            cand_author_hashes: list[list[int]] = [rec_author_hash[pos]]
+            cand_surfaces: list[int] = [surface_id]
             # 正样本 label = 当前事件的 ground-truth action（查表，不重新 encode）
-            labels: List[List[float]] = [rec_actions[pos]]
+            labels: list[list[float]] = [rec_actions[pos]]
 
             for neg_post in negative_posts:
                 cand_post_hashes.append(hash_id_to_ints(neg_post))
@@ -505,7 +543,7 @@ _TRAIN_SAMPLE_SCHEMA = pa.schema([
 ])
 
 
-def _samples_to_arrow_table(samples: List[Dict]) -> pa.Table:
+def _samples_to_arrow_table(samples: list[dict]) -> pa.Table:
     """按 `_TRAIN_SAMPLE_SCHEMA` 显式构造 pyarrow Table，避免类型推断导致的 int64/float64。"""
     columns = {name: [s[name] for s in samples] for name in _TRAIN_SAMPLE_SCHEMA.names}
     arrays = [
@@ -520,20 +558,24 @@ def process_single_day(
     output_path: str,
     neg_sample_ratio: int = 7,
     seed: int = 42,
+    max_age_days: int = MAX_AGE_DAYS,
 ):
     """处理单日的行为日志，生成训练样本。"""
     
     # 构建辅助数据结构
     post_to_author = build_post_to_author_map(post_meta_df)
     active_posts = build_active_post_set(post_meta_df)
+    negative_pool = build_negative_pool(post_meta_df)
     
-    logger.info(f"在线帖子数: {len(active_posts)}")
+    logger.info(f"在线帖子数: {len(active_posts)}，负样本窗口: {max_age_days} 天")
     
     # 初始化样本构造器
     builder = TrainingSampleBuilder(
         post_to_author=post_to_author,
         active_posts=active_posts,
         neg_sample_ratio=neg_sample_ratio,
+        negative_pool=negative_pool,
+        max_age_seconds=max_age_days * 86400,
     )
 
     # 全局向量化预编码 19 个行为字段（替代循环内逐行 encode_action_value 的 55 亿次调用）
@@ -620,6 +662,12 @@ def main():
         default=42,
         help="随机种子",
     )
+    parser.add_argument(
+        "--max-age-days",
+        type=int,
+        default=MAX_AGE_DAYS,
+        help="负样本只从事件时刻前 N 天内发布的帖子中采样（默认 7，与线上过滤一致）",
+    )
     
     args = parser.parse_args()
     
@@ -646,6 +694,7 @@ def main():
         output_path=str(output_path),
         neg_sample_ratio=args.neg_ratio,
         seed=args.seed,
+        max_age_days=args.max_age_days,
     )
     
     logger.info("=== 数据预处理完成 ===")

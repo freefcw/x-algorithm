@@ -44,10 +44,10 @@ import multiprocessing as mp
 import os
 import time
 from pathlib import Path
-from typing import List, Optional
 
 # 复用原版的全部核心函数
 from data_preprocessor import (
+    MAX_AGE_DAYS,
     load_behavior_logs,
     load_post_metadata,
     process_single_day,
@@ -57,10 +57,10 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(mess
 logger = logging.getLogger("preprocess_mp")
 
 
-def discover_dates(behavior_dir: str) -> List[str]:
+def discover_dates(behavior_dir: str) -> list[str]:
     """扫描 `dt=YYYY-MM-DD` 子目录，返回排序后的日期列表。"""
     base = Path(behavior_dir)
-    dates: List[str] = []
+    dates: list[str] = []
     for child in base.iterdir():
         if child.is_dir() and child.name.startswith("dt="):
             dates.append(child.name[len("dt=") :])
@@ -75,7 +75,7 @@ def _worker(args):
     必须是 module-level 函数（而非 lambda/嵌套）才能被 pickle 传给子进程。
     每个进程独立加载 post_meta 与 behavior_df，避免跨进程传输大 DataFrame。
     """
-    date_str, behavior_dir, post_meta_path, output_dir, neg_ratio, seed = args
+    date_str, behavior_dir, post_meta_path, output_dir, neg_ratio, seed, max_age_days = args
 
     # 子进程独立 logger 前缀，便于观察并行进度
     worker_logger = logging.getLogger(f"worker[{date_str}]")
@@ -94,6 +94,7 @@ def _worker(args):
             output_path=str(output_path),
             neg_sample_ratio=neg_ratio,
             seed=seed,
+            max_age_days=max_age_days,
         )
 
         elapsed = time.perf_counter() - t_start
@@ -103,7 +104,7 @@ def _worker(args):
         return {"date": date_str, "ok": True, "elapsed": elapsed, "output": str(output_path)}
     except Exception as e:
         elapsed = time.perf_counter() - t_start
-        worker_logger.exception(f"失败：{e}")
+        worker_logger.exception("失败")
         return {"date": date_str, "ok": False, "elapsed": elapsed, "error": str(e)}
 
 
@@ -151,6 +152,12 @@ def main():
         default=42,
         help="随机种子（每天 + 每用户会派生确定性子种子）",
     )
+    parser.add_argument(
+        "--max-age-days",
+        type=int,
+        default=MAX_AGE_DAYS,
+        help="负样本只从事件时刻前 N 天内发布的帖子中采样（默认 7，与线上过滤一致）",
+    )
 
     args = parser.parse_args()
 
@@ -178,7 +185,15 @@ def main():
 
     # 组装 worker 参数
     task_args = [
-        (d, args.behavior_dir, args.post_meta, args.output_dir, args.neg_ratio, args.seed)
+        (
+            d,
+            args.behavior_dir,
+            args.post_meta,
+            args.output_dir,
+            args.neg_ratio,
+            args.seed,
+            args.max_age_days,
+        )
         for d in dates
     ]
 
