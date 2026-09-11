@@ -204,9 +204,8 @@ Phoenix supports three distinct modes:
 
    ```shell
    uv run scripts/run_grpc_gateway.py \
-     --ranker-checkpoint checkpoints/model_params_step200.npz \
-     --retrieval-checkpoint checkpoints/retrieval_params_step200.npz \
-     --emb-tables checkpoints/embedding_tables.npz
+     --ranker-checkpoint checkpoints/step-000200 \
+     --retrieval-checkpoint checkpoints/retrieval_params_step200.npz
    ```
 
 3. **Published weights** with exported configs, split embedding tables, and retrieval corpus:

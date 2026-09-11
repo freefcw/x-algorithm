@@ -20,8 +20,7 @@ Phoenix gRPC 网关 — recommendation-service 与 Phoenix 模型之间的桥。
 启动方式:
     uv run scripts/run_grpc_gateway.py                       # 随机权重（演示）
     uv run scripts/run_grpc_gateway.py \
-        --ranker-checkpoint checkpoints/model_params_step200.npz \
-        --emb-tables checkpoints/embedding_tables.npz        # 加载训练产物
+        --ranker-checkpoint checkpoints/step-000200             # 加载完整训练产物
 
 默认仅监听本机 127.0.0.1:50053（可用 --host/--port 或环境变量
 PHOENIX_GRPC_HOST/PHOENIX_GRPC_PORT 修改）。如需供远程客户端调用，应在受控网络
@@ -30,14 +29,18 @@ PHOENIX_GRPC_HOST/PHOENIX_GRPC_PORT 修改）。如需供远程客户端调用�
 
 from __future__ import annotations
 
+import json
 import logging
 import math
 import os
+import re
 import threading
 import time
 from concurrent import futures
-from typing import List, Optional, Sequence, Tuple
+from pathlib import Path
+from typing import Any, List, Optional, Sequence, Tuple
 
+import jax.numpy as jnp
 import numpy as np
 
 from data_preprocessor import hash_id_to_ints
@@ -52,10 +55,10 @@ from runners import (
     RetrievalModelRunner,
 )
 from services.inference_types import (
-    ACTION_IDX_TO_ENUM,
     CandidatePrediction,
     HistoryFeatures,
 )
+from services.model_contract import ACTION_IDX_TO_ENUM, FEATURE_SCHEMA, supported_actions_header
 from services.recsys_proto import load_proto_modules
 
 logger = logging.getLogger("grpc_gateway")
@@ -81,8 +84,7 @@ MIN_PROB = 1e-9
 # filename or from a successful gRPC call.
 # v2: proto carries business string IDs; both training (data_preprocessor) and serving
 # hash the same string, so no integer ID mapping exists anywhere in the chain.
-FEATURE_SCHEMA = "phoenix-string-id-actions-v2"
-SUPPORTED_ACTIONS = ",".join(str(i) for i in range(1, 19))
+SUPPORTED_ACTIONS = supported_actions_header()
 
 # Snowflake 纪元（毫秒），用于给演示候选池合成"最近发布"的帖子 ID
 TWITTER_EPOCH_MS = 1288834974657
@@ -370,7 +372,9 @@ class RetrievalEngine:
             reps.append(rep[: len(ids)])
 
         corpus_embeddings = np.concatenate(reps, axis=0).astype(np.float32)
-        self._runner.set_corpus(corpus_embeddings, np.arange(corpus_size, dtype=np.int64))
+        self._runner.set_corpus(
+            jnp.asarray(corpus_embeddings), jnp.arange(corpus_size, dtype=jnp.int64)
+        )
         logger.info("候选池就绪：%d 条帖子，向量维度 %d", corpus_size, corpus_embeddings.shape[1])
 
     def retrieve(self, user_id: str, uas, max_results: int) -> List[Tuple[str, str, float]]:
@@ -396,8 +400,19 @@ class RetrievalEngine:
 # ── gRPC 服务实现 ─────────────────────────────────────────────────────────────
 
 
-def create_servicers(recsys_pb2, recsys_pb2_grpc, ranker: RankerEngine, retrieval: RetrievalEngine):
+def create_servicers(
+    recsys_pb2,
+    recsys_pb2_grpc,
+    ranker: Any,
+    retrieval: Any,
+    supported_action_enums: Sequence[int] | None = None,
+    continuous_dwell_supported: bool = True,
+):
     """构造两个 servicer（在函数内定义类，因为基类来自运行时生成的模块）。"""
+    supported = set(
+        range(1, 19) if supported_action_enums is None else supported_action_enums
+    )
+    supported_actions = ",".join(str(value) for value in sorted(supported))
 
     def set_contract_metadata(context, engine) -> None:
         context.set_trailing_metadata(
@@ -405,7 +420,7 @@ def create_servicers(recsys_pb2, recsys_pb2_grpc, ranker: RankerEngine, retrieva
                 ("feature-schema", FEATURE_SCHEMA),
                 ("model-version", engine.model_version),
                 ("random-weights", str(engine.model_version == "random").lower()),
-                ("supported-actions", SUPPORTED_ACTIONS),
+                ("supported-actions", supported_actions),
             )
         )
 
@@ -424,12 +439,16 @@ def create_servicers(recsys_pb2, recsys_pb2_grpc, ranker: RankerEngine, retrieva
                 # 概率 → log 概率，并按 ActionName 枚举值排列（下标 0 为 UNSPECIFIED 占位）
                 top_log_probs = [math.log(MIN_PROB)] * LOG_PROBS_LEN
                 for py_idx, enum_val in enumerate(ACTION_IDX_TO_ENUM):
+                    if enum_val not in supported:
+                        continue
                     p = float(np.clip(probs[py_idx], MIN_PROB, 1.0))
                     top_log_probs[enum_val] = math.log(p)
 
                 # 连续值下标 1 = DWELL_TIME；旧模型没有连续头时兼容离散占位。
-                dwell_time = float(probs[18])
+                dwell_time = float(probs[18]) if continuous_dwell_supported else 0.0
                 if (
+                    continuous_dwell_supported
+                    and
                     prediction.continuous_values is not None
                     and len(prediction.continuous_values) > 1
                 ):
@@ -489,6 +508,95 @@ def create_servicers(recsys_pb2, recsys_pb2_grpc, ranker: RankerEngine, retrieva
     return PredictionServicer(), RetrievalServicer()
 
 
+def load_ranker_contract(checkpoint_path: str | None) -> tuple[list[int] | None, bool]:
+    """读取 checkpoint bundle 的 metadata；旧 checkpoint 默认兼容全部行为。"""
+    if checkpoint_path is None:
+        return None, True
+    checkpoint = Path(checkpoint_path)
+    bundle_dir = checkpoint if checkpoint.is_dir() else checkpoint.parent
+    metadata_candidates = [bundle_dir / "metadata.json"]
+    if not checkpoint.is_dir():
+        match = re.search(r"model_params_step(\d+)", checkpoint.name)
+        if match:
+            metadata_candidates.insert(
+                0, checkpoint.with_name(f"metadata_step{match.group(1)}.json")
+            )
+    metadata_path = next((path for path in metadata_candidates if path.exists()), None)
+    if metadata_path is None:
+        return None, True
+    try:
+        with metadata_path.open(encoding="utf-8") as f:
+            metadata = json.load(f)
+    except (OSError, json.JSONDecodeError) as exc:
+        logger.warning("无法读取 ranker metadata %s，兼容全部行为：%s", metadata_path, exc)
+        return None, True
+    supported = metadata.get("supported_action_enums")
+    if supported is not None:
+        supported = [int(value) for value in supported]
+    observed = metadata.get("observed_actions")
+    continuous = True if observed is None else "dwell_time" in observed
+    return supported, continuous
+
+
+def resolve_ranker_checkpoint(
+    ranker_checkpoint: str | None, emb_tables_path: str | None
+) -> tuple[str | None, str | None]:
+    """解析 ranker bundle，并拒绝参数和 embedding 的跨版本组合。"""
+    if ranker_checkpoint is None:
+        return None, emb_tables_path
+
+    checkpoint = Path(ranker_checkpoint)
+    if checkpoint.is_dir():
+        metadata_path = checkpoint / "metadata.json"
+        params_path = checkpoint / "model_params.npz"
+        bundle_embedding = checkpoint / "embedding_tables.npz"
+        if not metadata_path.exists() or not params_path.exists() or not bundle_embedding.exists():
+            raise FileNotFoundError(
+                f"ranker checkpoint bundle 不完整，需要 {params_path.name}、"
+                f"{bundle_embedding.name}、{metadata_path.name}"
+            )
+        with metadata_path.open(encoding="utf-8") as f:
+            metadata = json.load(f)
+        if (
+            metadata.get("model_params") != params_path.name
+            or metadata.get("embedding_tables") != bundle_embedding.name
+        ):
+            raise ValueError("checkpoint metadata 与 bundle 文件名不一致")
+        if emb_tables_path is not None and Path(emb_tables_path).resolve() != bundle_embedding.resolve():
+            raise ValueError("--ranker-checkpoint 目录与 --emb-tables 不属于同一个 checkpoint bundle")
+        return str(params_path), str(bundle_embedding)
+
+    if not checkpoint.exists():
+        raise FileNotFoundError(f"ranker checkpoint 不存在：{checkpoint}")
+
+    metadata_candidates = [checkpoint.parent / "metadata.json"]
+    param_match = re.search(r"model_params_step(\d+)", checkpoint.name)
+    if param_match:
+        metadata_candidates.insert(
+            0, checkpoint.with_name(f"metadata_step{param_match.group(1)}.json")
+        )
+    metadata_path = next((path for path in metadata_candidates if path.exists()), None)
+    if metadata_path is not None:
+        with metadata_path.open(encoding="utf-8") as f:
+            metadata = json.load(f)
+        embedding_name = metadata.get("embedding_tables")
+        if not isinstance(embedding_name, str) or not embedding_name:
+            raise ValueError(f"checkpoint metadata 缺少 embedding_tables：{metadata_path}")
+        expected = checkpoint.parent / embedding_name
+        if not expected.is_file():
+            raise FileNotFoundError(f"checkpoint bundle 缺少 embedding 表：{expected}")
+        if emb_tables_path is None:
+            emb_tables_path = str(expected)
+        elif Path(emb_tables_path).resolve() != expected.resolve():
+            raise ValueError("模型参数与 embedding 表不属于同一个 checkpoint bundle")
+    else:
+        # 兼容旧的平铺格式，同时防止可识别的 step 被错误混用。
+        emb_match = re.search(r"embedding_tables_step(\d+)", Path(emb_tables_path or "").name)
+        if param_match and emb_match and param_match.group(1) != emb_match.group(1):
+            raise ValueError("模型参数与 embedding 表 step 不一致")
+    return str(checkpoint), emb_tables_path
+
+
 def serve(
     port: int = 50053,
     ranker_checkpoint: Optional[str] = None,
@@ -510,14 +618,29 @@ def serve(
         ranker = published_pipeline.ranker
         retrieval = published_pipeline.retrieval
     else:
+        ranker_checkpoint, emb_tables_path = resolve_ranker_checkpoint(
+            ranker_checkpoint, emb_tables_path
+        )
         tables = EmbeddingTables(emb_tables_path)
         logger.info("正在初始化精排模型...")
         ranker = RankerEngine(tables, ranker_checkpoint)
         logger.info("正在初始化召回模型...")
         retrieval = RetrievalEngine(tables, retrieval_checkpoint, corpus_size)
 
+    supported_action_enums = None
+    continuous_dwell_supported = True
+    if not artifacts_dir:
+        supported_action_enums, continuous_dwell_supported = load_ranker_contract(
+            ranker_checkpoint
+        )
+
     prediction_servicer, retrieval_servicer = create_servicers(
-        recsys_pb2, recsys_pb2_grpc, ranker, retrieval
+        recsys_pb2,
+        recsys_pb2_grpc,
+        ranker,
+        retrieval,
+        supported_action_enums,
+        continuous_dwell_supported,
     )
 
     server = grpc.server(futures.ThreadPoolExecutor(max_workers=4))

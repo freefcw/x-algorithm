@@ -94,7 +94,7 @@ uv run scripts/run_services.py all
 
 ### 4. 加载 Checkpoint (可选)
 
-Checkpoint 是训练脚本（`scripts/train_*.py`）产出的 `.npz` 文件：
+Checkpoint 是 HTTP 服务对应策略产出的 `.npz` 文件：
 
 ```bash
 uv run scripts/run_services.py ranker --ranker-checkpoint ./checkpoints/model_params_step200.npz
@@ -109,8 +109,7 @@ uv run scripts/run_services.py retrieval --retrieval-checkpoint ./checkpoints/re
 ```bash
 uv run scripts/run_grpc_gateway.py                # 随机权重，监听 50053
 uv run scripts/run_grpc_gateway.py \
-    --ranker-checkpoint checkpoints/model_params_step200.npz \
-    --emb-tables checkpoints/embedding_tables.npz  # 加载训练产物
+    --ranker-checkpoint checkpoints/step-000200  # 加载完整 checkpoint bundle
 ```
 
 实现见 `services/grpc_gateway.py`：真正消费请求里的用户行为序列构造模型输入，

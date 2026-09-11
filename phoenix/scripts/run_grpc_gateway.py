@@ -14,8 +14,7 @@ Phoenix gRPC 网关启动脚本。
 
     # 加载本地训练产物（scripts/train_ranker.py 的输出）
     uv run scripts/run_grpc_gateway.py \
-        --ranker-checkpoint checkpoints/model_params_step200.npz \
-        --emb-tables checkpoints/embedding_tables.npz
+        --ranker-checkpoint checkpoints/step-000200
 
 依赖:
     uv sync --group service   # 包含 grpcio / grpcio-tools
@@ -51,7 +50,7 @@ def main():
     parser.add_argument(
         "--ranker-checkpoint",
         default=os.getenv("RANKER_CHECKPOINT_PATH"),
-        help="精排模型检查点（train_ranker.py 产出的 model_params_step*.npz）",
+        help="精排 checkpoint 文件或 bundle 目录（推荐使用 train_ranker.py 产出的 step-* 目录）",
     )
     parser.add_argument(
         "--retrieval-checkpoint",
@@ -61,7 +60,7 @@ def main():
     parser.add_argument(
         "--emb-tables",
         default=os.getenv("EMB_TABLES_PATH"),
-        help="嵌入表文件（embedding_tables.npz），不传则随机初始化",
+        help="旧格式嵌入表文件；使用 bundle 目录时不要传此参数",
     )
     parser.add_argument(
         "--corpus-size",

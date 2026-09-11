@@ -19,6 +19,7 @@
 import _setup_path  # noqa: F401
 
 import argparse
+import json
 import logging
 import os
 from pathlib import Path
@@ -99,6 +100,23 @@ def save_embedding_tables(path: str, user_emb, post_emb, author_emb):
     os.makedirs(os.path.dirname(path), exist_ok=True)
     np.savez(path, user_emb_table=user_emb, post_emb_table=post_emb, author_emb_table=author_emb)
     logger.info(f"嵌入表已保存到 {path}")
+
+
+def resolve_resume_embedding_path(ckpt_dir: str) -> str | None:
+    """优先读取 ranker 最新 bundle，兼容旧的根目录 embedding_tables.npz。"""
+    legacy_path = Path(ckpt_dir) / "embedding_tables.npz"
+    if legacy_path.exists():
+        return str(legacy_path)
+    latest_path = Path(ckpt_dir) / "latest.json"
+    if not latest_path.exists():
+        return None
+    try:
+        with latest_path.open(encoding="utf-8") as f:
+            bundle_name = json.load(f)["checkpoint_dir"]
+    except (OSError, KeyError, TypeError, json.JSONDecodeError):
+        return None
+    bundle_path = Path(ckpt_dir) / bundle_name / "embedding_tables.npz"
+    return str(bundle_path) if bundle_path.exists() else None
 
 
 def lookup_embeddings(
@@ -333,8 +351,8 @@ def train(args):
         raise ValueError("召回训练需要 batch_size >= 2，否则 in-batch negatives 没有负样本")
 
     # 1. 初始化或加载嵌入表（与精排训练复用同一张表）
-    emb_path = os.path.join(args.ckpt_dir, "embedding_tables.npz")
-    if args.resume_emb and os.path.exists(emb_path):
+    emb_path = resolve_resume_embedding_path(args.ckpt_dir)
+    if args.resume_emb and emb_path is not None and os.path.exists(emb_path):
         user_emb, post_emb, author_emb = load_embedding_tables(emb_path)
         logger.info(f"已加载嵌入表：{emb_path}")
     else:
@@ -410,12 +428,13 @@ def train(args):
 
     # 6. 最终保存
     save_checkpoint(args.ckpt_dir, params, step)
-    save_embedding_tables(emb_path, user_emb, post_emb, author_emb)
+    output_emb_path = os.path.join(args.ckpt_dir, "embedding_tables.npz")
+    save_embedding_tables(output_emb_path, user_emb, post_emb, author_emb)
     logger.info("=== 训练完成 ===")
     logger.info(f"产物目录：{args.ckpt_dir}")
     logger.info("推理时加载：")
     logger.info(f"  模型参数：{args.ckpt_dir}/retrieval_params_step{step}.npz")
-    logger.info(f"  嵌入表  ：{emb_path}")
+    logger.info(f"  嵌入表  ：{output_emb_path}")
     logger.info("下一步：")
     logger.info("  1) 用物品塔离线对全库 post 预计算向量 → 灌入 FAISS/ScaNN")
     logger.info("  2) 在线请求用用户塔实时编码 user_repr，点积取 top-k 送入精排")

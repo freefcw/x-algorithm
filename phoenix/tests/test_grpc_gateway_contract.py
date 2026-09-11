@@ -9,6 +9,8 @@
 #   3. checkpoint 加载：训练脚本的 flatten npz → Haiku 嵌套参数
 #   4. snowflake_id：演示 retrieval corpus 的 ID 必须能还原发布时间
 
+import math
+
 import numpy as np
 import pytest
 
@@ -203,6 +205,50 @@ def test_servicer_echoes_business_string_ids():
     returned = response.distribution_sets[0].candidate_distributions[0].candidate
     assert returned.tweet_id == "69def6d4f0c8754f5c2fc994"
     assert returned.author_id == "602e867f0de2d061ee418407"
+
+
+def test_servicer_filters_unobserved_actions():
+    """训练只观测部分行为时，gRPC 不得把其他 head 当成有效预测。"""
+    from services.grpc_gateway import MIN_PROB, create_servicers
+    from services.inference_types import CandidatePrediction
+
+    _, recsys_pb2_grpc = load_proto_modules()
+
+    class _Ranker:
+        model_version = "unit"
+
+        def predict(self, user_id, uas, candidates):
+            return [
+                CandidatePrediction(action_probs=np.full(len(ACTIONS), 0.5))
+                for _ in candidates
+            ]
+
+    class _Context:
+        def __init__(self):
+            self.metadata = None
+
+        def set_trailing_metadata(self, metadata):
+            self.metadata = dict(metadata)
+
+    context = _Context()
+    servicer, _ = create_servicers(
+        recsys_pb2,
+        recsys_pb2_grpc,
+        _Ranker(),
+        None,
+        supported_action_enums=[1, 2],
+        continuous_dwell_supported=False,
+    )
+    response = servicer.PredictNextActions(
+        recsys_pb2.PredictNextActionsRequest(candidates=[recsys_pb2.TweetInfo(tweet_id="p", author_id="a")]),
+        context,
+    )
+
+    distribution = response.distribution_sets[0].candidate_distributions[0]
+    assert context.metadata["supported-actions"] == "1,2"
+    assert distribution.top_log_probs[1] == pytest.approx(math.log(0.5))
+    assert distribution.top_log_probs[3] == pytest.approx(math.log(MIN_PROB))
+    assert distribution.continuous_actions_values[1] == 0.0
 
 
 # ==================== 3. checkpoint 加载 ====================
