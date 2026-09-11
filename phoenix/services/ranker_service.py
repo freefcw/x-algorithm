@@ -145,7 +145,12 @@ async def lifespan(app: FastAPI):
         port=_config.metrics_port,
     )
 
-    _feature_store = create_feature_store("mock", emb_size=_config.model.emb_size)
+    if _config.environment == "production" and _config.feature_backend == "mock":
+        raise RuntimeError("production ranker requires a real feature backend")
+    _feature_store = create_feature_store(
+        _config.feature_backend,
+        emb_size=_config.model.emb_size,
+    )
 
     with _metrics.record_inference("init"):
         _strategy = create_strategy(

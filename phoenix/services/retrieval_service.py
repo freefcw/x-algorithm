@@ -137,8 +137,12 @@ class VectorIndex:
     
     def load(self) -> None:
         """加载候选池"""
+        if self.config.environment == "production" and not self.config.vector_index_path:
+            raise RuntimeError("production retrieval requires a configured vector index")
         if self.config.vector_index_type == "faiss" and self.config.vector_index_path:
             self._load_faiss()
+        elif self.config.environment == "production":
+            raise RuntimeError("production retrieval requires a supported vector index")
         else:
             self._load_mock()
     
@@ -146,12 +150,17 @@ class VectorIndex:
         """从 FAISS 索引加载"""
         try:
             import faiss
-            index = faiss.read_index(self.config.vector_index_path)
-            logger.info(f"Loaded FAISS index from {self.config.vector_index_path}")
-            # TODO: 实现 FAISS 检索逻辑
-            # 目前回退到 mock
+            faiss.read_index(self.config.vector_index_path)
+            if self.config.environment == "production":
+                raise RuntimeError(
+                    "FAISS index loading is not wired to the retrieval corpus yet; "
+                    "use the gRPC gateway or implement the index adapter before production"
+                )
+            logger.warning("FAISS index is not wired to this HTTP service; using demo corpus")
             self._load_mock()
-        except ImportError:
+        except ImportError as exc:
+            if self.config.environment == "production":
+                raise RuntimeError("production retrieval requires the faiss dependency") from exc
             logger.warning("faiss not installed, falling back to mock")
             self._load_mock()
     
@@ -211,7 +220,10 @@ def _init_model(config: RetrievalServiceConfig) -> RecsysRetrievalInferenceRunne
     runner.initialize()
     
     # 加载 checkpoint (如果提供)
-    registry = create_model_registry(config.checkpoint_path, allow_random_init=True)
+    allow_random_init = config.environment != "production"
+    registry = create_model_registry(
+        config.checkpoint_path, allow_random_init=allow_random_init
+    )
     if registry.get_params() is not None:
         runner.params = registry.get_params()
         logger.info("Loaded model from checkpoint")
@@ -238,7 +250,12 @@ async def lifespan(app: FastAPI):
     )
     
     # 初始化特征存储
-    _feature_store = create_feature_store("mock", emb_size=_config.model.emb_size)
+    if _config.environment == "production" and _config.feature_backend == "mock":
+        raise RuntimeError("production retrieval requires a real feature backend")
+    _feature_store = create_feature_store(
+        _config.feature_backend,
+        emb_size=_config.model.emb_size,
+    )
     
     # 初始化模型
     with _metrics.record_inference("init"):

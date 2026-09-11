@@ -84,8 +84,9 @@ class PhoenixStrategy(RankingStrategy):
         runner.initialize()
 
         # 加载 checkpoint 或回落到随机初始化
+        allow_random_init = self._config.environment != "production"
         registry = create_model_registry(
-            self._config.checkpoint_path, allow_random_init=True
+            self._config.checkpoint_path, allow_random_init=allow_random_init
         )
         if registry.get_params() is not None:
             runner.params = registry.get_params()

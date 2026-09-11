@@ -41,6 +41,7 @@ class RankerServiceConfig:
     """精排服务配置"""
     # 服务配置
     host: str = "0.0.0.0"
+    environment: str = "demo"
     port: int = 8081
     workers: int = 1  # JAX GPU 建议单进程
     
@@ -56,6 +57,7 @@ class RankerServiceConfig:
     
     # 特征服务地址
     feature_service_url: str = "http://localhost:8090"
+    feature_backend: str = "mock"
     
     # 监控
     enable_metrics: bool = True
@@ -74,11 +76,13 @@ class RankerServiceConfig:
         """从环境变量加载配置"""
         return cls(
             host=os.getenv("RANKER_HOST", "0.0.0.0"),
+            environment=os.getenv("PHOENIX_ENV", "demo").lower(),
             port=int(os.getenv("RANKER_PORT", "8081")),
             workers=int(os.getenv("RANKER_WORKERS", "1")),
             checkpoint_path=os.getenv("RANKER_CHECKPOINT_PATH"),
             max_batch_size=int(os.getenv("RANKER_MAX_BATCH", "32")),
             feature_service_url=os.getenv("FEATURE_SERVICE_URL", "http://localhost:8090"),
+            feature_backend=os.getenv("FEATURE_BACKEND", "mock"),
             enable_metrics=os.getenv("ENABLE_METRICS", "true").lower() == "true",
             metrics_port=int(os.getenv("RANKER_METRICS_PORT", "9091")),
             strategy=os.getenv("RANKER_STRATEGY", "phoenix"),
@@ -92,6 +96,7 @@ class RetrievalServiceConfig:
     """召回服务配置"""
     # 服务配置
     host: str = "0.0.0.0"
+    environment: str = "demo"
     port: int = 8082
     workers: int = 1
     
@@ -116,6 +121,7 @@ class RetrievalServiceConfig:
     
     # 特征服务
     feature_service_url: str = "http://localhost:8090"
+    feature_backend: str = "mock"
     
     # 监控
     enable_metrics: bool = True
@@ -126,6 +132,7 @@ class RetrievalServiceConfig:
         """从环境变量加载配置"""
         return cls(
             host=os.getenv("RETRIEVAL_HOST", "0.0.0.0"),
+            environment=os.getenv("PHOENIX_ENV", "demo").lower(),
             port=int(os.getenv("RETRIEVAL_PORT", "8082")),
             workers=int(os.getenv("RETRIEVAL_WORKERS", "1")),
             checkpoint_path=os.getenv("RETRIEVAL_CHECKPOINT_PATH"),
@@ -137,6 +144,7 @@ class RetrievalServiceConfig:
             corpus_refresh_interval_s=int(os.getenv("CORPUS_REFRESH_INTERVAL", "300")),
             max_batch_size=int(os.getenv("RETRIEVAL_MAX_BATCH", "64")),
             feature_service_url=os.getenv("FEATURE_SERVICE_URL", "http://localhost:8090"),
+            feature_backend=os.getenv("FEATURE_BACKEND", "mock"),
             enable_metrics=os.getenv("ENABLE_METRICS", "true").lower() == "true",
             metrics_port=int(os.getenv("RETRIEVAL_METRICS_PORT", "9092")),
         )
