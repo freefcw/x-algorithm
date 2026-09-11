@@ -6,8 +6,7 @@ from dataclasses import dataclass
 
 import numpy as np
 
-# Model ACTIONS index to recsys.proto ActionName enum value.
-ACTION_IDX_TO_ENUM = [1, 2, 3, 5, 6, 7, 8, 9, 10, 11, 12, 4, 13, 14, 15, 16, 17, 18]
+from services.model_contract import ACTION_IDX_TO_ENUM
 
 
 @dataclass
