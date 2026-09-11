@@ -104,7 +104,7 @@ uv run scripts/run_services.py retrieval --retrieval-checkpoint ./checkpoints/re
 ## gRPC 网关（供 recommendation-service 调用）
 
 上面的 HTTP 服务面向人工调试和外部系统。推荐主链路中，recommendation-service（Rust）通过
-`proto/definitions/recsys.proto` 定义的 gRPC 协议调用 Phoenix，对应服务是：
+`proto/definitions/phoenix_recsys.proto` 定义的 gRPC 协议调用 Phoenix，对应服务是：
 
 ```bash
 uv run scripts/run_grpc_gateway.py                # 随机权重，监听 50053

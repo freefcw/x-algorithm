@@ -178,7 +178,7 @@ def observed_action_names(head_mask: np.ndarray) -> list[str]:
 
 
 def supported_action_enums(head_mask: np.ndarray) -> list[int]:
-    """观测到的离散头对应的 recsys.proto ActionName 枚举值（dwell_time 不是离散头）。"""
+    """观测到的离散头对应的 phoenix_recsys.proto ActionName 枚举值（dwell_time 不是离散头）。"""
     return sorted(ACTION_IDX_TO_ENUM[i] for i in range(len(ACTION_IDX_TO_ENUM)) if head_mask[i] > 0)
 
 
