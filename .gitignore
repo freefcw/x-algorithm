@@ -67,7 +67,7 @@ logs/
 Thumbs.db
 
 # ---------- 生成代码 ----------
-# gRPC 网关运行时从 proto/definitions/recsys.proto 自动生成
+# gRPC 网关运行时从 proto/definitions/phoenix_recsys.proto 自动生成
 phoenix/services/proto_gen/
 
 # ---------- 其他 ----------

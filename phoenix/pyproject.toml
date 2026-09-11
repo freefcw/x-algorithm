@@ -118,3 +118,6 @@ service = [
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 pythonpath = ["."]
+# tests/engine/ 是生产引擎（xrex）侧测试，会把 xai_proto 的 recsys.proto 拉进进程；
+# 默认全量只跑演示链路，引擎测试需显式 `uv run pytest tests/engine`。
+norecursedirs = [".*", "__pycache__", "engine"]
