@@ -2,15 +2,11 @@
 """
 Phoenix gRPC 网关启动脚本。
 
-实现 recsys.proto 的精排 / 召回 gRPC 服务，供 recommendation-service 调用。
+实现 proto/definitions/phoenix_recsys.proto 的精排 / 召回 gRPC 服务，供 recommendation-service 调用。
 
 用法:
     # 随机权重（演示，无需任何文件）
     uv run scripts/run_grpc_gateway.py
-
-    # 加载发布 artifact（同时加载 config、参数、嵌入表和召回语料）
-    uv run scripts/run_grpc_gateway.py \
-        --artifacts-dir artifacts/oss-phoenix-artifacts
 
     # 加载本地训练产物（scripts/train_ranker.py 的输出）
     uv run scripts/run_grpc_gateway.py \
@@ -41,11 +37,6 @@ def main():
         type=int,
         default=int(os.getenv("PHOENIX_GRPC_PORT", "50053")),
         help="gRPC 监听端口（默认 50053）",
-    )
-    parser.add_argument(
-        "--artifacts-dir",
-        default=os.getenv("PHOENIX_ARTIFACTS_DIR"),
-        help="发布 artifact 根目录；提供后优先于单独 checkpoint 参数",
     )
     parser.add_argument(
         "--ranker-checkpoint",
@@ -79,7 +70,6 @@ def main():
         retrieval_checkpoint=args.retrieval_checkpoint,
         emb_tables_path=args.emb_tables,
         corpus_size=args.corpus_size,
-        artifacts_dir=args.artifacts_dir,
     )
 
 

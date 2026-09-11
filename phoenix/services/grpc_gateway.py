@@ -6,7 +6,7 @@
 """
 Phoenix gRPC 网关 — recommendation-service 与 Phoenix 模型之间的桥。
 
-实现 proto/definitions/recsys.proto 定义的两个 gRPC 服务：
+实现 proto/definitions/phoenix_recsys.proto 定义的两个 gRPC 服务：
     1. PhoenixPredictionService.PredictNextActions —— 精排：
        输入用户行为序列 + 候选帖子，输出每条帖子上 18 种行为的概率。
     2. PhoenixRetrievalService.Retrieve —— 召回：
@@ -86,12 +86,15 @@ MIN_PROB = 1e-9
 # hash the same string, so no integer ID mapping exists anywhere in the chain.
 SUPPORTED_ACTIONS = supported_actions_header()
 
-# Snowflake 纪元（毫秒），用于给演示候选池合成"最近发布"的帖子 ID
-TWITTER_EPOCH_MS = 1288834974657
+def demo_object_id(index: int) -> str:
+    """Return a deterministic ObjectId-shaped demo ID.
 
+    The index is only used to make the local corpus reproducible.  Business
+    IDs remain strings; no timestamp or ordering is encoded in the ID.
+    """
+    import hashlib
 
-def snowflake_id(timestamp_ms: int, sequence: int) -> int:
-    return ((timestamp_ms - TWITTER_EPOCH_MS) << 22) | (sequence & 0x3F_FFFF)
+    return hashlib.md5(f"phoenix-demo-post-{index}".encode(), usedforsecurity=False).hexdigest()[:24]
 
 
 # ── 嵌入表 ────────────────────────────────────────────────────────────────────
@@ -303,7 +306,7 @@ class RankerEngine:
 class RetrievalEngine:
     """双塔召回：用户塔编码 UAS，在演示候选池上做 Top-K 点积检索。
 
-    候选池是启动时合成的（Snowflake ID 的十进制字符串 + 网外作者），
+    候选池是启动时合成的（ObjectId 形状的字符串 + 网外作者），
     物品向量由真实的候选塔前向计算得到，检索数学是真实的。
     生产环境应替换为离线构建的向量索引（FAISS/Milvus），ID 直接用业务字符串。
     """
@@ -343,14 +346,9 @@ class RetrievalEngine:
 
     def _build_corpus(self, corpus_size: int) -> None:
         """合成演示候选池并用候选塔编码成向量。"""
-        now_ms = int(time.time() * 1000)
-        window_ms = 24 * 60 * 60 * 1000
-        step_ms = max(window_ms // max(corpus_size, 1), 1)
-
         # 演示作者（只用于独立 Phoenix retrieval smoke）
         self._post_ids = [
-            str(snowflake_id(now_ms - window_ms + step_ms * i, 500_000 + i))
-            for i in range(corpus_size)
+            demo_object_id(i) for i in range(corpus_size)
         ]
         self._author_ids = [str(201 + (i % 40)) for i in range(corpus_size)]
 
@@ -603,36 +601,24 @@ def serve(
     retrieval_checkpoint: Optional[str] = None,
     emb_tables_path: Optional[str] = None,
     corpus_size: int = 2000,
-    artifacts_dir: Optional[str] = None,
     host: str = "127.0.0.1",
 ) -> None:
     import grpc
 
     recsys_pb2, recsys_pb2_grpc = load_proto_modules()
 
-    if artifacts_dir:
-        from services.published_pipeline import PublishedPipeline
+    ranker_checkpoint, emb_tables_path = resolve_ranker_checkpoint(
+        ranker_checkpoint, emb_tables_path
+    )
+    tables = EmbeddingTables(emb_tables_path)
+    logger.info("正在初始化精排模型...")
+    ranker = RankerEngine(tables, ranker_checkpoint)
+    logger.info("正在初始化召回模型...")
+    retrieval = RetrievalEngine(tables, retrieval_checkpoint, corpus_size)
 
-        logger.info("正在从发布 artifact 初始化共享推理核心...")
-        published_pipeline = PublishedPipeline(artifacts_dir)
-        ranker = published_pipeline.ranker
-        retrieval = published_pipeline.retrieval
-    else:
-        ranker_checkpoint, emb_tables_path = resolve_ranker_checkpoint(
-            ranker_checkpoint, emb_tables_path
-        )
-        tables = EmbeddingTables(emb_tables_path)
-        logger.info("正在初始化精排模型...")
-        ranker = RankerEngine(tables, ranker_checkpoint)
-        logger.info("正在初始化召回模型...")
-        retrieval = RetrievalEngine(tables, retrieval_checkpoint, corpus_size)
-
-    supported_action_enums = None
-    continuous_dwell_supported = True
-    if not artifacts_dir:
-        supported_action_enums, continuous_dwell_supported = load_ranker_contract(
-            ranker_checkpoint
-        )
+    supported_action_enums, continuous_dwell_supported = load_ranker_contract(
+        ranker_checkpoint
+    )
 
     prediction_servicer, retrieval_servicer = create_servicers(
         recsys_pb2,

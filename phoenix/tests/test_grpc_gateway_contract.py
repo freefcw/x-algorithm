@@ -7,7 +7,7 @@
 #   1. ACTION_IDX_TO_ENUM：Python 行为下标 → proto ActionName 枚举值
 #   2. uas_to_history：proto 行为序列 → 模型历史特征
 #   3. checkpoint 加载：训练脚本的 flatten npz → Haiku 嵌套参数
-#   4. snowflake_id：演示 retrieval corpus 的 ID 必须能还原发布时间
+#   4. demo_object_id：演示 retrieval corpus 使用业务字符串 ID
 
 import math
 
@@ -21,8 +21,7 @@ from services.grpc_gateway import (
     HISTORY_LEN,
     NUM_HASHES,
     TABLE_SIZE,
-    TWITTER_EPOCH_MS,
-    snowflake_id,
+    demo_object_id,
     uas_to_history,
 )
 
@@ -285,18 +284,12 @@ def test_npz_checkpoint_roundtrip(tmp_path):
             np.testing.assert_allclose(np.asarray(loaded[mod][name]), arr)
 
 
-# ==================== 4. Snowflake ID 契约 ====================
+# ==================== 4. ObjectId-shaped string contract ====================
 
 
-def test_snowflake_id_parseable_by_age_filter():
-    """网关合成的候选池帖子 ID，高 41 位必须能还原出毫秒时间戳。
-
-    演示 retrieval corpus 使用 (id >> 22) + TWITTER_EPOCH_MS 解析发布时间，
-    这保证演示候选 ID 的时间字段可复现。
-    """
-    ts = 1_800_000_000_000
-    post_id = snowflake_id(ts, 42)
-    assert (post_id >> 22) + TWITTER_EPOCH_MS == ts
-
-    # 同一毫秒内不同序号不冲突
-    assert snowflake_id(ts, 1) != snowflake_id(ts, 2)
+def test_demo_object_id_is_stable_and_not_time_encoded():
+    first = demo_object_id(42)
+    assert first == demo_object_id(42)
+    assert first != demo_object_id(43)
+    assert len(first) == 24
+    assert all(char in "0123456789abcdef" for char in first)
