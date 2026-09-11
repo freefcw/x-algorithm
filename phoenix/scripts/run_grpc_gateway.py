@@ -2,7 +2,7 @@
 """
 Phoenix gRPC 网关启动脚本。
 
-实现 recsys.proto 的精排 / 召回 gRPC 服务，供 home-mixer 直接调用。
+实现 recsys.proto 的精排 / 召回 gRPC 服务，供 recommendation-service 调用。
 
 用法:
     # 随机权重（演示，无需任何文件）
@@ -32,6 +32,11 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(mess
 
 def main():
     parser = argparse.ArgumentParser(description="Phoenix gRPC gateway")
+    parser.add_argument(
+        "--host",
+        default=os.getenv("PHOENIX_GRPC_HOST", "127.0.0.1"),
+        help="gRPC 监听地址（默认 127.0.0.1；可用 PHOENIX_GRPC_HOST 修改）",
+    )
     parser.add_argument(
         "--port",
         type=int,
@@ -69,6 +74,7 @@ def main():
     from services.grpc_gateway import serve
 
     serve(
+        host=args.host,
         port=args.port,
         ranker_checkpoint=args.ranker_checkpoint,
         retrieval_checkpoint=args.retrieval_checkpoint,

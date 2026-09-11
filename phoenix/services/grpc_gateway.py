@@ -4,7 +4,7 @@
 # 除非遵守许可证，否则您不得使用此文件。
 
 """
-Phoenix gRPC 网关 — home-mixer 与 Phoenix 模型之间的桥。
+Phoenix gRPC 网关 — recommendation-service 与 Phoenix 模型之间的桥。
 
 实现 proto/definitions/recsys.proto 定义的两个 gRPC 服务：
     1. PhoenixPredictionService.PredictNextActions —— 精排：
@@ -14,7 +14,7 @@ Phoenix gRPC 网关 — home-mixer 与 Phoenix 模型之间的桥。
 
 与 HTTP 服务（ranker_service / retrieval_service）的区别：
     - HTTP 服务面向人和外部系统调试，字段是字符串 ID；
-    - 本网关面向 home-mixer（Rust），协议、字段、概率格式严格对齐 proto 契约，
+    - 本网关面向 recommendation-service（Rust），协议、字段、概率格式严格对齐 proto 契约，
       并且真正消费请求里的用户行为序列（而不是 mock 特征）。
 
 启动方式:
@@ -23,7 +23,9 @@ Phoenix gRPC 网关 — home-mixer 与 Phoenix 模型之间的桥。
         --ranker-checkpoint checkpoints/model_params_step200.npz \
         --emb-tables checkpoints/embedding_tables.npz        # 加载训练产物
 
-默认监听 0.0.0.0:50053（可用 --port 或环境变量 PHOENIX_GRPC_PORT 修改）。
+默认仅监听本机 127.0.0.1:50053（可用 --host/--port 或环境变量
+PHOENIX_GRPC_HOST/PHOENIX_GRPC_PORT 修改）。如需供远程客户端调用，应在受控网络
+边界内显式传入绑定地址，并配置相应的访问控制。
 """
 
 from __future__ import annotations
@@ -72,6 +74,14 @@ RANK_CHUNK = 32  # 单次前向最多处理的候选数，超出部分分批
 LOG_PROBS_LEN = 19        # ActionName 枚举 0..=18
 CONTINUOUS_LEN = 2        # ContinuousActionName 枚举 0..=1（1 = DWELL_TIME）
 MIN_PROB = 1e-9
+
+# Cross-language serving contract.  recommendation-service rejects a response when any of
+# these values is missing or incompatible with the request-side feature
+# mapping.  Keep this explicit instead of inferring readiness from a model
+# filename or from a successful gRPC call.
+FEATURE_SCHEMA = "phoenix-id-actions-v1"
+ID_MAPPING_VERSION = os.getenv("PHOENIX_ID_MAPPING_VERSION", "v1")
+SUPPORTED_ACTIONS = ",".join(str(i) for i in range(1, 19))
 
 # Snowflake 纪元（毫秒），用于给演示候选池合成"最近发布"的帖子 ID
 TWITTER_EPOCH_MS = 1288834974657
@@ -333,7 +343,7 @@ class RetrievalEngine:
         window_ms = 24 * 60 * 60 * 1000
         step_ms = max(window_ms // max(corpus_size, 1), 1)
 
-        # 网外作者（不在 home-mixer 演示关注列表 101..105 中）
+        # 演示作者（只用于独立 Phoenix retrieval smoke）
         self._post_ids = np.array(
             [
                 snowflake_id(now_ms - window_ms + step_ms * i, 500_000 + i)
@@ -394,9 +404,21 @@ class RetrievalEngine:
 def create_servicers(recsys_pb2, recsys_pb2_grpc, ranker: RankerEngine, retrieval: RetrievalEngine):
     """构造两个 servicer（在函数内定义类，因为基类来自运行时生成的模块）。"""
 
+    def set_contract_metadata(context, engine) -> None:
+        context.set_trailing_metadata(
+            (
+                ("feature-schema", FEATURE_SCHEMA),
+                ("id-mapping-version", ID_MAPPING_VERSION),
+                ("model-version", engine.model_version),
+                ("random-weights", str(engine.model_version == "random").lower()),
+                ("supported-actions", SUPPORTED_ACTIONS),
+            )
+        )
+
     class PredictionServicer(recsys_pb2_grpc.PhoenixPredictionServiceServicer):
         def PredictNextActions(self, request, context):
             start = time.time()
+            set_contract_metadata(context, ranker)
             candidates = [(c.tweet_id, c.author_id) for c in request.candidates]
             predictions = ranker.predict(
                 request.user_id, request.user_action_sequence, candidates
@@ -446,6 +468,7 @@ def create_servicers(recsys_pb2, recsys_pb2_grpc, ranker: RankerEngine, retrieva
     class RetrievalServicer(recsys_pb2_grpc.PhoenixRetrievalServiceServicer):
         def Retrieve(self, request, context):
             start = time.time()
+            set_contract_metadata(context, retrieval)
             results = retrieval.retrieve(
                 request.user_id, request.user_action_sequence, request.max_results or 100
             )
@@ -479,6 +502,7 @@ def serve(
     emb_tables_path: Optional[str] = None,
     corpus_size: int = 2000,
     artifacts_dir: Optional[str] = None,
+    host: str = "127.0.0.1",
 ) -> None:
     import grpc
 
@@ -509,9 +533,9 @@ def serve(
     recsys_pb2_grpc.add_PhoenixRetrievalServiceServicer_to_server(
         retrieval_servicer, server
     )
-    server.add_insecure_port(f"0.0.0.0:{port}")
+    server.add_insecure_port(f"{host}:{port}")
     server.start()
-    logger.info("Phoenix gRPC gateway ready on 0.0.0.0:%d", port)
+    logger.info("Phoenix gRPC gateway ready on %s:%d", host, port)
     logger.info(
         "  ranker=%s  retrieval=%s", ranker.model_version, retrieval.model_version
     )

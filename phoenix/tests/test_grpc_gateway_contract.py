@@ -1,13 +1,13 @@
 # gRPC 网关的跨语言契约测试
 #
-# 网关是 home-mixer（Rust / proto 契约）与 Phoenix 模型（Python ACTIONS 顺序）
+# 网关是 recommendation-service（Rust / proto 契约）与 Phoenix 模型（Python ACTIONS 顺序）
 # 之间的翻译层。这里的映射错一位不会报任何错——请求照常返回、分数照常输出，
 # 只有排序悄悄张冠李戴。因此每个转换点都需要用独立表达方式对拍：
 #
 #   1. ACTION_IDX_TO_ENUM：Python 行为下标 → proto ActionName 枚举值
 #   2. uas_to_history：proto 行为序列 → 模型历史特征
 #   3. checkpoint 加载：训练脚本的 flatten npz → Haiku 嵌套参数
-#   4. snowflake_id：生成的帖子 ID 必须能被 home-mixer 的 AgeFilter 还原时间
+#   4. snowflake_id：演示 retrieval corpus 的 ID 必须能还原发布时间
 
 import numpy as np
 import pytest
@@ -148,7 +148,7 @@ def test_uas_to_history_pads_and_truncates():
 
 
 def test_uas_to_history_handles_empty_sequence():
-    """空序列不报错，返回全零特征（对应 home-mixer 侧 UAS 缺失的场景）。"""
+    """空序列不报错，返回全零特征（对应推荐服务侧 UAS 缺失的场景）。"""
     history = uas_to_history(None)
     assert history.post_hashes.sum() == 0
     assert history.actions.sum() == 0
@@ -197,8 +197,8 @@ def test_npz_checkpoint_roundtrip(tmp_path):
 def test_snowflake_id_parseable_by_age_filter():
     """网关合成的候选池帖子 ID，高 41 位必须能还原出毫秒时间戳。
 
-    home-mixer 的 AgeFilter 按 (id >> 22) + TWITTER_EPOCH_MS 解析发布时间，
-    解析结果若不是"最近"，网外候选会被全部过滤，召回静默失效。
+    演示 retrieval corpus 使用 (id >> 22) + TWITTER_EPOCH_MS 解析发布时间，
+    这保证演示候选 ID 的时间字段可复现。
     """
     ts = 1_800_000_000_000
     post_id = snowflake_id(ts, 42)
