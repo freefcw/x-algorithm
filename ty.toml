@@ -1,0 +1,6 @@
+# ty 类型检查配置：仓库根无 Python 环境，唯一的解释器在 phoenix/.venv。
+# IDE 以仓库根为项目根运行 ty 时，需要显式指向该 venv 才能解析 jax/numpy 等导入。
+[environment]
+python = "./phoenix/.venv"
+# tests/ 通过 sys.path.insert 引入 phoenix/scripts（如 import train_ranker），让 ty 同样能解析。
+extra-paths = ["./phoenix/scripts"]
