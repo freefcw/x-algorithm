@@ -6,7 +6,7 @@
 ## 项目结构与模块组织
 `phoenix/` 里有两套代码，不要混用依赖组。
 
-- **演示链路**（getting-started / home-mixer demo）：根目录 `recsys_model.py`、`recsys_retrieval_model.py`、`grok.py`、`runners.py`、`data_preprocessor.py`，入口在 `scripts/`，服务在 `services/`。Python ≥ 3.11。安装：`uv sync --dev --group service`。架构说明见 `ARCHITECTURE.md`。
+- **演示链路**（getting-started / recommendation-service）：根目录 `recsys_model.py`、`recsys_retrieval_model.py`、`grok.py`、`runners.py`、`data_preprocessor.py`，入口在 `scripts/`，服务在 `services/`。Python ≥ 3.11。安装：`uv sync --dev --group service`。架构说明见 `ARCHITECTURE.md`。
 - **生产引擎**（Linux + CUDA）：`xrex/`、`crates/`。安装：`uv sync --extra engine`。入口见 `README.md` 和 `QUICKSTART.md`。
 
 中文操作文档在 `docs/`，中英文背景说明见 `README.md` 与 `README_zh.md`。测试在 `tests/`，示例在 `examples/`。
@@ -20,7 +20,7 @@
 - `uv run scripts/train_ranker.py`：训练精排模型。
 - `uv run scripts/train_retrieval.py`：训练召回模型。
 - `uv run scripts/run_services.py all`：启动精排/召回 HTTP 服务（8081/8082）。
-- `uv run scripts/run_grpc_gateway.py`：启动供 home-mixer 调用的 gRPC 网关（50053）。
+- `uv run scripts/run_grpc_gateway.py`：启动供 recommendation-service 调用的 gRPC 网关（50053）。
 - `uv run pytest`：运行全部 Python 测试。
 - `uv run pytest tests/test_recsys_model.py`：仅验证精排相关改动。
 - `uv run ty check`：做一次基础静态类型检查。
