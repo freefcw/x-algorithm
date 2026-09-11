@@ -79,8 +79,9 @@ MIN_PROB = 1e-9
 # these values is missing or incompatible with the request-side feature
 # mapping.  Keep this explicit instead of inferring readiness from a model
 # filename or from a successful gRPC call.
-FEATURE_SCHEMA = "phoenix-id-actions-v1"
-ID_MAPPING_VERSION = os.getenv("PHOENIX_ID_MAPPING_VERSION", "v1")
+# v2: proto carries business string IDs; both training (data_preprocessor) and serving
+# hash the same string, so no integer ID mapping exists anywhere in the chain.
+FEATURE_SCHEMA = "phoenix-string-id-actions-v2"
 SUPPORTED_ACTIONS = ",".join(str(i) for i in range(1, 19))
 
 # Snowflake 纪元（毫秒），用于给演示候选池合成"最近发布"的帖子 ID
@@ -158,8 +159,8 @@ def uas_to_history(uas) -> HistoryFeatures:
     records = records[-HISTORY_LEN:]
 
     for i, rec in enumerate(records):
-        post_hashes[0, i] = hash_id_to_ints(str(rec.tweet_id), NUM_HASHES, TABLE_SIZE)
-        author_hashes[0, i] = hash_id_to_ints(str(rec.author_id), NUM_HASHES, TABLE_SIZE)
+        post_hashes[0, i] = hash_id_to_ints(rec.tweet_id, NUM_HASHES, TABLE_SIZE)
+        author_hashes[0, i] = hash_id_to_ints(rec.author_id, NUM_HASHES, TABLE_SIZE)
         surface[0, i] = rec.product_surface % SURFACE_VOCAB
         mask = list(rec.action_mask)
         for py_idx, enum_val in enumerate(ACTION_IDX_TO_ENUM):
@@ -170,24 +171,25 @@ def uas_to_history(uas) -> HistoryFeatures:
 
 
 def build_batch(
-    user_id: int,
+    user_id: str,
     history: HistoryFeatures,
-    candidate_post_ids: Sequence[int],
-    candidate_author_ids: Sequence[int],
+    candidate_post_ids: Sequence[str],
+    candidate_author_ids: Sequence[str],
     num_candidates: int,
 ) -> RecsysBatch:
-    """组装 RecsysBatch（B=1，候选不足 num_candidates 时补 padding）。"""
+    """组装 RecsysBatch（B=1，候选不足 num_candidates 时补 padding）。
+
+    所有 ID 都是业务字符串，与 data_preprocessor 训练侧用同一个 hash_id_to_ints。
+    """
     cand_post = np.zeros((1, num_candidates, NUM_HASHES), dtype=np.int32)
     cand_author = np.zeros((1, num_candidates, NUM_HASHES), dtype=np.int32)
     cand_surface = np.zeros((1, num_candidates), dtype=np.int32)
 
     for i, (post_id, author_id) in enumerate(zip(candidate_post_ids, candidate_author_ids)):
-        cand_post[0, i] = hash_id_to_ints(str(post_id), NUM_HASHES, TABLE_SIZE)
-        cand_author[0, i] = hash_id_to_ints(str(author_id), NUM_HASHES, TABLE_SIZE)
+        cand_post[0, i] = hash_id_to_ints(post_id, NUM_HASHES, TABLE_SIZE)
+        cand_author[0, i] = hash_id_to_ints(author_id, NUM_HASHES, TABLE_SIZE)
 
-    user_hashes = np.array(
-        [hash_id_to_ints(str(user_id), NUM_HASHES, TABLE_SIZE)], dtype=np.int32
-    )
+    user_hashes = np.array([hash_id_to_ints(user_id, NUM_HASHES, TABLE_SIZE)], dtype=np.int32)
 
     return RecsysBatch(
         user_hashes=user_hashes,
@@ -256,7 +258,7 @@ class RankerEngine:
         self._runner = runner
 
     def predict(
-        self, user_id: int, uas, candidates: Sequence[Tuple[int, int]]
+        self, user_id: str, uas, candidates: Sequence[Tuple[str, str]]
     ) -> List[CandidatePrediction]:
         """返回每个候选的离散行为概率和可选连续预测。"""
         history = uas_to_history(uas)
@@ -299,9 +301,9 @@ class RankerEngine:
 class RetrievalEngine:
     """双塔召回：用户塔编码 UAS，在演示候选池上做 Top-K 点积检索。
 
-    候选池是启动时合成的（Snowflake ID + 网外作者），
+    候选池是启动时合成的（Snowflake ID 的十进制字符串 + 网外作者），
     物品向量由真实的候选塔前向计算得到，检索数学是真实的。
-    生产环境应替换为离线构建的向量索引（FAISS/Milvus）。
+    生产环境应替换为离线构建的向量索引（FAISS/Milvus），ID 直接用业务字符串。
     """
 
     def __init__(
@@ -344,16 +346,11 @@ class RetrievalEngine:
         step_ms = max(window_ms // max(corpus_size, 1), 1)
 
         # 演示作者（只用于独立 Phoenix retrieval smoke）
-        self._post_ids = np.array(
-            [
-                snowflake_id(now_ms - window_ms + step_ms * i, 500_000 + i)
-                for i in range(corpus_size)
-            ],
-            dtype=np.int64,
-        )
-        self._author_ids = np.array(
-            [201 + (i % 40) for i in range(corpus_size)], dtype=np.int64
-        )
+        self._post_ids = [
+            str(snowflake_id(now_ms - window_ms + step_ms * i, 500_000 + i))
+            for i in range(corpus_size)
+        ]
+        self._author_ids = [str(201 + (i % 40)) for i in range(corpus_size)]
 
         logger.info("正在编码演示候选池（%d 条帖子）...", corpus_size)
         empty_history = HistoryFeatures(
@@ -367,16 +364,16 @@ class RetrievalEngine:
         for start in range(0, corpus_size, RANK_CHUNK):
             ids = self._post_ids[start : start + RANK_CHUNK]
             authors = self._author_ids[start : start + RANK_CHUNK]
-            batch = build_batch(0, empty_history, ids.tolist(), authors.tolist(), RANK_CHUNK)
+            batch = build_batch("", empty_history, ids, authors, RANK_CHUNK)
             embeddings = self._tables.lookup(batch)
             rep = np.asarray(self._runner.encode_candidates(batch, embeddings)[0])
             reps.append(rep[: len(ids)])
 
         corpus_embeddings = np.concatenate(reps, axis=0).astype(np.float32)
-        self._runner.set_corpus(corpus_embeddings, self._post_ids)
+        self._runner.set_corpus(corpus_embeddings, np.arange(corpus_size, dtype=np.int64))
         logger.info("候选池就绪：%d 条帖子，向量维度 %d", corpus_size, corpus_embeddings.shape[1])
 
-    def retrieve(self, user_id: int, uas, max_results: int) -> List[Tuple[int, int, float]]:
+    def retrieve(self, user_id: str, uas, max_results: int) -> List[Tuple[str, str, float]]:
         """返回 [(post_id, author_id, score)]，按相似度降序。"""
         history = uas_to_history(uas)
         top_k = min(max(max_results, 1), len(self._post_ids))
@@ -392,9 +389,7 @@ class RetrievalEngine:
         results = []
         for idx, score in zip(indices, scores):
             idx = int(idx)
-            results.append(
-                (int(self._post_ids[idx]), int(self._author_ids[idx]), float(score))
-            )
+            results.append((self._post_ids[idx], self._author_ids[idx], float(score)))
         return results
 
 
@@ -408,7 +403,6 @@ def create_servicers(recsys_pb2, recsys_pb2_grpc, ranker: RankerEngine, retrieva
         context.set_trailing_metadata(
             (
                 ("feature-schema", FEATURE_SCHEMA),
-                ("id-mapping-version", ID_MAPPING_VERSION),
                 ("model-version", engine.model_version),
                 ("random-weights", str(engine.model_version == "random").lower()),
                 ("supported-actions", SUPPORTED_ACTIONS),
@@ -454,7 +448,7 @@ def create_servicers(recsys_pb2, recsys_pb2_grpc, ranker: RankerEngine, retrieva
 
             elapsed_ms = (time.time() - start) * 1000
             logger.info(
-                "PredictNextActions: user=%d candidates=%d (%.1f ms)",
+                "PredictNextActions: user=%s candidates=%d (%.1f ms)",
                 request.user_id,
                 len(candidates),
                 elapsed_ms,
@@ -483,7 +477,7 @@ def create_servicers(recsys_pb2, recsys_pb2_grpc, ranker: RankerEngine, retrieva
 
             elapsed_ms = (time.time() - start) * 1000
             logger.info(
-                "Retrieve: user=%d returned=%d (%.1f ms)",
+                "Retrieve: user=%s returned=%d (%.1f ms)",
                 request.user_id,
                 len(candidates),
                 elapsed_ms,

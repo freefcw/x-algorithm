@@ -32,7 +32,12 @@ from services.inference_types import (
 
 
 class PublishedFeatureAdapter:
-    """Converts public proto inputs into the exact published checkpoint tensors."""
+    """Converts public proto inputs into the exact published checkpoint tensors.
+
+    The published X artifact hashes integer snowflake IDs and derives post age from them,
+    so proto string IDs are parsed back to integers at this boundary. Non-numeric business
+    IDs cannot be served by the published bundle.
+    """
 
     def __init__(self, artifact_dir: Path):
         artifact = PublishedArtifact(artifact_dir)
@@ -67,8 +72,8 @@ class PublishedFeatureAdapter:
         records = records[-self.history_len :]
 
         for index, record in enumerate(records):
-            post_ids[index] = record.tweet_id
-            author_ids[index] = record.author_id
+            post_ids[index] = int(record.tweet_id)
+            author_ids[index] = int(record.author_id)
             surface[0, index] = record.product_surface % self.surface_vocab
             mask = list(record.action_mask)
             for model_index, enum_value in enumerate(ACTION_IDX_TO_ENUM):
@@ -204,12 +209,12 @@ class PublishedRankerEngine:
         self.model_version = root.name
 
     def predict(
-        self, user_id: int, uas, candidates: Sequence[Tuple[int, int]]
+        self, user_id: str, uas, candidates: Sequence[Tuple[str, str]]
     ) -> List[CandidatePrediction]:
         return self.predict_from_history(
-            user_id,
+            int(user_id),
             self._features.history_from_uas(uas),
-            candidates,
+            [(int(post_id), int(author_id)) for post_id, author_id in candidates],
         )
 
     def predict_from_json(
@@ -315,13 +320,16 @@ class PublishedRetrievalEngine:
         return self._topic_by_post.get(int(post_id), "")
 
     def retrieve(
-        self, user_id: int, uas, max_results: int
-    ) -> List[Tuple[int, int, float]]:
-        return self.retrieve_from_history(
-            user_id,
-            self._features.history_from_uas(uas),
-            max_results,
-        )
+        self, user_id: str, uas, max_results: int
+    ) -> List[Tuple[str, str, float]]:
+        return [
+            (str(post_id), str(author_id), score)
+            for post_id, author_id, score in self.retrieve_from_history(
+                int(user_id),
+                self._features.history_from_uas(uas),
+                max_results,
+            )
+        ]
 
     def retrieve_from_json(
         self,

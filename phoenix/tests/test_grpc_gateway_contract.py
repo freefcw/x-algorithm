@@ -86,7 +86,7 @@ def test_action_mapping_semantic_alignment():
 
 def _make_uas(records):
     return recsys_pb2.UserActionSequence(
-        user_id=1,
+        user_id="1",
         user_actions_data=recsys_pb2.UserActionSequenceDataContainer(
             ordered_aggregated_user_actions_list=recsys_pb2.AggregatedUserActionList(
                 aggregated_user_actions=records,
@@ -115,7 +115,8 @@ def test_uas_to_history_maps_action_mask_to_python_order():
     quote = recsys_pb2.ActionName.Value("SERVER_TWEET_QUOTE")      # 枚举 4，Python 下标 11
     report = recsys_pb2.ActionName.Value("CLIENT_TWEET_REPORT")    # 枚举 18，Python 下标 17
 
-    uas = _make_uas([_make_record(9001, 101, active_enum_values=[fav, quote, report])])
+    post_id, author_id = "69def6d4f0c8754f5c2fc994", "602e867f0de2d061ee418407"
+    uas = _make_uas([_make_record(post_id, author_id, active_enum_values=[fav, quote, report])])
     history = uas_to_history(uas)
 
     row = history.actions[0, 0]
@@ -125,25 +126,29 @@ def test_uas_to_history_maps_action_mask_to_python_order():
     # 其余行为位必须为 0（quote 枚举 4 若被错映射到 photo_expand 会在这里暴露）
     assert row.sum() == 3.0
 
-    # 哈希必须与训练侧同源（data_preprocessor.hash_id_to_ints）且非零
-    expected = hash_id_to_ints("9001", NUM_HASHES, TABLE_SIZE)
-    assert list(history.post_hashes[0, 0]) == expected
+    # 哈希必须与训练侧同源（data_preprocessor.hash_id_to_ints），且直接对业务字符串 ID
+    # 取哈希——中间不存在任何整数映射，训练样本和线上请求查的是同一嵌入行。
+    assert list(history.post_hashes[0, 0]) == hash_id_to_ints(post_id, NUM_HASHES, TABLE_SIZE)
+    assert list(history.author_hashes[0, 0]) == hash_id_to_ints(
+        author_id, NUM_HASHES, TABLE_SIZE
+    )
+    assert history.post_hashes[0, 0].min() > 0
     assert history.product_surface[0, 0] == 1
 
 
 def test_uas_to_history_pads_and_truncates():
     """不足 HISTORY_LEN 补零 padding；超过时保留最近的（序列尾部）。"""
     # 只有 2 条：位置 0/1 有值，其余全零 padding
-    uas = _make_uas([_make_record(1, 101), _make_record(2, 102)])
+    uas = _make_uas([_make_record("1", "101"), _make_record("2", "102")])
     history = uas_to_history(uas)
     assert history.post_hashes[0, 1].min() > 0
     assert history.post_hashes[0, 2:].sum() == 0
     assert history.actions[0, 2:].sum() == 0
 
     # 40 条：应保留最后 HISTORY_LEN 条，第 0 位对应第 40-HISTORY_LEN 条记录
-    records = [_make_record(1000 + i, 101) for i in range(40)]
+    records = [_make_record(f"post-{i}", "101") for i in range(40)]
     history = uas_to_history(_make_uas(records))
-    first_kept_id = str(1000 + (40 - HISTORY_LEN))
+    first_kept_id = f"post-{40 - HISTORY_LEN}"
     assert list(history.post_hashes[0, 0]) == hash_id_to_ints(first_kept_id, NUM_HASHES, TABLE_SIZE)
 
 
@@ -155,6 +160,49 @@ def test_uas_to_history_handles_empty_sequence():
 
     history = uas_to_history(_make_uas([]))
     assert history.post_hashes.sum() == 0
+
+
+def test_servicer_echoes_business_string_ids():
+    """候选 ID 以业务字符串进出 gRPC 层，servicer 不得做任何整数转换。"""
+    from services.grpc_gateway import create_servicers
+    from services.inference_types import CandidatePrediction
+    from services.recsys_proto import load_proto_modules
+
+    _, recsys_pb2_grpc = load_proto_modules()
+    seen = {}
+
+    class _Ranker:
+        model_version = "unit"
+
+        def predict(self, user_id, uas, candidates):
+            seen["user_id"], seen["candidates"] = user_id, list(candidates)
+            return [
+                CandidatePrediction(action_probs=np.full(len(ACTIONS), 0.5))
+                for _ in candidates
+            ]
+
+    class _Context:
+        def set_trailing_metadata(self, metadata):
+            seen["metadata"] = dict(metadata)
+
+    servicer, _ = create_servicers(recsys_pb2, recsys_pb2_grpc, _Ranker(), None)
+    request = recsys_pb2.PredictNextActionsRequest(
+        user_id="5506dd82fbe78e7de77976ca",
+        candidates=[
+            recsys_pb2.TweetInfo(
+                tweet_id="69def6d4f0c8754f5c2fc994", author_id="602e867f0de2d061ee418407"
+            )
+        ],
+    )
+    response = servicer.PredictNextActions(request, _Context())
+
+    assert seen["user_id"] == "5506dd82fbe78e7de77976ca"
+    assert seen["candidates"] == [("69def6d4f0c8754f5c2fc994", "602e867f0de2d061ee418407")]
+    assert "id-mapping-version" not in seen["metadata"]
+    assert seen["metadata"]["feature-schema"] == "phoenix-string-id-actions-v2"
+    returned = response.distribution_sets[0].candidate_distributions[0].candidate
+    assert returned.tweet_id == "69def6d4f0c8754f5c2fc994"
+    assert returned.author_id == "602e867f0de2d061ee418407"
 
 
 # ==================== 3. checkpoint 加载 ====================

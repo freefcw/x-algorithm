@@ -52,13 +52,13 @@ def _make_uas():
     action_mask = [False] * 19
     action_mask[1] = True
     return recsys_pb2.UserActionSequence(
-        user_id=42,
+        user_id="42",
         user_actions_data=recsys_pb2.UserActionSequenceDataContainer(
             ordered_aggregated_user_actions_list=recsys_pb2.AggregatedUserActionList(
                 aggregated_user_actions=[
                     recsys_pb2.AggregatedUserAction(
-                        tweet_id=100,
-                        author_id=200,
+                        tweet_id="100",
+                        author_id="200",
                         action_mask=action_mask,
                         product_surface=1,
                     )
