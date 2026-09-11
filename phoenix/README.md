@@ -5,7 +5,7 @@
 > 训练与服务需 Linux + NVIDIA GPU + CUDA 12，见 `QUICKSTART.md`）。其二是
 > 本地既有的演示推理链路（根目录 `recsys_model.py` 等与 `scripts/`、
 > `services/`，为 recommendation-service 提供 gRPC 模型服务，macOS 可运行），
-> 其文档见 [`docs/legacy-pipeline.md`](docs/legacy-pipeline.md)。两套代码
+> 其文档见 [`docs/local-demo-pipeline.md`](docs/local-demo-pipeline.md)。两套代码
 > 的依赖统一由本目录 `pyproject.toml` 管理。
 
 This repository contains the JAX code for the Phoenix recommendation system,

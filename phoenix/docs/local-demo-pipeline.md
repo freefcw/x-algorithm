@@ -1,6 +1,8 @@
-# Phoenix: Recommendation System
+# Phoenix local demo pipeline
 
-This repository contains JAX example code for the Phoenix recommendation system, which powers content ranking and retrieval. Phoenix uses transformer-based architectures for both **retrieval** (finding relevant candidates from millions of items) and **ranking** (ordering a smaller set of candidates by predicted engagement).
+> **Scope:** This is the local JAX demo pipeline (`recsys_model.py`, `scripts/`, `services/`) that `recommendation-service` calls on macOS. It is **not** the deleted Home Mixer / Thunder stack. The current Rust service only uses **ranking** (`PredictNextActions`) on candidates supplied by the social backend. Two-tower `Retrieve` exists as model code and a demo gateway, and is not on the live recommendation path until a real vector index lands (P4).
+
+This document describes the JAX example code for Phoenix ranking and retrieval. Phoenix uses transformer-based architectures for both **retrieval** (finding relevant candidates from millions of items) and **ranking** (ordering a smaller set of candidates by predicted engagement).
 
 > **Note:** The sample transformer implementation in this repository is ported from the [Grok-1 open source release](https://github.com/xai-org/grok-1) by xAI. The core transformer architecture comes from Grok-1, adapted here for recommendation system use cases with custom input embeddings and attention masking for candidate isolation. This code is representative of the model used internally with the exception of specific scaling optimizations.
 
