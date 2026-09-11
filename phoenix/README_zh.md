@@ -1,6 +1,6 @@
 # Phoenix: 推荐系统
 
-> **本地仓库说明**：本目录有两套代码。英文 [`README.md`](README.md) 描述上游生产框架（`xrex/`、`crates/`，需 Linux + CUDA）。recommendation-service 使用本机 Python 链路（`scripts/`、`services/`），macOS 可跑，操作见仓库执行计划和 [`docs/local-demo-pipeline.md`](docs/local-demo-pipeline.md)。当前 Rust 服务只调用精排；双塔召回是模型能力，尚未接入主链路。
+> **本地仓库说明**：本目录有两套代码。英文 [`README.md`](README.md) 描述上游生产框架（`xrex/`、`crates/`，需 Linux + CUDA）。recommendation-service 使用本机 Python 链路（`scripts/`、`services/`），macOS 可跑，操作见仓库执行计划和 [`../docs/implementation/slim-phoenix-recommendation.md`](../docs/implementation/slim-phoenix-recommendation.md)。当前 Rust 服务只调用精排；双塔召回是模型能力，尚未接入主链路。
 
 本仓库包含了 Phoenix 推荐系统的 JAX 示例代码，该系统负责内容的排序（Ranking）和检索（Retrieval）。Phoenix 使用基于 Transformer 的架构来实现**检索**（从数百万个项目中查找相关候选）和**排序**（根据预测的参与度对较小的一组候选进行排序）。
 
