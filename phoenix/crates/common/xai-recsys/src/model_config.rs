@@ -68,7 +68,7 @@ impl FromStr for MultimodalEmbeddingType {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct HashTableConfig {
     pub user_id_table_size: usize,
     pub user_hash_scales: Vec<i64>,
@@ -271,7 +271,7 @@ impl HashTableConfig {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct ModelConfig {
     pub hash_table: HashTableConfig,
     pub history_seq_len: usize,

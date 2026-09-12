@@ -76,8 +76,8 @@
 
 | 位置 | 本地改动 | 类型 | 上游改到时怎么办 |
 |---|---|---|---|
-| `xrex/cutedsl/ranker_attention_fa4.py:365-366` | `_attention_fwd` 内给 `out` / `lse` 加 `checkpoint_name(..., "attn_outputs")` | U2 | 重写后需重新植入；本轮上游重写了此文件，因整体不吸收而暂时无影响 |
-| `xrex/cutedsl/ranker_attention_varlen_fa4.py:673-674` | 同上 | U2 | 同上。这份是实际在跑的（`cutedsl_ranker_varlen_attn` 有 2 个配置选中），优先级高于上一条 |
+| `xrex/cutedsl/ranker_attention_fa4.py` `_attention_fwd` | 给 `out` / `lse` 加 `checkpoint_name(..., "attn_outputs")` | U2 | `49815da` 重写后已重新植入；后续上游改动仍需保留该标签 |
+| `xrex/cutedsl/ranker_attention_varlen_fa4.py` `_attention_fwd` | 同上 | U2 | `49815da` 重写后已重新植入；这是实际配置选中的 varlen 路径 |
 | `crates/serving/xai-recsys-engine/src/emb_table.rs` `load_tensor_no_resharding` | 移除 `shuffle_sharded_schedule` / `restore_piece_order` 调度打乱 | U2 | 本轮上游改的是同文件的 `get_channels`，区域不重叠。若上游改到该函数体，需重新判断是否保留移除 |
 | `xrex/inference/model_runner.py:4039`、`:4704`；`sid_retrieval_runner.py:383`；`gen_recs_runner.py:317` | 四处服务构造走本地 `server_factory.create_recsys_server(...)` 包装，上游是直接 `xai_recsys_engine.RecsysRetrievalPredictorServer(...)` | U2 | 上游改构造参数时，本地只需同步 kwargs，不要跟着改回直接构造。`tests/test_feature_config_schema.py` 有 AST 扫描守着（断言无直接构造、工厂调用恰好 4 处） |
 | `xrex/inference/launch_inference.py` `--hotswap_malloc_trim` | 本地保留，上游已移除 malloc_trim 相关路径 | U2 | 上游若再动热切换路径，确认该开关仍有落点 |

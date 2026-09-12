@@ -436,17 +436,19 @@ impl PredictRequestBatch {
                                         dist_entry.index_to_logits.insert(*idx, *v);
                                     }
                                 }
-                                for idx in item.requested_continuous_action_indices.iter() {
-                                    if let Some(v) = cont_pred.get(*idx as usize) {
-                                        dist_entry.index_to_continuous_values.insert(*idx, *v);
-                                    }
-                                }
                             } else if item.return_logprob {
                                 dist_entry.top_log_probs = dist.to_vec();
                                 dist_entry.continuous_actions_values = cont_pred.to_vec();
                             } else {
                                 dist_entry.logits = dist.to_vec();
                                 dist_entry.continuous_actions_values = cont_pred.to_vec();
+                            }
+                            if item.return_log_map {
+                                for idx in item.requested_continuous_action_indices.iter() {
+                                    if let Some(v) = cont_pred.get(*idx as usize) {
+                                        dist_entry.index_to_continuous_values.insert(*idx, *v);
+                                    }
+                                }
                             }
 
                             dist_entry
@@ -3058,8 +3060,7 @@ async fn handle_retrieval_request(
 
 fn validate_stale_post_config(enabled: bool, num_post_bool_features: usize) -> PyResult<()> {
     use xai_recsys::feature_config::bool_feature as bf;
-    // stale/relation bool 共用同一段宽度，required width 取三者最大下标 + 1，
-    // 不假设上游公开的枚举顺序。
+    // stale/relation bool 共用同一段宽度，required width 取三者最大下标 + 1。
     let required_width = bf::IS_STALE_POST14D
         .max(bf::IS_AUTHOR_FOLLOWED_BY_VIEWER_SEQ)
         .max(bf::IS_AUTHOR_FOLLOWING_VIEWER_SEQ)

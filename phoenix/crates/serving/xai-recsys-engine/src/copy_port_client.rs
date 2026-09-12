@@ -155,9 +155,16 @@ fn parse_elapsed_from_prefix(prefix: &str) -> Option<u64> {
 }
 
 fn newest_full_prefix(entries: &[Vec<(String, usize)>]) -> String {
+    full_prefixes_newest_first(entries)
+        .into_iter()
+        .next()
+        .unwrap_or_default()
+}
+
+fn full_prefixes_newest_first(entries: &[Vec<(String, usize)>]) -> Vec<String> {
     let n_active = entries.iter().filter(|e| !e.is_empty()).count();
     if n_active == 0 {
-        return String::new();
+        return Vec::new();
     }
     let mut counts = BTreeMap::<&str, usize>::new();
     for entry_list in entries {
@@ -177,13 +184,12 @@ fn newest_full_prefix(entries: &[Vec<(String, usize)>]) -> String {
             }
         }
     }
-    let mut prefix = "";
-    for (name, count) in &counts {
-        if *count == n_active {
-            prefix = name;
-        }
-    }
-    prefix.to_string()
+    counts
+        .into_iter()
+        .rev()
+        .filter(|(_, count)| *count == n_active)
+        .map(|(name, _)| name.to_string())
+        .collect()
 }
 
 fn is_newer_prefix(prefix: &str, elapsed_samples: u64) -> bool {
@@ -397,7 +403,7 @@ pub async fn download_dense_weight(
 ) -> Result<DownloadMeta, CopyPortError> {
     let (channels, entries) = connect_and_list(urls, String::new()).await?;
     let prefix = choose_prefix(target_prefix, &entries)?;
-    if !is_newer_prefix(&prefix, elapsed_samples) {
+    if target_prefix.is_none() && !is_newer_prefix(&prefix, elapsed_samples) {
         return Err(CopyPortError::NoNewer {
             new_prefix: prefix,
             prev_prefix: format!("elapsed_samples_{elapsed_samples:018}/"),
@@ -556,6 +562,109 @@ async fn download_sharded_with_channels(
     let results = run_downloads(futures, rate_limit_bytes_per_sec, concurrent).await?;
     sfence_after_download();
     combine_transfer_checksums(&results, &expected)
+}
+
+pub const BUNDLE_MANIFEST_NAME: &str = "export/MANIFEST.json";
+
+pub async fn find_bundle_checkpoint(
+    elapsed_samples: u64,
+    urls: &str,
+) -> Result<Option<(String, u64)>, CopyPortError> {
+    let (_channels, entries) = connect_and_list(urls, String::new()).await?;
+    select_bundle_checkpoint(&entries, elapsed_samples)
+}
+
+fn select_bundle_checkpoint(
+    entries: &[Vec<(String, usize)>],
+    elapsed_samples: u64,
+) -> Result<Option<(String, u64)>, CopyPortError> {
+    let mut newest_unbundled: Option<String> = None;
+    for prefix in full_prefixes_newest_first(entries) {
+        if !is_newer_prefix(&prefix, elapsed_samples) {
+            break;
+        }
+        let manifest_name = format!("{prefix}/{BUNDLE_MANIFEST_NAME}");
+        let on_all_channels = entries.iter().filter(|l| !l.is_empty()).all(|list| {
+            list.iter()
+                .any(|(name, size)| name == &manifest_name && *size > 0)
+        });
+        if on_all_channels {
+            if let Some(skipped) = &newest_unbundled {
+                log::warn!(
+                    "copy_port: newest checkpoint {skipped} has no complete \
+                     {BUNDLE_MANIFEST_NAME}; using older bundled checkpoint {prefix}"
+                );
+            }
+            let elapsed = parse_elapsed_from_prefix(&prefix).unwrap_or(elapsed_samples);
+            return Ok(Some((prefix, elapsed)));
+        }
+        newest_unbundled.get_or_insert(manifest_name);
+    }
+    match newest_unbundled {
+        Some(key) => Err(CopyPortError::NotFound { key }),
+        None => Ok(None),
+    }
+}
+
+pub async fn download_named_files(
+    prefix: &str,
+    urls: &str,
+    names: &[String],
+) -> Result<Vec<Vec<u8>>, CopyPortError> {
+    let prefix = format!("{}/", prefix.trim_end_matches('/'));
+    let (channels, entries) = connect_and_list(urls, prefix.clone()).await?;
+    let complete: Vec<usize> = (0..channels.len())
+        .filter(|&i| {
+            let listing: HashMap<&str, usize> =
+                entries[i].iter().map(|(n, s)| (n.as_str(), *s)).collect();
+            names
+                .iter()
+                .all(|n| listing.contains_key(n.strip_prefix(&prefix).unwrap_or(n)))
+        })
+        .collect();
+    let Some(&channel_idx) = complete.as_slice().choose(&mut rand::rng()) else {
+        return Err(CopyPortError::NotFound {
+            key: format!(
+                "{prefix}{{{}}} (no channel lists all files)",
+                names.join(",")
+            ),
+        });
+    };
+    let listing: HashMap<&str, usize> = entries[channel_idx]
+        .iter()
+        .map(|(name, size)| (name.as_str(), *size))
+        .collect();
+
+    let mut buffers: Vec<Vec<u8>> = Vec::with_capacity(names.len());
+    let mut sizes: Vec<usize> = Vec::with_capacity(names.len());
+    let mut futures: Vec<TransferFuture> = Vec::with_capacity(names.len());
+    for name in names {
+        let relative = name.strip_prefix(&prefix).unwrap_or(name);
+        let Some(&size) = listing.get(relative) else {
+            return Err(CopyPortError::NotFound {
+                key: format!("{prefix}{relative}"),
+            });
+        };
+        let full_name = format!("{prefix}{relative}");
+        let mut buf = vec![0u8; size];
+        let b: &'static mut [u8] = unsafe { mem::transmute(&mut buf[..]) };
+        buffers.push(buf);
+        sizes.push(size);
+        futures.push(Box::pin(send_entries(
+            channels[channel_idx].clone(),
+            vec![full_name.into_bytes()],
+            vec![0],
+            vec![size],
+            b,
+            #[cfg(target_os = "linux")]
+            (Vec::new(), Arc::new(Vec::new()), Arc::new(Vec::new())),
+        )));
+    }
+
+    let results = run_downloads(futures, None, None).await?;
+    sfence_after_download();
+    check_transfer_results(&results, &sizes)?;
+    Ok(buffers)
 }
 
 pub async fn download_embedding_table(
@@ -1021,6 +1130,95 @@ mod tests {
         set_or_check(&mut slot, 64, "piece").unwrap();
         assert!(set_or_check(&mut slot, 32, "piece").is_err());
         assert!(set_or_check(&mut slot, 0, "piece").is_err());
+    }
+
+    fn ckpt_listing(elapsed: u64, bundled: bool) -> Vec<(String, usize)> {
+        let prefix = format!("elapsed_samples_{elapsed:018}/run");
+        let mut l = vec![(format!("{prefix}/dense/w"), 8)];
+        if bundled {
+            l.push((format!("{prefix}/{BUNDLE_MANIFEST_NAME}"), 128));
+        }
+        l
+    }
+
+    fn ckpt_prefix(elapsed: u64) -> String {
+        format!("elapsed_samples_{elapsed:018}/run")
+    }
+
+    #[test]
+    fn full_prefixes_are_newest_first_and_require_every_active_channel() {
+        let mut a = ckpt_listing(10, true);
+        a.extend(ckpt_listing(20, true));
+        a.extend(ckpt_listing(30, true));
+        let mut b = ckpt_listing(10, true);
+        b.extend(ckpt_listing(20, true));
+        let entries = vec![a, b, Vec::new()];
+        assert_eq!(
+            full_prefixes_newest_first(&entries),
+            vec![ckpt_prefix(20), ckpt_prefix(10)]
+        );
+        assert_eq!(newest_full_prefix(&entries), ckpt_prefix(20));
+    }
+
+    #[test]
+    fn bundle_discovery_picks_newest_bundled_checkpoint() {
+        let mut l = ckpt_listing(10, true);
+        l.extend(ckpt_listing(20, true));
+        let entries = vec![l.clone(), l];
+        let (prefix, elapsed) = select_bundle_checkpoint(&entries, 0).unwrap().unwrap();
+        assert_eq!(prefix, ckpt_prefix(20));
+        assert_eq!(elapsed, 20);
+    }
+
+    #[test]
+    fn bundle_discovery_falls_back_past_unbundled_newest() {
+        let mut a = ckpt_listing(10, true);
+        a.extend(ckpt_listing(20, true));
+        a.extend(ckpt_listing(30, true));
+        let mut b = ckpt_listing(10, true);
+        b.extend(ckpt_listing(20, true));
+        b.extend(ckpt_listing(30, false));
+        let entries = vec![a, b];
+        let (prefix, elapsed) = select_bundle_checkpoint(&entries, 0).unwrap().unwrap();
+        assert_eq!(prefix, ckpt_prefix(20));
+        assert_eq!(elapsed, 20);
+    }
+
+    #[test]
+    fn bundle_discovery_never_returns_older_than_current() {
+        let mut l = ckpt_listing(10, true);
+        l.extend(ckpt_listing(20, true));
+        l.extend(ckpt_listing(30, false));
+        let entries = vec![l.clone(), l];
+        match select_bundle_checkpoint(&entries, 20) {
+            Err(CopyPortError::NotFound { key }) => {
+                assert_eq!(key, format!("{}/{BUNDLE_MANIFEST_NAME}", ckpt_prefix(30)));
+            }
+            other => panic!("expected NotFound, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn bundle_discovery_none_when_nothing_newer() {
+        let mut l = ckpt_listing(10, true);
+        l.extend(ckpt_listing(20, true));
+        let entries = vec![l.clone(), l];
+        assert!(select_bundle_checkpoint(&entries, 20).unwrap().is_none());
+        assert!(select_bundle_checkpoint(&entries, 25).unwrap().is_none());
+    }
+
+    #[test]
+    fn bundle_discovery_rejects_zero_size_manifest() {
+        let prefix = ckpt_prefix(10);
+        let l = vec![
+            (format!("{prefix}/dense/w"), 8),
+            (format!("{prefix}/{BUNDLE_MANIFEST_NAME}"), 0),
+        ];
+        let entries = vec![l.clone(), l];
+        assert!(matches!(
+            select_bundle_checkpoint(&entries, 0),
+            Err(CopyPortError::NotFound { .. })
+        ));
     }
 
     fn listing(pieces: &[usize], size: usize) -> Vec<(String, usize)> {

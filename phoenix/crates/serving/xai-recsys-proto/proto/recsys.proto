@@ -112,6 +112,7 @@ message PredictNextActionsRequest {
   repeated uint32 requestedContinuousActionIndices = 17;
 
   repeated ConvAssetIds conv_asset_ids = 18;
+
 }
 
 message ConvAssetIds {
@@ -352,6 +353,8 @@ enum ActionName {
   CLIENT_TWEET_SEARCH_QUERY_REFORMULATED = 104;
   CLIENT_TWEET_RELEVANT_TO_SEARCH = 105;
   CLIENT_TWEET_NOT_RELEVANT_TO_SEARCH = 106;
+  LLM_JUDGE_RELEVANT_TO_SEARCH = 107;
+  LLM_JUDGE_NOT_RELEVANT_TO_SEARCH = 108;
 
   ADS_WEB_CONVERSION = 128;
   ADS_VIDEO_VIEW = 129;
@@ -982,6 +985,11 @@ enum ProductSurface {
   PRODUCT_SURFACE_COMMUNITIES_TIMELINE = 13;
   PRODUCT_SURFACE_EXPLORE_PAGE = 14;
   PRODUCT_SURFACE_HOME_TIMELINE_RANKED_FOLLOWING = 15;
+  PRODUCT_SURFACE_TREND_PAGE = 16;
+  PRODUCT_SURFACE_EXPLORE_SPOTLIGHT = 17;
+  PRODUCT_SURFACE_PLACE_HOLDER_18 = 18;
+  PRODUCT_SURFACE_PLACE_HOLDER_19 = 19;
+  PRODUCT_SURFACE_PLACE_HOLDER_20 = 20;
 }
 
 enum Page {
@@ -1228,6 +1236,18 @@ message TweetInfo {
   uint64 bookmarkCount = 34;
 
   ScoreInfo scoreInfo = 35;
+  ContentFeatures contentFeatures = 36;
+  ContentFeatures quotedContentFeatures = 37;
+}
+
+message ContentFeatures {
+  bool hasVideo = 1;
+  uint32 maxVideoDurationMs = 2;
+  bool hasPhoto = 3;
+  uint32 mediaCount = 4;
+  uint32 weightedTextLen = 5;
+  uint32 newlineCount = 6;
+  bool hasUrl = 7;
 }
 
 message ScoreInfo {
@@ -1622,7 +1642,7 @@ enum UserActionAggregationType {
   IMMERSIVE = 26;
   ADS_CHAD_WITH_CONV_TYPES = 27;
   ADS_WITH_KV_AD_HISTORY = 28;
-  PLACEHOLDER_29 = 29;
+  IMMERSIVE_LONG_DWELL = 29;
   PLACEHOLDER_30 = 30;
   PLACEHOLDER_31 = 31;
   PLACEHOLDER_32 = 32;

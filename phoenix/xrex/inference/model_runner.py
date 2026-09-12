@@ -77,6 +77,7 @@ from xrex.train.trainer_recsys import (
 )
 from xrex.utils import ocdbt
 from xrex.utils.aot import JittedOrCompiled
+from xrex.utils.gpu import schedulable_cpus
 from xrex.utils.log_timer import Timer
 from xrex.utils.profiler import start_trace, stop_trace
 from xrex.utils.utils import get_peak_bytes_in_use
@@ -2758,8 +2759,8 @@ class BaseModelRunner(RecsysTrainer, Generic[RequestBatch, ModelConfig], ABC):
             nodes = numa.memory.get_allocation_allowed_nodes()
             if len(nodes) <= 1:
                 return
-            numa.schedule.run_on_nodes(*nodes)
             numa.memory.set_membind_nodes(*nodes)
+            os.sched_setaffinity(0, schedulable_cpus(*nodes))
             logger.info("NUMA: re-bound CPU+memory to nodes %s", nodes)
         except Exception as e:
             logger.warning("NUMA: failed to re-bind nodes: %s", e)

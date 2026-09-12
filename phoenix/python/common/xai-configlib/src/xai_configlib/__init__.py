@@ -237,6 +237,8 @@ def from_dict(
                     init_values[k] = base64.b64decode(v.encode("utf-8"))
                 elif is_datetime(vtype):
                     init_values[k] = datetime.datetime.fromisoformat(v)
+                elif is_class_ref(vtype):
+                    init_values[k] = _coerce_class_ref(v, f"{cls_name}.{k}")
                 else:
                     coerced = _coerce_enums_from_hint(vtype, v)
                     if coerced is not v:
@@ -508,6 +510,11 @@ def is_datetime(ty) -> bool:
     )
 
 
+def is_class_ref(ty) -> bool:
+    inner = _unwrap_optional(ty)
+    return inner is type or get_origin(inner) is type
+
+
 def _unwrap_optional(ty: Any) -> Any:
     if is_optional(ty):
         non_none = [a for a in get_args(ty) if a is not type(None)]
@@ -523,6 +530,22 @@ def _coerce_enum_value(enum_cls: enum.EnumMeta, value: Any) -> Any:
         return enum_cls(value)
     except (ValueError, TypeError):
         return enum_cls[value]
+
+
+def _coerce_class_ref(value: Any, where: str) -> Any:
+    if not isinstance(value, str):
+        return value
+    parts = value.split(".")
+    for split in range(len(parts) - 1, 0, -1):
+        try:
+            obj: Any = importlib.import_module(".".join(parts[:split]))
+        except ImportError:
+            continue
+        for attr in parts[split:]:
+            obj = getattr(obj, attr, None)
+        if isinstance(obj, type):
+            return obj
+    raise ValueError(f"{where}: cannot import class {value!r} (a local class cannot round-trip)")
 
 
 def _coerce_enums_from_hint(vtype: Any, value: Any) -> Any:

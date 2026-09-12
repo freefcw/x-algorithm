@@ -1228,6 +1228,18 @@ message TweetInfo {
   uint64 bookmarkCount = 34;
 
   ScoreInfo scoreInfo = 35;
+  ContentFeatures contentFeatures = 36;
+  ContentFeatures quotedContentFeatures = 37;
+}
+
+message ContentFeatures {
+  bool hasVideo = 1;
+  uint32 maxVideoDurationMs = 2;
+  bool hasPhoto = 3;
+  uint32 mediaCount = 4;
+  uint32 weightedTextLen = 5;
+  uint32 newlineCount = 6;
+  bool hasUrl = 7;
 }
 
 message ScoreInfo {

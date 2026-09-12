@@ -284,6 +284,8 @@ class ContextFeaturesConfig(Config):
 
     enable_author_nsfw: bool = False
 
+    enable_day_of_week: bool = True
+
 
 def metric_num_tokens(y: jnp.ndarray, valid_mask: jnp.ndarray) -> jnp.ndarray:
     return (valid_mask * y).sum()
@@ -1975,6 +1977,9 @@ class RecsysAggregatedModel(hk.Module):
                 continue
             if cat_feat.feature_name == "author_is_nsfw":
                 if not ctx_config.enable_author_nsfw:
+                    continue
+            if cat_feat.feature_name == "local_day_of_week":
+                if not ctx_config.enable_day_of_week:
                     continue
             if cat_feat.embedding_dim <= 0 or cat_feat.index >= cat_features.shape[-1]:
                 continue

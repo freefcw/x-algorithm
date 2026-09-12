@@ -83,8 +83,7 @@ fn build_dpp_inputs(req: &RankRequest, ctx: &DppContext) -> Vec<DppInput> {
 
 pub fn rank(req: &RankRequest, ctx: &DppContext) -> Vec<RankedCandidate> {
     let inputs = build_dpp_inputs(req, ctx);
-
-    let results = dpp::rescore(&inputs, &ctx.config, req.viewer_id);
+    let results = dpp::rescore(&inputs, None, &ctx.config, req.viewer_id);
 
     let debug = ctx.config.debug_viewer_id != 0 && req.viewer_id == ctx.config.debug_viewer_id;
     let selected_ids: HashSet<u64> = results.iter().map(|r| r.id).collect();

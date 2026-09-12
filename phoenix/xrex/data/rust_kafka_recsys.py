@@ -16,8 +16,10 @@ from xrex.data.streaming.kafkaconsumer import ConsumerMode, _check_reset_sentine
 from xrex.data.streaming.kafkaloader import (
     PhoenixKafkaDataset,
     _rearm_catchup_request,
-    _resolve_sasl_password,
     _take_catchup_request,
+    auto_detect_auth,
+    platform_ca_bundle_path,
+    system_ca_bundle_path,
 )
 
 
@@ -140,19 +142,35 @@ class RustKafkaDataset(PhoenixKafkaDataset):
         control_watcher: threading.Thread | None = None
 
         try:
-            sasl_password = _resolve_sasl_password(self.bootstrap_servers)
+            auth = auto_detect_auth(
+                self.bootstrap_servers,
+                self.sasl_mechanism,
+                self.sasl_plain_username,
+            )
+            if auth.mode == "mtls":
+                rust_bootstrap = self._resolve_bootstrap_servers(auth)
+            else:
+                rust_bootstrap = self.bootstrap_servers
 
             provider = RecordBatchProvider(
                 topic=self.topic_name,
-                bootstrap_servers=self.bootstrap_servers,
+                bootstrap_servers=rust_bootstrap,
                 group_id=self.group_id,
                 batch_size=batch_size,
                 num_shards=num_shards,
                 shard_index=shard_index,
                 num_partitions=self.num_kafka_partitions,
                 sasl_mechanism=self.sasl_mechanism,
-                sasl_username=self.sasl_plain_username,
-                sasl_password=sasl_password,
+                sasl_username=auth.sasl_username or self.sasl_plain_username,
+                sasl_password=auth.sasl_password or "",
+                security_protocol="SSL" if auth.mode == "mtls" else "SASL_SSL",
+                ssl_ca_location=(
+                    auth.ca_path
+                    if auth.mode != "mtls" or auth.ca_path
+                    else (platform_ca_bundle_path() or system_ca_bundle_path())
+                ),
+                ssl_certificate_location=auth.cert_path,
+                ssl_key_location=auth.key_path,
                 auto_offset_reset=self.auto_offset_reset,
                 queue_size=self.queue_size,
                 reset_to_latest=self.reset_to_latest,

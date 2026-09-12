@@ -7,6 +7,7 @@ import logging
 import os
 import queue
 import re
+import ssl
 import threading
 import time
 import urllib.parse
@@ -49,6 +50,7 @@ from xrex.data.streaming.kafkaconsumer import (
     DEFAULT_NEGATIVE_DOWNSAMPLE_POSITIVE_ACTION_INDICES,
     ConsumerMode,
     DropModeController,
+    KafkaAuth,
     PartitionLagTracker,
     consume_messages,
     discover_partition_count,
@@ -779,7 +781,8 @@ def ensure_sasl_password_env(cluster_name: str) -> None:
     pass
 
 
-def resolve_internal_bootstrap(bootstrap_servers: str) -> str:
+def resolve_internal_bootstrap(bootstrap_servers: str, auth_mode: str = "sasl") -> str:
+    del auth_mode
     if _has_port(bootstrap_servers.strip()):
         return bootstrap_servers
     return settings.KAFKA_BOOTSTRAP_SERVERS or bootstrap_servers
@@ -790,8 +793,143 @@ def cluster_sasl_username(cluster_name: str) -> str:
     return settings.KAFKA_SASL_USERNAME
 
 
-def _resolve_bootstrap_servers(bootstrap_servers: str) -> str:
+_DEFAULT_MTLS_CERTS_DIR = "/root/client-certs"
+_MTLS_CA_BUNDLE = "ca-bundle.crt"
+_MTLS_CLIENT_CERT = "client.fullchain"
+_MTLS_CLIENT_KEY = "client.key"
+
+_PLATFORM_CA_BUNDLE_PATH = "/etc/ssl/internal-ca/ca-bundle.crt"
+
+
+def _mtls_certs_dir() -> str:
+    return os.environ.get("KAFKA_MTLS_CERTS_DIR", _DEFAULT_MTLS_CERTS_DIR)
+
+
+def _mtls_cert_paths(certs_dir: str) -> tuple[str, str, str] | None:
+    ca = os.path.join(certs_dir, _MTLS_CA_BUNDLE)
+    cert = os.path.join(certs_dir, _MTLS_CLIENT_CERT)
+    key = os.path.join(certs_dir, _MTLS_CLIENT_KEY)
+    paths = (ca, cert, key)
+    missing = [p for p in paths if not os.path.isfile(p) or os.path.getsize(p) == 0]
+    if not missing:
+        return paths
+    present = [p for p in paths if os.path.exists(p)]
+    if present:
+        rank_logger.warning(
+            "Incomplete Kafka mTLS certs in %s (missing/empty: %s); "
+            "falling back to the downloaded certificate or SASL password.",
+            certs_dir,
+            ", ".join(os.path.basename(p) for p in missing),
+        )
+    return None
+
+
+def _mtls_client_paths(certs_dir: str) -> tuple[str, str] | None:
+    cert = os.path.join(certs_dir, _MTLS_CLIENT_CERT)
+    key = os.path.join(certs_dir, _MTLS_CLIENT_KEY)
+    pair = (cert, key)
+    if all(os.path.isfile(p) and os.path.getsize(p) > 0 for p in pair):
+        return pair
+    return None
+
+
+def platform_ca_bundle_path() -> str | None:
+    path = os.environ.get("KAFKA_MTLS_PLATFORM_CA_BUNDLE", "").strip() or _PLATFORM_CA_BUNDLE_PATH
+    if os.path.isfile(path) and os.path.getsize(path) > 0:
+        return path
+    return None
+
+
+def system_ca_bundle_path() -> str | None:
+    cafile = ssl.get_default_verify_paths().cafile
+    if cafile and os.path.isfile(cafile) and os.path.getsize(cafile) > 0:
+        return cafile
+    return None
+
+
+def _try_resolve_sasl_password(bootstrap_servers: str) -> str | None:
+    del bootstrap_servers
+    return os.environ.get("SASL_PLAIN_PASSWORD") or None
+
+
+def _resolve_mtls_bootstrap(bootstrap_servers: str) -> str:
     bs = bootstrap_servers.strip()
+    if _has_port(bs):
+        return bs
+    raise ValueError(
+        f"Cannot resolve mTLS bootstrap for {bs!r}: provide a raw broker address "
+        "(host:port[,host:port...]) — cluster-name resolution is internal-only."
+    )
+
+
+def auto_detect_auth(
+    bootstrap_servers: str,
+    sasl_mechanism: str,
+    sasl_username: str,
+    certs_dir: str | None = None,
+    download_dir: str | None = None,
+) -> KafkaAuth:
+    del download_dir
+    certs_dir = certs_dir if certs_dir is not None else _mtls_certs_dir()
+    force = os.environ.get("KAFKA_AUTH", "").strip().lower()
+    verify_broker = os.environ.get("KAFKA_MTLS_VERIFY", "").strip().lower() in (
+        "1",
+        "true",
+        "yes",
+    )
+    paths = _mtls_cert_paths(certs_dir)
+
+    if force == "sasl":
+        rank_logger.info("Kafka auth: KAFKA_AUTH=sasl, skipping mTLS certs.")
+    elif paths is not None:
+        rank_logger.info("Kafka auth: using mTLS certificates from %s", certs_dir)
+        ca, cert, key = paths
+        return KafkaAuth.mtls(ca, cert, key, verify_broker=verify_broker)
+    else:
+        client = _mtls_client_paths(certs_dir)
+        if client is not None:
+            truststore = platform_ca_bundle_path() if verify_broker else None
+            if verify_broker and truststore is None:
+                rank_logger.warning(
+                    "Kafka auth: client certificate mounted at %s without %s and no "
+                    "platform CA bundle; verifying the brokers against the system "
+                    "trust store. Point KAFKA_MTLS_PLATFORM_CA_BUNDLE at a PEM if the "
+                    "handshake fails with CERTIFICATE_VERIFY_FAILED.",
+                    certs_dir,
+                    _MTLS_CA_BUNDLE,
+                )
+            else:
+                rank_logger.info(
+                    "Kafka auth: client certificate from %s, broker truststore %s",
+                    certs_dir,
+                    truststore or "off (set KAFKA_MTLS_VERIFY=1 to enable it)",
+                )
+            return KafkaAuth.mtls(truststore, *client, verify_broker=verify_broker)
+        if force == "mtls":
+            raise RuntimeError(
+                f"KAFKA_AUTH=mtls but no client certs were found under {certs_dir} "
+                f"(expected {_MTLS_CA_BUNDLE}, {_MTLS_CLIENT_CERT}, {_MTLS_CLIENT_KEY})."
+            )
+
+    password = _try_resolve_sasl_password(bootstrap_servers)
+    if password:
+        sasl_username = sasl_username or settings.KAFKA_SASL_USERNAME
+        rank_logger.info("Kafka auth: using SASL/SCRAM (%s) as %s", sasl_mechanism, sasl_username)
+        return KafkaAuth.sasl(sasl_mechanism, sasl_username, password)
+
+    raise RuntimeError(
+        "No Kafka credentials found.\n"
+        f"  Tried mTLS certs at {certs_dir} "
+        f"(need {_MTLS_CA_BUNDLE}, {_MTLS_CLIENT_CERT}, {_MTLS_CLIENT_KEY})\n"
+        "  Tried SASL via SASL_PLAIN_PASSWORD.\n"
+        f"Set SASL_PLAIN_PASSWORD, or mount a client certificate at {certs_dir}."
+    )
+
+
+def _resolve_bootstrap_servers(bootstrap_servers: str, auth_mode: str = "sasl") -> str:
+    bs = bootstrap_servers.strip()
+    if auth_mode == "mtls":
+        return _resolve_mtls_bootstrap(bs)
     if _has_port(bs):
         rank_logger.info(f"Using raw bootstrap servers: {bs}")
         return bs
@@ -1075,8 +1213,16 @@ class PhoenixKafkaDataset(PhoenixDataset):
                         f"No data in the queue. Consecutive empty count: {consecutive_empty_count}, total loop count: {total_loop_count}, total empty count: {total_empty_count}"
                     )
 
-    def _resolve_bootstrap_servers(self) -> str:
-        return _resolve_bootstrap_servers(self.bootstrap_servers)
+    def _detect_auth(self) -> KafkaAuth:
+        return auto_detect_auth(
+            self.bootstrap_servers,
+            self.sasl_mechanism,
+            self.sasl_plain_username,
+        )
+
+    def _resolve_bootstrap_servers(self, auth: KafkaAuth | None = None) -> str:
+        mode = auth.mode if auth is not None else "sasl"
+        return _resolve_bootstrap_servers(self.bootstrap_servers, auth_mode=mode)
 
     def ensure_partition_count(self) -> None:
         if self.num_kafka_partitions is not None:
@@ -1084,15 +1230,16 @@ class PhoenixKafkaDataset(PhoenixDataset):
         if not self.topic_name:
             return
         try:
-            bootstrap_servers = self._resolve_bootstrap_servers()
-            sasl_plain_password = _resolve_sasl_password(self.bootstrap_servers)
+            auth = self._detect_auth()
+            bootstrap_servers = self._resolve_bootstrap_servers(auth)
             count = asyncio.run(
                 discover_partition_count(
                     topic=self.topic_name,
                     bootstrap_servers=bootstrap_servers,
                     sasl_mechanism=self.sasl_mechanism,
                     sasl_plain_username=self.sasl_plain_username,
-                    sasl_plain_password=sasl_plain_password,
+                    sasl_plain_password=auth.sasl_password or "",
+                    auth=auth,
                 )
             )
             object.__setattr__(self, "num_kafka_partitions", count)
@@ -1185,8 +1332,9 @@ class PhoenixKafkaDataset(PhoenixDataset):
                     shard_index=shard_index,
                 )
 
-                bootstrap_servers = self._resolve_bootstrap_servers()
-                sasl_plain_password = _resolve_sasl_password(self.bootstrap_servers)
+                auth = self._detect_auth()
+                bootstrap_servers = self._resolve_bootstrap_servers(auth)
+                sasl_plain_password = auth.sasl_password or ""
 
                 try:
                     discovered_count = await discover_partition_count(
@@ -1195,6 +1343,7 @@ class PhoenixKafkaDataset(PhoenixDataset):
                         sasl_mechanism=self.sasl_mechanism,
                         sasl_plain_username=self.sasl_plain_username,
                         sasl_plain_password=sasl_plain_password,
+                        auth=auth,
                     )
                 except Exception as e:
                     if self.num_kafka_partitions is not None:
@@ -1250,6 +1399,7 @@ class PhoenixKafkaDataset(PhoenixDataset):
                     sasl_mechanism=self.sasl_mechanism,
                     sasl_plain_username=self.sasl_plain_username,
                     sasl_plain_password=sasl_plain_password,
+                    auth=auth,
                     bootstrap_servers=bootstrap_servers,
                     reset_to_latest=self.reset_to_latest,
                     seek_to_timestamp_ms=self.seek_to_timestamp_ms,

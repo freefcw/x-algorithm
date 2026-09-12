@@ -384,7 +384,6 @@ MODEL_CFGS = {
             "use_seqpack": True,
             "right_anchored_rope": True,
             "compute_post_unexplored_label": True,
-            "multimodal_embedding_type": "v5",
             "seqpack_distribution": BetaLengthDistribution(
                 min_len=126,
                 max_len=1022,
