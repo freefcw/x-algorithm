@@ -19,11 +19,12 @@
 
 ## 我想继续建设生产链路
 
-1. [推荐服务外部依赖梳理与 MVP 建设建议](./recommendation-service-mvp-assessment.md)：从业务角度判断首版保留、延后和不复制的能力，适合立项与范围决策时先读。
-2. [getting-started/06-从演示到真实系统](./getting-started/06-从演示到真实系统.md)：当前演示链路的真实数据缺口和推进顺序。
-3. [training/](./training/)：训练数据规格与离线链路的目标设计。
-4. [operations/](./operations/)：数据持续更新、索引切版、发布运维建议。
-5. [research/](./research/)：双塔、冷启动等算法背景调研。
+1. [以 PhoenixCandidatePipeline 为主干的推荐链路收敛方案](./implementation/phoenix-pipeline-trunk-plan.md)（`decision`）：已定方向的主干收敛决策——以 `mp` 的 `PhoenixCandidatePipeline` 为唯一编排主干、吸收 `mp-slim` 的契约层成果、ID 方案选 Copy newtype `ObjectId`、新增 U4 / U5 差异类，以及 P0–P3 实施批次与执行记录。要接业务、改 ID 类型或删组件之前先读它。
+2. [推荐服务外部依赖梳理与 MVP 建设建议](./recommendation-service-mvp-assessment.md)：从业务角度判断首版保留、延后和不复制的能力，适合立项与范围决策时先读。
+3. [getting-started/06-从演示到真实系统](./getting-started/06-从演示到真实系统.md)：当前演示链路的真实数据缺口和推进顺序。
+4. [training/](./training/)：训练数据规格与离线链路的目标设计。
+5. [operations/](./operations/)：数据持续更新、索引切版、发布运维建议。
+6. [research/](./research/)：双塔、冷启动等算法背景调研。
 
 ## 文档状态标签
 
@@ -31,6 +32,7 @@
 | --- | --- |
 | `current-code` | 以当前仓库代码为事实基准，可用于定位实现行为。 |
 | `design` | 设计建议或目标形态，不代表已经完整落地。 |
+| `decision` | 已定方向的决策记录：结论、依据与执行边界已确定，正按批次落地；文末的执行记录说明哪些批次已完成。 |
 | `runbook` | 操作手册，包含生产化假设，需要结合真实环境校准。 |
 | `historical` | 历史过程记录，可能落后于当前代码，仅供考古。 |
 | `research` | 外部资料整理或算法背景，不能直接推导当前仓库行为。 |
@@ -42,6 +44,7 @@
 | [bootstrap/](./bootstrap/) | `runbook` / `current-code` | 从环境、编译、模型、Demo 到真实数据和生产验收的完整启动手册。 |
 | [getting-started/](./getting-started/) | `current-code` | 从零跑通主线（推荐入口）。 |
 | [recommendation-service-mvp-assessment.md](./recommendation-service-mvp-assessment.md) | `design` | 面向业务决策的外部依赖评估、MVP 边界和三阶段演进建议。 |
+| [implementation/phoenix-pipeline-trunk-plan.md](./implementation/phoenix-pipeline-trunk-plan.md) | `decision` | 以 `PhoenixCandidatePipeline` 为主干的推荐链路收敛方案：分支取舍、U4 / U5 差异类、ObjectId 方案、组件取舍、P0–P3 实施批次与执行记录。 |
 | [home-mixer/](./home-mixer/) | `current-code` | 首页 Feed 编排服务、请求生命周期、组件和字段字典。 |
 | [candidate-pipeline/](./candidate-pipeline/) | `current-code` | 通用候选流框架及 `PhoenixCandidatePipeline` 当前装配。 |
 | [thunder/](./thunder/) | `current-code` | Kafka 摄入、内存索引、gRPC 查询和运维缺口。 |

@@ -27,8 +27,16 @@ Every intentional difference from upstream belongs to one class:
 | `U1` | Dependency substitution | Keep the upstream-facing contract; replace only metrics, config, cache, RPC, or storage implementation. |
 | `U2` | Downstream extension | Make the extension additive. Do not rewrite an upstream method signature when a wrapper or adapter is sufficient. Add a regression test. |
 | `U3` | Deferred external capability | Keep the capability in the inventory with its owner, missing contract, enablement state, and re-entry condition. Do not add a production-looking stub. |
+| `U4` | Identity type substitution | Business identities are 96-bit ObjectIds that upstream `u64` cannot carry. Inside the pipeline every identity is `PostId` / `UserId` (a `Copy` newtype). When porting upstream code apply a mechanical substitution: `u64` in ID positions → `PostId` / `UserId`; proto3 sentinel `0` → `Option` / empty string; `to_be_bytes()` → `as_bytes()`; `wrapping_mul` bucketing → `to_u64_hash()`; Snowflake-derived time → hydrated `created_at_ms`. Keep `u64` unchanged for timestamps, counters, thresholds, request-local IDs, and hash arithmetic. |
+| `U5` | Product not applicable | Concepts the product does not have (quote, retweet, subscription, …). Physically delete only the *dedicated* component files and remove them from assembly; keep the corresponding fields in `PostCandidate` / `PhoenixScores` / `UserFeatures` as `None` / empty; keep the related branches in shared filters as no-ops; set the matching action-head weights to 0; record later upstream changes to those dedicated files as "skipped" in the capability inventory. |
 
 A difference without one of these classifications is drift and should be removed or documented before more code is built on it.
+
+`U4` and `U5` were introduced by the trunk convergence decision in [`../implementation/phoenix-pipeline-trunk-plan.md`](../implementation/phoenix-pipeline-trunk-plan.md) (§4); that document also fixes the `ObjectId` design and the migration batches (P0–P3). Until the P1 batch lands, `home-mixer` still uses `u64` identities internally and bridges to the string-ID `phoenix_recsys.proto` with decimal parse/format at the Phoenix boundary; every such site is marked `TEMP(U4-P1)` and is removed by P1.
+
+### Measured upstream-sync friction for `U4`
+
+Measured over the 18 snapshots `c65aa17 → 902a06f`: each snapshot changed 0–19 `home-mixer` files and 0–4k lines; added/removed lines containing `u64` total 67 (0–16 per snapshot), about 0.7% of the total churn. The four pending snapshots `49815da → 6bb4594` contain 21 `u64` lines in total, all of the form `Vec<u64>` / `HashSet<u64>` / `HashMap<u64, …>` / `user_id: u64` parameters. This is the recurring cost of `U4`: a small mechanical substitution per snapshot, surfaced by the compiler once the pipeline types are `PostId` / `UserId`.
 
 ## Structural adoption ceilings
 
