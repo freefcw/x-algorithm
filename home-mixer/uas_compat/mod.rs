@@ -106,8 +106,9 @@ pub mod convert {
             .and_then(|value| u64::try_from(value).ok())
             .unwrap_or(0);
         Ok(recsys::AggregatedUserAction {
-            tweet_id,
-            author_id,
+            // TEMP(U4-P1): 十进制 u64 桥接，P1 迁移到 PostId 后删除
+            tweet_id: tweet_id.to_string(),
+            author_id: author_id.to_string(),
             impressed_time_ms,
             action_mask: thrift_action.action_mask,
             product_surface: thrift_action.product_surface.unwrap_or(0),

@@ -110,7 +110,8 @@ impl PhoenixPredictionClient for ProdPhoenixPredictionClient {
 
         let mut client = PhoenixPredictionServiceClient::new(channel.clone());
         let request = recsys::PredictNextActionsRequest {
-            user_id,
+            // TEMP(U4-P1): 十进制 u64 桥接，P1 迁移到 PostId 后删除
+            user_id: user_id.to_string(),
             user_action_sequence: Some(sequence),
             candidates,
         };

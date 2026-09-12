@@ -2,6 +2,8 @@ use crate::clients::phoenix_retrieval_client::{retrieve_with_timeout, PhoenixRet
 use crate::models::candidate::PostCandidate;
 use crate::models::query::{ScoredPostsQuery, TopicRecallMode};
 use crate::params;
+// TEMP(U4-P1): 十进制 u64 桥接，P1 迁移到 PostId 后删除
+use crate::sources::phoenix_source::parse_bridged_tweet_info;
 use std::sync::Arc;
 use std::time::Duration;
 use tonic::async_trait;
@@ -40,21 +42,42 @@ impl Source<ScoredPostsQuery, PostCandidate> for PhoenixMoeSource {
         .await
         .map_err(|error| format!("PhoenixMoeSource: {error}"))?;
 
-        Ok(response
+        // TEMP(U4-P1): 十进制 u64 桥接，P1 迁移到 PostId 后删除
+        // 协议里的 ID 是字符串；这里只接受十进制 u64，其余候选整条丢弃并计数告警。
+        let mut unparsable_ids = 0usize;
+        let mut unparsable_example: Option<String> = None;
+        let candidates: Vec<PostCandidate> = response
             .top_k_candidates
             .into_iter()
             .flat_map(|group| group.candidates)
             .filter_map(|candidate| candidate.candidate)
-            .map(|tweet| PostCandidate {
-                tweet_id: tweet.tweet_id,
-                author_id: tweet.author_id,
-                // wire 用 0 表示"不是回复"，直接 Some(0) 会让下游把它当成真实祖先帖。
-                in_reply_to_tweet_id: (tweet.in_reply_to_tweet_id != 0)
-                    .then_some(tweet.in_reply_to_tweet_id),
-                served_type: Some(pb::ServedType::ForYouPhoenixRetrievalMoe),
-                ..Default::default()
+            .filter_map(|tweet| {
+                let parsed = parse_bridged_tweet_info(&tweet);
+                if parsed.is_none() {
+                    unparsable_ids += 1;
+                    unparsable_example.get_or_insert_with(|| tweet.tweet_id.clone());
+                }
+                parsed
             })
-            .collect())
+            .map(
+                |(tweet_id, author_id, in_reply_to_tweet_id)| PostCandidate {
+                    tweet_id,
+                    author_id,
+                    in_reply_to_tweet_id,
+                    served_type: Some(pb::ServedType::ForYouPhoenixRetrievalMoe),
+                    ..Default::default()
+                },
+            )
+            .collect();
+        if unparsable_ids > 0 {
+            log::warn!(
+                "PhoenixMoeSource: dropped {} retrieved candidate(s) whose ids are not decimal u64 (e.g. {:?})",
+                unparsable_ids,
+                unparsable_example.unwrap_or_default()
+            );
+        }
+
+        Ok(candidates)
     }
 }
 
@@ -77,8 +100,9 @@ mod tests {
                 top_k_candidates: vec![recsys::ScoredCandidates {
                     candidates: vec![recsys::ScoredCandidate {
                         candidate: Some(recsys::TweetInfo {
-                            tweet_id: 100,
-                            author_id: 200,
+                            // TEMP(U4-P1): 十进制 u64 桥接，P1 迁移到 PostId 后删除
+                            tweet_id: "100".to_string(),
+                            author_id: "200".to_string(),
                             ..Default::default()
                         }),
                         score: 0.9,

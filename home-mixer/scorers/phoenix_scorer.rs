@@ -35,8 +35,9 @@ impl Scorer<ScoredPostsQuery, PostCandidate> for PhoenixScorer {
                     let tweet_id = c.retweeted_tweet_id.unwrap_or(c.tweet_id);
                     let author_id = c.retweeted_user_id.unwrap_or(c.author_id);
                     x_algorithm_proto::recsys::TweetInfo {
-                        tweet_id,
-                        author_id,
+                        // TEMP(U4-P1): 十进制 u64 桥接，P1 迁移到 PostId 后删除
+                        tweet_id: tweet_id.to_string(),
+                        author_id: author_id.to_string(),
                         safety_label_mask: 0,
                         ..Default::default()
                     }
@@ -105,11 +106,21 @@ impl PhoenixScorer {
             return predictions_map;
         };
 
+        // TEMP(U4-P1): 十进制 u64 桥接，P1 迁移到 PostId 后删除
+        // 响应里的 tweet_id 是字符串；只接受十进制 u64，其余整条预测丢弃并计数告警。
+        let mut unparsable_ids = 0usize;
+        let mut unparsable_example: Option<String> = None;
+
         for distribution in &distribution_set.candidate_distributions {
             let Some(candidate) = &distribution.candidate else {
                 continue;
             };
-            let tweet_id = candidate.tweet_id;
+            // TEMP(U4-P1): 十进制 u64 桥接，P1 迁移到 PostId 后删除
+            let Ok(tweet_id) = candidate.tweet_id.parse::<u64>() else {
+                unparsable_ids += 1;
+                unparsable_example.get_or_insert_with(|| candidate.tweet_id.clone());
+                continue;
+            };
 
             let action_probs: HashMap<usize, f64> = distribution
                 .top_log_probs
@@ -131,6 +142,15 @@ impl PhoenixScorer {
                     action_probs,
                     continuous_values,
                 },
+            );
+        }
+
+        // TEMP(U4-P1): 十进制 u64 桥接，P1 迁移到 PostId 后删除
+        if unparsable_ids > 0 {
+            log::warn!(
+                "PhoenixScorer: dropped {} prediction(s) whose tweet_id is not a decimal u64 (e.g. {:?})",
+                unparsable_ids,
+                unparsable_example.unwrap_or_default()
             );
         }
 
@@ -281,6 +301,39 @@ mod tests {
             .await;
 
         assert!(scored[0].is_err());
+    }
+
+    // TEMP(U4-P1): 十进制 u64 桥接，P1 迁移到 PostId 后删除
+    #[test]
+    fn predictions_with_non_decimal_tweet_ids_are_dropped_not_zeroed() {
+        use x_algorithm_proto::recsys::{
+            CandidateDistribution, DistributionSet, PredictNextActionsResponse, TweetInfo,
+        };
+
+        let distribution = |tweet_id: &str| CandidateDistribution {
+            candidate: Some(TweetInfo {
+                tweet_id: tweet_id.to_string(),
+                ..Default::default()
+            }),
+            top_log_probs: vec![0.0; ActionName::ServerTweetFav as usize + 1],
+            continuous_actions_values: Vec::new(),
+        };
+        let response = PredictNextActionsResponse {
+            distribution_sets: vec![DistributionSet {
+                candidate_distributions: vec![
+                    distribution("10"),
+                    // 24 位 hex（ObjectId 形状）无法解析为 u64，必须被丢弃而不是当成 0。
+                    distribution("5f1a2b3c4d5e6f7a8b9c0d1e"),
+                    distribution(""),
+                ],
+            }],
+        };
+
+        let predictions_map = scorer().build_predictions_map(&response);
+
+        assert_eq!(predictions_map.len(), 1);
+        assert!(predictions_map.contains_key(&10));
+        assert!(!predictions_map.contains_key(&0));
     }
 
     #[test]

@@ -250,7 +250,8 @@ fn convert_to_proto_sequence(
 
     // Build the final UserActionSequence
     Ok(UserActionSequence {
-        user_id,
+        // TEMP(U4-P1): 十进制 u64 桥接，P1 迁移到 PostId 后删除
+        user_id: user_id.to_string(),
         metadata: Some(proto_metadata),
         user_actions_data: Some(UserActionSequenceDataContainer {
             data: Some(ProtoDataContainer::OrderedAggregatedUserActionsList(
@@ -361,8 +362,9 @@ mod tests {
             provider.hydrate_sequence(&second)
         );
 
-        assert_eq!(first_result.expect("first sequence").user_id, 42);
-        assert_eq!(second_result.expect("second sequence").user_id, 43);
+        // TEMP(U4-P1): 十进制 u64 桥接，P1 迁移到 PostId 后删除
+        assert_eq!(first_result.expect("first sequence").user_id, "42");
+        assert_eq!(second_result.expect("second sequence").user_id, "43");
         assert_eq!(fetcher.calls.load(Ordering::Relaxed), 2);
     }
 }
