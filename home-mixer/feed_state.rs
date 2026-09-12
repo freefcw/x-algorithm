@@ -10,30 +10,30 @@ use std::sync::Mutex;
 
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct FeedStateSnapshot {
-    pub served_post_ids: Vec<u64>,
+    pub served_post_ids: Vec<crate::models::PostId>,
     pub request_timestamps_ms: Vec<i64>,
 }
 
 pub trait FeedStateStore: Send + Sync {
-    fn load(&self, user_id: u64) -> Result<FeedStateSnapshot, String>;
+    fn load(&self, user_id: crate::models::UserId) -> Result<FeedStateSnapshot, String>;
     fn record(
         &self,
-        user_id: u64,
-        served_post_ids: Vec<u64>,
+        user_id: crate::models::UserId,
+        served_post_ids: Vec<crate::models::PostId>,
         request_timestamp_ms: i64,
     ) -> Result<(), String>;
 }
 
 #[derive(Default)]
 struct UserFeedState {
-    served_post_ids: VecDeque<u64>,
+    served_post_ids: VecDeque<crate::models::PostId>,
     request_timestamps_ms: VecDeque<i64>,
 }
 
 #[derive(Default)]
 struct FeedStateCache {
-    users: HashMap<u64, UserFeedState>,
-    least_to_most_recent: VecDeque<u64>,
+    users: HashMap<crate::models::UserId, UserFeedState>,
+    least_to_most_recent: VecDeque<crate::models::UserId>,
 }
 
 pub struct InMemoryFeedStateStore {
@@ -67,7 +67,7 @@ impl InMemoryFeedStateStore {
 }
 
 impl FeedStateStore for InMemoryFeedStateStore {
-    fn load(&self, user_id: u64) -> Result<FeedStateSnapshot, String> {
+    fn load(&self, user_id: crate::models::UserId) -> Result<FeedStateSnapshot, String> {
         let mut cache = self
             .cache
             .lock()
@@ -84,8 +84,8 @@ impl FeedStateStore for InMemoryFeedStateStore {
 
     fn record(
         &self,
-        user_id: u64,
-        served_post_ids: Vec<u64>,
+        user_id: crate::models::UserId,
+        served_post_ids: Vec<crate::models::PostId>,
         request_timestamp_ms: i64,
     ) -> Result<(), String> {
         if self.max_users == 0 {
@@ -117,7 +117,7 @@ impl FeedStateStore for InMemoryFeedStateStore {
     }
 }
 
-fn touch_user(users: &mut VecDeque<u64>, user_id: u64) {
+fn touch_user(users: &mut VecDeque<crate::models::UserId>, user_id: crate::models::UserId) {
     users.retain(|existing| *existing != user_id);
     users.push_back(user_id);
 }

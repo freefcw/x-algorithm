@@ -14,7 +14,7 @@ impl Filter<ScoredPostsQuery, PostCandidate> for DedupConversationFilter {
     ) -> FilterResult<PostCandidate> {
         let mut kept: Vec<PostCandidate> = Vec::new();
         let mut removed: Vec<PostCandidate> = Vec::new();
-        let mut best_per_convo: HashMap<u64, (usize, f64)> = HashMap::new();
+        let mut best_per_convo: HashMap<crate::models::PostId, (usize, f64)> = HashMap::new();
 
         for candidate in candidates {
             let conversation_id = get_conversation_id(&candidate);
@@ -41,7 +41,7 @@ impl Filter<ScoredPostsQuery, PostCandidate> for DedupConversationFilter {
 
 /// 无祖先时回落到原帖 ID 而不是自身 ID：转推与该原帖下的回复属于同一会话，
 /// 用自身 ID 会让两者落进不同的桶从而双双保留。
-fn get_conversation_id(candidate: &PostCandidate) -> u64 {
+fn get_conversation_id(candidate: &PostCandidate) -> crate::models::PostId {
     candidate
         .ancestors
         .iter()
@@ -54,9 +54,9 @@ fn get_conversation_id(candidate: &PostCandidate) -> u64 {
 mod tests {
     use super::*;
 
-    fn candidate(tweet_id: u64, score: f64) -> PostCandidate {
+    fn candidate(tweet_id: impl Into<crate::models::PostId>, score: f64) -> PostCandidate {
         PostCandidate {
-            tweet_id,
+            tweet_id: tweet_id.into(),
             score: Some(score),
             ..Default::default()
         }
@@ -65,11 +65,11 @@ mod tests {
     #[test]
     fn retweet_and_reply_to_the_same_original_share_one_conversation() {
         let retweet = PostCandidate {
-            retweeted_tweet_id: Some(1),
+            retweeted_tweet_id: Some(1.into()),
             ..candidate(10, 0.2)
         };
         let reply = PostCandidate {
-            ancestors: vec![1],
+            ancestors: vec![1.into()],
             ..candidate(11, 0.9)
         };
 
@@ -77,9 +77,9 @@ mod tests {
             DedupConversationFilter.filter(&ScoredPostsQuery::default(), vec![retweet, reply]);
 
         assert_eq!(result.kept.len(), 1);
-        assert_eq!(result.kept[0].tweet_id, 11);
+        assert_eq!(result.kept[0].tweet_id, crate::models::pid(11));
         assert_eq!(result.removed.len(), 1);
-        assert_eq!(result.removed[0].tweet_id, 10);
+        assert_eq!(result.removed[0].tweet_id, crate::models::pid(10));
     }
 
     #[test]

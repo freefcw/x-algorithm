@@ -1,5 +1,6 @@
 use crate::candidate_pipeline::for_you_candidate_pipeline::ForYouCandidatePipeline;
-use crate::feed_state::{FeedStateStore, InMemoryFeedStateStore};
+use crate::clients::served_persistence::{InMemoryServedPersistence, ServedPersistence};
+use crate::feed_state::FeedStateStore;
 use crate::feed_stats::{FeedStatsSink, LoggingFeedStats};
 use crate::models::feed_item::FeedItem;
 use crate::models::query::ScoredPostsQuery;
@@ -7,8 +8,7 @@ use crate::query_builder::QueryBuilder;
 use crate::scored_posts_server::ScoredPostsServer;
 use crate::selectors::blender_selector::BlenderConfig;
 use crate::sources::scored_posts_source::ScoredPostsProvider;
-use crate::util::request_util::current_time_ms;
-use log::{error, info};
+use log::info;
 use std::sync::Arc;
 use std::time::Instant;
 use xai_candidate_pipeline::candidate_pipeline::CandidatePipeline;
@@ -17,30 +17,26 @@ use xai_candidate_pipeline::source::Source;
 pub struct ForYouFeedOutput {
     pub items: Vec<FeedItem>,
     pub request_id: String,
+    pub persist_error: Option<String>,
 }
 
 pub struct ForYouFeedServer {
     query_builder: QueryBuilder,
     pipeline: ForYouCandidatePipeline,
-    // Local U2 consistency boundary. Production history clients must define
-    // equivalent atomicity before this moves to asynchronous SideEffects.
-    local_state_store: Option<Arc<dyn FeedStateStore>>,
+    served_persist: Option<Arc<dyn ServedPersistence>>,
 }
 
 impl ForYouFeedServer {
     pub fn new(query_builder: QueryBuilder, scored_posts_server: Arc<ScoredPostsServer>) -> Self {
-        let state_store: Arc<dyn FeedStateStore> = Arc::new(InMemoryFeedStateStore::new(
-            crate::params::LOCAL_SERVED_HISTORY_LIMIT,
-            crate::params::LOCAL_REQUEST_TIMESTAMP_LIMIT,
-        ));
-        let stats_sink: Arc<dyn FeedStatsSink> = Arc::new(LoggingFeedStats);
+        let provider: Arc<dyn ScoredPostsProvider> = scored_posts_server.clone();
         Self::with_local_state_and_query_builder(
             query_builder,
-            scored_posts_server,
+            provider,
             BlenderConfig::default(),
             Vec::new(),
-            state_store,
-            stats_sink,
+            scored_posts_server.feed_state_store(),
+            Arc::new(LoggingFeedStats),
+            Some(scored_posts_server.served_persist()),
         )
     }
 
@@ -56,7 +52,7 @@ impl ForYouFeedServer {
         Self {
             query_builder: QueryBuilder::default(),
             pipeline: ForYouCandidatePipeline::with_sources(provider, config, supplemental_sources),
-            local_state_store: None,
+            served_persist: None,
         }
     }
 
@@ -74,6 +70,7 @@ impl ForYouFeedServer {
             supplemental_sources,
             state_store,
             stats_sink,
+            None,
         )
     }
 
@@ -84,17 +81,20 @@ impl ForYouFeedServer {
         supplemental_sources: Vec<Box<dyn Source<ScoredPostsQuery, FeedItem>>>,
         state_store: Arc<dyn FeedStateStore>,
         stats_sink: Arc<dyn FeedStatsSink>,
+        served_persist: Option<Arc<dyn ServedPersistence>>,
     ) -> Self {
+        let served_persist = served_persist
+            .unwrap_or_else(|| Arc::new(InMemoryServedPersistence::new(Arc::clone(&state_store))));
         Self {
             query_builder,
             pipeline: ForYouCandidatePipeline::with_local_state(
                 provider,
                 config,
                 supplemental_sources,
-                Arc::clone(&state_store),
+                state_store,
                 stats_sink,
             ),
-            local_state_store: Some(state_store),
+            served_persist: Some(served_persist),
         }
     }
 
@@ -106,21 +106,22 @@ impl ForYouFeedServer {
         let started = Instant::now();
         let result = self.pipeline.execute(query).await;
         let request_id = result.query.request_id.clone();
-        if let Some(state_store) = &self.local_state_store {
+        let persist_error = if let Some(persist) = &self.served_persist {
             let served_post_ids = result
                 .selected_candidates
                 .iter()
                 .filter_map(FeedItem::served_post_id)
-                .collect();
-            if let Err(state_error) =
-                state_store.record(result.query.user_id, served_post_ids, current_time_ms())
-            {
-                error!(
-                    "For You local state - request_id {} - failed: {}",
-                    request_id, state_error
-                );
-            }
-        }
+                .collect::<Vec<_>>();
+            persist
+                .persist(
+                    result.query.user_id,
+                    &served_post_ids,
+                    result.query.request_time_ms,
+                )
+                .err()
+        } else {
+            None
+        };
         info!(
             "For You response - request_id {} - {} items ({} ms)",
             request_id,
@@ -130,6 +131,7 @@ impl ForYouFeedServer {
         ForYouFeedOutput {
             items: result.selected_candidates,
             request_id,
+            persist_error,
         }
     }
 }

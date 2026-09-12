@@ -464,7 +464,7 @@ mod tests {
     fn keyword_and_handle_drops_do_not_waste_a_group_slot() {
         let mut first = post_with_text(1, "this post contains badword in the text");
         if let FeedItemContent::Post(post) = &mut first.content {
-            post.author_id = 9999;
+            post.author_id = crate::models::uid(9999).to_string();
         }
         let posts = vec![
             first,

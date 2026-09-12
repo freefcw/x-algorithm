@@ -240,26 +240,33 @@ mod tests {
     use rand::SeedableRng;
     use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-    const TWITTER_EPOCH_MS: u64 = 1_288_834_974_657;
-
     fn minutes(value: u64) -> Duration {
         Duration::from_secs(value * 60)
     }
 
-    fn tweet_id_with_age(age: Duration) -> u64 {
+    fn tweet_id_with_age(age: Duration) -> crate::models::PostId {
         let now_ms = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .expect("current time after Unix epoch")
             .as_millis() as u64;
-        ((now_ms - TWITTER_EPOCH_MS) << 22) - ((age.as_millis() as u64) << 22)
+        let created_ms = now_ms.saturating_sub(age.as_millis() as u64);
+        crate::models::ObjectId::from_parts((created_ms / 1000) as u32, 1)
     }
 
     fn candidate(author_id: u64, age: Duration, views: Option<u64>) -> PostCandidate {
+        let author = crate::models::uid(author_id);
         PostCandidate {
             tweet_id: tweet_id_with_age(age),
-            author_id,
+            author_id: author,
+            created_at_ms: {
+                let now_ms = SystemTime::now()
+                    .duration_since(UNIX_EPOCH)
+                    .expect("current time after Unix epoch")
+                    .as_millis() as u64;
+                Some(now_ms.saturating_sub(age.as_millis() as u64))
+            },
             author_followers_count: Some(100),
-            author_profile_looked_up_for_user_id: Some(author_id),
+            author_profile_looked_up_for_user_id: Some(author),
             favorite_count: Some(0),
             view_count: views,
             ..Default::default()
@@ -317,7 +324,7 @@ mod tests {
     #[test]
     fn mismatched_author_profile_is_ineligible() {
         let mut stale_profile = candidate(2, minutes(10), Some(10));
-        stale_profile.author_profile_looked_up_for_user_id = Some(99);
+        stale_profile.author_profile_looked_up_for_user_id = Some(crate::models::uid(99));
         let candidates = vec![candidate(1, minutes(10), Some(2_000)), stale_profile];
         let cold_start = AuthorColdStart::new(enabled_config());
 
@@ -330,9 +337,9 @@ mod tests {
     #[test]
     fn replies_retweets_and_large_authors_are_ineligible() {
         let mut reply = candidate(2, minutes(10), Some(10));
-        reply.in_reply_to_tweet_id = Some(1);
+        reply.in_reply_to_tweet_id = Some(crate::models::pid(1));
         let mut retweet = candidate(3, minutes(10), Some(10));
-        retweet.retweeted_tweet_id = Some(1);
+        retweet.retweeted_tweet_id = Some(crate::models::pid(1));
         let mut large_author = candidate(4, minutes(10), Some(10));
         large_author.author_followers_count = Some(1_001);
         let candidates = vec![

@@ -91,7 +91,7 @@ impl UserActionSeqQueryHydrator {
                     )
                 })?
                 .map_err(|e| format!("Failed to fetch user action sequence: {}", e))?;
-                self.aggregate_user_action_sequence(query.user_id, uas_thrift)
+                self.aggregate_user_action_sequence(query, uas_thrift)
             })
             .await
             .clone();
@@ -136,13 +136,20 @@ impl QueryHydrator<ScoredPostsQuery> for UserActionSeqQueryHydrator {
 impl UserActionSeqQueryHydrator {
     fn aggregate_user_action_sequence(
         &self,
-        user_id: u64,
+        query: &ScoredPostsQuery,
         uas_thrift: ThriftUserActionSequence,
     ) -> Result<UserActionSequence, String> {
+        if query.request_time_ms <= 0 {
+            return Err(format!(
+                "invalid request_time_ms {}; cannot anchor UAS aggregation window for user {}",
+                query.request_time_ms, query.user_id
+            ));
+        }
+
         // Extract user_actions from thrift sequence
         let thrift_user_actions = uas_thrift.user_actions.clone().unwrap_or_default();
         if thrift_user_actions.is_empty() {
-            return Err(format!("No user actions found for user {}", user_id));
+            return Err(format!("No user actions found for user {}", query.user_id));
         }
 
         // Pre-aggregation filter
@@ -150,14 +157,16 @@ impl UserActionSeqQueryHydrator {
         if filtered_actions.is_empty() {
             return Err(format!(
                 "No user actions remaining after filtering for user {}",
-                user_id
+                query.user_id
             ));
         }
 
         // Aggregate
-        let mut aggregated_actions =
-            self.aggregator
-                .run(&filtered_actions, p::UAS_WINDOW_TIME_MS, 0);
+        let mut aggregated_actions = self.aggregator.run(
+            &filtered_actions,
+            p::UAS_WINDOW_TIME_MS,
+            query.request_time_ms,
+        );
 
         // Post-aggregation filters
         for filter in &self.post_filters {
@@ -173,7 +182,7 @@ impl UserActionSeqQueryHydrator {
         // Convert to proto format
         let original_metadata = uas_thrift.metadata.clone().unwrap_or_default();
         convert_to_proto_sequence(
-            user_id,
+            query.user_id,
             original_metadata,
             aggregated_actions,
             self.aggregator.name(),
@@ -182,7 +191,7 @@ impl UserActionSeqQueryHydrator {
 }
 
 fn convert_to_proto_sequence(
-    user_id: u64,
+    user_id: crate::models::UserId,
     original_metadata: ThriftUserActionSequenceMeta,
     aggregated_actions: Vec<ThriftAggregatedUserAction>,
     aggregator_name: &str,
@@ -250,7 +259,6 @@ fn convert_to_proto_sequence(
 
     // Build the final UserActionSequence
     Ok(UserActionSequence {
-        // TEMP(U4-P1): 十进制 u64 桥接，P1 迁移到 PostId 后删除
         user_id: user_id.to_string(),
         metadata: Some(proto_metadata),
         user_actions_data: Some(UserActionSequenceDataContainer {
@@ -276,7 +284,7 @@ mod tests {
     impl UserActionSequenceOps for CountingFetcher {
         async fn get_by_user_id(
             &self,
-            user_id: u64,
+            user_id: crate::models::UserId,
         ) -> Result<ThriftUserActionSequence, anyhow::Error> {
             self.calls.fetch_add(1, Ordering::Relaxed);
             DemoUserActionSequenceFetcher.get_by_user_id(user_id).await
@@ -289,10 +297,55 @@ mod tests {
     impl UserActionSequenceOps for SlowFetcher {
         async fn get_by_user_id(
             &self,
-            user_id: u64,
+            user_id: crate::models::UserId,
         ) -> Result<ThriftUserActionSequence, anyhow::Error> {
             tokio::time::sleep(Duration::from_millis(20)).await;
             DemoUserActionSequenceFetcher.get_by_user_id(user_id).await
+        }
+    }
+
+    struct StubFetcher {
+        actions: Vec<crate::uas_compat::UserAction>,
+    }
+
+    #[async_trait]
+    impl UserActionSequenceOps for StubFetcher {
+        async fn get_by_user_id(
+            &self,
+            _user_id: crate::models::UserId,
+        ) -> Result<ThriftUserActionSequence, anyhow::Error> {
+            Ok(ThriftUserActionSequence {
+                metadata: None,
+                user_actions: Some(self.actions.clone()),
+            })
+        }
+    }
+
+    fn raw_action(
+        tweet_seq: u64,
+        action_time_ms: i64,
+        action_type: i32,
+    ) -> crate::uas_compat::UserAction {
+        crate::uas_compat::UserAction {
+            tweet_id: Some(crate::models::pid(tweet_seq)),
+            author_id: Some(crate::models::uid(100 + tweet_seq)),
+            action_time_ms: Some(action_time_ms),
+            action_type: Some(action_type),
+        }
+    }
+
+    fn proto_aggregated_actions(
+        sequence: &UserActionSequence,
+    ) -> &[x_algorithm_proto::recsys::AggregatedUserAction] {
+        match sequence
+            .user_actions_data
+            .as_ref()
+            .and_then(|container| container.data.as_ref())
+        {
+            Some(ProtoDataContainer::OrderedAggregatedUserActionsList(list)) => {
+                &list.aggregated_user_actions
+            }
+            _ => &[],
         }
     }
 
@@ -301,7 +354,7 @@ mod tests {
         let provider = UserActionSeqQueryHydrator::new(Arc::new(SlowFetcher))
             .with_fetch_timeout(Duration::from_millis(1));
         let query = ScoredPostsQuery {
-            user_id: 42,
+            user_id: 42.into(),
             request_id: "slow-uas".to_string(),
             prediction_id: 7,
             ..Default::default()
@@ -322,9 +375,10 @@ mod tests {
         });
         let provider = UserActionSeqQueryHydrator::new(fetcher.clone());
         let query = ScoredPostsQuery {
-            user_id: 42,
+            user_id: 42.into(),
             request_id: "request-1".to_string(),
             prediction_id: 7,
+            request_time_ms: x_algorithm_proto::demo::now_ms(),
             ..Default::default()
         };
 
@@ -344,16 +398,19 @@ mod tests {
             calls: AtomicUsize::new(0),
         });
         let provider = UserActionSeqQueryHydrator::new(fetcher.clone());
+        let request_time_ms = x_algorithm_proto::demo::now_ms();
         let first = ScoredPostsQuery {
-            user_id: 42,
+            user_id: 42.into(),
             request_id: "same-request-label".to_string(),
             prediction_id: 7,
+            request_time_ms,
             ..Default::default()
         };
         let second = ScoredPostsQuery {
-            user_id: 43,
+            user_id: 43.into(),
             request_id: first.request_id.clone(),
             prediction_id: first.prediction_id,
+            request_time_ms,
             ..Default::default()
         };
 
@@ -362,9 +419,103 @@ mod tests {
             provider.hydrate_sequence(&second)
         );
 
-        // TEMP(U4-P1): 十进制 u64 桥接，P1 迁移到 PostId 后删除
-        assert_eq!(first_result.expect("first sequence").user_id, "42");
-        assert_eq!(second_result.expect("second sequence").user_id, "43");
+        assert_eq!(
+            first_result.expect("first sequence").user_id,
+            crate::models::uid(42).to_string()
+        );
+        assert_eq!(
+            second_result.expect("second sequence").user_id,
+            crate::models::uid(43).to_string()
+        );
         assert_eq!(fetcher.calls.load(Ordering::Relaxed), 2);
+    }
+
+    #[tokio::test]
+    async fn aggregation_anchors_window_at_request_time() {
+        let reference_time_ms = 700_000_000_i64;
+        let cutoff = reference_time_ms - p::UAS_WINDOW_TIME_MS as i64;
+        let provider = UserActionSeqQueryHydrator::new(Arc::new(StubFetcher {
+            actions: vec![
+                raw_action(1, cutoff - 1, 1),
+                raw_action(2, cutoff, 1),
+                raw_action(3, reference_time_ms, 2),
+                raw_action(4, reference_time_ms + 1, 1),
+                raw_action(2, cutoff + 10, 3),
+            ],
+        }));
+        let query = ScoredPostsQuery {
+            user_id: crate::models::uid(7),
+            request_id: "window-anchor".to_string(),
+            prediction_id: 1,
+            request_time_ms: reference_time_ms,
+            ..Default::default()
+        };
+
+        let sequence = provider.hydrate_sequence(&query).await.expect("sequence");
+        let actions = proto_aggregated_actions(&sequence);
+
+        assert_eq!(actions.len(), 2);
+        assert_eq!(actions[0].tweet_id, crate::models::pid(2).to_string());
+        assert_eq!(actions[0].impressed_time_ms, cutoff as u64);
+        assert!(actions[0].action_mask[1]);
+        assert!(actions[0].action_mask[3]);
+        assert_eq!(actions[1].tweet_id, crate::models::pid(3).to_string());
+        assert_eq!(actions[1].impressed_time_ms, reference_time_ms as u64);
+
+        let metadata = sequence.metadata.expect("metadata");
+        assert_eq!(metadata.length, 2);
+        assert_eq!(metadata.first_sequence_time, cutoff as u64);
+        assert_eq!(metadata.last_sequence_time, reference_time_ms as u64);
+    }
+
+    #[tokio::test]
+    async fn sequence_is_truncated_to_most_recent_max_length() {
+        let reference_time_ms = 700_000_000_i64;
+        let total = p::UAS_MAX_SEQUENCE_LENGTH + 5;
+        let actions = (0..total)
+            .map(|i| raw_action(i as u64 + 1, reference_time_ms - i as i64, 1))
+            .collect();
+        let provider = UserActionSeqQueryHydrator::new(Arc::new(StubFetcher { actions }));
+        let query = ScoredPostsQuery {
+            user_id: crate::models::uid(7),
+            request_id: "truncate".to_string(),
+            prediction_id: 1,
+            request_time_ms: reference_time_ms,
+            ..Default::default()
+        };
+
+        let sequence = provider.hydrate_sequence(&query).await.expect("sequence");
+        let actions = proto_aggregated_actions(&sequence);
+
+        assert_eq!(actions.len(), p::UAS_MAX_SEQUENCE_LENGTH);
+        assert_eq!(
+            actions.last().expect("last action").impressed_time_ms,
+            reference_time_ms as u64
+        );
+        assert_eq!(
+            actions.first().expect("first action").impressed_time_ms,
+            (reference_time_ms - (p::UAS_MAX_SEQUENCE_LENGTH - 1) as i64) as u64
+        );
+    }
+
+    #[tokio::test]
+    async fn invalid_request_time_fails_aggregation() {
+        let provider = UserActionSeqQueryHydrator::new(Arc::new(StubFetcher {
+            actions: vec![raw_action(1, 10, 1)],
+        }));
+        let query = ScoredPostsQuery {
+            user_id: crate::models::uid(7),
+            request_id: "bad-time".to_string(),
+            prediction_id: 1,
+            request_time_ms: 0,
+            ..Default::default()
+        };
+
+        let error = provider
+            .hydrate_sequence(&query)
+            .await
+            .expect_err("nonpositive request time must fail");
+
+        assert!(error.contains("request_time_ms"));
     }
 }

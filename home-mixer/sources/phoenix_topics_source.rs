@@ -45,7 +45,7 @@ impl Source<ScoredPostsQuery, PostCandidate> for PhoenixTopicsSource {
 
 async fn retrieve_topics_with_timeout(
     client: &dyn TopicRetrievalClient,
-    user_id: u64,
+    user_id: crate::models::UserId,
     topic_ids: &[i64],
     max_results: usize,
     timeout: Duration,
@@ -73,7 +73,7 @@ mod tests {
         impl TopicRetrievalClient for SlowTopicClient {
             async fn retrieve(
                 &self,
-                _user_id: u64,
+                _user_id: crate::models::UserId,
                 _topic_ids: &[i64],
                 _max_results: usize,
             ) -> Result<Vec<crate::clients::topic_retrieval_client::TopicPost>, String>
@@ -83,10 +83,15 @@ mod tests {
             }
         }
 
-        let error =
-            retrieve_topics_with_timeout(&SlowTopicClient, 1, &[10], 10, Duration::from_millis(1))
-                .await
-                .expect_err("slow topic retrieval must time out");
+        let error = retrieve_topics_with_timeout(
+            &SlowTopicClient,
+            crate::models::uid(1),
+            &[10],
+            10,
+            Duration::from_millis(1),
+        )
+        .await
+        .expect_err("slow topic retrieval must time out");
 
         assert!(error.contains("timed out"));
     }

@@ -1,6 +1,31 @@
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum VfFailurePolicy {
+    #[default]
+    AllowAll,
+    InNetworkOnly,
+}
+
+impl VfFailurePolicy {
+    fn from_value(value: Option<String>) -> Self {
+        let Some(value) = value else {
+            return Self::AllowAll;
+        };
+        match value.trim().to_ascii_lowercase().as_str() {
+            "" | "allow_all" => Self::AllowAll,
+            "in_network_only" => Self::InNetworkOnly,
+            value => {
+                log::warn!(
+                    "invalid HOME_MIXER_VF_FAILURE_POLICY={value:?}; defaulting to allow_all"
+                );
+                Self::AllowAll
+            }
+        }
+    }
+}
+
 /// Optional integrations that are not required for the primary recommendation path.
 ///
-/// Every flag defaults to false. Enabling one is an operator action: the
+/// Boolean flags default to false. Enabling one is an operator action: the
 /// corresponding public service contract, credentials, endpoint, timeout, and
 /// fallback behavior must be verified first.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -16,6 +41,7 @@ pub struct HomeMixerFeatures {
     pub author_cold_start: bool,
     /// 仅在 author_cold_start 同时启用时生效。
     pub cold_start_thompson_sampling: bool,
+    pub vf_failure_policy: VfFailurePolicy,
 }
 
 impl HomeMixerFeatures {
@@ -36,6 +62,7 @@ impl HomeMixerFeatures {
             cold_start_thompson_sampling: enabled(lookup(
                 "HOME_MIXER_ENABLE_COLD_START_THOMPSON_SAMPLING",
             )),
+            vf_failure_policy: VfFailurePolicy::from_value(lookup("HOME_MIXER_VF_FAILURE_POLICY")),
         }
     }
 }
@@ -86,5 +113,40 @@ mod tests {
         assert!(!features.unsigned_cached_posts);
         assert!(features.author_cold_start);
         assert!(features.cold_start_thompson_sampling);
+    }
+
+    #[test]
+    fn vf_failure_policy_defaults_to_allow_all() {
+        assert_eq!(VfFailurePolicy::from_value(None), VfFailurePolicy::AllowAll);
+        for value in ["", "   ", "ALLOW_ALL", " allow_all "] {
+            assert_eq!(
+                VfFailurePolicy::from_value(Some(value.to_string())),
+                VfFailurePolicy::AllowAll,
+                "{value:?}"
+            );
+        }
+        assert_eq!(
+            HomeMixerFeatures::from_lookup(|_| None).vf_failure_policy,
+            VfFailurePolicy::AllowAll
+        );
+    }
+
+    #[test]
+    fn vf_failure_policy_parses_in_network_only_case_insensitively() {
+        for value in ["in_network_only", "IN_NETWORK_ONLY", " In_Network_Only "] {
+            assert_eq!(
+                VfFailurePolicy::from_value(Some(value.to_string())),
+                VfFailurePolicy::InNetworkOnly,
+                "{value:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn vf_failure_policy_unknown_value_falls_back_to_allow_all() {
+        assert_eq!(
+            VfFailurePolicy::from_value(Some("bogus".to_string())),
+            VfFailurePolicy::AllowAll
+        );
     }
 }

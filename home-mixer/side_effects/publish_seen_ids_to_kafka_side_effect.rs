@@ -15,9 +15,9 @@ use xai_candidate_pipeline::side_effect::{SideEffect, SideEffectInput};
 pub trait SeenIdsPublisher: Send + Sync {
     async fn publish_seen_ids(
         &self,
-        user_id: u64,
+        user_id: crate::models::UserId,
         request_time_ms: i64,
-        seen_ids: &[u64],
+        seen_ids: &[crate::models::PostId],
     ) -> Result<(), String>;
 }
 
@@ -60,16 +60,16 @@ mod tests {
 
     #[derive(Default)]
     struct RecordingPublisher {
-        published: Mutex<Vec<(u64, i64, Vec<u64>)>>,
+        published: Mutex<Vec<(crate::models::UserId, i64, Vec<crate::models::PostId>)>>,
     }
 
     #[async_trait]
     impl SeenIdsPublisher for RecordingPublisher {
         async fn publish_seen_ids(
             &self,
-            user_id: u64,
+            user_id: crate::models::UserId,
             request_time_ms: i64,
-            seen_ids: &[u64],
+            seen_ids: &[crate::models::PostId],
         ) -> Result<(), String> {
             self.published.lock().expect("publish lock").push((
                 user_id,
@@ -91,9 +91,9 @@ mod tests {
         assert!(!side_effect.enable(Arc::clone(&empty_query)));
 
         let query = ScoredPostsQuery {
-            user_id: 42,
+            user_id: 42.into(),
             request_time_ms: 1_700_000_000_000,
-            seen_ids: vec![1, 2],
+            seen_ids: vec![1.into(), 2.into()],
             ..Default::default()
         };
         assert!(side_effect.enable(Arc::new(query.clone())));
@@ -106,6 +106,13 @@ mod tests {
         side_effect.side_effect(input).await.expect("side effect");
 
         let published = publisher.published.lock().expect("publish lock");
-        assert_eq!(published.as_slice(), &[(42, 1_700_000_000_000, vec![1, 2])]);
+        assert_eq!(
+            published.as_slice(),
+            &[(
+                crate::models::uid(42),
+                1_700_000_000_000,
+                vec![crate::models::pid(1), crate::models::pid(2)]
+            )]
+        );
     }
 }

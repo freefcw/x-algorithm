@@ -4,22 +4,25 @@ use crate::candidate_hydrators::gizmoduck_hydrator::GizmoduckCandidateHydrator;
 use crate::candidate_hydrators::has_media_hydrator::HasMediaHydrator;
 use crate::candidate_hydrators::in_network_candidate_hydrator::InNetworkCandidateHydrator;
 use crate::candidate_hydrators::language_code_hydrator::LanguageCodeHydrator;
-use crate::candidate_hydrators::quote_hydrator::QuoteHydrator;
-use crate::candidate_hydrators::subscription_hydrator::SubscriptionHydrator;
+
 use crate::candidate_hydrators::tes_hydration_provider::TesHydrationProvider;
 use crate::candidate_hydrators::vf_candidate_hydrator::VFCandidateHydrator;
 use crate::candidate_hydrators::video_duration_candidate_hydrator::VideoDurationCandidateHydrator;
 use crate::clients::gizmoduck_client::{
     DemoGizmoduckClient, DisabledGizmoduckClient, GizmoduckClient,
 };
+#[cfg(not(feature = "legacy-int-ids"))]
+use crate::clients::in_network_posts_client::DisabledInNetworkPostsClient;
+use crate::clients::in_network_posts_client::{DemoFallbackPostsClient, InNetworkPostsClient};
 use crate::clients::phoenix_prediction_client::{
-    PhoenixPredictionClient, ProdPhoenixPredictionClient,
+    PhoenixPredictionClient, SlimPhoenixPredictionClient,
 };
 use crate::clients::phoenix_retrieval_client::{
     PhoenixRetrievalClient, ProdPhoenixRetrievalClient,
 };
 use crate::clients::s2s::{S2S_CHAIN_PATH, S2S_CRT_PATH, S2S_KEY_PATH};
 use crate::clients::strato_client::{DemoStratoClient, DisabledStratoClient, StratoClient};
+#[cfg(feature = "legacy-int-ids")]
 use crate::clients::thunder_client::ThunderClient;
 use crate::clients::topic_retrieval_client::{DemoTopicRetrievalClient, TopicRetrievalClient};
 use crate::clients::tweet_entity_service_client::{DemoTESClient, DisabledTESClient, TESClient};
@@ -27,20 +30,20 @@ use crate::clients::uas_fetcher::{
     DemoUserActionSequenceFetcher, DisabledUserActionSequenceFetcher, UserActionSequenceOps,
 };
 use crate::clients::user_topic_reader::{DemoUserTopicReader, UserTopicReader};
+#[cfg(feature = "legacy-int-ids")]
 use crate::clients::vm_ranker_client::GrpcVMRankerClient;
 use crate::feature_policy::HomeMixerFeatures;
+use crate::feed_state::FeedStateStore;
 use crate::filters::age_filter::AgeFilter;
-use crate::filters::ancillary_vf_filter::AncillaryVFFilter;
 use crate::filters::author_socialgraph_filter::AuthorSocialgraphFilter;
 use crate::filters::core_data_hydration_filter::CoreDataHydrationFilter;
 use crate::filters::dedup_conversation_filter::DedupConversationFilter;
 use crate::filters::drop_duplicates_filter::DropDuplicatesFilter;
-use crate::filters::ineligible_subscription_filter::IneligibleSubscriptionFilter;
+use crate::filters::first_stage_eligible_filter::FirstStageEligibleFilter;
 use crate::filters::new_user_topic_ids_filter::NewUserTopicIdsFilter;
 use crate::filters::previously_seen_posts_backup_filter::PreviouslySeenPostsBackupFilter;
 use crate::filters::previously_seen_posts_filter::PreviouslySeenPostsFilter;
 use crate::filters::previously_served_posts_filter::PreviouslyServedPostsFilter;
-use crate::filters::retweet_deduplication_filter::RetweetDeduplicationFilter;
 use crate::filters::self_tweet_filter::SelfTweetFilter;
 use crate::filters::topic_ids_filter::TopicIdsFilter;
 use crate::filters::vf_filter::VFFilter;
@@ -52,9 +55,11 @@ use crate::params;
 use crate::query_hydrators::blocked_user_ids_query_hydrator::BlockedUserIdsQueryHydrator;
 use crate::query_hydrators::followed_user_ids_query_hydrator::FollowedUserIdsQueryHydrator;
 use crate::query_hydrators::muted_user_ids_query_hydrator::MutedUserIdsQueryHydrator;
+use crate::query_hydrators::past_request_timestamps_query_hydrator::PastRequestTimestampsQueryHydrator;
 use crate::query_hydrators::retrieval_sequence_query_hydrator::RetrievalSequenceQueryHydrator;
 use crate::query_hydrators::scoring_sequence_query_hydrator::ScoringSequenceQueryHydrator;
-use crate::query_hydrators::subscribed_user_ids_query_hydrator::SubscribedUserIdsQueryHydrator;
+use crate::query_hydrators::served_history_query_hydrator::ServedHistoryQueryHydrator;
+
 use crate::query_hydrators::user_action_seq_query_hydrator::UserActionSeqQueryHydrator;
 use crate::query_hydrators::user_features_query_hydrator::UserFeaturesQueryHydrator;
 use crate::query_hydrators::user_safety_features_query_hydrator::UserSafetyFeaturesQueryHydrator;
@@ -63,10 +68,13 @@ use crate::runtime_config::HomeMixerMode;
 use crate::scorers::author_cold_start::{AuthorColdStart, AuthorColdStartScorer, ColdStartConfig};
 use crate::scorers::phoenix_scorer::PhoenixScorer;
 use crate::scorers::ranking_scorer::RankingScorer;
+use crate::scorers::rule_fallback_scorer::RuleFallbackScorer;
+#[cfg(feature = "legacy-int-ids")]
 use crate::scorers::vm_ranker::VMRanker;
 use crate::selectors::TopKScoreSelector;
 use crate::side_effects::phoenix_request_cache_side_effect::PhoenixRequestCacheSideEffect;
 use crate::sources::cached_posts_source::CachedPostsSource;
+use crate::sources::fallback_source::FallbackSource;
 use crate::sources::phoenix_moe_source::PhoenixMoeSource;
 use crate::sources::phoenix_source::PhoenixSource;
 use crate::sources::phoenix_topics_source::PhoenixTopicsSource;
@@ -111,33 +119,60 @@ impl TopicPersonalizationClients {
     }
 }
 
-struct PhoenixDependencies {
-    uas_fetcher: Arc<dyn UserActionSequenceOps>,
-    phoenix_client: Arc<dyn PhoenixPredictionClient + Send + Sync>,
-    phoenix_retrieval_client: Arc<dyn PhoenixRetrievalClient + Send + Sync>,
-    thunder_client: Arc<ThunderClient>,
-    strato_client: Arc<dyn StratoClient + Send + Sync>,
-    tes_client: Arc<dyn TESClient + Send + Sync>,
-    gizmoduck_client: Arc<dyn GizmoduckClient + Send + Sync>,
-    vf_client: Arc<dyn VisibilityFilteringClient + Send + Sync>,
-    topic_clients: Option<TopicPersonalizationClients>,
-    moe_retrieval_client: Option<Arc<dyn PhoenixRetrievalClient + Send + Sync>>,
-    features: HomeMixerFeatures,
+/// All runtime ports needed to assemble the Phoenix candidate pipeline.
+///
+/// Production callers implement these ports against their own services and
+/// inject them here; the mode-based helpers below remain Demo/Degraded
+/// conveniences and never claim that disabled adapters are production-ready.
+pub struct PhoenixDependencies {
+    pub uas_fetcher: Arc<dyn UserActionSequenceOps>,
+    pub phoenix_client: Arc<dyn PhoenixPredictionClient + Send + Sync>,
+    pub phoenix_retrieval_client: Arc<dyn PhoenixRetrievalClient + Send + Sync>,
+    pub in_network_client: Arc<dyn InNetworkPostsClient>,
+    pub strato_client: Arc<dyn StratoClient + Send + Sync>,
+    pub tes_client: Arc<dyn TESClient + Send + Sync>,
+    pub gizmoduck_client: Arc<dyn GizmoduckClient + Send + Sync>,
+    pub vf_client: Arc<dyn VisibilityFilteringClient + Send + Sync>,
+    pub topic_clients: Option<TopicPersonalizationClients>,
+    pub moe_retrieval_client: Option<Arc<dyn PhoenixRetrievalClient + Send + Sync>>,
+    pub fallback_client: Option<Arc<dyn InNetworkPostsClient>>,
+    pub features: HomeMixerFeatures,
 }
 
 impl PhoenixCandidatePipeline {
-    async fn build_with_clients(dependencies: PhoenixDependencies) -> PhoenixCandidatePipeline {
+    /// Add request-local served history and request timestamps to the same
+    /// pipeline instance that later records the successful response. Keeping
+    /// the store at this boundary avoids a read/write split between servers.
+    pub fn with_feed_state_store(mut self, store: Arc<dyn FeedStateStore>) -> Self {
+        self.install_feed_state_store(store);
+        self
+    }
+
+    /// Install state hydrators on an already allocated pipeline.
+    pub fn install_feed_state_store(&mut self, store: Arc<dyn FeedStateStore>) {
+        self.query_hydrators.insert(
+            0,
+            Box::new(ServedHistoryQueryHydrator::from_store(Arc::clone(&store))),
+        );
+        self.query_hydrators.insert(
+            1,
+            Box::new(PastRequestTimestampsQueryHydrator::from_store(store)),
+        );
+    }
+
+    pub async fn build_with_clients(dependencies: PhoenixDependencies) -> PhoenixCandidatePipeline {
         let PhoenixDependencies {
             uas_fetcher,
             phoenix_client,
             phoenix_retrieval_client,
-            thunder_client,
+            in_network_client,
             strato_client,
             tes_client,
             gizmoduck_client,
             vf_client,
             topic_clients,
             moe_retrieval_client,
+            fallback_client,
             features,
         } = dependencies;
         // Query Hydrators
@@ -157,9 +192,6 @@ impl PhoenixCandidatePipeline {
             Box::new(FollowedUserIdsQueryHydrator::new(Arc::clone(
                 &feature_provider,
             ))),
-            Box::new(SubscribedUserIdsQueryHydrator::new(Arc::clone(
-                &feature_provider,
-            ))),
             Box::new(UserSafetyFeaturesQueryHydrator::new(feature_provider)),
         ];
         let topic_retrieval_client = topic_clients.map(|clients| {
@@ -171,11 +203,18 @@ impl PhoenixCandidatePipeline {
 
         // Sources follow the upstream order. TweetMixer remains U3 and is omitted.
         let mut sources: Vec<Box<dyn Source<ScoredPostsQuery, PostCandidate>>> = vec![
-            Box::new(ThunderSource { thunder_client }),
+            Box::new(ThunderSource {
+                client: in_network_client,
+            }),
             Box::new(PhoenixSource {
                 phoenix_retrieval_client,
             }),
         ];
+        if let Some(fallback_client) = fallback_client {
+            sources.push(Box::new(FallbackSource {
+                client: fallback_client,
+            }));
+        }
         if let Some(client) = topic_retrieval_client {
             sources.push(Box::new(PhoenixTopicsSource { client }));
         }
@@ -194,12 +233,10 @@ impl PhoenixCandidatePipeline {
         let mut hydrators: Vec<Box<dyn Hydrator<ScoredPostsQuery, PostCandidate>>> = vec![
             Box::new(InNetworkCandidateHydrator),
             Box::new(CoreDataCandidateHydrator::new(Arc::clone(&tes_provider))),
-            Box::new(QuoteHydrator::new(Arc::clone(&tes_provider))),
             Box::new(VideoDurationCandidateHydrator::new(Arc::clone(
                 &tes_provider,
             ))),
             Box::new(HasMediaHydrator::new(Arc::clone(&tes_provider))),
-            Box::new(SubscriptionHydrator::new(tes_client).await),
             Box::new(FilteredTopicsHydrator::new(Arc::clone(&tes_provider))),
             Box::new(LanguageCodeHydrator::new(tes_provider)),
         ];
@@ -213,10 +250,9 @@ impl PhoenixCandidatePipeline {
         let filters: Vec<Box<dyn Filter<ScoredPostsQuery, PostCandidate>>> = vec![
             Box::new(DropDuplicatesFilter),
             Box::new(CoreDataHydrationFilter),
+            Box::new(FirstStageEligibleFilter),
             Box::new(AgeFilter::new(Duration::from_secs(params::MAX_POST_AGE))),
             Box::new(SelfTweetFilter),
-            Box::new(RetweetDeduplicationFilter),
-            Box::new(IneligibleSubscriptionFilter),
             Box::new(PreviouslySeenPostsFilter),
             Box::new(PreviouslySeenPostsBackupFilter),
             Box::new(PreviouslyServedPostsFilter),
@@ -237,11 +273,13 @@ impl PhoenixCandidatePipeline {
         let mut scorers: Vec<Box<dyn Scorer<ScoredPostsQuery, PostCandidate>>> = vec![
             Box::new(PhoenixScorer { phoenix_client }),
             Box::new(RankingScorer),
+            Box::new(RuleFallbackScorer),
         ];
 
         // 可选旁路：VM Ranker 二次重排（上游 scorers 第三位）。开关 + 地址
         // 齐备时装配本仓库 vm-ranker 服务的 gRPC Adapter；缺地址时禁用旁路
         // 并保留主链（与 MoE 相同的降级规则）。
+        #[cfg(feature = "legacy-int-ids")]
         if features.vm_ranker {
             match std::env::var("VM_RANKER_GRPC_ADDR") {
                 Ok(addr) if !addr.trim().is_empty() => {
@@ -258,6 +296,12 @@ impl PhoenixCandidatePipeline {
                 }
             }
         }
+        #[cfg(not(feature = "legacy-int-ids"))]
+        if features.vm_ranker {
+            log::warn!(
+                "HOME_MIXER_ENABLE_VM_RANKER is set but legacy-int-ids is disabled; VM Ranker adapter is unavailable"
+            );
+        }
         if features.author_cold_start {
             scorers.push(Box::new(AuthorColdStartScorer::new(author_cold_start)));
         }
@@ -273,8 +317,7 @@ impl PhoenixCandidatePipeline {
 
         // Post-selection filters
         let post_selection_filters: Vec<Box<dyn Filter<ScoredPostsQuery, PostCandidate>>> = vec![
-            Box::new(VFFilter),
-            Box::new(AncillaryVFFilter),
+            Box::new(VFFilter::new(features.vf_failure_policy)),
             Box::new(DedupConversationFilter),
         ];
 
@@ -384,17 +427,26 @@ impl PhoenixCandidatePipeline {
             )
         };
 
-        let phoenix_client = Arc::new(
-            ProdPhoenixPredictionClient::new()
+        let phoenix_client: Arc<dyn PhoenixPredictionClient + Send + Sync> = Arc::new(
+            SlimPhoenixPredictionClient::new_with_allow_random(demo_mode)
                 .await
                 .expect("Failed to create Phoenix prediction client"),
         );
         let phoenix_retrieval_client = Arc::new(
-            ProdPhoenixRetrievalClient::new()
+            ProdPhoenixRetrievalClient::new_with_allow_random(demo_mode)
                 .await
                 .expect("Failed to create Phoenix retrieval client"),
         );
-        let thunder_client = Arc::new(ThunderClient::new().await);
+        #[cfg(feature = "legacy-int-ids")]
+        let in_network_client: Arc<dyn InNetworkPostsClient> = Arc::new(ThunderClient::new().await);
+        #[cfg(not(feature = "legacy-int-ids"))]
+        let in_network_client: Arc<dyn InNetworkPostsClient> =
+            Arc::new(DisabledInNetworkPostsClient);
+        // A fallback pool is a product/backend contract, not a safe default.
+        // Only Demo gets deterministic fixture data; production/degraded modes
+        // leave the source unassembled until a real adapter is injected.
+        let fallback_client: Option<Arc<dyn InNetworkPostsClient>> =
+            demo_mode.then(|| Arc::new(DemoFallbackPostsClient) as Arc<dyn InNetworkPostsClient>);
         let gizmoduck_client: Arc<dyn GizmoduckClient + Send + Sync> =
             if demo_mode && features.author_cold_start {
                 Arc::new(DemoGizmoduckClient)
@@ -421,7 +473,7 @@ impl PhoenixCandidatePipeline {
         let moe_retrieval_client = if features.phoenix_moe {
             match std::env::var("PHOENIX_MOE_GRPC_ADDR") {
                 Ok(addr) => Some(Arc::new(
-                    ProdPhoenixRetrievalClient::from_addr(addr)
+                    ProdPhoenixRetrievalClient::from_addr_with_allow_random(addr, demo_mode)
                         .expect("Failed to create Phoenix MoE retrieval client"),
                 )
                     as Arc<dyn PhoenixRetrievalClient + Send + Sync>),
@@ -445,13 +497,14 @@ impl PhoenixCandidatePipeline {
             uas_fetcher,
             phoenix_client,
             phoenix_retrieval_client,
-            thunder_client,
+            in_network_client,
             strato_client,
             tes_client,
             gizmoduck_client,
             vf_client,
             topic_clients,
             moe_retrieval_client,
+            fallback_client,
             features,
         })
         .await
@@ -542,7 +595,12 @@ mod tests {
             .any(|name| name == "GizmoduckCandidateHydrator"));
         assert_eq!(
             scorers.components,
-            vec!["PhoenixScorer", "RankingScorer", "AuthorColdStartScorer"]
+            vec![
+                "PhoenixScorer",
+                "RankingScorer",
+                "RuleFallbackScorer",
+                "AuthorColdStartScorer",
+            ]
         );
     }
 

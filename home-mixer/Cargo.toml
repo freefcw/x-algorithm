@@ -35,11 +35,20 @@ lazy_static = "1.5"
 rand = "0.9"
 rand_distr = "0.5"
 
+# ObjectId → int64 派生（xrex / wrapping_mul 分桶）
+md5 = "0.7"
+
 # 内部 workspace 依赖
 xai_candidate_pipeline = { path = "../candidate-pipeline" }
 
 # 协议定义（替代原始 xai_home_mixer_proto / xai_recsys_proto / xai_thunder_proto）
 x-algorithm-proto = { path = "../proto" }
+
+[features]
+# Thunder / VM Ranker 仍是 i64/u64 proto。默认开启以保留演示链路
+# （仅能 round-trip 零填充 ObjectId）；P3 改 string proto 后删除。
+default = ["legacy-int-ids"]
+legacy-int-ids = []
 
 [[bin]]
 name = "home-mixer"

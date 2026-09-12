@@ -73,6 +73,18 @@ impl ThunderClient {
     /// # Returns
     /// Some(channel) 如果连接可用，None 如果无可用连接
     pub fn get_random_channel(&self, _cluster: ThunderCluster) -> Option<Channel> {
-        Some(self.channel.clone())
+        // The current Thunder wire contract still carries business IDs as
+        // integer fields. Keep this adapter behind the explicit legacy feature
+        // so a no-default-features build cannot accidentally send ObjectIds
+        // through a lossy u64 conversion. P3 will remove this gate when the
+        // wire schema is migrated to strings.
+        #[cfg(feature = "legacy-int-ids")]
+        {
+            Some(self.channel.clone())
+        }
+        #[cfg(not(feature = "legacy-int-ids"))]
+        {
+            None
+        }
     }
 }

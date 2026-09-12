@@ -1,16 +1,20 @@
+use crate::models::ids::{PostId, UserId};
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
 #[serde(default, rename_all = "camelCase")]
 pub struct PureCoreData {
-    pub author_id: u64,
+    pub author_id: UserId,
     pub text: String,
-    pub source_tweet_id: Option<u64>,
-    pub source_user_id: Option<u64>,
-    pub quoted_tweet_id: Option<u64>,
-    pub quoted_user_id: Option<u64>,
-    pub in_reply_to_tweet_id: Option<u64>,
-    pub in_reply_to_user_id: Option<u64>,
+    pub source_tweet_id: Option<PostId>,
+    pub source_user_id: Option<UserId>,
+    pub quoted_tweet_id: Option<PostId>,
+    pub quoted_user_id: Option<UserId>,
+    pub in_reply_to_tweet_id: Option<PostId>,
+    pub in_reply_to_user_id: Option<UserId>,
+    /// Authoritative post creation time in unix milliseconds.
+    pub created_at_ms: Option<u64>,
+    pub recommendation_eligible: Option<bool>,
     pub language_code: Option<String>,
     pub favorite_count: Option<i64>,
     pub view_count: Option<u64>,
@@ -24,7 +28,7 @@ pub struct PureCoreData {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
 #[serde(rename_all = "camelCase")]
 pub struct ExclusiveTweetControl {
-    pub conversation_author_id: i64,
+    pub conversation_author_id: UserId,
 }
 
 pub type MediaEntities = Vec<MediaEntity>;
@@ -50,15 +54,15 @@ pub struct VideoInfo {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
 #[serde(rename_all = "camelCase")]
 pub struct Share {
-    pub source_tweet_id: u64,
-    pub source_user_id: u64,
+    pub source_tweet_id: PostId,
+    pub source_user_id: UserId,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
 #[serde(rename_all = "camelCase")]
 pub struct Reply {
-    pub in_reply_to_tweet_id: Option<u64>,
-    pub in_reply_to_user_id: u64,
+    pub in_reply_to_tweet_id: Option<PostId>,
+    pub in_reply_to_user_id: UserId,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
@@ -76,7 +80,7 @@ pub struct GizmoduckUserProfile {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
 #[serde(rename_all = "camelCase")]
 pub struct GizmoduckUser {
-    pub user_id: u64,
+    pub user_id: UserId,
     pub profile: GizmoduckUserProfile,
     pub counts: GizmoduckUserCounts,
 }
@@ -93,10 +97,12 @@ mod tests {
 
     #[test]
     fn core_data_without_view_count_remains_compatible() {
-        let core: PureCoreData = serde_json::from_str(r#"{"authorId":7,"text":"post"}"#)
-            .expect("legacy core data should deserialize");
+        let core: PureCoreData =
+            serde_json::from_str(r#"{"authorId":"000000000000000000000007","text":"post"}"#)
+                .expect("legacy core data should deserialize");
 
-        assert_eq!(core.author_id, 7);
+        assert_eq!(core.author_id, crate::models::uid(7));
         assert_eq!(core.view_count, None);
+        assert_eq!(core.created_at_ms, None);
     }
 }

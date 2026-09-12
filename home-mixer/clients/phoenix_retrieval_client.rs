@@ -19,6 +19,8 @@
 //     时，走真实 gRPC 调用 PhoenixRetrievalService.Retrieve；
 //   - 未设置时返回显式不可用错误，由 Source 隔离并保留其他召回路。
 
+use crate::clients::phoenix_prediction_client::validate_serving_metadata;
+use crate::models::ids::UserId;
 use log::{info, warn};
 use std::time::Duration;
 use tonic::async_trait;
@@ -43,7 +45,7 @@ pub trait PhoenixRetrievalClient: Send + Sync {
     /// 召回响应，包含按相似度排序的候选帖子列表
     async fn retrieve(
         &self,
-        user_id: u64,
+        user_id: UserId,
         sequence: recsys::UserActionSequence,
         max_results: u32,
     ) -> Result<recsys::RetrieveResponse, anyhow::Error>;
@@ -51,7 +53,7 @@ pub trait PhoenixRetrievalClient: Send + Sync {
 
 pub async fn retrieve_with_timeout(
     client: &(dyn PhoenixRetrievalClient + Send + Sync),
-    user_id: u64,
+    user_id: UserId,
     sequence: recsys::UserActionSequence,
     max_results: u32,
     timeout: Duration,
@@ -72,19 +74,32 @@ pub async fn retrieve_with_timeout(
 /// 未设置时返回显式不可用错误，由 Source 记录并跳过该召回路。
 pub struct ProdPhoenixRetrievalClient {
     channel: Option<Channel>,
+    pub allow_random: bool,
 }
 
 impl ProdPhoenixRetrievalClient {
     pub fn from_addr(addr: String) -> Result<Self, anyhow::Error> {
+        Self::from_addr_with_allow_random(addr, false)
+    }
+
+    pub fn from_addr_with_allow_random(
+        addr: String,
+        allow_random: bool,
+    ) -> Result<Self, anyhow::Error> {
         info!("PhoenixRetrievalClient: connecting to {}", addr);
         Ok(Self {
             channel: Some(Channel::from_shared(addr)?.connect_lazy()),
+            allow_random,
         })
     }
 
     pub async fn new() -> Result<Self, anyhow::Error> {
+        Self::new_with_allow_random(false).await
+    }
+
+    pub async fn new_with_allow_random(allow_random: bool) -> Result<Self, anyhow::Error> {
         let channel = match std::env::var("PHOENIX_RETRIEVAL_GRPC_ADDR") {
-            Ok(addr) => return Self::from_addr(addr),
+            Ok(addr) => return Self::from_addr_with_allow_random(addr, allow_random),
             Err(_) => {
                 warn!(
                     "PhoenixRetrievalClient: PHOENIX_RETRIEVAL_GRPC_ADDR not set; retrieval is unavailable"
@@ -92,7 +107,10 @@ impl ProdPhoenixRetrievalClient {
                 None
             }
         };
-        Ok(Self { channel })
+        Ok(Self {
+            channel,
+            allow_random,
+        })
     }
 }
 
@@ -100,7 +118,7 @@ impl ProdPhoenixRetrievalClient {
 impl PhoenixRetrievalClient for ProdPhoenixRetrievalClient {
     async fn retrieve(
         &self,
-        user_id: u64,
+        user_id: UserId,
         sequence: recsys::UserActionSequence,
         max_results: u32,
     ) -> Result<recsys::RetrieveResponse, anyhow::Error> {
@@ -110,13 +128,46 @@ impl PhoenixRetrievalClient for ProdPhoenixRetrievalClient {
 
         let mut client = PhoenixRetrievalServiceClient::new(channel.clone());
         let request = recsys::RetrieveRequest {
-            // TEMP(U4-P1): 十进制 u64 桥接，P1 迁移到 PostId 后删除
             user_id: user_id.to_string(),
             user_action_sequence: Some(sequence),
             max_results,
         };
         let response = client.retrieve(request).await?;
-        Ok(response.into_inner())
+        validate_serving_metadata(response.metadata(), self.allow_random)?;
+        let inner = response.into_inner();
+        let returned: Vec<_> = inner
+            .top_k_candidates
+            .iter()
+            .flat_map(|group| group.candidates.iter())
+            .collect();
+        anyhow::ensure!(
+            returned.len() <= max_results as usize,
+            "Phoenix retrieval returned more candidates than requested"
+        );
+        let mut ids = std::collections::HashSet::new();
+        for scored in &returned {
+            let Some(candidate) = scored.candidate.as_ref() else {
+                anyhow::bail!("Phoenix retrieval response has a candidate without TweetInfo");
+            };
+            anyhow::ensure!(
+                !candidate.tweet_id.is_empty(),
+                "Phoenix retrieval response has empty tweet_id"
+            );
+            anyhow::ensure!(
+                ids.insert(candidate.tweet_id.clone()),
+                "Phoenix retrieval response has duplicate tweet_id {}",
+                candidate.tweet_id
+            );
+        }
+        if inner
+            .top_k_candidates
+            .iter()
+            .flat_map(|group| group.candidates.iter())
+            .any(|candidate| !candidate.score.is_finite())
+        {
+            anyhow::bail!("Phoenix retrieval response contains NaN/Inf score");
+        }
+        Ok(inner)
     }
 }
 
@@ -130,7 +181,7 @@ mod tests {
     impl PhoenixRetrievalClient for SlowRetrievalClient {
         async fn retrieve(
             &self,
-            _user_id: u64,
+            _user_id: UserId,
             _sequence: recsys::UserActionSequence,
             _max_results: u32,
         ) -> Result<recsys::RetrieveResponse, anyhow::Error> {
@@ -141,10 +192,13 @@ mod tests {
 
     #[tokio::test]
     async fn missing_retrieval_endpoint_is_explicitly_unavailable() {
-        let error = ProdPhoenixRetrievalClient { channel: None }
-            .retrieve(1, Default::default(), 10)
-            .await
-            .expect_err("missing endpoint must not report successful retrieval");
+        let error = ProdPhoenixRetrievalClient {
+            channel: None,
+            allow_random: false,
+        }
+        .retrieve(crate::models::uid(1), Default::default(), 10)
+        .await
+        .expect_err("missing endpoint must not report successful retrieval");
 
         assert!(error.to_string().contains("not configured"));
     }
@@ -153,7 +207,7 @@ mod tests {
     async fn retrieval_deadline_bounds_slow_adapter() {
         let error = retrieve_with_timeout(
             &SlowRetrievalClient,
-            1,
+            crate::models::uid(1),
             Default::default(),
             10,
             Duration::from_millis(1),

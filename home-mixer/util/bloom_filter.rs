@@ -3,18 +3,6 @@
 // 客户端在发送推荐请求时，可以附带一个布隆过滤器，
 // 包含用户最近已经看到的帖子 ID。
 // Home Mixer 使用这个过滤器来去重，避免重复推送已读帖子。
-//
-// Protobuf 定义:
-//   message ImpressionBloomFilterEntry {
-//     bytes filter = 1;
-//     uint32 hash_count = 2;
-//   }
-//
-// 布隆过滤器原理：
-//   - 一个 bit 数组 + 多个哈希函数
-//   - 查询时，如果所有哈希函数位置的 bit 都为 1，则"可能存在"
-//   - 如果任一位置为 0，则"一定不存在"
-//   - 允许一定的 false positive，但没有 false negative
 
 use x_algorithm_proto::home_mixer::ImpressionBloomFilterEntry;
 
@@ -36,14 +24,7 @@ impl BloomFilter {
     }
 
     /// 检查帖子 ID 是否可能存在于过滤器中
-    ///
-    /// # Arguments
-    /// * `post_id` - 帖子 ID
-    ///
-    /// # Returns
-    /// true 如果帖子可能已被看过（可能有 false positive）
-    /// false 如果帖子一定没被看过
-    pub fn may_contain(&self, post_id: u64) -> bool {
+    pub fn may_contain(&self, post_id: &[u8]) -> bool {
         if self.filter.is_empty() || self.hash_count == 0 {
             return false;
         }
@@ -51,7 +32,6 @@ impl BloomFilter {
         let bit_count = self.filter.len() * 8;
         let bit_count_u64 = u64::try_from(bit_count).unwrap_or(u64::MAX);
 
-        // 使用 double hashing: h(i) = h1 + i * h2
         let h1 = murmur_hash(post_id, 0);
         let h2 = murmur_hash(post_id, h1);
 
@@ -69,33 +49,46 @@ impl BloomFilter {
     }
 }
 
-/// 简化的 Murmur 哈希
-fn murmur_hash(key: u64, seed: u64) -> u64 {
-    let mut h = seed;
-    let k = key;
-
-    let k = k.wrapping_mul(0xcc9e2d51);
-    let k = k.rotate_left(15);
-    let k = k.wrapping_mul(0x1b873593);
+/// Mix a 64-bit lane into the murmur-like state.
+fn mix_lane(mut h: u64, mut k: u64) -> u64 {
+    k = k.wrapping_mul(0xcc9e2d51);
+    k = k.rotate_left(15);
+    k = k.wrapping_mul(0x1b873593);
 
     h ^= k;
     h = h.rotate_left(13);
-    h = h.wrapping_mul(5).wrapping_add(0xe6546b64);
+    h.wrapping_mul(5).wrapping_add(0xe6546b64)
+}
 
-    // Finalization
-    h ^= 8;
+fn murmur_hash(key: &[u8], seed: u64) -> u64 {
+    let mut h = seed;
+    let mut chunks = key.chunks_exact(8);
+    for chunk in chunks.by_ref() {
+        h = mix_lane(
+            h,
+            u64::from_le_bytes(chunk.try_into().expect("8-byte chunk")),
+        );
+    }
+    let rem = chunks.remainder();
+    if !rem.is_empty() {
+        let mut buf = [0u8; 8];
+        buf[..rem.len()].copy_from_slice(rem);
+        h = mix_lane(h, u64::from_le_bytes(buf));
+    }
+
+    h ^= key.len() as u64;
     h ^= h >> 16;
     h = h.wrapping_mul(0x85ebca6b);
     h ^= h >> 13;
     h = h.wrapping_mul(0xc2b2ae35);
     h ^= h >> 16;
-
     h
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::models::pid;
 
     #[test]
     fn test_empty_filter() {
@@ -103,7 +96,7 @@ mod tests {
             filter: vec![],
             hash_count: 3,
         };
-        assert!(!filter.may_contain(12345));
+        assert!(!filter.may_contain(pid(12345).as_bytes()));
     }
 
     #[test]
@@ -112,6 +105,6 @@ mod tests {
             filter: vec![0xFF],
             hash_count: 0,
         };
-        assert!(!filter.may_contain(12345));
+        assert!(!filter.may_contain(pid(12345).as_bytes()));
     }
 }

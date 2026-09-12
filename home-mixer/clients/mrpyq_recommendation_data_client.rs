@@ -1,6 +1,3 @@
-use crate::business_feed::model::{
-    CandidatePage, CandidateReference, CandidateSource, RecommendationContent,
-};
 use crate::params::MRPYQ_RECOMMENDATION_DATA_TIMEOUT_MS;
 use std::collections::HashSet;
 use std::fmt;
@@ -13,6 +10,38 @@ use x_algorithm_proto::recommendation_data::recommendation_data_service_client::
 
 const ADDRESS_ENV: &str = "MRPYQ_RECOMMENDATION_DATA_ADDR";
 const TIMEOUT_ENV: &str = "MRPYQ_RECOMMENDATION_DATA_TIMEOUT_MS";
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum CandidateSource {
+    Network,
+    Fallback,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct CandidateReference {
+    pub feed_id: String,
+    pub source: CandidateSource,
+    pub source_score: i64,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct CandidatePage {
+    pub candidates: Vec<CandidateReference>,
+    pub next_page_token: String,
+    pub source_ready: bool,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct RecommendationContent {
+    pub feed_id: String,
+    pub creator_account_id: String,
+    pub creator_member_id: String,
+    pub created_at_ms: i64,
+    pub like_count: i32,
+    pub comment_count: i32,
+    pub gift_value: i32,
+    pub recommendation_eligible: bool,
+}
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct MrpyqRecommendationDataConfig {

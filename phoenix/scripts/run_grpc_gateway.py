@@ -2,7 +2,7 @@
 """
 Phoenix gRPC 网关启动脚本。
 
-实现 proto/definitions/phoenix_recsys.proto 的精排 / 召回 gRPC 服务，供 recommendation-service 调用。
+实现 proto/definitions/phoenix_recsys.proto 的精排 / 召回 gRPC 服务，供 home-mixer 调用。
 
 用法:
     # 随机权重（演示，无需任何文件）

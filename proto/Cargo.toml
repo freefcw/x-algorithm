@@ -7,6 +7,7 @@ description = "Protocol Buffer definitions for x-algorithm recommendation system
 [dependencies]
 prost = "0.13"
 tonic = "0.12"
+md5 = "0.7"
 
 [build-dependencies]
 tonic-build = "0.12"

@@ -8,20 +8,22 @@
 //! switch（U1）；对接 X 内部服务需要另写 Adapter。
 
 use crate::models::candidate::PhoenixScores;
+use crate::models::ids::{PostId, UserId};
 use tonic::async_trait;
+#[cfg(feature = "legacy-int-ids")]
 use x_algorithm_proto::vm_ranker as pb;
 
 /// 对应上游 `RankCandidate`。
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct VmRankCandidate {
-    pub tweet_id: u64,
-    pub author_id: u64,
+    pub tweet_id: PostId,
+    pub author_id: UserId,
     pub in_network: bool,
     pub is_retweet: bool,
     pub is_reply: bool,
     pub author_followers_count: i32,
     pub vqv_ineligible: bool,
-    pub retweeted_tweet_id: Option<u64>,
+    pub retweeted_tweet_id: Option<PostId>,
     pub score: Option<f64>,
     pub phoenix_scores: PhoenixScores,
 }
@@ -37,7 +39,7 @@ pub struct DppParams {
 /// DPP 与新用户阈值改由装配/Adapter 配置显式传入。
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct VmRankRequest {
-    pub viewer_id: u64,
+    pub viewer_id: UserId,
     pub request_timestamp_ms: i64,
     pub viewer_following_count: usize,
     pub value_model_id: Option<String>,
@@ -47,7 +49,7 @@ pub struct VmRankRequest {
 
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct VmRankedCandidate {
-    pub tweet_id: u64,
+    pub tweet_id: PostId,
     pub score: f64,
 }
 
@@ -64,11 +66,13 @@ pub trait VMRankerClient: Send + Sync {
 /// 真实 gRPC Adapter：调用本仓库 `vm-ranker` 服务（wire 为本地重建的
 /// `vm_ranker.proto`，与上游内部服务不保证兼容）。由装配在
 /// `HOME_MIXER_ENABLE_VM_RANKER=1` 且提供 `VM_RANKER_GRPC_ADDR` 时注入。
+#[cfg(feature = "legacy-int-ids")]
 pub struct GrpcVMRankerClient {
     endpoint: String,
     timeout: std::time::Duration,
 }
 
+#[cfg(feature = "legacy-int-ids")]
 impl GrpcVMRankerClient {
     pub fn new(endpoint: String) -> Self {
         Self {
@@ -77,9 +81,13 @@ impl GrpcVMRankerClient {
         }
     }
 
+    fn to_u64(id: crate::models::ObjectId) -> u64 {
+        id.to_u64_be_padded().unwrap_or(0)
+    }
+
     fn to_proto(request: VmRankRequest) -> pb::RankRequest {
         pb::RankRequest {
-            viewer_id: request.viewer_id,
+            viewer_id: Self::to_u64(request.viewer_id),
             value_model_id: request.value_model_id.unwrap_or_default(),
             request_timestamp_ms: u64::try_from(request.request_timestamp_ms).unwrap_or(0),
             viewer_following_count: u32::try_from(request.viewer_following_count).unwrap_or(0),
@@ -92,14 +100,14 @@ impl GrpcVMRankerClient {
                 .candidates
                 .into_iter()
                 .map(|c| pb::RankCandidate {
-                    tweet_id: c.tweet_id,
-                    author_id: c.author_id,
+                    tweet_id: Self::to_u64(c.tweet_id),
+                    author_id: Self::to_u64(c.author_id),
                     in_network: c.in_network,
                     is_retweet: c.is_retweet,
                     is_reply: c.is_reply,
                     author_followers_count: c.author_followers_count,
                     vqv_ineligible: c.vqv_ineligible,
-                    retweeted_tweet_id: c.retweeted_tweet_id.unwrap_or(0),
+                    retweeted_tweet_id: c.retweeted_tweet_id.map(Self::to_u64).unwrap_or(0),
                     score: c.score,
                     phoenix_scores: Some(pb::PhoenixScores {
                         favorite_score: c.phoenix_scores.favorite_score,
@@ -138,6 +146,7 @@ impl GrpcVMRankerClient {
     }
 }
 
+#[cfg(feature = "legacy-int-ids")]
 #[async_trait]
 impl VMRankerClient for GrpcVMRankerClient {
     async fn rank(&self, request: VmRankRequest) -> Result<VmRankResponse, String> {
@@ -162,7 +171,7 @@ impl VMRankerClient for GrpcVMRankerClient {
                 .candidates
                 .into_iter()
                 .map(|c| VmRankedCandidate {
-                    tweet_id: c.tweet_id,
+                    tweet_id: crate::models::ObjectId::from_u64_be_padded(c.tweet_id),
                     score: c.score,
                 })
                 .collect(),
@@ -170,7 +179,7 @@ impl VMRankerClient for GrpcVMRankerClient {
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "legacy-int-ids"))]
 mod tests {
     use super::*;
 
@@ -250,7 +259,7 @@ mod tests {
     #[test]
     fn candidate_and_request_fields_map_to_proto() {
         let request = VmRankRequest {
-            viewer_id: 42,
+            viewer_id: crate::models::uid(42),
             request_timestamp_ms: 1_700_000_000_000,
             viewer_following_count: 7,
             value_model_id: Some("model-a".to_string()),
@@ -259,14 +268,14 @@ mod tests {
                 max_selected_rank: 60,
             }),
             candidates: vec![VmRankCandidate {
-                tweet_id: 11,
-                author_id: 22,
+                tweet_id: 11.into(),
+                author_id: 22.into(),
                 in_network: true,
                 is_retweet: true,
                 is_reply: false,
                 author_followers_count: 333,
                 vqv_ineligible: true,
-                retweeted_tweet_id: Some(44),
+                retweeted_tweet_id: Some(44.into()),
                 score: Some(0.5),
                 phoenix_scores: PhoenixScores::default(),
             }],

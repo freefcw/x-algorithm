@@ -9,9 +9,8 @@ use crate::clients::tweet_mixer_client::{TweetMixerClient, TweetMixerRequest};
 use crate::models::candidate::PostCandidate;
 use crate::models::query::ScoredPostsQuery;
 use crate::params::{MAX_POST_AGE, TWEET_MIXER_MAX_RESULTS};
-use crate::util::snowflake::duration_since_creation_opt;
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use tonic::async_trait;
 use x_algorithm_proto::home_mixer as pb;
 use xai_candidate_pipeline::source::Source;
@@ -54,9 +53,20 @@ impl Source<ScoredPostsQuery, PostCandidate> for TweetMixerSource {
         let result = candidates
             .into_iter()
             .filter_map(|candidate| {
-                let within_age = duration_since_creation_opt(candidate.tweet_id)
-                    .map(|age| age <= Duration::from_secs(MAX_POST_AGE))
-                    .unwrap_or(false);
+                let ts = candidate.tweet_id.timestamp_secs();
+                let within_age = if ts == 0 {
+                    false
+                } else {
+                    SystemTime::now()
+                        .duration_since(UNIX_EPOCH)
+                        .ok()
+                        .map(|now| {
+                            let created_ms = u64::from(ts).saturating_mul(1000);
+                            now.as_millis() as u64 - created_ms
+                                <= Duration::from_secs(MAX_POST_AGE).as_millis() as u64
+                        })
+                        .unwrap_or(false)
+                };
                 if !within_age {
                     return None;
                 }
@@ -98,15 +108,13 @@ mod tests {
         }
     }
 
-    /// 用本地 Snowflake 纪元构造指定年龄的帖子 ID。
-    fn snowflake_id_with_age(age: Duration) -> u64 {
-        const TWITTER_EPOCH_MS: u64 = 1_288_834_974_657;
+    fn object_id_with_age(age: Duration) -> crate::models::PostId {
         let now_ms = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .expect("clock")
             .as_millis() as u64;
-        let created_ms = now_ms - age.as_millis() as u64;
-        (created_ms - TWITTER_EPOCH_MS) << 22
+        let created_ms = now_ms.saturating_sub(age.as_millis() as u64);
+        crate::models::ObjectId::from_parts((created_ms / 1000) as u32, 1)
     }
 
     #[test]
@@ -130,18 +138,18 @@ mod tests {
 
     #[tokio::test]
     async fn maps_request_fields_and_drops_stale_posts() {
-        let fresh_id = snowflake_id_with_age(Duration::from_secs(60));
-        let stale_id = snowflake_id_with_age(Duration::from_secs(MAX_POST_AGE + 3_600));
+        let fresh_id = object_id_with_age(Duration::from_secs(60));
+        let stale_id = object_id_with_age(Duration::from_secs(MAX_POST_AGE + 3_600));
         let client = Arc::new(FakeTweetMixer {
             candidates: vec![
                 TweetMixerCandidate {
                     tweet_id: fresh_id,
-                    author_id: Some(7),
+                    author_id: Some(crate::models::uid(7)),
                     in_reply_to_tweet_id: None,
                 },
                 TweetMixerCandidate {
                     tweet_id: stale_id,
-                    author_id: Some(8),
+                    author_id: Some(crate::models::uid(8)),
                     in_reply_to_tweet_id: None,
                 },
             ],
@@ -152,17 +160,17 @@ mod tests {
         };
 
         let query = ScoredPostsQuery {
-            user_id: 42,
+            user_id: 42.into(),
             user_agent: "agent".to_string(),
             country_code: String::new(),
-            seen_ids: vec![11, 12],
+            seen_ids: vec![11.into(), 12.into()],
             ..Default::default()
         };
         let candidates = source.source(&query).await.expect("source");
 
         assert_eq!(candidates.len(), 1);
         assert_eq!(candidates[0].tweet_id, fresh_id);
-        assert_eq!(candidates[0].author_id, 7);
+        assert_eq!(candidates[0].author_id, crate::models::uid(7));
         assert_eq!(
             candidates[0].served_type,
             Some(pb::ServedType::ForYouTweetMixer)
@@ -174,10 +182,13 @@ mod tests {
             .expect("request lock")
             .clone()
             .expect("request sent");
-        assert_eq!(request.user_id, 42);
+        assert_eq!(request.user_id, crate::models::uid(42));
         assert_eq!(request.user_agent.as_deref(), Some("agent"));
         assert_eq!(request.country_code, None);
-        assert_eq!(request.excluded_tweet_ids, vec![11, 12]);
+        assert_eq!(
+            request.excluded_tweet_ids,
+            vec![crate::models::pid(11), crate::models::pid(12)]
+        );
         assert_eq!(request.max_results, TWEET_MIXER_MAX_RESULTS);
     }
 }

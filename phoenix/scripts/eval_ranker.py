@@ -29,7 +29,7 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(mess
 logger = logging.getLogger("eval_ranker")
 
 DAY_SECONDS = 86400.0
-# 与 recommendation-service/src/ranking.rs::fallback 一致
+# 与 home-mixer RuleFallbackScorer 的规则基线一致
 RULE_FRESHNESS_WEIGHT = 1.5
 RULE_FRESHNESS_DAYS = 7.0
 RULE_NETWORK_BONUS = 2.0
@@ -171,7 +171,7 @@ def baseline_scores(rows: dict, stats: dict, post_author: dict, post_time: dict)
             created = post_time.get(pid)
             age_days = max(0.0, (t - created) / DAY_SECONDS) if created else RULE_FRESHNESS_DAYS
             # 评估集没有 Candidate.source，只能用用户-作者历史互动近似线上 Network source。
-            # 因此该分数不是 recommendation-service fallback 的逐字节复刻。
+            # 因此该分数不是 Home Mixer fallback 的逐字节复刻。
             rule[i, j] = rule_score(
                 age_days,
                 interactions > 0,

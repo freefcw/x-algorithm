@@ -2,8 +2,7 @@ use crate::clients::phoenix_retrieval_client::{retrieve_with_timeout, PhoenixRet
 use crate::models::candidate::PostCandidate;
 use crate::models::query::{ScoredPostsQuery, TopicRecallMode};
 use crate::params;
-// TEMP(U4-P1): 十进制 u64 桥接，P1 迁移到 PostId 后删除
-use crate::sources::phoenix_source::parse_bridged_tweet_info;
+use crate::sources::phoenix_source::parse_tweet_info;
 use std::sync::Arc;
 use std::time::Duration;
 use tonic::async_trait;
@@ -42,8 +41,6 @@ impl Source<ScoredPostsQuery, PostCandidate> for PhoenixMoeSource {
         .await
         .map_err(|error| format!("PhoenixMoeSource: {error}"))?;
 
-        // TEMP(U4-P1): 十进制 u64 桥接，P1 迁移到 PostId 后删除
-        // 协议里的 ID 是字符串；这里只接受十进制 u64，其余候选整条丢弃并计数告警。
         let mut unparsable_ids = 0usize;
         let mut unparsable_example: Option<String> = None;
         let candidates: Vec<PostCandidate> = response
@@ -52,7 +49,7 @@ impl Source<ScoredPostsQuery, PostCandidate> for PhoenixMoeSource {
             .flat_map(|group| group.candidates)
             .filter_map(|candidate| candidate.candidate)
             .filter_map(|tweet| {
-                let parsed = parse_bridged_tweet_info(&tweet);
+                let parsed = parse_tweet_info(&tweet);
                 if parsed.is_none() {
                     unparsable_ids += 1;
                     unparsable_example.get_or_insert_with(|| tweet.tweet_id.clone());
@@ -71,7 +68,7 @@ impl Source<ScoredPostsQuery, PostCandidate> for PhoenixMoeSource {
             .collect();
         if unparsable_ids > 0 {
             log::warn!(
-                "PhoenixMoeSource: dropped {} retrieved candidate(s) whose ids are not decimal u64 (e.g. {:?})",
+                "PhoenixMoeSource: dropped {} retrieved candidate(s) whose ids are not 24-hex ObjectIds (e.g. {:?})",
                 unparsable_ids,
                 unparsable_example.unwrap_or_default()
             );
@@ -92,7 +89,7 @@ mod tests {
     impl PhoenixRetrievalClient for FakeRetrievalClient {
         async fn retrieve(
             &self,
-            _user_id: u64,
+            _user_id: crate::models::UserId,
             _sequence: recsys::UserActionSequence,
             _max_results: u32,
         ) -> Result<recsys::RetrieveResponse, anyhow::Error> {
@@ -100,9 +97,8 @@ mod tests {
                 top_k_candidates: vec![recsys::ScoredCandidates {
                     candidates: vec![recsys::ScoredCandidate {
                         candidate: Some(recsys::TweetInfo {
-                            // TEMP(U4-P1): 十进制 u64 桥接，P1 迁移到 PostId 后删除
-                            tweet_id: "100".to_string(),
-                            author_id: "200".to_string(),
+                            tweet_id: "000000000000000000000064".to_string(),
+                            author_id: "0000000000000000000000c8".to_string(),
                             ..Default::default()
                         }),
                         score: 0.9,
@@ -132,7 +128,7 @@ mod tests {
             .expect("MoE candidates");
 
         assert!(source.enable(&query));
-        assert_eq!(candidates[0].tweet_id, 100);
+        assert_eq!(candidates[0].tweet_id, crate::models::pid(100));
         assert_eq!(
             candidates[0].served_type,
             Some(pb::ServedType::ForYouPhoenixRetrievalMoe)

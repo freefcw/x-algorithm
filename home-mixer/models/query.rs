@@ -1,4 +1,5 @@
 use crate::models::candidate::PostCandidate;
+use crate::models::ids::{PostId, UserId};
 use crate::models::user_features::UserFeatures;
 use crate::visibility::vf_client::{GetTwitterContextViewer, TwitterContextViewer};
 use x_algorithm_proto::home_mixer::ImpressionBloomFilterEntry;
@@ -15,12 +16,12 @@ pub enum TopicRecallMode {
 
 #[derive(Clone, Default, Debug)]
 pub struct ScoredPostsQuery {
-    pub user_id: u64,
+    pub user_id: UserId,
     pub client_app_id: i32,
     pub country_code: String,
     pub language_code: String,
-    pub seen_ids: Vec<u64>,
-    pub served_ids: Vec<u64>,
+    pub seen_ids: Vec<PostId>,
+    pub served_ids: Vec<PostId>,
     pub in_network_only: bool,
     pub is_bottom_request: bool,
     pub bloom_filter_entries: Vec<ImpressionBloomFilterEntry>,
@@ -38,7 +39,7 @@ pub struct ScoredPostsQuery {
     pub supplemental_topic_ids: Vec<i64>,
     pub exclude_videos: bool,
     pub enable_phoenix_moe: bool,
-    pub impressed_post_ids: Vec<u64>,
+    pub impressed_post_ids: Vec<PostId>,
     pub past_request_timestamps_ms: Vec<i64>,
     pub is_preview: bool,
     pub is_shadow_traffic: bool,

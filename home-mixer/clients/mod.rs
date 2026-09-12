@@ -20,12 +20,15 @@
 pub mod gizmoduck_client;
 pub mod impressed_posts_client;
 pub mod impression_bloom_filter_client;
+pub mod in_network_posts_client;
 pub mod mrpyq_recommendation_data_client;
 pub mod phoenix_prediction_client;
 pub mod phoenix_retrieval_client;
 pub mod s2s;
+pub mod served_persistence;
 pub mod socialgraph_client;
 pub mod strato_client;
+#[cfg(feature = "legacy-int-ids")]
 pub mod thunder_client;
 pub mod topic_retrieval_client;
 pub mod tweet_entity_service_client;

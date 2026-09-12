@@ -1,12 +1,8 @@
-use crate::business_feed::RuleBasedBusinessFeedServer;
 use crate::clients::gizmoduck_client::{
     DemoGizmoduckClient, DisabledGizmoduckClient, GizmoduckClient,
 };
 #[cfg(test)]
 use crate::clients::gizmoduck_client::{ViewerData, ViewerEligibility};
-use crate::clients::mrpyq_recommendation_data_client::{
-    client_from_config, DisabledMrpyqRecommendationDataClient, MrpyqRecommendationDataConfig,
-};
 #[cfg(test)]
 use crate::feature_policy::HomeMixerFeatures;
 use crate::for_you_server::ForYouFeedServer;
@@ -29,7 +25,6 @@ pub use crate::runtime_config::{HomeMixerConfig, HomeMixerMode};
 pub struct HomeMixerServer {
     scored_posts_server: Arc<ScoredPostsServer>,
     for_you_feed_server: Arc<ForYouFeedServer>,
-    business_feed_server: Arc<RuleBasedBusinessFeedServer>,
 }
 
 impl HomeMixerServer {
@@ -47,21 +42,14 @@ impl HomeMixerServer {
             }
         };
         let query_builder = QueryBuilder::new(config.features, viewer_client);
-        let pipeline = Arc::new(
-            crate::candidate_pipeline::phoenix_candidate_pipeline::PhoenixCandidatePipeline::
-                assemble_for_mode(config.mode, config.features)
-                .await,
-        );
+        let pipeline = crate::candidate_pipeline::phoenix_candidate_pipeline::PhoenixCandidatePipeline::
+            assemble_for_mode(config.mode, config.features)
+            .await;
         let debug_access = DebugAccessPolicy::new(config.features.debug_rpc, config.debug_token);
         let scored_posts_server = Arc::new(
             ScoredPostsServer::new(query_builder, pipeline).with_debug_access(debug_access),
         );
-        let mrpyq_config = MrpyqRecommendationDataConfig::from_env()?;
-        let business_feed_server = Arc::new(RuleBasedBusinessFeedServer::new(client_from_config(
-            mrpyq_config,
-        )?));
-        Ok(Self::with_scored_posts_server(scored_posts_server)
-            .with_business_feed_server(business_feed_server))
+        Ok(Self::with_scored_posts_server(scored_posts_server))
     }
 
     pub async fn new() -> anyhow::Result<Self> {
@@ -77,18 +65,7 @@ impl HomeMixerServer {
         HomeMixerServer {
             scored_posts_server,
             for_you_feed_server,
-            business_feed_server: Arc::new(RuleBasedBusinessFeedServer::new(Arc::new(
-                DisabledMrpyqRecommendationDataClient,
-            ))),
         }
-    }
-
-    pub fn with_business_feed_server(
-        mut self,
-        business_feed_server: Arc<RuleBasedBusinessFeedServer>,
-    ) -> Self {
-        self.business_feed_server = business_feed_server;
-        self
     }
 
     pub fn register(self: Arc<Self>, routes: &mut RoutesBuilder) {
@@ -106,17 +83,6 @@ impl HomeMixerServer {
         routes.add_service(
             pb::for_you_feed_service_server::ForYouFeedServiceServer::from_arc(Arc::clone(
                 &self.for_you_feed_server,
-            ))
-            .max_decoding_message_size(crate::params::MAX_GRPC_MESSAGE_SIZE)
-            .max_encoding_message_size(crate::params::MAX_GRPC_MESSAGE_SIZE)
-            .accept_compressed(CompressionEncoding::Gzip)
-            .accept_compressed(CompressionEncoding::Zstd)
-            .send_compressed(CompressionEncoding::Gzip)
-            .send_compressed(CompressionEncoding::Zstd),
-        );
-        routes.add_service(
-            pb::business_feed_service_server::BusinessFeedServiceServer::from_arc(Arc::clone(
-                &self.business_feed_server,
             ))
             .max_decoding_message_size(crate::params::MAX_GRPC_MESSAGE_SIZE)
             .max_encoding_message_size(crate::params::MAX_GRPC_MESSAGE_SIZE)
@@ -159,6 +125,11 @@ async fn run_for_you_rpc(
     let query = context.query;
     info!("For You request - request_id {}", query.request_id);
     let output = server.get_for_you_feed(query).await;
+    if let Some(error) = output.persist_error {
+        return Err(Status::unavailable(format!(
+            "served persist failed: {error}"
+        )));
+    }
     Ok(Response::new(pb::ForYouFeedResponse {
         items: output
             .items
@@ -178,7 +149,14 @@ impl pb::scored_posts_service_server::ScoredPostsService for ScoredPostsServer {
         let context = self.query_builder().build(request.into_inner()).await?;
         let query = context.query;
         info!("Scored Posts request - request_id {}", query.request_id);
+        let user_id = query.user_id;
+        let request_time_ms = query.request_time_ms;
         let output = self.score(query).await;
+        if let Err(error) = self.persist_selected(user_id, &output.posts, request_time_ms) {
+            return Err(Status::unavailable(format!(
+                "served persist failed: {error}"
+            )));
+        }
         Ok(Response::new(ScoredPostsResponse {
             scored_posts: output.posts,
         }))
@@ -196,7 +174,14 @@ impl pb::scored_posts_service_server::ScoredPostsService for ScoredPostsServer {
             "Debug Scored Posts request - request_id {}",
             query.request_id
         );
+        let user_id = query.user_id;
+        let request_time_ms = query.request_time_ms;
         let (output, debug) = self.score_with_debug(query).await;
+        if let Err(error) = self.persist_selected(user_id, &output.posts, request_time_ms) {
+            return Err(Status::unavailable(format!(
+                "served persist failed: {error}"
+            )));
+        }
         Ok(Response::new(pb::DebugScoredPostsResponse {
             response: Some(ScoredPostsResponse {
                 scored_posts: output.posts,
@@ -209,41 +194,47 @@ impl pb::scored_posts_service_server::ScoredPostsService for ScoredPostsServer {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::candidate_hydrators::vf_candidate_hydrator::VFCandidateHydrator;
-    use crate::filters::ancillary_vf_filter::AncillaryVFFilter;
     use crate::models::candidate_features::GizmoduckUserResult;
     use crate::models::query::TopicRecallMode;
-    use crate::visibility::models::FilteredReason;
-    use crate::visibility::vf_client::{
-        SafetyLevel, TwitterContextViewer, VisibilityFilteringClient,
-    };
     use std::collections::HashMap;
     use std::time::Duration;
-    use xai_candidate_pipeline::filter::Filter;
-    use xai_candidate_pipeline::hydrator::Hydrator;
 
     #[test]
     fn for_you_wrapper_requires_and_preserves_inner_query() {
         assert!(for_you_query_from_wrapper(pb::ForYouFeedQuery { query: None }).is_none());
 
         let inner = pb::ScoredPostsQuery {
-            viewer_id: 42,
+            viewer_id: "00000000000000000000002a".to_string(),
             ..Default::default()
         };
         let extracted = for_you_query_from_wrapper(pb::ForYouFeedQuery { query: Some(inner) })
             .expect("wrapped query");
-        assert_eq!(extracted.viewer_id, 42);
+        assert_eq!(extracted.viewer_id, crate::models::uid(42).to_string());
+    }
+
+    #[tokio::test]
+    async fn degraded_assembly_keeps_the_served_persist_gate() {
+        let server = HomeMixerServer::build(HomeMixerConfig {
+            mode: HomeMixerMode::Degraded,
+            features: HomeMixerFeatures::default(),
+            debug_token: None,
+        })
+        .await
+        .expect("degraded assembly");
+
+        server
+            .scored_posts_server
+            .persist_selected(crate::models::uid(7), &[], 1)
+            .expect("in-memory served persist must stay armed outside demo");
     }
 
     #[test]
     fn application_servers_own_their_rpc_interfaces() {
         fn assert_scored<T: pb::scored_posts_service_server::ScoredPostsService>() {}
         fn assert_for_you<T: pb::for_you_feed_service_server::ForYouFeedService>() {}
-        fn assert_business<T: pb::business_feed_service_server::BusinessFeedService>() {}
 
         assert_scored::<ScoredPostsServer>();
         assert_for_you::<ForYouFeedServer>();
-        assert_business::<RuleBasedBusinessFeedServer>();
     }
 
     enum ViewerResponse {
@@ -258,7 +249,10 @@ mod tests {
 
     #[tonic::async_trait]
     impl GizmoduckClient for TestGizmoduckClient {
-        async fn get_viewer_data(&self, _viewer_id: u64) -> Result<ViewerData, anyhow::Error> {
+        async fn get_viewer_data(
+            &self,
+            _viewer_id: crate::models::UserId,
+        ) -> Result<ViewerData, anyhow::Error> {
             match &self.response {
                 ViewerResponse::Data(data) => Ok(data.clone()),
                 ViewerResponse::Error => anyhow::bail!("viewer service unavailable"),
@@ -271,8 +265,9 @@ mod tests {
 
         async fn get_users(
             &self,
-            _user_ids: Vec<u64>,
-        ) -> Result<HashMap<u64, Option<GizmoduckUserResult>>, anyhow::Error> {
+            _user_ids: Vec<crate::models::UserId>,
+        ) -> Result<HashMap<crate::models::UserId, Option<GizmoduckUserResult>>, anyhow::Error>
+        {
             Ok(HashMap::new())
         }
     }
@@ -288,38 +283,16 @@ mod tests {
             .query
     }
 
-    struct QuoteRejectingVisibilityClient;
-
-    #[tonic::async_trait]
-    impl VisibilityFilteringClient for QuoteRejectingVisibilityClient {
-        async fn get_result(
-            &self,
-            tweet_ids: Vec<u64>,
-            _safety_level: SafetyLevel,
-            _for_user_id: u64,
-            _context: Option<TwitterContextViewer>,
-        ) -> Result<HashMap<u64, Option<FilteredReason>>, anyhow::Error> {
-            Ok(tweet_ids
-                .into_iter()
-                .map(|id| {
-                    let reason = (id == 300)
-                        .then(|| FilteredReason::GenericFiltered("unsafe quote".to_string()));
-                    (id, reason)
-                })
-                .collect())
-        }
-    }
-
     #[tokio::test]
     async fn maps_p3_request_context_and_cached_candidates() {
         let query = build_query(
             pb::ScoredPostsQuery {
-                viewer_id: 42,
+                viewer_id: "00000000000000000000002a".to_string(),
                 client_app_id: 7,
                 country_code: "US".to_string(),
                 language_code: "en".to_string(),
-                seen_ids: vec![1, -1],
-                served_ids: vec![2, -2],
+                seen_ids: vec![crate::models::pid(1).to_string(), "-1".to_string()],
+                served_ids: vec![crate::models::pid(2).to_string(), "-2".to_string()],
                 in_network_only: true,
                 is_bottom_request: true,
                 bloom_filter_entries: vec![pb::ImpressionBloomFilterEntry {
@@ -332,13 +305,13 @@ mod tests {
                 new_user_topic_ids: vec![20],
                 exclude_videos: true,
                 enable_phoenix_moe: true,
-                impressed_post_ids: vec![7, -7],
+                impressed_post_ids: vec![crate::models::pid(7).to_string(), "-7".to_string()],
                 past_request_timestamps_ms: vec![1_700_000_000_000],
                 cached_posts: vec![pb::CachedPost {
-                    tweet_id: 100,
-                    author_id: 200,
+                    tweet_id: crate::models::pid(100).to_string(),
+                    author_id: crate::models::uid(200).to_string(),
                     tweet_text: "cached text".to_string(),
-                    quoted_tweet_id: 300,
+                    quoted_tweet_id: crate::models::pid(300).to_string(),
                     filtered_topic_ids: vec![10],
                     video_duration_ms: 5_000,
                     language_code: "en".to_string(),
@@ -358,15 +331,17 @@ mod tests {
         )
         .await;
 
-        assert_eq!(query.user_id, 42);
+        assert_eq!(query.user_id, crate::models::uid(42));
         assert_eq!(query.client_app_id, 7);
         assert_eq!(query.country_code, "US");
         assert_eq!(query.language_code, "en");
-        assert_eq!(query.seen_ids, vec![1]);
-        assert_eq!(query.served_ids, vec![2]);
+        assert_eq!(query.seen_ids, vec![crate::models::pid(1)]);
+        assert_eq!(query.served_ids, vec![crate::models::pid(2)]);
         assert!(query.in_network_only && query.is_bottom_request);
         assert_eq!(query.bloom_filter_entries.len(), 1);
-        assert!(query.request_id.ends_with("-42"));
+        assert!(query
+            .request_id
+            .ends_with(&format!("-{}", crate::models::uid(42))));
         assert!(query.prediction_id > 0);
         assert!(query.request_time_ms > 0);
         assert_eq!(query.topic_ids, vec![10]);
@@ -375,11 +350,14 @@ mod tests {
         assert_eq!(query.topic_recall_mode(), TopicRecallMode::Strict);
         assert!(query.exclude_videos);
         assert!(query.enable_phoenix_moe);
-        assert_eq!(query.impressed_post_ids, vec![7]);
+        assert_eq!(query.impressed_post_ids, vec![crate::models::pid(7)]);
         assert!(query.has_cached_posts);
-        assert_eq!(query.cached_posts[0].tweet_id, 100);
+        assert_eq!(query.cached_posts[0].tweet_id, crate::models::pid(100));
         assert_eq!(query.cached_posts[0].tweet_text, "cached text");
-        assert_eq!(query.cached_posts[0].quoted_tweet_id, Some(300));
+        assert_eq!(
+            query.cached_posts[0].quoted_tweet_id,
+            Some(crate::models::pid(300))
+        );
         assert_eq!(query.cached_posts[0].filtered_topic_ids, vec![10]);
         assert_eq!(query.cached_posts[0].video_duration_ms, Some(5_000));
         assert_eq!(query.cached_posts[0].language_code.as_deref(), Some("en"));
@@ -396,7 +374,7 @@ mod tests {
     async fn maps_new_user_topics_to_cold_start_mode() {
         let query = build_query(
             pb::ScoredPostsQuery {
-                viewer_id: 42,
+                viewer_id: "00000000000000000000002a".to_string(),
                 new_user_topic_ids: vec![20],
                 ..Default::default()
             },
@@ -409,39 +387,6 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn removes_cached_candidate_when_quoted_post_is_not_visible() {
-        let query = build_query(
-            pb::ScoredPostsQuery {
-                viewer_id: 42,
-                cached_posts: vec![pb::CachedPost {
-                    tweet_id: 100,
-                    author_id: 200,
-                    quoted_tweet_id: 300,
-                    ..Default::default()
-                }],
-                ..Default::default()
-            },
-            HomeMixerFeatures {
-                unsigned_cached_posts: true,
-                ..Default::default()
-            },
-        )
-        .await;
-        let hydrator = VFCandidateHydrator {
-            vf_client: Arc::new(QuoteRejectingVisibilityClient),
-        };
-        let hydrated = hydrator.hydrate(&query, &query.cached_posts).await;
-        let hydrated = hydrated[0].as_ref().expect("visibility hydration");
-        let mut candidate = query.cached_posts[0].clone();
-        hydrator.update(&mut candidate, hydrated.clone());
-
-        let result = AncillaryVFFilter.filter(&query, vec![candidate]);
-
-        assert!(result.kept.is_empty());
-        assert_eq!(result.removed.len(), 1);
-    }
-
-    #[tokio::test]
     async fn viewer_policy_can_force_in_network_only() {
         let client = Arc::new(TestGizmoduckClient {
             response: ViewerResponse::Data(ViewerData {
@@ -450,7 +395,7 @@ mod tests {
         });
         let query = QueryBuilder::new(HomeMixerFeatures::default(), client)
             .build(pb::ScoredPostsQuery {
-                viewer_id: 42,
+                viewer_id: "00000000000000000000002a".to_string(),
                 ..Default::default()
             })
             .await
@@ -467,7 +412,7 @@ mod tests {
         });
         let query = QueryBuilder::new(HomeMixerFeatures::default(), client)
             .build(pb::ScoredPostsQuery {
-                viewer_id: 42,
+                viewer_id: "00000000000000000000002a".to_string(),
                 ..Default::default()
             })
             .await
@@ -487,7 +432,7 @@ mod tests {
         let query = QueryBuilder::new(HomeMixerFeatures::default(), client)
             .with_viewer_data_timeout(Duration::from_millis(1))
             .build(pb::ScoredPostsQuery {
-                viewer_id: 42,
+                viewer_id: "00000000000000000000002a".to_string(),
                 ..Default::default()
             })
             .await
@@ -506,7 +451,7 @@ mod tests {
         });
         let query = QueryBuilder::new(HomeMixerFeatures::default(), client)
             .build(pb::ScoredPostsQuery {
-                viewer_id: 42,
+                viewer_id: "00000000000000000000002a".to_string(),
                 ..Default::default()
             })
             .await
@@ -520,9 +465,9 @@ mod tests {
     async fn unsigned_cached_posts_are_rejected_by_default() {
         let error = QueryBuilder::default()
             .build(pb::ScoredPostsQuery {
-                viewer_id: 42,
+                viewer_id: "00000000000000000000002a".to_string(),
                 cached_posts: vec![pb::CachedPost {
-                    tweet_id: 100,
+                    tweet_id: crate::models::pid(100).to_string(),
                     ..Default::default()
                 }],
                 ..Default::default()
@@ -538,7 +483,7 @@ mod tests {
     async fn request_cannot_enable_moe_when_global_switch_is_off() {
         let query = build_query(
             pb::ScoredPostsQuery {
-                viewer_id: 42,
+                viewer_id: "00000000000000000000002a".to_string(),
                 enable_phoenix_moe: true,
                 ..Default::default()
             },
@@ -551,7 +496,7 @@ mod tests {
 
     #[tokio::test]
     async fn query_builder_rejects_non_positive_viewer_id() {
-        for viewer_id in [0, -1] {
+        for viewer_id in ["".to_string(), "0".to_string(), "not-an-id".to_string()] {
             let error = QueryBuilder::default()
                 .build(pb::ScoredPostsQuery {
                     viewer_id,

@@ -38,7 +38,7 @@ impl Scorer<ScoredPostsQuery, PostCandidate> for VMRanker {
             }
         };
 
-        let score_map: HashMap<u64, f64> = response
+        let score_map: HashMap<crate::models::PostId, f64> = response
             .candidates
             .iter()
             .map(|scored| (scored.tweet_id, scored.score))
@@ -121,19 +121,19 @@ mod tests {
     fn candidates() -> Vec<PostCandidate> {
         vec![
             PostCandidate {
-                tweet_id: 1,
-                author_id: 10,
+                tweet_id: 1.into(),
+                author_id: 10.into(),
                 author_followers_count: Some(100),
-                author_profile_looked_up_for_user_id: Some(10),
+                author_profile_looked_up_for_user_id: Some(10.into()),
                 view_count: Some(2_000),
                 score: Some(0.1),
                 ..Default::default()
             },
             PostCandidate {
-                tweet_id: 2,
-                author_id: 20,
+                tweet_id: 2.into(),
+                author_id: 20.into(),
                 author_followers_count: Some(100),
-                author_profile_looked_up_for_user_id: Some(20),
+                author_profile_looked_up_for_user_id: Some(20.into()),
                 view_count: Some(10),
                 score: Some(0.2),
                 ..Default::default()
@@ -147,7 +147,7 @@ mod tests {
             client: Arc::new(FakeVmRanker {
                 response: Ok(VmRankResponse {
                     candidates: vec![VmRankedCandidate {
-                        tweet_id: 1,
+                        tweet_id: 1.into(),
                         score: 0.9,
                     }],
                 }),

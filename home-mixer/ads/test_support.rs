@@ -12,7 +12,7 @@ use x_algorithm_proto::home_mixer::{BrandSafetyRiskLevel, BrandSafetyVerdict, Sc
 
 pub(crate) fn post(tweet_id: u64, verdict: BrandSafetyVerdict) -> FeedItem {
     FeedItem::post(ScoredPost {
-        tweet_id,
+        tweet_id: crate::models::pid(tweet_id).to_string(),
         score: 1.0 - tweet_id as f32 * 0.01,
         brand_safety_verdict: verdict as i32,
         ..Default::default()
@@ -33,7 +33,7 @@ pub(crate) fn avoid_post(tweet_id: u64) -> FeedItem {
 
 pub(crate) fn post_with_text(tweet_id: u64, text: &str) -> FeedItem {
     FeedItem::post(ScoredPost {
-        tweet_id,
+        tweet_id: crate::models::pid(tweet_id).to_string(),
         score: 1.0 - tweet_id as f32 * 0.01,
         brand_safety_verdict: BrandSafetyVerdict::SafeForAdjacency as i32,
         tweet_text: text.to_string(),
@@ -84,9 +84,9 @@ pub(crate) fn keyword_ad(id: u32, keywords: &[&str]) -> Advertisement {
     }
 }
 
-pub(crate) fn handle_ad(id: u32, handles: &[i64]) -> Advertisement {
+pub(crate) fn handle_ad(id: u32, handles: &[u64]) -> Advertisement {
     Advertisement {
-        avoid_handles: handles.to_vec(),
+        avoid_handles: handles.iter().copied().map(crate::models::uid).collect(),
         ..advertisement(id, BrandSafetyRiskLevel::Unspecified)
     }
 }
@@ -142,7 +142,13 @@ pub(crate) fn labels(items: &[FeedItem]) -> Vec<String> {
     items
         .iter()
         .map(|item| match &item.content {
-            FeedItemContent::Post(post) => format!("post-{}", post.tweet_id),
+            FeedItemContent::Post(post) => match crate::models::ObjectId::parse(&post.tweet_id)
+                .ok()
+                .and_then(|id| id.to_u64_be_padded())
+            {
+                Some(n) => format!("post-{n}"),
+                None => format!("post-{}", post.tweet_id),
+            },
             FeedItemContent::Advertisement(advertisement) => advertisement.ad_id.clone(),
             other => format!("{other:?}"),
         })

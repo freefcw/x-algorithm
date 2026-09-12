@@ -67,7 +67,7 @@ impl HomeMixerConfig {
     pub(crate) fn validate(&self) -> anyhow::Result<()> {
         if self.mode == HomeMixerMode::ProductionReady {
             anyhow::bail!(
-                "production_ready is unavailable: verified caller identity, Viewer, UAS, Strato, TES, Gizmoduck, VF, Phoenix, and Thunder contracts are not configured"
+                "production_ready is unavailable: business adapter contracts are not verified (caller identity, TES, UAS, Strato, VF, in-network/fallback, Phoenix metadata, served persist)"
             );
         }
         if self.features.unsigned_cached_posts && self.mode != HomeMixerMode::Demo {

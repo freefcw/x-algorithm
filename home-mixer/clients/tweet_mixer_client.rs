@@ -6,27 +6,28 @@
 //! Adapter 负责传输、产品上下文映射、认证与超时，之后 `TweetMixerSource`
 //! 才能进入装配。
 
+use crate::models::ids::{PostId, UserId};
 use tonic::async_trait;
 
 /// 对应上游 `TweetMixerRequest` 中 Home 推荐产品可携带的公开字段。
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct TweetMixerRequest {
-    pub user_id: u64,
+    pub user_id: UserId,
     pub client_app_id: i32,
     pub user_agent: Option<String>,
     pub country_code: Option<String>,
     pub language_code: Option<String>,
     /// 已见帖子，Adapter 应映射为服务端排除列表。
-    pub excluded_tweet_ids: Vec<u64>,
+    pub excluded_tweet_ids: Vec<crate::models::PostId>,
     pub max_results: u32,
 }
 
 /// 服务返回的最小候选形状；后续补全由标准 Hydrator 负责。
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct TweetMixerCandidate {
-    pub tweet_id: u64,
-    pub author_id: Option<u64>,
-    pub in_reply_to_tweet_id: Option<u64>,
+    pub tweet_id: PostId,
+    pub author_id: Option<UserId>,
+    pub in_reply_to_tweet_id: Option<PostId>,
 }
 
 #[async_trait]

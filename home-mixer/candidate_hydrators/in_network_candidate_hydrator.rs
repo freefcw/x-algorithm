@@ -14,19 +14,24 @@ impl Hydrator<ScoredPostsQuery, PostCandidate> for InNetworkCandidateHydrator {
         candidates: &[PostCandidate],
     ) -> Vec<Result<PostCandidate, String>> {
         let viewer_id = query.user_id;
-        let followed_ids: HashSet<u64> = query
+        let followed_ids: HashSet<crate::models::UserId> = query
             .user_features
             .followed_user_ids
             .iter()
             .copied()
-            .filter_map(|id| u64::try_from(id).ok().filter(|id| *id != 0))
+            .filter(|id| !id.is_nil())
             .collect();
 
         let hydrated_candidates = candidates
             .iter()
             .map(|candidate| {
                 let is_self = candidate.author_id == viewer_id;
-                let is_in_network = is_self || followed_ids.contains(&candidate.author_id);
+                // Source adapters may already know the authoritative origin:
+                // Thunder marks true and the business fallback marks false.
+                // Only infer membership for sources that leave it unset.
+                let is_in_network = candidate
+                    .in_network
+                    .unwrap_or_else(|| is_self || followed_ids.contains(&candidate.author_id));
                 Ok(PostCandidate {
                     in_network: Some(is_in_network),
                     ..Default::default()
@@ -51,7 +56,7 @@ mod tests {
     async fn ignores_nonpositive_followed_ids() {
         let query = ScoredPostsQuery {
             user_features: UserFeatures {
-                followed_user_ids: vec![-1, 0, 10],
+                followed_user_ids: vec![crate::models::UserId::NIL, 10.into()],
                 ..Default::default()
             },
             ..Default::default()
@@ -61,11 +66,11 @@ mod tests {
                 &query,
                 &[
                     PostCandidate {
-                        author_id: u64::MAX,
+                        author_id: crate::models::uid(u64::MAX),
                         ..Default::default()
                     },
                     PostCandidate {
-                        author_id: 10,
+                        author_id: 10.into(),
                         ..Default::default()
                     },
                 ],
@@ -79,6 +84,34 @@ mod tests {
         assert_eq!(
             hydrated[1].as_ref().expect("candidate").in_network,
             Some(true)
+        );
+    }
+
+    #[tokio::test]
+    async fn preserves_source_authority_when_membership_is_already_set() {
+        let query = ScoredPostsQuery {
+            user_id: crate::models::uid(1),
+            user_features: UserFeatures {
+                followed_user_ids: vec![crate::models::uid(2)],
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        let hydrated = InNetworkCandidateHydrator
+            .hydrate(
+                &query,
+                &[PostCandidate {
+                    author_id: crate::models::uid(2),
+                    // A fallback source can be authored by a followed user but
+                    // still be explicitly classified as out-of-network.
+                    in_network: Some(false),
+                    ..Default::default()
+                }],
+            )
+            .await;
+        assert_eq!(
+            hydrated[0].as_ref().expect("candidate").in_network,
+            Some(false)
         );
     }
 }

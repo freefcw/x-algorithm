@@ -27,7 +27,7 @@ impl Filter<ScoredPostsQuery, PostCandidate> for PreviouslySeenPostsFilter {
                 seen_ids.contains(&post_id)
                     || bloom_filters
                         .iter()
-                        .any(|filter| filter.may_contain(post_id))
+                        .any(|filter| filter.may_contain(post_id.as_bytes()))
             })
         });
 

@@ -38,7 +38,7 @@ impl Hydrator<ScoredPostsQuery, PostCandidate> for GizmoduckCandidateHydrator {
         let client = &self.gizmoduck_client;
 
         let mut seen_user_ids = HashSet::new();
-        let user_ids_to_fetch: Vec<u64> = candidates
+        let user_ids_to_fetch: Vec<crate::models::UserId> = candidates
             .iter()
             .flat_map(|candidate| {
                 let author_id = (candidate.author_profile_looked_up_for_user_id
@@ -138,15 +138,16 @@ mod tests {
 
     #[derive(Default)]
     struct RecordingGizmoduckClient {
-        requests: Mutex<Vec<Vec<u64>>>,
+        requests: Mutex<Vec<Vec<crate::models::UserId>>>,
     }
 
     #[tonic::async_trait]
     impl GizmoduckClient for RecordingGizmoduckClient {
         async fn get_users(
             &self,
-            user_ids: Vec<u64>,
-        ) -> Result<HashMap<u64, Option<GizmoduckUserResult>>, anyhow::Error> {
+            user_ids: Vec<crate::models::UserId>,
+        ) -> Result<HashMap<crate::models::UserId, Option<GizmoduckUserResult>>, anyhow::Error>
+        {
             self.requests
                 .lock()
                 .expect("request lock")
@@ -164,8 +165,9 @@ mod tests {
     impl GizmoduckClient for SlowGizmoduckClient {
         async fn get_users(
             &self,
-            _user_ids: Vec<u64>,
-        ) -> Result<HashMap<u64, Option<GizmoduckUserResult>>, anyhow::Error> {
+            _user_ids: Vec<crate::models::UserId>,
+        ) -> Result<HashMap<crate::models::UserId, Option<GizmoduckUserResult>>, anyhow::Error>
+        {
             tokio::time::sleep(Duration::from_millis(20)).await;
             Ok(HashMap::new())
         }
@@ -180,8 +182,9 @@ mod tests {
     impl GizmoduckClient for FailOnceGizmoduckClient {
         async fn get_users(
             &self,
-            user_ids: Vec<u64>,
-        ) -> Result<HashMap<u64, Option<GizmoduckUserResult>>, anyhow::Error> {
+            user_ids: Vec<crate::models::UserId>,
+        ) -> Result<HashMap<crate::models::UserId, Option<GizmoduckUserResult>>, anyhow::Error>
+        {
             if self.calls.fetch_add(1, Ordering::Relaxed) == 0 {
                 return Err(anyhow::anyhow!("temporary profile failure"));
             }
@@ -209,7 +212,7 @@ mod tests {
             .await
             .with_request_timeout(Duration::from_millis(1));
         let candidates = [PostCandidate {
-            author_id: 1,
+            author_id: 1.into(),
             ..Default::default()
         }];
 
@@ -229,17 +232,17 @@ mod tests {
         let hydrator = GizmoduckCandidateHydrator::new(client.clone()).await;
         let mut candidates = vec![
             PostCandidate {
-                author_id: 1,
-                retweeted_user_id: Some(2),
+                author_id: 1.into(),
+                retweeted_user_id: Some(2.into()),
                 ..Default::default()
             },
             PostCandidate {
-                author_id: 2,
-                retweeted_user_id: Some(3),
+                author_id: 2.into(),
+                retweeted_user_id: Some(3.into()),
                 ..Default::default()
             },
             PostCandidate {
-                author_id: 1,
+                author_id: 1.into(),
                 ..Default::default()
             },
         ];
@@ -249,12 +252,19 @@ mod tests {
         assert_eq!(hydrated.len(), candidates.len());
         assert_eq!(
             *client.requests.lock().expect("request lock"),
-            vec![vec![1, 2, 3]]
+            vec![vec![
+                crate::models::uid(1),
+                crate::models::uid(2),
+                crate::models::uid(3)
+            ]]
         );
-        assert_eq!(candidates[0].author_profile_looked_up_for_user_id, Some(1));
+        assert_eq!(
+            candidates[0].author_profile_looked_up_for_user_id,
+            Some(crate::models::uid(1))
+        );
         assert_eq!(
             candidates[0].retweeted_profile_looked_up_for_user_id,
-            Some(2)
+            Some(crate::models::uid(2))
         );
     }
 
@@ -264,26 +274,29 @@ mod tests {
         let hydrator = GizmoduckCandidateHydrator::new(client.clone()).await;
         let mut candidates = vec![
             PostCandidate {
-                author_id: 1,
+                author_id: 1.into(),
                 ..Default::default()
             },
             PostCandidate {
-                author_id: 2,
+                author_id: 2.into(),
                 ..Default::default()
             },
         ];
 
         hydrate_and_update(&hydrator, &mut candidates).await;
-        candidates[0].retweeted_user_id = Some(3);
+        candidates[0].retweeted_user_id = Some(crate::models::uid(3));
         hydrate_and_update(&hydrator, &mut candidates).await;
 
         assert_eq!(
             *client.requests.lock().expect("request lock"),
-            vec![vec![1, 2], vec![3]]
+            vec![
+                vec![crate::models::uid(1), crate::models::uid(2)],
+                vec![crate::models::uid(3)]
+            ]
         );
         assert_eq!(
             candidates[0].retweeted_profile_looked_up_for_user_id,
-            Some(3)
+            Some(crate::models::uid(3))
         );
     }
 
@@ -292,7 +305,7 @@ mod tests {
         let client = Arc::new(RecordingGizmoduckClient::default());
         let hydrator = GizmoduckCandidateHydrator::new(client.clone()).await;
         let mut candidates = [PostCandidate {
-            author_id: 1,
+            author_id: 1.into(),
             ..Default::default()
         }];
 
@@ -301,7 +314,7 @@ mod tests {
 
         assert_eq!(
             *client.requests.lock().expect("request lock"),
-            vec![vec![1]]
+            vec![vec![crate::models::uid(1)]]
         );
     }
 
@@ -310,21 +323,21 @@ mod tests {
         let client = Arc::new(RecordingGizmoduckClient::default());
         let hydrator = GizmoduckCandidateHydrator::new(client.clone()).await;
         let mut candidates = [PostCandidate {
-            author_id: 1,
+            author_id: 1.into(),
             ..Default::default()
         }];
 
         let hydrated = hydrator
             .hydrate(&ScoredPostsQuery::default(), &candidates)
             .await;
-        candidates[0].author_id = 2;
+        candidates[0].author_id = crate::models::uid(2);
         hydrator.update_all(&mut candidates, hydrated);
 
         assert_eq!(candidates[0].author_profile_looked_up_for_user_id, None);
         hydrate_and_update(&hydrator, &mut candidates).await;
         assert_eq!(
             *client.requests.lock().expect("request lock"),
-            vec![vec![1], vec![2]]
+            vec![vec![crate::models::uid(1)], vec![crate::models::uid(2)]]
         );
     }
 
@@ -333,19 +346,22 @@ mod tests {
         let client = Arc::new(RecordingGizmoduckClient::default());
         let hydrator = GizmoduckCandidateHydrator::new(client.clone()).await;
         let mut candidates = [PostCandidate {
-            author_id: 1,
+            author_id: 1.into(),
             ..Default::default()
         }];
 
         hydrate_and_update(&hydrator, &mut candidates).await;
-        candidates[0].author_id = 2;
+        candidates[0].author_id = crate::models::uid(2);
         hydrate_and_update(&hydrator, &mut candidates).await;
 
         assert_eq!(
             *client.requests.lock().expect("request lock"),
-            vec![vec![1], vec![2]]
+            vec![vec![crate::models::uid(1)], vec![crate::models::uid(2)]]
         );
-        assert_eq!(candidates[0].author_profile_looked_up_for_user_id, Some(2));
+        assert_eq!(
+            candidates[0].author_profile_looked_up_for_user_id,
+            Some(crate::models::uid(2))
+        );
     }
 
     #[tokio::test]
@@ -353,7 +369,7 @@ mod tests {
         let client = Arc::new(FailOnceGizmoduckClient::default());
         let hydrator = GizmoduckCandidateHydrator::new(client.clone()).await;
         let mut candidates = [PostCandidate {
-            author_id: 1,
+            author_id: 1.into(),
             ..Default::default()
         }];
 
@@ -363,7 +379,10 @@ mod tests {
 
         let retried = hydrate_and_update(&hydrator, &mut candidates).await;
         assert!(retried[0].is_ok());
-        assert_eq!(candidates[0].author_profile_looked_up_for_user_id, Some(1));
+        assert_eq!(
+            candidates[0].author_profile_looked_up_for_user_id,
+            Some(crate::models::uid(1))
+        );
         assert_eq!(client.calls.load(Ordering::Relaxed), 2);
     }
 
@@ -372,11 +391,11 @@ mod tests {
         let client = Arc::new(RecordingGizmoduckClient::default());
         let hydrator = GizmoduckCandidateHydrator::new(client.clone()).await;
         let mut first_request = [PostCandidate {
-            author_id: 1,
+            author_id: 1.into(),
             ..Default::default()
         }];
         let mut second_request = [PostCandidate {
-            author_id: 1,
+            author_id: 1.into(),
             ..Default::default()
         }];
 
@@ -385,7 +404,7 @@ mod tests {
 
         assert_eq!(
             *client.requests.lock().expect("request lock"),
-            vec![vec![1], vec![1]]
+            vec![vec![crate::models::uid(1)], vec![crate::models::uid(1)]]
         );
     }
 }

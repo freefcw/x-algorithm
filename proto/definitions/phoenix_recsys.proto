@@ -6,7 +6,7 @@
 // 注册键，两个同名但内容不同的 proto 进入同一个 Python 进程会报 duplicate file name。
 // 本文件包名仍是 recsys，Rust 侧 tonic::include_proto!("recsys") 不受文件名影响。
 //
-// 该协议定义了 Phoenix（精排/召回模型）服务与 recommendation-service 之间的通信协议。
+// 该协议定义了 Phoenix（精排/召回模型）服务与 home-mixer::PhoenixCandidatePipeline 之间的通信协议。
 // 包含两大核心功能：
 //   1. 精排预测（PredictNextActions）—— 为候选帖子预估各互动行为的概率
 //   2. 双塔召回（Retrieve）—— 基于用户历史行为检索全局相关帖子

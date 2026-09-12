@@ -35,12 +35,15 @@ mod tests {
     use super::*;
 
     struct FakeImpressedPosts {
-        ids: Vec<u64>,
+        ids: Vec<crate::models::PostId>,
     }
 
     #[async_trait]
     impl ImpressedPostsClient for FakeImpressedPosts {
-        async fn get(&self, _user_id: u64) -> Result<Vec<u64>, String> {
+        async fn get(
+            &self,
+            _user_id: crate::models::UserId,
+        ) -> Result<Vec<crate::models::PostId>, String> {
             Ok(self.ids.clone())
         }
     }
@@ -48,17 +51,22 @@ mod tests {
     #[tokio::test]
     async fn store_values_replace_request_values() {
         let hydrator = ImpressedPostsQueryHydrator {
-            client: Arc::new(FakeImpressedPosts { ids: vec![5, 6] }),
+            client: Arc::new(FakeImpressedPosts {
+                ids: vec![crate::models::pid(5), crate::models::pid(6)],
+            }),
         };
         let mut query = ScoredPostsQuery {
-            user_id: 42,
-            impressed_post_ids: vec![1],
+            user_id: 42.into(),
+            impressed_post_ids: vec![1.into()],
             ..Default::default()
         };
 
         let hydrated = hydrator.hydrate(&query).await.expect("hydrate");
         hydrator.update(&mut query, hydrated);
 
-        assert_eq!(query.impressed_post_ids, vec![5, 6]);
+        assert_eq!(
+            query.impressed_post_ids,
+            vec![crate::models::pid(5), crate::models::pid(6)]
+        );
     }
 }

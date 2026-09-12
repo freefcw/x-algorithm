@@ -1,6 +1,7 @@
 use crate::clients::tweet_entity_service_client::TESClient;
 use crate::models::candidate::PostCandidate;
 use crate::models::candidate_features::MediaEntities;
+use crate::models::ids::PostId;
 use crate::models::query::ScoredPostsQuery;
 use crate::params;
 use std::collections::{HashMap, HashSet};
@@ -17,7 +18,7 @@ pub struct TesHydrationProvider {
 
 type CoreBatch = Vec<Result<PostCandidate, String>>;
 type CachedCoreBatch = OnceCell<Arc<CoreBatch>>;
-type MediaBatch = HashMap<u64, Option<MediaEntities>>;
+type MediaBatch = HashMap<PostId, Option<MediaEntities>>;
 type CachedMediaBatch = OnceCell<Result<Arc<MediaBatch>, String>>;
 
 impl TesHydrationProvider {
@@ -81,7 +82,7 @@ impl TesHydrationProvider {
     pub async fn media_by_post(
         &self,
         query: &ScoredPostsQuery,
-        post_ids: Vec<u64>,
+        post_ids: Vec<PostId>,
     ) -> Result<Arc<MediaBatch>, String> {
         let mut lookup_ids = post_ids;
         lookup_ids.sort_unstable();
@@ -135,7 +136,7 @@ impl TesHydrationProvider {
         result
     }
 
-    async fn load_core_candidates(&self, tweet_ids: Vec<u64>) -> CoreBatch {
+    async fn load_core_candidates(&self, tweet_ids: Vec<PostId>) -> CoreBatch {
         let core_by_tweet = match tokio::time::timeout(
             self.request_timeout,
             self.tes_client.get_tweet_core_datas(tweet_ids.clone()),
@@ -203,6 +204,8 @@ impl TesHydrationProvider {
                     quoted_tweet_id: core.and_then(|value| value.quoted_tweet_id),
                     quoted_user_id: core.and_then(|value| value.quoted_user_id),
                     in_reply_to_tweet_id: core.and_then(|value| value.in_reply_to_tweet_id),
+                    created_at_ms: core.and_then(|value| value.created_at_ms),
+                    recommendation_eligible: core.and_then(|value| value.recommendation_eligible),
                     language_code: core.and_then(|value| value.language_code.clone()),
                     favorite_count: core.and_then(|value| value.favorite_count),
                     view_count: core.and_then(|value| value.view_count),
@@ -222,7 +225,7 @@ impl TesHydrationProvider {
     }
 }
 
-fn batch_key(query: &ScoredPostsQuery, ids: &[u64]) -> String {
+fn batch_key(query: &ScoredPostsQuery, ids: &[PostId]) -> String {
     format!(
         "{}:{}:{}:{ids:?}",
         query.request_id, query.user_id, query.prediction_id
@@ -244,8 +247,8 @@ mod tests {
     impl TESClient for CountingTesClient {
         async fn get_tweet_core_datas(
             &self,
-            tweet_ids: Vec<u64>,
-        ) -> Result<HashMap<u64, Option<PureCoreData>>, anyhow::Error> {
+            tweet_ids: Vec<crate::models::PostId>,
+        ) -> Result<HashMap<crate::models::PostId, Option<PureCoreData>>, anyhow::Error> {
             self.core_calls.fetch_add(1, Ordering::Relaxed);
             Ok(tweet_ids
                 .into_iter()
@@ -264,16 +267,17 @@ mod tests {
 
         async fn get_tweet_media_entities(
             &self,
-            tweet_ids: Vec<u64>,
-        ) -> Result<HashMap<u64, Option<MediaEntities>>, anyhow::Error> {
+            tweet_ids: Vec<crate::models::PostId>,
+        ) -> Result<HashMap<crate::models::PostId, Option<MediaEntities>>, anyhow::Error> {
             self.media_calls.fetch_add(1, Ordering::Relaxed);
             Ok(tweet_ids.into_iter().map(|id| (id, Some(vec![]))).collect())
         }
 
         async fn get_subscription_author_ids(
             &self,
-            _tweet_ids: Vec<u64>,
-        ) -> Result<HashMap<u64, Option<u64>>, anyhow::Error> {
+            _tweet_ids: Vec<crate::models::PostId>,
+        ) -> Result<HashMap<crate::models::PostId, Option<crate::models::UserId>>, anyhow::Error>
+        {
             Ok(HashMap::new())
         }
     }
@@ -284,24 +288,25 @@ mod tests {
     impl TESClient for SlowTesClient {
         async fn get_tweet_core_datas(
             &self,
-            _tweet_ids: Vec<u64>,
-        ) -> Result<HashMap<u64, Option<PureCoreData>>, anyhow::Error> {
+            _tweet_ids: Vec<crate::models::PostId>,
+        ) -> Result<HashMap<crate::models::PostId, Option<PureCoreData>>, anyhow::Error> {
             tokio::time::sleep(Duration::from_millis(20)).await;
             Ok(HashMap::new())
         }
 
         async fn get_tweet_media_entities(
             &self,
-            _tweet_ids: Vec<u64>,
-        ) -> Result<HashMap<u64, Option<MediaEntities>>, anyhow::Error> {
+            _tweet_ids: Vec<crate::models::PostId>,
+        ) -> Result<HashMap<crate::models::PostId, Option<MediaEntities>>, anyhow::Error> {
             tokio::time::sleep(Duration::from_millis(20)).await;
             Ok(HashMap::new())
         }
 
         async fn get_subscription_author_ids(
             &self,
-            _tweet_ids: Vec<u64>,
-        ) -> Result<HashMap<u64, Option<u64>>, anyhow::Error> {
+            _tweet_ids: Vec<crate::models::PostId>,
+        ) -> Result<HashMap<crate::models::PostId, Option<crate::models::UserId>>, anyhow::Error>
+        {
             Ok(HashMap::new())
         }
     }
@@ -316,7 +321,7 @@ mod tests {
             ..Default::default()
         };
         let candidates = [PostCandidate {
-            tweet_id: 100,
+            tweet_id: 100.into(),
             ..Default::default()
         }];
 
@@ -327,7 +332,7 @@ mod tests {
             .expect_err("slow TES core must time out")
             .contains("timed out"));
         let media_error = provider
-            .media_by_post(&query, vec![100])
+            .media_by_post(&query, vec![crate::models::pid(100)])
             .await
             .expect_err("slow TES media must time out");
         assert!(media_error.contains("timed out"));
@@ -346,7 +351,7 @@ mod tests {
             ..Default::default()
         };
         let candidates = [PostCandidate {
-            tweet_id: 100,
+            tweet_id: 100.into(),
             ..Default::default()
         }];
 
@@ -355,8 +360,8 @@ mod tests {
             provider.core_candidates(&query, &candidates)
         );
         let (video, has_media) = tokio::join!(
-            provider.media_by_post(&query, vec![100]),
-            provider.media_by_post(&query, vec![100])
+            provider.media_by_post(&query, vec![crate::models::pid(100)]),
+            provider.media_by_post(&query, vec![crate::models::pid(100)])
         );
 
         assert!(core[0].is_ok());
@@ -375,19 +380,19 @@ mod tests {
         });
         let provider = TesHydrationProvider::new(client.clone());
         let first = ScoredPostsQuery {
-            user_id: 42,
+            user_id: 42.into(),
             request_id: "request-1".to_string(),
             prediction_id: 7,
             ..Default::default()
         };
         let second = ScoredPostsQuery {
-            user_id: 42,
+            user_id: 42.into(),
             request_id: "request-2".to_string(),
             prediction_id: 8,
             ..Default::default()
         };
         let candidates = [PostCandidate {
-            tweet_id: 100,
+            tweet_id: 100.into(),
             ..Default::default()
         }];
 

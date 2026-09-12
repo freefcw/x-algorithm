@@ -3,6 +3,7 @@ use crate::clients::gizmoduck_client::{
 };
 use crate::feature_policy::HomeMixerFeatures;
 use crate::models::candidate::PostCandidate;
+use crate::models::ids::{parse_wire_id, ObjectId, UserId};
 use crate::models::query::ScoredPostsQuery;
 use crate::util::request_util::{current_time_ms, generate_request_id};
 use std::sync::Arc;
@@ -55,7 +56,13 @@ impl QueryBuilder {
     }
 
     pub async fn build(&self, proto_query: pb::ScoredPostsQuery) -> Result<RequestContext, Status> {
-        if proto_query.viewer_id <= 0 {
+        if proto_query.viewer_id.is_empty() {
+            return Err(Status::invalid_argument("viewer_id must be specified"));
+        }
+        let viewer_id = ObjectId::parse(&proto_query.viewer_id).map_err(|_| {
+            Status::invalid_argument("viewer_id must be 24 lowercase hex characters")
+        })?;
+        if viewer_id.is_nil() {
             return Err(Status::invalid_argument("viewer_id must be specified"));
         }
         if !proto_query.cached_posts.is_empty() && !self.features.unsigned_cached_posts {
@@ -64,15 +71,13 @@ impl QueryBuilder {
             ));
         }
 
-        let viewer_id = u64::try_from(proto_query.viewer_id)
-            .map_err(|_| Status::invalid_argument("viewer_id must be non-negative"))?;
         let viewer_data = self.fetch_viewer_data(viewer_id).await;
         Ok(RequestContext {
             query: query_from_proto(proto_query, self.features, viewer_data),
         })
     }
 
-    async fn fetch_viewer_data(&self, viewer_id: u64) -> ViewerData {
+    async fn fetch_viewer_data(&self, viewer_id: UserId) -> ViewerData {
         match tokio::time::timeout(
             self.viewer_data_timeout,
             self.gizmoduck_client.get_viewer_data(viewer_id),
@@ -137,22 +142,20 @@ fn query_from_proto(
         user_agent,
         enable_phoenix_moe,
     } = proto_query;
+    let mut invalid_ids = 0usize;
     let cached_posts = cached_posts
         .into_iter()
         .filter_map(|cached| {
-            let tweet_id = cached.tweet_id;
-            (tweet_id != 0).then(|| PostCandidate {
+            let tweet_id = parse_wire_id(&cached.tweet_id, &mut invalid_ids)?;
+            Some(PostCandidate {
                 tweet_id,
-                author_id: cached.author_id,
+                author_id: parse_wire_id(&cached.author_id, &mut invalid_ids).unwrap_or_default(),
                 tweet_text: cached.tweet_text,
                 quoted_tweet_text: cached.quoted_tweet_text,
-                quoted_tweet_id: (cached.quoted_tweet_id != 0).then_some(cached.quoted_tweet_id),
-                retweeted_tweet_id: (cached.retweeted_tweet_id != 0)
-                    .then_some(cached.retweeted_tweet_id),
-                retweeted_user_id: (cached.retweeted_user_id != 0)
-                    .then_some(cached.retweeted_user_id),
-                in_reply_to_tweet_id: (cached.in_reply_to_tweet_id != 0)
-                    .then_some(cached.in_reply_to_tweet_id),
+                quoted_tweet_id: parse_wire_id(&cached.quoted_tweet_id, &mut invalid_ids),
+                retweeted_tweet_id: parse_wire_id(&cached.retweeted_tweet_id, &mut invalid_ids),
+                retweeted_user_id: parse_wire_id(&cached.retweeted_user_id, &mut invalid_ids),
+                in_reply_to_tweet_id: parse_wire_id(&cached.in_reply_to_tweet_id, &mut invalid_ids),
                 served_type: Some(
                     pb::ServedType::try_from(cached.served_type)
                         .ok()
@@ -177,19 +180,22 @@ fn query_from_proto(
         .collect::<Vec<_>>();
     let has_cached_posts = !cached_posts.is_empty();
 
-    let user_id = u64::try_from(viewer_id).expect("viewer_id was validated by QueryBuilder");
+    let user_id = ObjectId::parse(&viewer_id).expect("viewer_id was validated by QueryBuilder");
     let seen_ids = seen_ids
         .into_iter()
-        .filter_map(|id| u64::try_from(id).ok())
+        .filter_map(|id| parse_wire_id(&id, &mut invalid_ids))
         .collect();
     let served_ids = served_ids
         .into_iter()
-        .filter_map(|id| u64::try_from(id).ok())
+        .filter_map(|id| parse_wire_id(&id, &mut invalid_ids))
         .collect();
     let impressed_post_ids = impressed_post_ids
         .into_iter()
-        .filter_map(|id| u64::try_from(id).ok())
+        .filter_map(|id| parse_wire_id(&id, &mut invalid_ids))
         .collect();
+    if invalid_ids > 0 {
+        log::warn!("QueryBuilder: dropped {invalid_ids} illegal identity string(s)");
+    }
     let in_network_only = in_network_only || !viewer_data.for_you_eligibility.allows_for_you();
     let enable_phoenix_moe = features.phoenix_moe && enable_phoenix_moe;
 

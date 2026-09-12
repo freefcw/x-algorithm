@@ -22,9 +22,9 @@ struct Args {
     #[arg(long, default_value = "http://localhost:50051")]
     addr: String,
 
-    /// 请求的用户 ID
+    /// 请求的用户 ID（24 位小写 hex；纯数字会按零填充 ObjectId 解释）
     #[arg(long, default_value = "1")]
-    viewer_id: i64,
+    viewer_id: String,
 
     /// 只要网内（关注者）帖子
     #[arg(long, default_value_t = false)]
@@ -47,17 +47,17 @@ struct Args {
 async fn main() -> anyhow::Result<()> {
     let args = Args::parse();
 
+    let viewer_id = parse_demo_viewer_id(&args.viewer_id)?;
     let now_ms = x_algorithm_proto::demo::now_ms();
     let cached_posts = (0..args.cached_posts)
         .map(|index| {
             let index_i64 = i64::try_from(index).expect("demo index fits i64");
+            let ts_secs = u32::try_from(((now_ms - index_i64 * 1_000) / 1000).max(0)).unwrap_or(0);
             CachedPost {
-                tweet_id: u64::try_from(x_algorithm_proto::demo::snowflake_id(
-                    now_ms - index_i64 * 1_000,
-                    2_000_000 + index_i64,
-                ))
-                .expect("demo Snowflake ID is positive"),
-                author_id: 201 + u64::try_from(index % 40).expect("demo author index fits u64"),
+                tweet_id: format!("{ts_secs:08x}{:016x}", 2_000_000 + index),
+                author_id: x_algorithm_proto::demo::padded_object_id_hex(
+                    201 + u64::try_from(index % 40).expect("demo author index fits u64"),
+                ),
                 served_type: ServedType::ForYouCachedPost as i32,
                 tweet_text: format!("Cached demo post {index}"),
                 language_code: "en".to_string(),
@@ -66,7 +66,7 @@ async fn main() -> anyhow::Result<()> {
         })
         .collect();
     let request = ScoredPostsQuery {
-        viewer_id: args.viewer_id,
+        viewer_id,
         client_app_id: 0,
         country_code: "CN".to_string(),
         language_code: "zh".to_string(),
@@ -130,7 +130,7 @@ async fn main() -> anyhow::Result<()> {
     }
 
     println!(
-        "{:<4} {:<20} {:<8} {:<10} {:<10} 来源",
+        "{:<4} {:<24} {:<24} {:<10} {:<10} 来源",
         "#", "帖子 ID", "作者", "得分", "网内"
     );
     for (i, post) in scored_posts.iter().enumerate() {
@@ -145,7 +145,7 @@ async fn main() -> anyhow::Result<()> {
             _ => "未知",
         };
         println!(
-            "{:<4} {:<20} {:<8} {:<10.4} {:<10} {}",
+            "{:<4} {:<24} {:<24} {:<10.4} {:<10} {}",
             i + 1,
             post.tweet_id,
             post.author_id,
@@ -166,4 +166,18 @@ async fn main() -> anyhow::Result<()> {
     );
 
     Ok(())
+}
+
+fn parse_demo_viewer_id(raw: &str) -> anyhow::Result<String> {
+    if raw.chars().all(|c| c.is_ascii_digit()) && raw.len() != 24 {
+        let n: u64 = raw.parse()?;
+        return Ok(x_algorithm_proto::demo::padded_object_id_hex(n));
+    }
+    if raw.len() == 24
+        && raw.bytes().all(|b| b.is_ascii_hexdigit())
+        && !raw.bytes().any(|b| b.is_ascii_uppercase())
+    {
+        return Ok(raw.to_string());
+    }
+    anyhow::bail!("viewer-id must be 24 lowercase hex chars or a decimal integer");
 }

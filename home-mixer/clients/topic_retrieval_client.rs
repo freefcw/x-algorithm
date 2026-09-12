@@ -1,9 +1,10 @@
+use crate::models::ids::{ObjectId, PostId, UserId};
 use tonic::async_trait;
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct TopicPost {
-    pub tweet_id: u64,
-    pub author_id: u64,
+    pub tweet_id: PostId,
+    pub author_id: UserId,
     pub matched_topic_ids: Vec<i64>,
 }
 
@@ -11,7 +12,7 @@ pub struct TopicPost {
 pub trait TopicRetrievalClient: Send + Sync {
     async fn retrieve(
         &self,
-        user_id: u64,
+        user_id: UserId,
         topic_ids: &[i64],
         max_results: usize,
     ) -> Result<Vec<TopicPost>, String>;
@@ -23,7 +24,7 @@ pub struct DemoTopicRetrievalClient;
 impl TopicRetrievalClient for DemoTopicRetrievalClient {
     async fn retrieve(
         &self,
-        _user_id: u64,
+        _user_id: UserId,
         topic_ids: &[i64],
         max_results: usize,
     ) -> Result<Vec<TopicPost>, String> {
@@ -36,12 +37,9 @@ impl TopicRetrievalClient for DemoTopicRetrievalClient {
             .filter_map(|index| {
                 let topic_id = topic_ids[index % topic_ids.len()];
                 let index_i64 = i64::try_from(index).ok()?;
-                let tweet_id = u64::try_from(x_algorithm_proto::demo::snowflake_id(
-                    now_ms - index_i64 * 1_000,
-                    1_000_000 + index_i64,
-                ))
-                .ok()?;
-                let author_id = 201 + u64::try_from(index % 40).ok()?;
+                let ts_secs = u32::try_from(((now_ms - index_i64 * 1_000) / 1000).max(0)).ok()?;
+                let tweet_id = ObjectId::from_parts(ts_secs, 1_000_000 + index as u64);
+                let author_id = ObjectId::from_u64_be_padded(201 + (index as u64) % 40);
                 Some(TopicPost {
                     tweet_id,
                     author_id,
@@ -62,12 +60,12 @@ mod tests {
             .build()
             .expect("test runtime");
         let posts = runtime
-            .block_on(DemoTopicRetrievalClient.retrieve(42, &[10, 20], 4))
+            .block_on(DemoTopicRetrievalClient.retrieve(crate::models::uid(42), &[10, 20], 4))
             .expect("topic candidates");
 
         assert_eq!(posts.len(), 4);
         assert_eq!(posts[0].matched_topic_ids, vec![10]);
         assert_eq!(posts[1].matched_topic_ids, vec![20]);
-        assert!(posts.iter().all(|post| post.tweet_id > 0));
+        assert!(posts.iter().all(|post| !post.tweet_id.is_nil()));
     }
 }

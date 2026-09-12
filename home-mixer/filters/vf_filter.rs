@@ -1,9 +1,24 @@
+use crate::feature_policy::VfFailurePolicy;
 use crate::models::candidate::PostCandidate;
 use crate::models::query::ScoredPostsQuery;
 use crate::visibility::models::{Action, FilteredReason, VisibilityDecision};
 use xai_candidate_pipeline::filter::{Filter, FilterResult};
 
-pub struct VFFilter;
+pub struct VFFilter {
+    failure_policy: VfFailurePolicy,
+}
+
+impl VFFilter {
+    pub fn new(failure_policy: VfFailurePolicy) -> Self {
+        Self { failure_policy }
+    }
+}
+
+impl Default for VFFilter {
+    fn default() -> Self {
+        Self::new(VfFailurePolicy::AllowAll)
+    }
+}
 
 impl Filter<ScoredPostsQuery, PostCandidate> for VFFilter {
     fn filter(
@@ -11,14 +26,15 @@ impl Filter<ScoredPostsQuery, PostCandidate> for VFFilter {
         _query: &ScoredPostsQuery,
         candidates: Vec<PostCandidate>,
     ) -> FilterResult<PostCandidate> {
-        let (removed, kept): (Vec<_>, Vec<_>) =
-            candidates.into_iter().partition(should_drop_candidate);
+        let (removed, kept): (Vec<_>, Vec<_>) = candidates
+            .into_iter()
+            .partition(|candidate| should_drop_candidate(candidate, self.failure_policy));
 
         FilterResult { kept, removed }
     }
 }
 
-fn should_drop_candidate(candidate: &PostCandidate) -> bool {
+fn should_drop_candidate(candidate: &PostCandidate, failure_policy: VfFailurePolicy) -> bool {
     if let Some(action) = &candidate.visibility_action {
         return matches!(action, Action::Drop(_));
     }
@@ -26,7 +42,7 @@ fn should_drop_candidate(candidate: &PostCandidate) -> bool {
         VisibilityDecision::Allowed => false,
         VisibilityDecision::Restricted(reason) => should_drop_reason(reason),
         VisibilityDecision::Unchecked | VisibilityDecision::Unavailable(_) => {
-            !candidate.in_network.unwrap_or(false)
+            failure_policy == VfFailurePolicy::InNetworkOnly && candidate.in_network != Some(true)
         }
     }
 }
@@ -44,28 +60,53 @@ fn should_drop_reason(reason: &FilteredReason) -> bool {
 mod tests {
     use super::*;
 
+    fn candidate(
+        tweet_id: u64,
+        in_network: Option<bool>,
+        visibility_decision: VisibilityDecision,
+    ) -> PostCandidate {
+        PostCandidate {
+            tweet_id: tweet_id.into(),
+            in_network,
+            visibility_decision,
+            ..Default::default()
+        }
+    }
+
     #[test]
-    fn unavailable_visibility_keeps_network_posts_and_drops_recommendations() {
-        let result = VFFilter.filter(
+    fn unavailable_visibility_keeps_in_network_and_out_of_network() {
+        let result = VFFilter::default().filter(
             &ScoredPostsQuery::default(),
             vec![
-                PostCandidate {
-                    tweet_id: 1,
-                    in_network: Some(true),
-                    visibility_decision: VisibilityDecision::Unavailable("vf down".to_string()),
-                    ..Default::default()
-                },
-                PostCandidate {
-                    tweet_id: 2,
-                    in_network: Some(false),
-                    visibility_decision: VisibilityDecision::Unavailable("vf down".to_string()),
-                    ..Default::default()
-                },
+                candidate(
+                    1,
+                    Some(true),
+                    VisibilityDecision::Unavailable("vf down".to_string()),
+                ),
+                candidate(
+                    2,
+                    Some(false),
+                    VisibilityDecision::Unavailable("vf down".to_string()),
+                ),
             ],
         );
 
-        assert_eq!(result.kept[0].tweet_id, 1);
-        assert_eq!(result.removed[0].tweet_id, 2);
+        assert_eq!(
+            result.kept.iter().map(|c| c.tweet_id).collect::<Vec<_>>(),
+            vec![crate::models::pid(1), crate::models::pid(2)]
+        );
+        assert!(result.removed.is_empty());
+    }
+
+    #[test]
+    fn unchecked_visibility_keeps_out_of_network() {
+        let result = VFFilter::default().filter(
+            &ScoredPostsQuery::default(),
+            vec![candidate(2, Some(false), VisibilityDecision::Unchecked)],
+        );
+
+        assert_eq!(result.kept[0].tweet_id, crate::models::pid(2));
+        assert!(result.removed.is_empty());
     }
 
     #[test]
@@ -81,8 +122,56 @@ mod tests {
             ..Default::default()
         };
 
-        let result = VFFilter.filter(&ScoredPostsQuery::default(), vec![candidate]);
+        let result = VFFilter::default().filter(&ScoredPostsQuery::default(), vec![candidate]);
         assert_eq!(result.kept.len(), 1);
         assert!(result.removed.is_empty());
+    }
+
+    #[test]
+    fn in_network_only_policy_drops_unverified_out_of_network_and_unknown() {
+        let result = VFFilter::new(VfFailurePolicy::InNetworkOnly).filter(
+            &ScoredPostsQuery::default(),
+            vec![
+                candidate(
+                    1,
+                    Some(true),
+                    VisibilityDecision::Unavailable("vf down".to_string()),
+                ),
+                candidate(
+                    2,
+                    Some(false),
+                    VisibilityDecision::Unavailable("vf down".to_string()),
+                ),
+                candidate(3, None, VisibilityDecision::Unchecked),
+            ],
+        );
+
+        assert_eq!(
+            result.kept.iter().map(|c| c.tweet_id).collect::<Vec<_>>(),
+            vec![crate::models::pid(1)]
+        );
+        assert_eq!(
+            result
+                .removed
+                .iter()
+                .map(|c| c.tweet_id)
+                .collect::<Vec<_>>(),
+            vec![crate::models::pid(2), crate::models::pid(3)]
+        );
+    }
+
+    #[test]
+    fn in_network_only_policy_still_drops_explicit_drop_action() {
+        let candidate = PostCandidate {
+            in_network: Some(true),
+            visibility_decision: VisibilityDecision::Unavailable("vf down".to_string()),
+            visibility_action: Some(Action::Drop(Default::default())),
+            ..Default::default()
+        };
+
+        let result = VFFilter::new(VfFailurePolicy::InNetworkOnly)
+            .filter(&ScoredPostsQuery::default(), vec![candidate]);
+        assert!(result.kept.is_empty());
+        assert_eq!(result.removed.len(), 1);
     }
 }

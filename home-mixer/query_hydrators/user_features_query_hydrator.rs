@@ -116,15 +116,18 @@ mod tests {
 
     #[async_trait]
     impl StratoClient for CountingStratoClient {
-        async fn get_user_features(&self, user_id: u64) -> Result<Vec<u8>, anyhow::Error> {
+        async fn get_user_features(
+            &self,
+            user_id: crate::models::UserId,
+        ) -> Result<Vec<u8>, anyhow::Error> {
             self.calls.fetch_add(1, Ordering::Relaxed);
             DemoStratoClient.get_user_features(user_id).await
         }
 
         async fn store_request_info(
             &self,
-            _user_id: u64,
-            _post_ids: Vec<u64>,
+            _user_id: crate::models::UserId,
+            _post_ids: Vec<crate::models::PostId>,
         ) -> Result<Vec<u8>, anyhow::Error> {
             unreachable!("feature hydration does not write request state")
         }
@@ -134,15 +137,18 @@ mod tests {
 
     #[async_trait]
     impl StratoClient for SlowStratoClient {
-        async fn get_user_features(&self, _user_id: u64) -> Result<Vec<u8>, anyhow::Error> {
+        async fn get_user_features(
+            &self,
+            _user_id: crate::models::UserId,
+        ) -> Result<Vec<u8>, anyhow::Error> {
             tokio::time::sleep(Duration::from_millis(20)).await;
             Ok(Vec::new())
         }
 
         async fn store_request_info(
             &self,
-            _user_id: u64,
-            _post_ids: Vec<u64>,
+            _user_id: crate::models::UserId,
+            _post_ids: Vec<crate::models::PostId>,
         ) -> Result<Vec<u8>, anyhow::Error> {
             unreachable!("feature hydration does not write request state")
         }
@@ -153,7 +159,7 @@ mod tests {
         let provider = UserFeaturesQueryHydrator::new(Arc::new(SlowStratoClient))
             .with_fetch_timeout(Duration::from_millis(1));
         let query = ScoredPostsQuery {
-            user_id: 42,
+            user_id: 42.into(),
             request_id: "slow-features".to_string(),
             prediction_id: 7,
             ..Default::default()
@@ -174,7 +180,7 @@ mod tests {
         });
         let provider = UserFeaturesQueryHydrator::new(client.clone());
         let query = ScoredPostsQuery {
-            user_id: 42,
+            user_id: 42.into(),
             request_id: "request-1".to_string(),
             prediction_id: 7,
             ..Default::default()
@@ -197,13 +203,13 @@ mod tests {
         });
         let provider = UserFeaturesQueryHydrator::new(client.clone());
         let first = ScoredPostsQuery {
-            user_id: 42,
+            user_id: 42.into(),
             request_id: "same-request-label".to_string(),
             prediction_id: 7,
             ..Default::default()
         };
         let second = ScoredPostsQuery {
-            user_id: 43,
+            user_id: 43.into(),
             request_id: first.request_id.clone(),
             prediction_id: first.prediction_id,
             ..Default::default()

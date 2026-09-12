@@ -23,6 +23,7 @@
 use crate::models::candidate_features::{
     GizmoduckUser, GizmoduckUserCounts, GizmoduckUserProfile, GizmoduckUserResult,
 };
+use crate::models::ids::UserId;
 use std::collections::HashMap;
 use tonic::async_trait;
 
@@ -60,7 +61,7 @@ pub trait GizmoduckClient: Send + Sync {
     ///
     /// The neutral default keeps the main recommendation path running until a
     /// public user-service adapter is supplied and manually verified.
-    async fn get_viewer_data(&self, _viewer_id: u64) -> Result<ViewerData, anyhow::Error> {
+    async fn get_viewer_data(&self, _viewer_id: UserId) -> Result<ViewerData, anyhow::Error> {
         Ok(ViewerData::default())
     }
 
@@ -75,8 +76,8 @@ pub trait GizmoduckClient: Send + Sync {
     /// - None: 用户不存在或被停用
     async fn get_users(
         &self,
-        user_ids: Vec<u64>,
-    ) -> Result<HashMap<u64, Option<GizmoduckUserResult>>, anyhow::Error>;
+        user_ids: Vec<UserId>,
+    ) -> Result<HashMap<UserId, Option<GizmoduckUserResult>>, anyhow::Error>;
 }
 
 /// Demo viewer and profile adapter. Demo users explicitly permit For You
@@ -85,7 +86,7 @@ pub struct DemoGizmoduckClient;
 
 #[async_trait]
 impl GizmoduckClient for DemoGizmoduckClient {
-    async fn get_viewer_data(&self, _viewer_id: u64) -> Result<ViewerData, anyhow::Error> {
+    async fn get_viewer_data(&self, _viewer_id: UserId) -> Result<ViewerData, anyhow::Error> {
         Ok(ViewerData {
             for_you_eligibility: ViewerEligibility::Allowed,
         })
@@ -93,12 +94,13 @@ impl GizmoduckClient for DemoGizmoduckClient {
 
     async fn get_users(
         &self,
-        user_ids: Vec<u64>,
-    ) -> Result<HashMap<u64, Option<GizmoduckUserResult>>, anyhow::Error> {
+        user_ids: Vec<UserId>,
+    ) -> Result<HashMap<UserId, Option<GizmoduckUserResult>>, anyhow::Error> {
         Ok(user_ids
             .into_iter()
             .map(|id| {
-                let followers_count = u32::try_from(id % 900 + 50).expect("bounded demo count");
+                let n = id.to_u64_be_padded().unwrap_or(0);
+                let followers_count = u32::try_from(n % 900 + 50).expect("bounded demo count");
                 (
                     id,
                     Some(GizmoduckUserResult {
@@ -130,11 +132,11 @@ impl DisabledGizmoduckClient {
 impl GizmoduckClient for DisabledGizmoduckClient {
     async fn get_users(
         &self,
-        user_ids: Vec<u64>,
-    ) -> Result<HashMap<u64, Option<GizmoduckUserResult>>, anyhow::Error> {
+        user_ids: Vec<UserId>,
+    ) -> Result<HashMap<UserId, Option<GizmoduckUserResult>>, anyhow::Error> {
         // Stub: 返回所有用户为 None（未找到）
         // 这意味着 author_screen_name 和 author_followers_count 将为 None
-        let results: HashMap<u64, Option<GizmoduckUserResult>> =
+        let results: HashMap<UserId, Option<GizmoduckUserResult>> =
             user_ids.into_iter().map(|id| (id, None)).collect();
         Ok(results)
     }

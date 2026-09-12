@@ -385,7 +385,7 @@ impl RankingScorer {
         let mut ordered: Vec<usize> = (0..candidates.len()).collect();
         ordered.sort_by(|&a, &b| scores[b].partial_cmp(&scores[a]).unwrap_or(Ordering::Equal));
 
-        let mut author_counts: HashMap<u64, usize> = HashMap::new();
+        let mut author_counts: HashMap<crate::models::UserId, usize> = HashMap::new();
         let mut exponents = vec![0.0; candidates.len()];
         for index in ordered {
             let entry = author_counts
@@ -625,7 +625,7 @@ mod tests {
         };
         let mutual_reply = PostCandidate {
             is_mutual_follow_author: Some(true),
-            in_reply_to_tweet_id: Some(1),
+            in_reply_to_tweet_id: Some(1.into()),
             phoenix_scores: base_scores.clone(),
             ..Default::default()
         };
@@ -653,8 +653,8 @@ mod tests {
         let query = ScoredPostsQuery::default();
         let candidates = vec![
             PostCandidate {
-                tweet_id: 1,
-                author_id: 10,
+                tweet_id: 1.into(),
+                author_id: 10.into(),
                 in_network: Some(true),
                 phoenix_scores: PhoenixScores {
                     favorite_score: Some(0.8),
@@ -663,8 +663,8 @@ mod tests {
                 ..Default::default()
             },
             PostCandidate {
-                tweet_id: 2,
-                author_id: 10,
+                tweet_id: 2.into(),
+                author_id: 10.into(),
                 in_network: Some(true),
                 phoenix_scores: PhoenixScores {
                     favorite_score: Some(0.7),
@@ -692,8 +692,8 @@ mod tests {
         let query = ScoredPostsQuery::default();
         let candidates = vec![
             PostCandidate {
-                tweet_id: 1,
-                author_id: 10,
+                tweet_id: 1.into(),
+                author_id: 10.into(),
                 in_network: Some(true),
                 phoenix_scores: PhoenixScores {
                     favorite_score: Some(0.5),
@@ -702,8 +702,8 @@ mod tests {
                 ..Default::default()
             },
             PostCandidate {
-                tweet_id: 2,
-                author_id: 20,
+                tweet_id: 2.into(),
+                author_id: 20.into(),
                 in_network: Some(false),
                 phoenix_scores: PhoenixScores {
                     favorite_score: Some(0.5),
@@ -730,10 +730,10 @@ mod tests {
         let query = ScoredPostsQuery::default();
         let candidates = vec![
             PostCandidate {
-                tweet_id: 1,
-                author_id: 10,
+                tweet_id: 1.into(),
+                author_id: 10.into(),
                 in_network: Some(true),
-                in_reply_to_tweet_id: Some(99),
+                in_reply_to_tweet_id: Some(99.into()),
                 phoenix_scores: PhoenixScores {
                     favorite_score: Some(0.5),
                     ..Default::default()
@@ -741,10 +741,10 @@ mod tests {
                 ..Default::default()
             },
             PostCandidate {
-                tweet_id: 2,
-                author_id: 20,
+                tweet_id: 2.into(),
+                author_id: 20.into(),
                 in_network: Some(true),
-                retweeted_tweet_id: Some(98),
+                retweeted_tweet_id: Some(98.into()),
                 phoenix_scores: PhoenixScores {
                     favorite_score: Some(0.5),
                     ..Default::default()
@@ -752,8 +752,8 @@ mod tests {
                 ..Default::default()
             },
             PostCandidate {
-                tweet_id: 3,
-                author_id: 30,
+                tweet_id: 3.into(),
+                author_id: 30.into(),
                 in_network: Some(true),
                 phoenix_scores: PhoenixScores {
                     favorite_score: Some(0.5),
@@ -775,8 +775,8 @@ mod tests {
     fn topic_feed_uses_topic_oon_weight_factor() {
         let make_candidates = || {
             vec![PostCandidate {
-                tweet_id: 1,
-                author_id: 10,
+                tweet_id: 1.into(),
+                author_id: 10.into(),
                 in_network: Some(false),
                 phoenix_scores: PhoenixScores {
                     favorite_score: Some(0.5),
@@ -811,8 +811,8 @@ mod tests {
             ..Default::default()
         };
         let candidates = vec![PostCandidate {
-            tweet_id: 1,
-            author_id: 10,
+            tweet_id: 1.into(),
+            author_id: 10.into(),
             in_network: Some(false),
             phoenix_scores: PhoenixScores {
                 favorite_score: Some(0.5),

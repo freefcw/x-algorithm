@@ -33,18 +33,18 @@ mod tests {
         };
         let candidates = vec![
             PostCandidate {
-                tweet_id: 1,
+                tweet_id: 1.into(),
                 video_duration_ms: Some(30_000),
                 ..Default::default()
             },
             PostCandidate {
-                tweet_id: 2,
+                tweet_id: 2.into(),
                 ..Default::default()
             },
         ];
         let result = VideoFilter.filter(&query, candidates);
 
-        assert_eq!(result.kept[0].tweet_id, 2);
-        assert_eq!(result.removed[0].tweet_id, 1);
+        assert_eq!(result.kept[0].tweet_id, crate::models::pid(2));
+        assert_eq!(result.removed[0].tweet_id, crate::models::pid(1));
     }
 }

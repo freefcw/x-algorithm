@@ -7,7 +7,6 @@
 //   4. 返回最终排序后的 Feed 流
 
 pub mod ads;
-pub mod business_feed;
 pub mod candidate_hydrators;
 pub mod candidate_pipeline;
 pub mod clients;
@@ -38,7 +37,7 @@ pub mod uas_compat;
 pub mod visibility;
 
 pub use candidate_pipeline::phoenix_candidate_pipeline::{
-    PhoenixCandidatePipeline, TopicPersonalizationClients,
+    PhoenixCandidatePipeline, PhoenixDependencies, TopicPersonalizationClients,
 };
-pub use feature_policy::HomeMixerFeatures;
+pub use feature_policy::{HomeMixerFeatures, VfFailurePolicy};
 pub use server::{HomeMixerConfig, HomeMixerServer};

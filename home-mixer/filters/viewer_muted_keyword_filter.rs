@@ -63,11 +63,14 @@ mod tests {
     use super::*;
     use crate::models::user_features::UserFeatures;
 
-    fn create_test_candidate(tweet_id: u64, tweet_text: &str) -> PostCandidate {
+    fn create_test_candidate(
+        tweet_id: impl Into<crate::models::PostId>,
+        tweet_text: &str,
+    ) -> PostCandidate {
         PostCandidate {
-            tweet_id,
+            tweet_id: tweet_id.into(),
             tweet_text: tweet_text.to_string(),
-            author_id: 12345,
+            author_id: 12345.into(),
             ..Default::default()
         }
     }
@@ -82,7 +85,7 @@ mod tests {
         }
     }
 
-    fn removed_ids(result: &FilterResult<PostCandidate>) -> Vec<u64> {
+    fn removed_ids(result: &FilterResult<PostCandidate>) -> Vec<crate::models::PostId> {
         result.removed.iter().map(|c| c.tweet_id).collect()
     }
 
@@ -92,13 +95,13 @@ mod tests {
         query.user_features.muted_keywords = vec!["spoiler".to_string()];
         let candidates = vec![
             PostCandidate {
-                tweet_id: 1,
+                tweet_id: 1.into(),
                 tweet_text: "safe main text".to_string(),
                 quoted_tweet_text: "contains spoiler details".to_string(),
                 ..Default::default()
             },
             PostCandidate {
-                tweet_id: 2,
+                tweet_id: 2.into(),
                 tweet_text: "safe".to_string(),
                 quoted_tweet_text: "also safe".to_string(),
                 ..Default::default()
@@ -107,8 +110,8 @@ mod tests {
 
         let result = ViewerMutedKeywordFilter::new().filter(&query, candidates);
 
-        assert_eq!(result.kept[0].tweet_id, 2);
-        assert_eq!(result.removed[0].tweet_id, 1);
+        assert_eq!(result.kept[0].tweet_id, crate::models::pid(2));
+        assert_eq!(result.removed[0].tweet_id, crate::models::pid(1));
     }
 
     #[test]
@@ -135,8 +138,8 @@ mod tests {
             ],
         );
 
-        assert_eq!(removed_ids(&result), [1]);
-        assert_eq!(result.kept[0].tweet_id, 2);
+        assert_eq!(removed_ids(&result), [crate::models::pid(1)]);
+        assert_eq!(result.kept[0].tweet_id, crate::models::pid(2));
     }
 
     #[test]
@@ -150,8 +153,11 @@ mod tests {
             ],
         );
 
-        assert_eq!(removed_ids(&result), [1, 2]);
-        assert_eq!(result.kept[0].tweet_id, 3);
+        assert_eq!(
+            removed_ids(&result),
+            [crate::models::pid(1), crate::models::pid(2)]
+        );
+        assert_eq!(result.kept[0].tweet_id, crate::models::pid(3));
     }
 
     #[test]
@@ -165,7 +171,7 @@ mod tests {
             ],
         );
 
-        assert_eq!(removed_ids(&result), [1]);
+        assert_eq!(removed_ids(&result), [crate::models::pid(1)]);
         assert_eq!(result.kept.len(), 2);
     }
 
@@ -180,8 +186,11 @@ mod tests {
             ],
         );
 
-        assert_eq!(removed_ids(&result), [1, 2]);
-        assert_eq!(result.kept[0].tweet_id, 3);
+        assert_eq!(
+            removed_ids(&result),
+            [crate::models::pid(1), crate::models::pid(2)]
+        );
+        assert_eq!(result.kept[0].tweet_id, crate::models::pid(3));
     }
 
     #[test]
@@ -195,7 +204,7 @@ mod tests {
             ],
         );
 
-        assert_eq!(removed_ids(&result), [1]);
+        assert_eq!(removed_ids(&result), [crate::models::pid(1)]);
         assert_eq!(result.kept.len(), 2);
     }
 
@@ -215,8 +224,15 @@ mod tests {
             ],
         );
 
-        assert_eq!(removed_ids(&result), [1, 2, 3]);
-        assert_eq!(result.kept[0].tweet_id, 4);
+        assert_eq!(
+            removed_ids(&result),
+            [
+                crate::models::pid(1),
+                crate::models::pid(2),
+                crate::models::pid(3)
+            ]
+        );
+        assert_eq!(result.kept[0].tweet_id, crate::models::pid(4));
     }
 
     #[test]
@@ -231,8 +247,15 @@ mod tests {
             ],
         );
 
-        assert_eq!(removed_ids(&result), [1, 2, 3]);
-        assert_eq!(result.kept[0].tweet_id, 4);
+        assert_eq!(
+            removed_ids(&result),
+            [
+                crate::models::pid(1),
+                crate::models::pid(2),
+                crate::models::pid(3)
+            ]
+        );
+        assert_eq!(result.kept[0].tweet_id, crate::models::pid(4));
     }
 
     #[test]
@@ -246,8 +269,11 @@ mod tests {
             ],
         );
 
-        assert_eq!(removed_ids(&result), [1, 2]);
-        assert_eq!(result.kept[0].tweet_id, 3);
+        assert_eq!(
+            removed_ids(&result),
+            [crate::models::pid(1), crate::models::pid(2)]
+        );
+        assert_eq!(result.kept[0].tweet_id, crate::models::pid(3));
     }
 
     #[test]
@@ -284,7 +310,7 @@ mod tests {
             ],
         );
 
-        assert_eq!(removed_ids(&result), [2]);
+        assert_eq!(removed_ids(&result), [crate::models::pid(2)]);
         assert_eq!(result.kept.len(), 2);
     }
 
@@ -300,8 +326,15 @@ mod tests {
             ],
         );
 
-        assert_eq!(removed_ids(&result), [1, 2, 3]);
-        assert_eq!(result.kept[0].tweet_id, 4);
+        assert_eq!(
+            removed_ids(&result),
+            [
+                crate::models::pid(1),
+                crate::models::pid(2),
+                crate::models::pid(3)
+            ]
+        );
+        assert_eq!(result.kept[0].tweet_id, crate::models::pid(4));
     }
 
     #[test]
@@ -314,7 +347,7 @@ mod tests {
             ],
         );
 
-        assert_eq!(removed_ids(&result), [2]);
-        assert_eq!(result.kept[0].tweet_id, 1);
+        assert_eq!(removed_ids(&result), [crate::models::pid(2)]);
+        assert_eq!(result.kept[0].tweet_id, crate::models::pid(1));
     }
 }

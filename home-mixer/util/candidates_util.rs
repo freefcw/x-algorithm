@@ -13,14 +13,16 @@ const MAX_FOLLOWERS_THRESHOLD: i64 = 10_000;
 
 /// 获取帖子及其关联帖子（转发原帖、被回复帖）的 ID 列表。
 /// 去重过滤使用：用户看过原帖时，其转发/回复也应被过滤。
-pub fn get_related_post_ids(candidate: &PostCandidate) -> Vec<u64> {
+pub fn get_related_post_ids(candidate: &PostCandidate) -> Vec<crate::models::PostId> {
     let mut ids = vec![candidate.tweet_id];
     ids.extend(candidate.retweeted_tweet_id);
     ids.extend(candidate.in_reply_to_tweet_id);
     ids
 }
 
-pub fn related_post_ids_iter(candidate: &PostCandidate) -> impl Iterator<Item = u64> {
+pub fn related_post_ids_iter(
+    candidate: &PostCandidate,
+) -> impl Iterator<Item = crate::models::PostId> {
     std::iter::once(candidate.tweet_id)
         .chain(candidate.retweeted_tweet_id)
         .chain(candidate.in_reply_to_tweet_id)
@@ -80,14 +82,21 @@ mod tests {
     #[test]
     fn test_get_related_post_ids() {
         let candidate = PostCandidate {
-            tweet_id: 100,
-            retweeted_tweet_id: Some(101),
-            in_reply_to_tweet_id: Some(102),
+            tweet_id: 100.into(),
+            retweeted_tweet_id: Some(101.into()),
+            in_reply_to_tweet_id: Some(102.into()),
             ..Default::default()
         };
         let ids = get_related_post_ids(&candidate);
-        assert_eq!(ids, vec![100, 101, 102]);
-        let iter_ids: Vec<u64> = related_post_ids_iter(&candidate).collect();
+        assert_eq!(
+            ids,
+            vec![
+                crate::models::pid(100),
+                crate::models::pid(101),
+                crate::models::pid(102)
+            ]
+        );
+        let iter_ids: Vec<_> = related_post_ids_iter(&candidate).collect();
         assert_eq!(iter_ids, ids);
     }
 

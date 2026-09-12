@@ -38,9 +38,9 @@ pub struct UserActionSequenceMeta {
 #[derive(Clone, Debug, Default)]
 pub struct UserAction {
     /// 帖子 ID
-    pub tweet_id: Option<i64>,
+    pub tweet_id: Option<crate::models::PostId>,
     /// 帖子作者 ID
-    pub author_id: Option<i64>,
+    pub author_id: Option<crate::models::UserId>,
     /// 曝光/互动时间（毫秒 epoch）
     pub action_time_ms: Option<i64>,
     /// 行为类型代码
@@ -55,9 +55,9 @@ pub struct UserAction {
 #[derive(Clone, Debug, Default)]
 pub struct AggregatedUserAction {
     /// 帖子 ID
-    pub tweet_id: Option<i64>,
+    pub tweet_id: Option<crate::models::PostId>,
     /// 作者 ID
-    pub author_id: Option<i64>,
+    pub author_id: Option<crate::models::UserId>,
     /// 最初曝光时间（毫秒 epoch）
     pub impressed_time_ms: Option<i64>,
     /// 行为位掩码 — 每个 bit 对应一种行为类型
@@ -106,7 +106,6 @@ pub mod convert {
             .and_then(|value| u64::try_from(value).ok())
             .unwrap_or(0);
         Ok(recsys::AggregatedUserAction {
-            // TEMP(U4-P1): 十进制 u64 桥接，P1 迁移到 PostId 后删除
             tweet_id: tweet_id.to_string(),
             author_id: author_id.to_string(),
             impressed_time_ms,
@@ -115,11 +114,13 @@ pub mod convert {
         })
     }
 
-    fn required_id(value: Option<i64>, field: &str) -> Result<u64, String> {
+    fn required_id(
+        value: Option<crate::models::ObjectId>,
+        field: &str,
+    ) -> Result<crate::models::ObjectId, String> {
         value
-            .and_then(|value| u64::try_from(value).ok())
-            .filter(|value| *value != 0)
-            .ok_or_else(|| format!("AggregatedUserAction.{field} must be a positive ID"))
+            .filter(|value| !value.is_nil())
+            .ok_or_else(|| format!("AggregatedUserAction.{field} must be a non-nil ObjectId"))
     }
 
     #[cfg(test)]
@@ -130,18 +131,18 @@ pub mod convert {
         fn rejects_missing_nonpositive_or_negative_identity_fields() {
             for action in [
                 AggregatedUserAction {
-                    tweet_id: Some(-1),
-                    author_id: Some(1),
+                    tweet_id: None,
+                    author_id: Some(crate::models::uid(1)),
                     ..Default::default()
                 },
                 AggregatedUserAction {
-                    tweet_id: Some(1),
-                    author_id: Some(-1),
+                    tweet_id: Some(crate::models::pid(1)),
+                    author_id: None,
                     ..Default::default()
                 },
                 AggregatedUserAction {
-                    tweet_id: Some(0),
-                    author_id: Some(1),
+                    tweet_id: Some(crate::models::PostId::NIL),
+                    author_id: Some(crate::models::uid(1)),
                     ..Default::default()
                 },
             ] {
@@ -152,8 +153,8 @@ pub mod convert {
         #[test]
         fn negative_impression_time_degrades_to_zero_without_wrapping() {
             let converted = thrift_to_proto_aggregated_user_action(AggregatedUserAction {
-                tweet_id: Some(1),
-                author_id: Some(2),
+                tweet_id: Some(crate::models::pid(1)),
+                author_id: Some(crate::models::uid(2)),
                 impressed_time_ms: Some(-1),
                 ..Default::default()
             })

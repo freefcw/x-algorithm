@@ -80,15 +80,15 @@ mod tests {
     impl TESClient for FakeTESClient {
         async fn get_tweet_core_datas(
             &self,
-            _tweet_ids: Vec<u64>,
-        ) -> Result<HashMap<u64, Option<PureCoreData>>, anyhow::Error> {
+            _tweet_ids: Vec<crate::models::PostId>,
+        ) -> Result<HashMap<crate::models::PostId, Option<PureCoreData>>, anyhow::Error> {
             Ok(HashMap::new())
         }
 
         async fn get_tweet_media_entities(
             &self,
-            tweet_ids: Vec<u64>,
-        ) -> Result<HashMap<u64, Option<MediaEntities>>, anyhow::Error> {
+            tweet_ids: Vec<crate::models::PostId>,
+        ) -> Result<HashMap<crate::models::PostId, Option<MediaEntities>>, anyhow::Error> {
             Ok(tweet_ids
                 .into_iter()
                 .map(|id| {
@@ -106,8 +106,9 @@ mod tests {
 
         async fn get_subscription_author_ids(
             &self,
-            _tweet_ids: Vec<u64>,
-        ) -> Result<HashMap<u64, Option<u64>>, anyhow::Error> {
+            _tweet_ids: Vec<crate::models::PostId>,
+        ) -> Result<HashMap<crate::models::PostId, Option<crate::models::UserId>>, anyhow::Error>
+        {
             Ok(HashMap::new())
         }
     }
@@ -121,9 +122,9 @@ mod tests {
             ..Default::default()
         };
         let candidate = PostCandidate {
-            tweet_id: 100,
-            retweeted_tweet_id: Some(200),
-            quoted_tweet_id: Some(300),
+            tweet_id: 100.into(),
+            retweeted_tweet_id: Some(200.into()),
+            quoted_tweet_id: Some(300.into()),
             ..Default::default()
         };
 

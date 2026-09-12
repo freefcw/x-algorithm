@@ -42,25 +42,25 @@ mod tests {
         };
         let candidates = vec![
             PostCandidate {
-                tweet_id: 1,
+                tweet_id: 1.into(),
                 in_network: Some(true),
                 filtered_topic_ids: vec![30],
                 ..Default::default()
             },
             PostCandidate {
-                tweet_id: 2,
+                tweet_id: 2.into(),
                 in_network: Some(false),
                 filtered_topic_ids: vec![10],
                 ..Default::default()
             },
             PostCandidate {
-                tweet_id: 3,
+                tweet_id: 3.into(),
                 in_network: Some(false),
                 filtered_topic_ids: vec![30],
                 ..Default::default()
             },
             PostCandidate {
-                tweet_id: 4,
+                tweet_id: 4.into(),
                 in_network: Some(false),
                 retrieval_topic_ids: vec![10],
                 ..Default::default()
@@ -75,7 +75,7 @@ mod tests {
                 .iter()
                 .map(|candidate| candidate.tweet_id)
                 .collect::<Vec<_>>(),
-            vec![1, 2]
+            vec![crate::models::pid(1), crate::models::pid(2)]
         );
         assert_eq!(result.removed.len(), 2);
     }

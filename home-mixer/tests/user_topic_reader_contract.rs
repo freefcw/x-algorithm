@@ -1,5 +1,6 @@
 use home_mixer::clients::topic_retrieval_client::{TopicPost, TopicRetrievalClient};
 use home_mixer::clients::user_topic_reader::UserTopicReader;
+use home_mixer::models::{uid, UserId};
 use home_mixer::scored_posts_server::ScoredPostsServer;
 use home_mixer::{HomeMixerServer, PhoenixCandidatePipeline, TopicPersonalizationClients};
 use std::sync::Arc;
@@ -9,8 +10,10 @@ struct ExternalUserTopicReader;
 
 #[async_trait]
 impl UserTopicReader for ExternalUserTopicReader {
-    async fn get_supplemental_topic_ids(&self, user_id: u64) -> Result<Vec<i64>, anyhow::Error> {
-        Ok(vec![i64::try_from(user_id)?])
+    async fn get_supplemental_topic_ids(&self, user_id: UserId) -> Result<Vec<i64>, anyhow::Error> {
+        Ok(vec![i64::try_from(
+            user_id.to_u64_be_padded().unwrap_or(0),
+        )?])
     }
 }
 
@@ -20,7 +23,7 @@ struct ExternalTopicRetrievalClient;
 impl TopicRetrievalClient for ExternalTopicRetrievalClient {
     async fn retrieve(
         &self,
-        _user_id: u64,
+        _user_id: UserId,
         _topic_ids: &[i64],
         _max_results: usize,
     ) -> Result<Vec<TopicPost>, String> {
@@ -35,7 +38,7 @@ fn public_reader_contract_can_be_implemented_by_an_external_adapter() {
         .expect("test runtime");
 
     let topic_ids = runtime
-        .block_on(ExternalUserTopicReader.get_supplemental_topic_ids(42))
+        .block_on(ExternalUserTopicReader.get_supplemental_topic_ids(uid(42)))
         .expect("user topics");
 
     assert_eq!(topic_ids, vec![42]);

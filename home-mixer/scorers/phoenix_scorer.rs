@@ -35,7 +35,6 @@ impl Scorer<ScoredPostsQuery, PostCandidate> for PhoenixScorer {
                     let tweet_id = c.retweeted_tweet_id.unwrap_or(c.tweet_id);
                     let author_id = c.retweeted_user_id.unwrap_or(c.author_id);
                     x_algorithm_proto::recsys::TweetInfo {
-                        // TEMP(U4-P1): 十进制 u64 桥接，P1 迁移到 PostId 后删除
                         tweet_id: tweet_id.to_string(),
                         author_id: author_id.to_string(),
                         safety_label_mask: 0,
@@ -76,21 +75,40 @@ impl Scorer<ScoredPostsQuery, PostCandidate> for PhoenixScorer {
                         .collect();
                 }
                 Err(error) => {
-                    return vec![
-                        Err(format!("Phoenix prediction failed: {error}"));
-                        candidates.len()
-                    ];
+                    // Keep cardinality while marking the whole batch degraded.
+                    // Returning an explicit marker lets the fallback scorer clear
+                    // stale Phoenix heads before applying one consistent rule rank.
+                    return candidates
+                        .iter()
+                        .map(|_| {
+                            Ok(PostCandidate {
+                                phoenix_scores: PhoenixScores::default(),
+                                degraded_reason: Some(format!("phoenix_unavailable: {error}")),
+                                ..Default::default()
+                            })
+                        })
+                        .collect();
                 }
             }
         }
 
-        vec![Ok(PostCandidate::default()); candidates.len()]
+        candidates
+            .iter()
+            .map(|_| {
+                Ok(PostCandidate {
+                    phoenix_scores: PhoenixScores::default(),
+                    degraded_reason: Some("phoenix_missing_sequence".to_string()),
+                    ..Default::default()
+                })
+            })
+            .collect()
     }
 
     fn update(&self, candidate: &mut PostCandidate, scored: PostCandidate) {
         candidate.phoenix_scores = scored.phoenix_scores;
         candidate.prediction_request_id = scored.prediction_request_id;
         candidate.last_scored_at_ms = scored.last_scored_at_ms;
+        candidate.degraded_reason = scored.degraded_reason;
     }
 }
 
@@ -99,15 +117,13 @@ impl PhoenixScorer {
     fn build_predictions_map(
         &self,
         response: &x_algorithm_proto::recsys::PredictNextActionsResponse,
-    ) -> HashMap<u64, ActionPredictions> {
+    ) -> HashMap<crate::models::PostId, ActionPredictions> {
         let mut predictions_map = HashMap::new();
 
         let Some(distribution_set) = response.distribution_sets.first() else {
             return predictions_map;
         };
 
-        // TEMP(U4-P1): 十进制 u64 桥接，P1 迁移到 PostId 后删除
-        // 响应里的 tweet_id 是字符串；只接受十进制 u64，其余整条预测丢弃并计数告警。
         let mut unparsable_ids = 0usize;
         let mut unparsable_example: Option<String> = None;
 
@@ -115,12 +131,16 @@ impl PhoenixScorer {
             let Some(candidate) = &distribution.candidate else {
                 continue;
             };
-            // TEMP(U4-P1): 十进制 u64 桥接，P1 迁移到 PostId 后删除
-            let Ok(tweet_id) = candidate.tweet_id.parse::<u64>() else {
+            let Ok(tweet_id) = crate::models::ObjectId::parse(&candidate.tweet_id) else {
                 unparsable_ids += 1;
                 unparsable_example.get_or_insert_with(|| candidate.tweet_id.clone());
                 continue;
             };
+            if tweet_id.is_nil() {
+                unparsable_ids += 1;
+                unparsable_example.get_or_insert_with(|| candidate.tweet_id.clone());
+                continue;
+            }
 
             let action_probs: HashMap<usize, f64> = distribution
                 .top_log_probs
@@ -145,10 +165,9 @@ impl PhoenixScorer {
             );
         }
 
-        // TEMP(U4-P1): 十进制 u64 桥接，P1 迁移到 PostId 后删除
         if unparsable_ids > 0 {
             log::warn!(
-                "PhoenixScorer: dropped {} prediction(s) whose tweet_id is not a decimal u64 (e.g. {:?})",
+                "PhoenixScorer: dropped {} prediction(s) whose tweet_id is not a 24-hex ObjectId (e.g. {:?})",
                 unparsable_ids,
                 unparsable_example.unwrap_or_default()
             );
@@ -225,7 +244,7 @@ mod tests {
     impl PhoenixPredictionClient for UnusedPhoenixClient {
         async fn predict(
             &self,
-            _user_id: u64,
+            _user_id: crate::models::UserId,
             _sequence: x_algorithm_proto::recsys::UserActionSequence,
             _candidates: Vec<x_algorithm_proto::recsys::TweetInfo>,
         ) -> Result<x_algorithm_proto::recsys::PredictNextActionsResponse, anyhow::Error> {
@@ -239,7 +258,7 @@ mod tests {
     impl PhoenixPredictionClient for FailingPhoenixClient {
         async fn predict(
             &self,
-            _user_id: u64,
+            _user_id: crate::models::UserId,
             _sequence: x_algorithm_proto::recsys::UserActionSequence,
             _candidates: Vec<x_algorithm_proto::recsys::TweetInfo>,
         ) -> Result<x_algorithm_proto::recsys::PredictNextActionsResponse, anyhow::Error> {
@@ -264,7 +283,7 @@ mod tests {
             .score(
                 &query,
                 &[PostCandidate {
-                    tweet_id: 10,
+                    tweet_id: crate::models::pid(10),
                     ..Default::default()
                 }],
             )
@@ -280,7 +299,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn unavailable_prediction_does_not_produce_scored_candidate_metadata() {
+    async fn unavailable_prediction_marks_whole_batch_for_rule_fallback() {
         let query = ScoredPostsQuery {
             prediction_id: 123,
             scoring_sequence: Some(Default::default()),
@@ -294,18 +313,24 @@ mod tests {
             .score(
                 &query,
                 &[PostCandidate {
-                    tweet_id: 10,
+                    tweet_id: crate::models::pid(10),
                     ..Default::default()
                 }],
             )
             .await;
 
-        assert!(scored[0].is_err());
+        let candidate = scored[0]
+            .as_ref()
+            .expect("fallback marker preserves cardinality");
+        assert!(candidate.prediction_request_id.is_none());
+        assert!(candidate
+            .degraded_reason
+            .as_deref()
+            .is_some_and(|reason| { reason.starts_with("phoenix_unavailable:") }));
     }
 
-    // TEMP(U4-P1): 十进制 u64 桥接，P1 迁移到 PostId 后删除
     #[test]
-    fn predictions_with_non_decimal_tweet_ids_are_dropped_not_zeroed() {
+    fn predictions_with_non_object_ids_are_dropped_not_nil() {
         use x_algorithm_proto::recsys::{
             CandidateDistribution, DistributionSet, PredictNextActionsResponse, TweetInfo,
         };
@@ -321,9 +346,9 @@ mod tests {
         let response = PredictNextActionsResponse {
             distribution_sets: vec![DistributionSet {
                 candidate_distributions: vec![
-                    distribution("10"),
-                    // 24 位 hex（ObjectId 形状）无法解析为 u64，必须被丢弃而不是当成 0。
+                    distribution("00000000000000000000000a"),
                     distribution("5f1a2b3c4d5e6f7a8b9c0d1e"),
+                    distribution("10"),
                     distribution(""),
                 ],
             }],
@@ -331,9 +356,11 @@ mod tests {
 
         let predictions_map = scorer().build_predictions_map(&response);
 
-        assert_eq!(predictions_map.len(), 1);
-        assert!(predictions_map.contains_key(&10));
-        assert!(!predictions_map.contains_key(&0));
+        assert_eq!(predictions_map.len(), 2);
+        assert!(predictions_map.contains_key(&crate::models::pid(0xa)));
+        assert!(predictions_map
+            .contains_key(&crate::models::ObjectId::parse("5f1a2b3c4d5e6f7a8b9c0d1e").unwrap()));
+        assert!(!predictions_map.contains_key(&crate::models::PostId::NIL));
     }
 
     #[test]

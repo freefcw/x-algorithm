@@ -18,6 +18,7 @@
 // 当前为 stub 实现。
 // TODO: 替换为你平台的用户数据服务
 
+use crate::models::ids::{PostId, UserId};
 use tonic::async_trait;
 
 // =============================================================================
@@ -85,14 +86,13 @@ pub trait StratoClient: Send + Sync {
     ///   - InNetworkCandidateHydrator: 判断帖子是否来自关注者
     ///   - AuthorSocialgraphFilter: 过滤被屏蔽/静音的作者
     ///   - ViewerMutedKeywordFilter: 使用屏蔽关键词列表
-    ///   - IneligibleSubscriptionFilter: 检查付费订阅状态
     ///
     /// # Arguments
     /// * `user_id` - 用户 ID
     ///
     /// # Returns
     /// 序列化的用户特征数据（原始字节）
-    async fn get_user_features(&self, user_id: u64) -> Result<Vec<u8>, anyhow::Error>;
+    async fn get_user_features(&self, user_id: UserId) -> Result<Vec<u8>, anyhow::Error>;
 
     /// 存储请求信息（已投递帖子缓存）
     ///
@@ -104,8 +104,8 @@ pub trait StratoClient: Send + Sync {
     /// * `post_ids` - 本次投递的帖子 ID 列表
     async fn store_request_info(
         &self,
-        user_id: u64,
-        post_ids: Vec<u64>,
+        user_id: UserId,
+        post_ids: Vec<PostId>,
     ) -> Result<Vec<u8>, anyhow::Error>;
 }
 
@@ -122,7 +122,7 @@ impl DisabledStratoClient {
 
 #[async_trait]
 impl StratoClient for DisabledStratoClient {
-    async fn get_user_features(&self, _user_id: u64) -> Result<Vec<u8>, anyhow::Error> {
+    async fn get_user_features(&self, _user_id: UserId) -> Result<Vec<u8>, anyhow::Error> {
         // Stub: 返回空的用户特征 JSON
         let empty_features = serde_json::json!({
             "mutedKeywords": [],
@@ -136,8 +136,8 @@ impl StratoClient for DisabledStratoClient {
 
     async fn store_request_info(
         &self,
-        _user_id: u64,
-        _post_ids: Vec<u64>,
+        _user_id: UserId,
+        _post_ids: Vec<PostId>,
     ) -> Result<Vec<u8>, anyhow::Error> {
         anyhow::bail!("Strato request-info persistence is disabled")
     }
@@ -152,12 +152,17 @@ pub struct DemoStratoClient;
 
 #[async_trait]
 impl StratoClient for DemoStratoClient {
-    async fn get_user_features(&self, _user_id: u64) -> Result<Vec<u8>, anyhow::Error> {
+    async fn get_user_features(&self, _user_id: UserId) -> Result<Vec<u8>, anyhow::Error> {
+        let followed: Vec<String> = x_algorithm_proto::demo::DEMO_AUTHOR_IDS
+            .iter()
+            .copied()
+            .map(x_algorithm_proto::demo::demo_author_object_id_hex)
+            .collect();
         let features = serde_json::json!({
             "mutedKeywords": [],
             "blockedUserIds": [],
             "mutedUserIds": [],
-            "followedUserIds": x_algorithm_proto::demo::DEMO_AUTHOR_IDS.to_vec(),
+            "followedUserIds": followed,
             "subscribedUserIds": []
         });
         Ok(serde_json::to_vec(&features)?)
@@ -165,8 +170,8 @@ impl StratoClient for DemoStratoClient {
 
     async fn store_request_info(
         &self,
-        _user_id: u64,
-        _post_ids: Vec<u64>,
+        _user_id: UserId,
+        _post_ids: Vec<PostId>,
     ) -> Result<Vec<u8>, anyhow::Error> {
         anyhow::bail!("Strato request-info persistence is not configured in demo mode")
     }
@@ -179,11 +184,11 @@ mod tests {
     #[tokio::test]
     async fn non_persistent_adapters_never_report_write_success() {
         assert!(DisabledStratoClient
-            .store_request_info(1, vec![10])
+            .store_request_info(crate::models::uid(1), vec![crate::models::pid(10)])
             .await
             .is_err());
         assert!(DemoStratoClient
-            .store_request_info(1, vec![10])
+            .store_request_info(crate::models::uid(1), vec![crate::models::pid(10)])
             .await
             .is_err());
     }

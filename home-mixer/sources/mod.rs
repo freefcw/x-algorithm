@@ -1,5 +1,6 @@
 pub mod ads_source;
 pub mod cached_posts_source;
+pub mod fallback_source;
 pub mod phoenix_moe_source;
 pub mod phoenix_source;
 pub mod phoenix_topics_source;

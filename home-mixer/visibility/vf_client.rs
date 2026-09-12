@@ -15,9 +15,11 @@
 //   （因为用户没有主动选择关注这些作者）
 //
 // 当前提供 Demo 显式 Allow 和 Disabled 显式 Unavailable 两种实现。
-// Disabled 结果由 Home Mixer 策略层保守降级，不会被解释为审核通过。
+// Disabled 结果写成 Unavailable：是否保留候选由配置的故障策略
+// （HOME_MIXER_VF_FAILURE_POLICY：全放行或仅网内）决定，不解释为审核通过。
 
 use super::models::FilteredReason;
+use crate::models::ids::{PostId, UserId};
 use std::collections::HashMap;
 use std::path::PathBuf;
 use tonic::async_trait;
@@ -50,7 +52,7 @@ pub enum SafetyLevel {
 #[derive(Clone, Debug, Default)]
 pub struct TwitterContextViewer {
     /// 查看者的用户 ID
-    pub user_id: u64,
+    pub user_id: UserId,
     /// 客户端应用 ID（iOS/Android/Web 等）
     pub client_application_id: i64,
     /// 请求发起国家代码 (ISO 3166-1 alpha-2)
@@ -87,11 +89,11 @@ pub trait VisibilityFilteringClient: Send + Sync {
     /// - Some(reason) 表示帖子被标记，附带原因
     async fn get_result(
         &self,
-        tweet_ids: Vec<u64>,
+        tweet_ids: Vec<PostId>,
         safety_level: SafetyLevel,
-        for_user_id: u64,
+        for_user_id: UserId,
         context: Option<TwitterContextViewer>,
-    ) -> Result<HashMap<u64, Option<FilteredReason>>, anyhow::Error>;
+    ) -> Result<HashMap<PostId, Option<FilteredReason>>, anyhow::Error>;
 }
 
 /// Demo visibility adapter. It produces an explicit allow decision for every
@@ -102,18 +104,18 @@ pub struct DemoVisibilityFilteringClient;
 impl VisibilityFilteringClient for DemoVisibilityFilteringClient {
     async fn get_result(
         &self,
-        tweet_ids: Vec<u64>,
+        tweet_ids: Vec<PostId>,
         _safety_level: SafetyLevel,
-        _for_user_id: u64,
+        _for_user_id: UserId,
         _context: Option<TwitterContextViewer>,
-    ) -> Result<HashMap<u64, Option<FilteredReason>>, anyhow::Error> {
+    ) -> Result<HashMap<PostId, Option<FilteredReason>>, anyhow::Error> {
         Ok(tweet_ids.into_iter().map(|id| (id, None)).collect())
     }
 }
 
 /// Disabled production integration. Returning an error keeps "not checked"
-/// distinct from an explicit allow; the application policy then retains only
-/// in-network candidates.
+/// distinct from an explicit allow; the configured failure policy then decides
+/// whether to retain all candidates or only in-network ones.
 pub struct DisabledVisibilityFilteringClient;
 
 impl DisabledVisibilityFilteringClient {
@@ -139,11 +141,11 @@ impl DisabledVisibilityFilteringClient {
 impl VisibilityFilteringClient for DisabledVisibilityFilteringClient {
     async fn get_result(
         &self,
-        tweet_ids: Vec<u64>,
+        tweet_ids: Vec<PostId>,
         _safety_level: SafetyLevel,
-        _for_user_id: u64,
+        _for_user_id: UserId,
         _context: Option<TwitterContextViewer>,
-    ) -> Result<HashMap<u64, Option<FilteredReason>>, anyhow::Error> {
+    ) -> Result<HashMap<PostId, Option<FilteredReason>>, anyhow::Error> {
         let _ = tweet_ids;
         anyhow::bail!("production visibility adapter is not configured")
     }

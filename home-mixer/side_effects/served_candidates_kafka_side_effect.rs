@@ -56,7 +56,7 @@ mod tests {
 
     #[derive(Default)]
     struct RecordingSink {
-        published: Mutex<Vec<(String, Vec<u64>)>>,
+        published: Mutex<Vec<(String, Vec<crate::models::PostId>)>>,
     }
 
     #[async_trait]
@@ -93,7 +93,7 @@ mod tests {
         let input = Arc::new(SideEffectInput {
             query: Arc::new(query),
             selected_candidates: vec![FeedItem::post(ScoredPost {
-                tweet_id: 9,
+                tweet_id: crate::models::pid(9).to_string(),
                 ..Default::default()
             })],
             non_selected_candidates: Vec::new(),
@@ -101,6 +101,9 @@ mod tests {
         side_effect.side_effect(input).await.expect("side effect");
 
         let published = sink.published.lock().expect("publish lock");
-        assert_eq!(published.as_slice(), &[("req-1".to_string(), vec![9])]);
+        assert_eq!(
+            published.as_slice(),
+            &[("req-1".to_string(), vec![crate::models::pid(9)])]
+        );
     }
 }

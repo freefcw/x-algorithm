@@ -4,7 +4,7 @@
 # 除非遵守许可证，否则您不得使用此文件。
 
 """
-Phoenix gRPC 网关 — recommendation-service 与 Phoenix 模型之间的桥。
+Phoenix gRPC 网关 — home-mixer 与 Phoenix 模型之间的桥。
 
 实现 proto/definitions/phoenix_recsys.proto 定义的两个 gRPC 服务：
     1. PhoenixPredictionService.PredictNextActions —— 精排：
@@ -14,7 +14,7 @@ Phoenix gRPC 网关 — recommendation-service 与 Phoenix 模型之间的桥。
 
 与 HTTP 服务（ranker_service / retrieval_service）的区别：
     - HTTP 服务面向人和外部系统调试，字段是字符串 ID；
-    - 本网关面向 recommendation-service（Rust），协议、字段、概率格式严格对齐 proto 契约，
+    - 本网关面向 home-mixer（Rust），协议、字段、概率格式严格对齐 proto 契约，
       并且真正消费请求里的用户行为序列（而不是 mock 特征）。
 
 启动方式:
@@ -78,7 +78,7 @@ LOG_PROBS_LEN = 19        # ActionName 枚举 0..=18
 CONTINUOUS_LEN = 2        # ContinuousActionName 枚举 0..=1（1 = DWELL_TIME）
 MIN_PROB = 1e-9
 
-# Cross-language serving contract.  recommendation-service rejects a response when any of
+# Cross-language serving contract.  home-mixer rejects a response when any of
 # these values is missing or incompatible with the request-side feature
 # mapping.  Keep this explicit instead of inferring readiness from a model
 # filename or from a successful gRPC call.
@@ -95,6 +95,11 @@ def demo_object_id(index: int) -> str:
     import hashlib
 
     return hashlib.md5(f"phoenix-demo-post-{index}".encode(), usedforsecurity=False).hexdigest()[:24]
+
+
+def demo_author_id(index: int) -> str:
+    """Return the same padded ObjectId used by Rust demo adapters."""
+    return f"{201 + (index % 40):024x}"
 
 
 # ── 嵌入表 ────────────────────────────────────────────────────────────────────
@@ -350,7 +355,10 @@ class RetrievalEngine:
         self._post_ids = [
             demo_object_id(i) for i in range(corpus_size)
         ]
-        self._author_ids = [str(201 + (i % 40)) for i in range(corpus_size)]
+        # Keep corpus identities on the same 24-hex wire contract as Home
+        # Mixer.  Decimal IDs here would be rejected by PhoenixSource and make
+        # the local retrieval path silently empty.
+        self._author_ids = [demo_author_id(i) for i in range(corpus_size)]
 
         logger.info("正在编码演示候选池（%d 条帖子）...", corpus_size)
         empty_history = HistoryFeatures(
@@ -408,7 +416,9 @@ def create_servicers(
 ):
     """构造两个 servicer（在函数内定义类，因为基类来自运行时生成的模块）。"""
     supported = set(
-        range(1, 19) if supported_action_enums is None else supported_action_enums
+        [1, 2, 5, 6, 8, 9, 10, 11, 14, 15, 16, 17, 18]
+        if supported_action_enums is None
+        else supported_action_enums
     )
     supported_actions = ",".join(str(value) for value in sorted(supported))
 

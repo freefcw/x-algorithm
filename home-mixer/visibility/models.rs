@@ -13,8 +13,10 @@
 //   - PostCandidate.visibility_decision: 存储帖子审核的明确状态
 
 /// A missing response and an explicit allow are different business outcomes.
-/// Filters use this state to apply the configured in-network/out-of-network
-/// degradation policy without guessing from an Option value.
+/// Request failure and a successful response that omits a post are both
+/// `Unavailable`; whether the candidate is kept is decided by the configured
+/// failure policy (`HOME_MIXER_VF_FAILURE_POLICY`). An explicit allow remains
+/// distinct.
 #[derive(Clone, Debug, Default)]
 pub enum VisibilityDecision {
     #[default]

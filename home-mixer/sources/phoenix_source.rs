@@ -42,9 +42,6 @@ impl Source<ScoredPostsQuery, PostCandidate> for PhoenixSource {
         .await
         .map_err(|e| format!("PhoenixSource: {e}"))?;
 
-        // TEMP(U4-P1): 十进制 u64 桥接，P1 迁移到 PostId 后删除
-        // 协议里的 ID 是字符串；这里只接受十进制 u64，其余候选整条丢弃并计数告警。
-        // 已知后果：演示网关的召回语料 ID 是 24 位 hex，P0 阶段本 Source 在演示模式下返回 0 条。
         let mut unparsable_ids = 0usize;
         let mut unparsable_example: Option<String> = None;
         let candidates: Vec<PostCandidate> = response
@@ -53,7 +50,7 @@ impl Source<ScoredPostsQuery, PostCandidate> for PhoenixSource {
             .flat_map(|scored_candidates| scored_candidates.candidates)
             .filter_map(|scored_candidate| scored_candidate.candidate)
             .filter_map(|tweet_info| {
-                let parsed = parse_bridged_tweet_info(&tweet_info);
+                let parsed = parse_tweet_info(&tweet_info);
                 if parsed.is_none() {
                     unparsable_ids += 1;
                     unparsable_example.get_or_insert_with(|| tweet_info.tweet_id.clone());
@@ -72,7 +69,7 @@ impl Source<ScoredPostsQuery, PostCandidate> for PhoenixSource {
             .collect();
         if unparsable_ids > 0 {
             log::warn!(
-                "PhoenixSource: dropped {} retrieved candidate(s) whose ids are not decimal u64 (e.g. {:?})",
+                "PhoenixSource: dropped {} retrieved candidate(s) whose ids are not 24-hex ObjectIds (e.g. {:?})",
                 unparsable_ids,
                 unparsable_example.unwrap_or_default()
             );
@@ -82,25 +79,28 @@ impl Source<ScoredPostsQuery, PostCandidate> for PhoenixSource {
     }
 }
 
-/// TEMP(U4-P1): 十进制 u64 桥接，P1 迁移到 PostId 后删除
-///
-/// 把 Phoenix 返回的字符串 ID 解析为流水线内部的 u64：`tweet_id` / `author_id` 必须是十进制
-/// u64；`in_reply_to_tweet_id` 空串或 "0" 表示"不是回复"（沿用旧协议"0 = 非回复"的语义，
-/// 直接 Some(0) 会让下游把它当成真实祖先帖），否则也必须能解析。
-/// 任一字段解析失败返回 `None`，由调用方丢弃该候选——绝不回退成 0。
-pub(crate) fn parse_bridged_tweet_info(
+/// Parse Phoenix `TweetInfo` identity fields into pipeline ObjectIds.
+/// Empty `in_reply_to_tweet_id` means not a reply. `"0"` is not a sentinel
+/// and fails closed (the whole candidate is dropped).
+pub(crate) fn parse_tweet_info(
     tweet_info: &x_algorithm_proto::recsys::TweetInfo,
-) -> Option<(u64, u64, Option<u64>)> {
-    let tweet_id = tweet_info.tweet_id.parse::<u64>().ok()?;
-    let author_id = tweet_info.author_id.parse::<u64>().ok()?;
-    let in_reply_to_tweet_id = if tweet_info.in_reply_to_tweet_id.is_empty() {
-        None
-    } else {
-        tweet_info
-            .in_reply_to_tweet_id
-            .parse::<u64>()
-            .ok()
-            .map(|id| (id != 0).then_some(id))?
+) -> Option<(
+    crate::models::PostId,
+    crate::models::UserId,
+    Option<crate::models::PostId>,
+)> {
+    use crate::models::ids::ObjectId;
+    let tweet_id = ObjectId::parse(&tweet_info.tweet_id)
+        .ok()
+        .filter(|id| !id.is_nil())?;
+    let author_id = ObjectId::parse(&tweet_info.author_id)
+        .ok()
+        .filter(|id| !id.is_nil())?;
+    let in_reply_to_tweet_id = match ObjectId::parse_optional(&tweet_info.in_reply_to_tweet_id) {
+        Ok(None) => None,
+        Ok(Some(id)) if id.is_nil() => None,
+        Ok(Some(id)) => Some(id),
+        Err(_) => return None,
     };
     Some((tweet_id, author_id, in_reply_to_tweet_id))
 }
@@ -116,7 +116,7 @@ mod tests {
     impl PhoenixRetrievalClient for UnusedRetrievalClient {
         async fn retrieve(
             &self,
-            _user_id: u64,
+            _user_id: crate::models::UserId,
             _sequence: recsys::UserActionSequence,
             _max_results: u32,
         ) -> Result<recsys::RetrieveResponse, anyhow::Error> {
@@ -130,14 +130,13 @@ mod tests {
         }
     }
 
-    // TEMP(U4-P1): 十进制 u64 桥接，P1 迁移到 PostId 后删除
     struct MixedIdRetrievalClient;
 
     #[async_trait]
     impl PhoenixRetrievalClient for MixedIdRetrievalClient {
         async fn retrieve(
             &self,
-            _user_id: u64,
+            _user_id: crate::models::UserId,
             _sequence: recsys::UserActionSequence,
             _max_results: u32,
         ) -> Result<recsys::RetrieveResponse, anyhow::Error> {
@@ -154,22 +153,25 @@ mod tests {
             Ok(recsys::RetrieveResponse {
                 top_k_candidates: vec![recsys::ScoredCandidates {
                     candidates: vec![
-                        tweet("100", "200", ""),
-                        tweet("101", "200", "0"),
-                        tweet("102", "200", "99"),
-                        // 24 位 hex（ObjectId 形状）：演示网关语料的真实形态，必须被丢弃。
-                        tweet("5f1a2b3c4d5e6f7a8b9c0d1e", "200", ""),
-                        tweet("103", "not-a-u64", ""),
-                        tweet("104", "200", "not-a-u64"),
+                        tweet("000000000000000000000064", "0000000000000000000000c8", ""),
+                        tweet(
+                            "000000000000000000000065",
+                            "0000000000000000000000c8",
+                            "000000000000000000000063",
+                        ),
+                        tweet("5f1a2b3c4d5e6f7a8b9c0d1e", "0000000000000000000000c8", ""),
+                        tweet("103", "0000000000000000000000c8", ""),
+                        tweet("000000000000000000000068", "not-a-id", ""),
+                        tweet("000000000000000000000069", "0000000000000000000000c8", "0"),
                     ],
                 }],
             })
         }
     }
 
-    // TEMP(U4-P1): 十进制 u64 桥接，P1 迁移到 PostId 后删除
     #[tokio::test]
-    async fn non_decimal_ids_are_dropped_instead_of_becoming_zero() {
+    async fn non_object_ids_are_dropped_instead_of_becoming_nil() {
+        use crate::models::{pid, uid};
         let source = PhoenixSource {
             phoenix_retrieval_client: Arc::new(MixedIdRetrievalClient),
         };
@@ -180,17 +182,22 @@ mod tests {
 
         let candidates = source.source(&query).await.expect("retrieval succeeds");
 
-        let ids: Vec<(u64, u64, Option<u64>)> = candidates
+        let ids: Vec<_> = candidates
             .iter()
             .map(|c| (c.tweet_id, c.author_id, c.in_reply_to_tweet_id))
             .collect();
+        let hex = crate::models::ObjectId::parse("5f1a2b3c4d5e6f7a8b9c0d1e").unwrap();
         assert_eq!(
             ids,
-            vec![(100, 200, None), (101, 200, None), (102, 200, Some(99))]
+            vec![
+                (pid(0x64), uid(0xc8), None),
+                (pid(0x65), uid(0xc8), Some(pid(0x63))),
+                (hex, uid(0xc8), None),
+            ]
         );
         assert!(candidates
             .iter()
-            .all(|c| c.tweet_id != 0 && c.author_id != 0));
+            .all(|c| !c.tweet_id.is_nil() && !c.author_id.is_nil()));
         assert!(candidates
             .iter()
             .all(|c| c.served_type == Some(pb::ServedType::ForYouPhoenixRetrieval)));

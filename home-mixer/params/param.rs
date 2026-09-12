@@ -37,7 +37,8 @@ pub const FAVORITE_WEIGHT: f64 = 0.5;
 /// rust_home_mixer_reply_weight = 5.0
 pub const REPLY_WEIGHT: f64 = 5.0;
 /// rust_home_mixer_retweet_weight = 1.0
-pub const RETWEET_WEIGHT: f64 = 1.0;
+/// P2/U5: 产品无转推，权重置 0。
+pub const RETWEET_WEIGHT: f64 = 0.0;
 /// rust_home_mixer_photo_expand_weight = 0.05
 pub const PHOTO_EXPAND_WEIGHT: f64 = 0.05;
 /// rust_home_mixer_video_open_weight = 0.05
@@ -59,9 +60,10 @@ pub const SHARE_VIA_COPY_LINK_WEIGHT: f64 = 20.0;
 /// rust_home_mixer_dwell_weight = 0.0
 pub const DWELL_WEIGHT: f64 = 0.0;
 /// rust_home_mixer_quote_weight = 5.0
-pub const QUOTE_WEIGHT: f64 = 5.0;
+/// P2/U5: 产品无引用转发，权重置 0。
+pub const QUOTE_WEIGHT: f64 = 0.0;
 /// rust_home_mixer_quoted_click_weight = 0.05
-pub const QUOTED_CLICK_WEIGHT: f64 = 0.05;
+pub const QUOTED_CLICK_WEIGHT: f64 = 0.0;
 /// rust_home_mixer_quoted_vqv_weight = 0.0
 pub const QUOTED_VQV_WEIGHT: f64 = 0.0;
 /// rust_home_mixer_follow_author_weight = 4.0

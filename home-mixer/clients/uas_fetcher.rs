@@ -19,6 +19,7 @@
 // 当前为 stub 实现，返回空行为序列。
 // TODO: 当你的平台用户行为追踪系统就绪后，对接真实数据
 
+use crate::models::ids::{ObjectId, UserId};
 use crate::uas_compat;
 use tonic::async_trait;
 
@@ -37,7 +38,7 @@ pub trait UserActionSequenceOps: Send + Sync {
     /// Thrift 格式的用户行为序列
     async fn get_by_user_id(
         &self,
-        user_id: u64,
+        user_id: UserId,
     ) -> Result<uas_compat::UserActionSequence, anyhow::Error>;
 }
 
@@ -60,7 +61,7 @@ impl DisabledUserActionSequenceFetcher {
 impl UserActionSequenceOps for DisabledUserActionSequenceFetcher {
     async fn get_by_user_id(
         &self,
-        _user_id: u64,
+        _user_id: UserId,
     ) -> Result<uas_compat::UserActionSequence, anyhow::Error> {
         // Stub: 返回空的行为序列
         // 这意味着 Phoenix 模型将无法使用个性化行为特征，
@@ -87,7 +88,7 @@ pub struct DemoUserActionSequenceFetcher;
 impl UserActionSequenceOps for DemoUserActionSequenceFetcher {
     async fn get_by_user_id(
         &self,
-        _user_id: u64,
+        _user_id: UserId,
     ) -> Result<uas_compat::UserActionSequence, anyhow::Error> {
         let now_ms = x_algorithm_proto::demo::now_ms();
         let count = 32;
@@ -96,13 +97,14 @@ impl UserActionSequenceOps for DemoUserActionSequenceFetcher {
         let user_actions = (0..count)
             .map(|i| {
                 let action_time_ms = now_ms - (count - i) * step_ms;
+                let ts_secs = u32::try_from((action_time_ms / 1000).max(0)).unwrap_or(0);
                 let authors = x_algorithm_proto::demo::DEMO_AUTHOR_IDS;
+                let author = authors[(i as usize) % authors.len()];
                 uas_compat::UserAction {
-                    tweet_id: Some(x_algorithm_proto::demo::snowflake_id(
-                        action_time_ms,
-                        1000 + i,
+                    tweet_id: Some(ObjectId::from_parts(ts_secs, 1000 + i as u64)),
+                    author_id: Some(ObjectId::from_u64_be_padded(
+                        u64::try_from(author).unwrap_or(0),
                     )),
-                    author_id: Some(authors[(i as usize) % authors.len()]),
                     action_time_ms: Some(action_time_ms),
                     action_type: Some(1),
                 }

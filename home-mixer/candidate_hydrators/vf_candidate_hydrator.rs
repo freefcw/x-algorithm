@@ -24,11 +24,11 @@ impl VFCandidateHydrator {
 
     async fn fetch_vf_results(
         client: &Arc<dyn VisibilityFilteringClient + Send + Sync>,
-        tweet_ids: Vec<u64>,
+        tweet_ids: Vec<crate::models::PostId>,
         safety_level: SafetyLevel,
-        for_user_id: u64,
+        for_user_id: crate::models::UserId,
         context: Option<TwitterContextViewer>,
-    ) -> Result<HashMap<u64, Option<FilteredReason>>, String> {
+    ) -> Result<HashMap<crate::models::PostId, Option<FilteredReason>>, String> {
         if tweet_ids.is_empty() {
             return Ok(HashMap::new());
         }
@@ -140,7 +140,7 @@ impl Hydrator<ScoredPostsQuery, PostCandidate> for VFCandidateHydrator {
             .count();
         if unavailable_candidates > 0 {
             log::warn!(
-                "request_id={} visibility unavailable for {} candidates; applying network fallback",
+                "request_id={} visibility unavailable for {} candidates; deferring to configured failure policy",
                 query.request_id,
                 unavailable_candidates
             );
@@ -156,8 +156,8 @@ impl Hydrator<ScoredPostsQuery, PostCandidate> for VFCandidateHydrator {
 }
 
 fn decision_for(
-    result: &Result<HashMap<u64, Option<FilteredReason>>, String>,
-    tweet_id: u64,
+    result: &Result<HashMap<crate::models::PostId, Option<FilteredReason>>, String>,
+    tweet_id: crate::models::PostId,
 ) -> VisibilityDecision {
     match result {
         Ok(values) => match values.get(&tweet_id) {
@@ -183,8 +183,8 @@ fn action_for_decision(decision: &VisibilityDecision) -> Option<Action> {
 }
 
 fn ancillary_must_drop(
-    result: &Result<HashMap<u64, Option<FilteredReason>>, String>,
-    ids: impl Iterator<Item = u64>,
+    result: &Result<HashMap<crate::models::PostId, Option<FilteredReason>>, String>,
+    ids: impl Iterator<Item = crate::models::PostId>,
 ) -> bool {
     ids.into_iter().any(|id| match result {
         Ok(values) => !matches!(values.get(&id), Some(None)),
@@ -202,15 +202,15 @@ mod tests {
     impl VisibilityFilteringClient for FakeVisibilityClient {
         async fn get_result(
             &self,
-            tweet_ids: Vec<u64>,
+            tweet_ids: Vec<crate::models::PostId>,
             _safety_level: SafetyLevel,
-            _for_user_id: u64,
+            _for_user_id: crate::models::UserId,
             _context: Option<TwitterContextViewer>,
-        ) -> Result<HashMap<u64, Option<FilteredReason>>, anyhow::Error> {
+        ) -> Result<HashMap<crate::models::PostId, Option<FilteredReason>>, anyhow::Error> {
             Ok(tweet_ids
                 .into_iter()
                 .map(|id| {
-                    let reason = (id == 2)
+                    let reason = (id == crate::models::pid(2))
                         .then(|| FilteredReason::GenericFiltered("unsafe quote".to_string()));
                     (id, reason)
                 })
@@ -231,8 +231,8 @@ mod tests {
         let hydrated = runtime.block_on(hydrator.hydrate(
             &ScoredPostsQuery::default(),
             &[PostCandidate {
-                tweet_id: 1,
-                quoted_tweet_id: Some(2),
+                tweet_id: 1.into(),
+                quoted_tweet_id: Some(2.into()),
                 ..Default::default()
             }],
         ));
@@ -246,14 +246,18 @@ mod tests {
     }
 
     #[test]
-    fn omitted_visibility_result_is_unavailable_and_ancillary_fails_closed() {
+    fn omitted_visibility_result_is_unavailable() {
         let result = Ok(HashMap::new());
-
-        assert!(matches!(
-            decision_for(&result, 1),
-            VisibilityDecision::Unavailable(_)
+        match decision_for(&result, crate::models::pid(1)) {
+            VisibilityDecision::Unavailable(reason) => {
+                assert_eq!(reason, "visibility response omitted post");
+            }
+            other => panic!("expected unavailable, got {other:?}"),
+        }
+        assert!(ancillary_must_drop(
+            &result,
+            [crate::models::pid(2)].into_iter()
         ));
-        assert!(ancillary_must_drop(&result, [2].into_iter()));
     }
 
     struct FailingVisibilityClient;
@@ -262,11 +266,11 @@ mod tests {
     impl VisibilityFilteringClient for FailingVisibilityClient {
         async fn get_result(
             &self,
-            _tweet_ids: Vec<u64>,
+            _tweet_ids: Vec<crate::models::PostId>,
             _safety_level: SafetyLevel,
-            _for_user_id: u64,
+            _for_user_id: crate::models::UserId,
             _context: Option<TwitterContextViewer>,
-        ) -> Result<HashMap<u64, Option<FilteredReason>>, anyhow::Error> {
+        ) -> Result<HashMap<crate::models::PostId, Option<FilteredReason>>, anyhow::Error> {
             anyhow::bail!("vf unavailable")
         }
     }
@@ -280,9 +284,9 @@ mod tests {
             .hydrate(
                 &ScoredPostsQuery::default(),
                 &[PostCandidate {
-                    tweet_id: 1,
+                    tweet_id: 1.into(),
                     in_network: Some(false),
-                    quoted_tweet_id: Some(2),
+                    quoted_tweet_id: Some(2.into()),
                     ..Default::default()
                 }],
             )

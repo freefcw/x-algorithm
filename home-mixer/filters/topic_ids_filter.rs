@@ -176,17 +176,17 @@ mod tests {
         };
         let candidates = vec![
             PostCandidate {
-                tweet_id: 1,
+                tweet_id: 1.into(),
                 filtered_topic_ids: vec![10],
                 ..Default::default()
             },
             PostCandidate {
-                tweet_id: 2,
+                tweet_id: 2.into(),
                 filtered_topic_ids: vec![30],
                 ..Default::default()
             },
             PostCandidate {
-                tweet_id: 3,
+                tweet_id: 3.into(),
                 filtered_topic_ids: vec![20, 99],
                 ..Default::default()
             },
@@ -199,7 +199,7 @@ mod tests {
                 .iter()
                 .map(|candidate| candidate.tweet_id)
                 .collect::<Vec<_>>(),
-            vec![1]
+            vec![crate::models::pid(1)]
         );
         assert_eq!(result.removed.len(), 2);
     }
@@ -213,17 +213,17 @@ mod tests {
         };
         let candidates = vec![
             PostCandidate {
-                tweet_id: 1,
+                tweet_id: 1.into(),
                 filtered_topic_ids: vec![10],
                 ..Default::default()
             },
             PostCandidate {
-                tweet_id: 2,
+                tweet_id: 2.into(),
                 filtered_topic_ids: vec![30],
                 ..Default::default()
             },
             PostCandidate {
-                tweet_id: 3,
+                tweet_id: 3.into(),
                 filtered_topic_ids: vec![99],
                 ..Default::default()
             },
@@ -237,7 +237,7 @@ mod tests {
                 .iter()
                 .map(|candidate| candidate.tweet_id)
                 .collect::<Vec<_>>(),
-            vec![1, 2]
+            vec![crate::models::pid(1), crate::models::pid(2)]
         );
         assert_eq!(result.removed.len(), 1);
     }

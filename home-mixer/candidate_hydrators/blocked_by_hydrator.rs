@@ -16,7 +16,7 @@ pub struct BlockedByHydrator {
     pub socialgraph_client: Arc<dyn SocialGraphClientOps>,
 }
 
-fn relationship_user_ids(candidates: &[PostCandidate]) -> Vec<u64> {
+fn relationship_user_ids(candidates: &[PostCandidate]) -> Vec<crate::models::UserId> {
     let mut seen = HashSet::new();
     let mut user_ids = Vec::new();
 
@@ -89,13 +89,16 @@ mod tests {
     use std::sync::{Arc, Mutex};
 
     struct FakeSocialGraph {
-        blocked_by: HashSet<u64>,
+        blocked_by: HashSet<crate::models::UserId>,
         fail: bool,
-        requested_ids: Arc<Mutex<Vec<u64>>>,
+        requested_ids: Arc<Mutex<Vec<crate::models::UserId>>>,
     }
 
     impl FakeSocialGraph {
-        fn new(blocked_by: HashSet<u64>, fail: bool) -> (Self, Arc<Mutex<Vec<u64>>>) {
+        fn new(
+            blocked_by: HashSet<crate::models::UserId>,
+            fail: bool,
+        ) -> (Self, Arc<Mutex<Vec<crate::models::UserId>>>) {
             let requested_ids = Arc::new(Mutex::new(Vec::new()));
             (
                 Self {
@@ -112,9 +115,9 @@ mod tests {
     impl SocialGraphClientOps for FakeSocialGraph {
         async fn check_blocked_by(
             &self,
-            _viewer_id: u64,
-            user_ids: &[u64],
-        ) -> Result<HashSet<u64>, String> {
+            _viewer_id: crate::models::UserId,
+            user_ids: &[crate::models::UserId],
+        ) -> Result<HashSet<crate::models::UserId>, String> {
             self.requested_ids
                 .lock()
                 .unwrap()
@@ -133,13 +136,13 @@ mod tests {
     fn candidates() -> Vec<PostCandidate> {
         vec![
             PostCandidate {
-                tweet_id: 1,
-                author_id: 100,
+                tweet_id: 1.into(),
+                author_id: 100.into(),
                 ..Default::default()
             },
             PostCandidate {
-                tweet_id: 2,
-                author_id: 200,
+                tweet_id: 2.into(),
+                author_id: 200.into(),
                 ..Default::default()
             },
         ]
@@ -147,12 +150,13 @@ mod tests {
 
     #[tokio::test]
     async fn marks_only_blocking_authors() {
-        let (fake_social_graph, _) = FakeSocialGraph::new(HashSet::from([200]), false);
+        let (fake_social_graph, _) =
+            FakeSocialGraph::new(HashSet::from([crate::models::uid(200)]), false);
         let hydrator = BlockedByHydrator {
             socialgraph_client: Arc::new(fake_social_graph),
         };
         let query = ScoredPostsQuery {
-            user_id: 42,
+            user_id: 42.into(),
             ..Default::default()
         };
 
@@ -198,25 +202,27 @@ mod tests {
 
     #[tokio::test]
     async fn marks_retweeted_and_quoted_authors_and_deduplicates_lookup_ids() {
-        let (fake_social_graph, requested_ids) =
-            FakeSocialGraph::new(HashSet::from([300, 400]), false);
+        let (fake_social_graph, requested_ids) = FakeSocialGraph::new(
+            HashSet::from([crate::models::uid(300), crate::models::uid(400)]),
+            false,
+        );
         let hydrator = BlockedByHydrator {
             socialgraph_client: Arc::new(fake_social_graph),
         };
         let query = ScoredPostsQuery {
-            user_id: 42,
+            user_id: 42.into(),
             ..Default::default()
         };
         let candidates = vec![
             PostCandidate {
-                author_id: 100,
-                retweeted_user_id: Some(300),
-                quoted_user_id: Some(400),
+                author_id: 100.into(),
+                retweeted_user_id: Some(300.into()),
+                quoted_user_id: Some(400.into()),
                 ..Default::default()
             },
             PostCandidate {
-                author_id: 100,
-                quoted_user_id: Some(400),
+                author_id: 100.into(),
+                quoted_user_id: Some(400.into()),
                 ..Default::default()
             },
         ];
@@ -229,6 +235,13 @@ mod tests {
         assert_eq!(candidates[0].quoted_author_blocks_viewer, Some(true));
         assert_eq!(candidates[1].author_blocks_viewer, Some(false));
         assert_eq!(candidates[1].quoted_author_blocks_viewer, Some(true));
-        assert_eq!(*requested_ids.lock().unwrap(), vec![100, 300, 400]);
+        assert_eq!(
+            *requested_ids.lock().unwrap(),
+            vec![
+                crate::models::uid(100),
+                crate::models::uid(300),
+                crate::models::uid(400)
+            ]
+        );
     }
 }

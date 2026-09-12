@@ -1,3 +1,4 @@
+use crate::models::ids::{PostId, UserId};
 use crate::visibility::models as vf;
 use std::collections::HashMap;
 use x_algorithm_proto::home_mixer as pb;
@@ -13,15 +14,23 @@ pub struct SafetyLabelInfo {
 
 #[derive(Clone, Debug, Default)]
 pub struct PostCandidate {
-    pub tweet_id: u64,
-    pub author_id: u64,
+    pub tweet_id: PostId,
+    pub author_id: UserId,
     pub tweet_text: String,
     pub quoted_tweet_text: String,
-    pub in_reply_to_tweet_id: Option<u64>,
-    pub retweeted_tweet_id: Option<u64>,
-    pub retweeted_user_id: Option<u64>,
-    pub quoted_tweet_id: Option<u64>,
-    pub quoted_user_id: Option<u64>,
+    pub in_reply_to_tweet_id: Option<PostId>,
+    pub retweeted_tweet_id: Option<PostId>,
+    pub retweeted_user_id: Option<UserId>,
+    pub quoted_tweet_id: Option<PostId>,
+    pub quoted_user_id: Option<UserId>,
+    /// Hydrated post creation time. AgeFilter reads this; missing values fall
+    /// back to `tweet_id.timestamp_secs()`.
+    pub created_at_ms: Option<u64>,
+    /// First-stage business eligibility from TES / RecommendationContent.
+    /// `None` keeps the candidate (demo / missing adapter); `Some(false)` drops it.
+    pub recommendation_eligible: Option<bool>,
+    /// Set when the request used a whole-batch rule fallback after Phoenix failure.
+    pub degraded_reason: Option<String>,
     pub phoenix_scores: PhoenixScores,
     pub prediction_request_id: Option<u64>,
     pub last_scored_at_ms: Option<u64>,
@@ -29,7 +38,7 @@ pub struct PostCandidate {
     pub score: Option<f64>,
     pub served_type: Option<pb::ServedType>,
     pub in_network: Option<bool>,
-    pub ancestors: Vec<u64>,
+    pub ancestors: Vec<PostId>,
     pub video_duration_ms: Option<i32>,
     pub quoted_video_duration_ms: Option<i32>,
     pub author_followers_count: Option<i32>,
@@ -38,10 +47,10 @@ pub struct PostCandidate {
     /// Request-local lookup marker. The ID prevents stale profile data from being
     /// reused if another hydrator changes the candidate author.
     #[doc(hidden)]
-    pub author_profile_looked_up_for_user_id: Option<u64>,
+    pub author_profile_looked_up_for_user_id: Option<UserId>,
     /// Request-local lookup marker for the original author of a retweet.
     #[doc(hidden)]
-    pub retweeted_profile_looked_up_for_user_id: Option<u64>,
+    pub retweeted_profile_looked_up_for_user_id: Option<UserId>,
     /// 候选作者或转推原作者是否反向屏蔽 viewer；由 `BlockedByHydrator`（CH-09）负责写入。
     pub author_blocks_viewer: Option<bool>,
     /// 引用帖作者是否反向屏蔽 viewer；由 `BlockedByHydrator` 写入。
@@ -50,11 +59,11 @@ pub struct PostCandidate {
     /// VF 的处理动作独立于解释原因保存，避免下游从原因反推展示策略。
     pub visibility_action: Option<vf::Action>,
     pub drop_ancillary_posts: Option<bool>,
-    pub subscription_author_id: Option<u64>,
+    pub subscription_author_id: Option<UserId>,
     pub retrieval_topic_ids: Vec<i64>,
     pub filtered_topic_ids: Vec<i64>,
     pub unfiltered_topic_ids: Vec<i64>,
-    pub following_replied_user_ids: Vec<u64>,
+    pub following_replied_user_ids: Vec<UserId>,
     pub has_media: Option<bool>,
     pub language_code: Option<String>,
     pub favorite_count: Option<i64>,
@@ -106,24 +115,24 @@ pub struct PhoenixScores {
 }
 
 pub trait CandidateHelpers {
-    fn get_screen_names(&self) -> HashMap<u64, String>;
+    fn get_screen_names(&self) -> HashMap<UserId, String>;
     /// 转推指向的原帖 ID；非转推时即自身 ID。
-    fn get_original_tweet_id(&self) -> u64;
+    fn get_original_tweet_id(&self) -> PostId;
     /// 转推指向的原作者 ID；非转推时即自身作者。
-    fn get_original_author_id(&self) -> u64;
+    fn get_original_author_id(&self) -> UserId;
 }
 
 impl CandidateHelpers for PostCandidate {
-    fn get_original_tweet_id(&self) -> u64 {
+    fn get_original_tweet_id(&self) -> PostId {
         self.retweeted_tweet_id.unwrap_or(self.tweet_id)
     }
 
-    fn get_original_author_id(&self) -> u64 {
+    fn get_original_author_id(&self) -> UserId {
         self.retweeted_user_id.unwrap_or(self.author_id)
     }
 
-    fn get_screen_names(&self) -> HashMap<u64, String> {
-        let mut screen_names = HashMap::<u64, String>::new();
+    fn get_screen_names(&self) -> HashMap<UserId, String> {
+        let mut screen_names = HashMap::<UserId, String>::new();
         if let Some(author_screen_name) = self.author_screen_name.clone() {
             screen_names.insert(self.author_id, author_screen_name);
         }

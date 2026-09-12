@@ -1,6 +1,9 @@
 use crate::candidate_pipeline::phoenix_candidate_pipeline::PhoenixCandidatePipeline;
+use crate::clients::served_persistence::{InMemoryServedPersistence, ServedPersistence};
 use crate::debug_access::{DebugAccessError, DebugAccessPolicy};
+use crate::feed_state::{FeedStateStore, InMemoryFeedStateStore};
 use crate::models::candidate::CandidateHelpers;
+use crate::models::ids::{wire_id, wire_optional_id};
 use crate::models::query::ScoredPostsQuery;
 use crate::query_builder::QueryBuilder;
 use crate::visibility::models::VisibilityDecision;
@@ -20,10 +23,26 @@ pub struct ScoredPostsServer {
     pipeline: Arc<PhoenixCandidatePipeline>,
     query_builder: QueryBuilder,
     debug_access: DebugAccessPolicy,
+    feed_state: Arc<dyn FeedStateStore>,
+    served_persist: Arc<dyn ServedPersistence>,
 }
 
 impl ScoredPostsServer {
-    pub fn new(query_builder: QueryBuilder, pipeline: Arc<PhoenixCandidatePipeline>) -> Self {
+    pub fn new(query_builder: QueryBuilder, pipeline: PhoenixCandidatePipeline) -> Self {
+        let state_store: Arc<dyn FeedStateStore> = Arc::new(InMemoryFeedStateStore::new(
+            crate::params::LOCAL_SERVED_HISTORY_LIMIT,
+            crate::params::LOCAL_REQUEST_TIMESTAMP_LIMIT,
+        ));
+        Self::with_state(query_builder, pipeline, state_store)
+    }
+
+    pub fn with_state(
+        query_builder: QueryBuilder,
+        mut pipeline: PhoenixCandidatePipeline,
+        state_store: Arc<dyn FeedStateStore>,
+    ) -> Self {
+        pipeline.install_feed_state_store(Arc::clone(&state_store));
+        let pipeline = Arc::new(pipeline);
         for stage in pipeline.components() {
             info!(
                 "Scored Posts components - stage={:?} components=[{}]",
@@ -35,11 +54,18 @@ impl ScoredPostsServer {
             pipeline,
             query_builder,
             debug_access: DebugAccessPolicy::default(),
+            served_persist: Arc::new(InMemoryServedPersistence::new(Arc::clone(&state_store))),
+            feed_state: state_store,
         }
     }
 
     pub fn with_pipeline(pipeline: PhoenixCandidatePipeline) -> Self {
-        Self::new(QueryBuilder::default(), Arc::new(pipeline))
+        Self::new(QueryBuilder::default(), pipeline)
+    }
+
+    pub fn with_served_persist(mut self, persist: Arc<dyn ServedPersistence>) -> Self {
+        self.served_persist = persist;
+        self
     }
 
     pub fn with_debug_access(mut self, debug_access: DebugAccessPolicy) -> Self {
@@ -56,6 +82,27 @@ impl ScoredPostsServer {
 
     pub(crate) fn query_builder(&self) -> QueryBuilder {
         self.query_builder.clone()
+    }
+
+    pub(crate) fn feed_state_store(&self) -> Arc<dyn FeedStateStore> {
+        Arc::clone(&self.feed_state)
+    }
+
+    pub(crate) fn served_persist(&self) -> Arc<dyn ServedPersistence> {
+        Arc::clone(&self.served_persist)
+    }
+
+    pub(crate) fn persist_selected(
+        &self,
+        user_id: crate::models::UserId,
+        posts: &[ScoredPost],
+        request_time_ms: i64,
+    ) -> Result<(), String> {
+        let ids = posts
+            .iter()
+            .filter_map(|post| crate::models::ObjectId::parse(&post.tweet_id).ok())
+            .collect::<Vec<_>>();
+        self.served_persist.persist(user_id, &ids, request_time_ms)
     }
 
     pub async fn score(&self, query: ScoredPostsQuery) -> ScoredPostsOutput {
@@ -110,19 +157,23 @@ fn stage_debug(candidates: &[crate::models::candidate::PostCandidate]) -> pb::Pi
         count: u32::try_from(candidates.len()).unwrap_or(u32::MAX),
         tweet_ids: candidates
             .iter()
-            .map(|candidate| candidate.tweet_id)
+            .map(|candidate| candidate.tweet_id.to_string())
             .collect(),
     }
 }
 
 fn candidate_to_scored_post(candidate: crate::models::candidate::PostCandidate) -> ScoredPost {
-    let screen_names = candidate.get_screen_names();
+    let screen_names = candidate
+        .get_screen_names()
+        .into_iter()
+        .map(|(id, name)| (id.to_string(), name))
+        .collect();
     ScoredPost {
-        tweet_id: candidate.tweet_id,
-        author_id: candidate.author_id,
-        retweeted_tweet_id: candidate.retweeted_tweet_id.unwrap_or(0),
-        retweeted_user_id: candidate.retweeted_user_id.unwrap_or(0),
-        in_reply_to_tweet_id: candidate.in_reply_to_tweet_id.unwrap_or(0),
+        tweet_id: wire_id(candidate.tweet_id),
+        author_id: wire_id(candidate.author_id),
+        retweeted_tweet_id: wire_optional_id(candidate.retweeted_tweet_id),
+        retweeted_user_id: wire_optional_id(candidate.retweeted_user_id),
+        in_reply_to_tweet_id: wire_optional_id(candidate.in_reply_to_tweet_id),
         score: candidate.score.unwrap_or(0.0) as f32,
         in_network: candidate.in_network.unwrap_or(false),
         served_type: candidate
@@ -131,7 +182,11 @@ fn candidate_to_scored_post(candidate: crate::models::candidate::PostCandidate) 
             .unwrap_or_default(),
         last_scored_timestamp_ms: candidate.last_scored_at_ms.unwrap_or(0),
         prediction_request_id: candidate.prediction_request_id.unwrap_or(0),
-        ancestors: candidate.ancestors,
+        ancestors: candidate
+            .ancestors
+            .into_iter()
+            .map(|id| id.to_string())
+            .collect(),
         screen_names,
         visibility_reason: match candidate.visibility_decision {
             VisibilityDecision::Restricted(reason) => {
@@ -162,20 +217,20 @@ mod tests {
     #[test]
     fn pipeline_debug_preserves_stage_counts_and_ids() {
         let retrieved = vec![PostCandidate {
-            tweet_id: 1,
+            tweet_id: crate::models::pid(1),
             ..Default::default()
         }];
         let filtered = vec![PostCandidate {
-            tweet_id: 2,
+            tweet_id: crate::models::pid(2),
             ..Default::default()
         }];
         let selected = vec![
             PostCandidate {
-                tweet_id: 3,
+                tweet_id: crate::models::pid(3),
                 ..Default::default()
             },
             PostCandidate {
-                tweet_id: 4,
+                tweet_id: crate::models::pid(4),
                 ..Default::default()
             },
         ];
@@ -183,11 +238,20 @@ mod tests {
         let debug = pipeline_debug_info("request-1".to_string(), &retrieved, &filtered, &selected);
 
         assert_eq!(debug.request_id, "request-1");
-        assert_eq!(debug.retrieved.expect("retrieved").tweet_ids, vec![1]);
-        assert_eq!(debug.filtered.expect("filtered").tweet_ids, vec![2]);
+        assert_eq!(
+            debug.retrieved.expect("retrieved").tweet_ids,
+            vec!["000000000000000000000001"]
+        );
+        assert_eq!(
+            debug.filtered.expect("filtered").tweet_ids,
+            vec!["000000000000000000000002"]
+        );
         let selected = debug.selected.expect("selected");
         assert_eq!(selected.count, 2);
-        assert_eq!(selected.tweet_ids, vec![3, 4]);
+        assert_eq!(
+            selected.tweet_ids,
+            vec!["000000000000000000000003", "000000000000000000000004"]
+        );
     }
 
     #[test]

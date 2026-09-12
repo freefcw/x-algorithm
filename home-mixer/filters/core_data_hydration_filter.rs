@@ -12,7 +12,7 @@ impl Filter<ScoredPostsQuery, PostCandidate> for CoreDataHydrationFilter {
     ) -> FilterResult<PostCandidate> {
         let (kept, removed) = candidates
             .into_iter()
-            .partition(|c| c.author_id != 0 && !c.tweet_text.trim().is_empty());
+            .partition(|c| !c.author_id.is_nil() && !c.tweet_text.trim().is_empty());
         FilterResult { kept, removed }
     }
 }

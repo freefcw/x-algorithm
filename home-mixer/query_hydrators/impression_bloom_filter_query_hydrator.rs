@@ -41,7 +41,10 @@ mod tests {
 
     #[async_trait]
     impl ImpressionBloomFilterClient for FakeBloomFilterClient {
-        async fn get(&self, _user_id: u64) -> Result<Vec<ImpressionBloomFilterEntry>, String> {
+        async fn get(
+            &self,
+            _user_id: crate::models::UserId,
+        ) -> Result<Vec<ImpressionBloomFilterEntry>, String> {
             Ok(self.entries.clone())
         }
     }
@@ -59,7 +62,7 @@ mod tests {
             }),
         };
         let mut query = ScoredPostsQuery {
-            user_id: 42,
+            user_id: 42.into(),
             ..Default::default()
         };
 

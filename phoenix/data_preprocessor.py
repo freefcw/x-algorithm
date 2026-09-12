@@ -46,7 +46,7 @@ NUM_ACTIONS = len(ACTIONS)  # 19种行为
 NUM_HASHES = 2             # 每个ID的哈希数量
 TABLE_SIZE = 100_000       # 哈希表大小（与训练脚本一致）
 SURFACE_VOCAB = 16         # 场景词汇表大小
-MAX_AGE_DAYS = 7           # 负样本候选的最大帖龄（与 recommendation-service MAX_AGE_MS 一致）
+MAX_AGE_DAYS = 7           # 负样本候选的最大帖龄（生产取值需与 Home Mixer AgeFilter 对齐）
 
 # 行为字段名映射（输入日志字段 -> 内部使用）
 BEHAVIOR_FIELDS = [

@@ -6,8 +6,28 @@
 //! 避免两边各写一份后悄悄漂移。
 
 /// 演示宇宙中的账号集合。
-/// thunder 演示模式用它作为帖子作者；home-mixer 演示模式用它作为 viewer 的关注列表。
+/// thunder 演示模式用它作为帖子作者（仍走 i64 proto，直到 P3）；
+/// home-mixer 演示关注列表用同一组整数的零填充 24-hex ObjectId。
 pub const DEMO_AUTHOR_IDS: [i64; 5] = [101, 102, 103, 104, 105];
+
+/// 与 [`DEMO_AUTHOR_IDS`] 一一对应的 24 位小写 hex（末 8 字节大端零填充）。
+pub fn demo_author_object_id_hex(author_seq: i64) -> String {
+    padded_object_id_hex(u64::try_from(author_seq).expect("demo author id is non-negative"))
+}
+
+/// 把历史 u64 演示 ID 编成 24-hex ObjectId，保持 P0→P1 排序对照的 1:1 映射。
+pub fn padded_object_id_hex(n: u64) -> String {
+    format!("{n:024x}")
+}
+
+/// 与 phoenix 网关 `demo_object_id(index)` 同一编码：md5("phoenix-demo-post-{index}")[:24]。
+pub fn phoenix_demo_post_id(index: u64) -> String {
+    let digest = md5::compute(format!("phoenix-demo-post-{index}"));
+    digest.0[..12]
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect()
+}
 
 /// Twitter Snowflake 纪元（毫秒）：2010-11-04T01:42:54.657Z。
 /// 与 `home-mixer/util/snowflake.rs` 的解析逻辑对应。
@@ -46,5 +66,16 @@ mod tests {
     fn test_snowflake_id_sequence_uniqueness() {
         let ts = 1_800_000_000_000_i64;
         assert_ne!(snowflake_id(ts, 1), snowflake_id(ts, 2));
+    }
+
+    #[test]
+    fn padded_object_id_hex_zero_fills_24_chars() {
+        assert_eq!(padded_object_id_hex(1), "000000000000000000000001");
+        assert_eq!(demo_author_object_id_hex(101), "000000000000000000000065");
+    }
+
+    #[test]
+    fn phoenix_demo_post_id_matches_gateway_md5_prefix() {
+        assert_eq!(phoenix_demo_post_id(0), "4ed94de62235affc0e1b5a2e");
     }
 }

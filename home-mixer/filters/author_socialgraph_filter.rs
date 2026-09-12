@@ -15,9 +15,9 @@ impl Filter<ScoredPostsQuery, PostCandidate> for AuthorSocialgraphFilter {
         let blocked_by_user_ids = query.user_features.blocked_by_user_ids.clone();
         let viewer_muted_user_ids = query.user_features.muted_user_ids.clone();
 
-        let viewer_blocks = |user_id: Option<u64>| {
+        let viewer_blocks = |user_id: Option<crate::models::UserId>| {
             user_id
-                .and_then(|id| i64::try_from(id).ok())
+                .filter(|id| !id.is_nil())
                 .is_some_and(|id| viewer_blocked_user_ids.contains(&id))
         };
 
@@ -33,13 +33,15 @@ impl Filter<ScoredPostsQuery, PostCandidate> for AuthorSocialgraphFilter {
             let viewer_blocks_retweeted_user = viewer_blocks(candidate.retweeted_user_id);
 
             // 签名关系存储无法表示的作者 ID 保持中立。
-            let (muted, blocked) = match i64::try_from(candidate.author_id) {
-                Ok(author_id) => (
+            let author_id = candidate.author_id;
+            let (muted, blocked) = if author_id.is_nil() {
+                (false, false)
+            } else {
+                (
                     viewer_muted_user_ids.contains(&author_id),
                     viewer_blocked_user_ids.contains(&author_id)
                         || blocked_by_user_ids.contains(&author_id),
-                ),
-                Err(_) => (false, false),
+                )
             };
 
             if muted
@@ -69,9 +71,9 @@ mod tests {
         let filter = AuthorSocialgraphFilter;
         let query = ScoredPostsQuery {
             user_features: UserFeatures {
-                blocked_user_ids: vec![-1, 200],
-                blocked_by_user_ids: vec![400],
-                muted_user_ids: vec![300],
+                blocked_user_ids: vec![200.into()],
+                blocked_by_user_ids: vec![400.into()],
+                muted_user_ids: vec![300.into()],
                 ..Default::default()
             },
             ..Default::default()
@@ -79,31 +81,31 @@ mod tests {
 
         let candidates = vec![
             PostCandidate {
-                author_id: 100,
+                author_id: 100.into(),
                 ..Default::default()
             }, // clear
             PostCandidate {
-                author_id: 200,
+                author_id: 200.into(),
                 ..Default::default()
             }, // blocked
             PostCandidate {
-                author_id: 300,
+                author_id: 300.into(),
                 ..Default::default()
             }, // muted
             PostCandidate {
-                author_id: 400,
+                author_id: 400.into(),
                 ..Default::default()
             }, // author blocked viewer
             PostCandidate {
-                author_id: u64::MAX,
+                author_id: crate::models::uid(u64::MAX),
                 ..Default::default()
             }, // not representable by the signed relationship store, keep neutral
         ];
 
         let result = filter.filter(&query, candidates);
         assert_eq!(result.kept.len(), 2);
-        assert_eq!(result.kept[0].author_id, 100);
-        assert_eq!(result.kept[1].author_id, u64::MAX);
+        assert_eq!(result.kept[0].author_id, crate::models::uid(100));
+        assert_eq!(result.kept[1].author_id, crate::models::uid(u64::MAX));
         assert_eq!(result.removed.len(), 3);
     }
 
@@ -112,7 +114,7 @@ mod tests {
         let filter = AuthorSocialgraphFilter;
         let query = ScoredPostsQuery {
             user_features: UserFeatures {
-                blocked_user_ids: vec![900],
+                blocked_user_ids: vec![900.into()],
                 ..Default::default()
             },
             ..Default::default()
@@ -120,45 +122,45 @@ mod tests {
 
         let candidates = vec![
             PostCandidate {
-                tweet_id: 1,
-                author_id: 100,
+                tweet_id: 1.into(),
+                author_id: 100.into(),
                 author_blocks_viewer: Some(true),
                 ..Default::default()
             }, // author blocks viewer (hydrated signal)
             PostCandidate {
-                tweet_id: 2,
-                author_id: 101,
+                tweet_id: 2.into(),
+                author_id: 101.into(),
                 quoted_author_blocks_viewer: Some(true),
                 ..Default::default()
             }, // quoted author blocks viewer
             PostCandidate {
-                tweet_id: 3,
-                author_id: 102,
-                quoted_user_id: Some(900),
+                tweet_id: 3.into(),
+                author_id: 102.into(),
+                quoted_user_id: Some(900.into()),
                 ..Default::default()
             }, // viewer blocks quoted author
             PostCandidate {
-                tweet_id: 4,
-                author_id: 103,
-                retweeted_user_id: Some(900),
+                tweet_id: 4.into(),
+                author_id: 103.into(),
+                retweeted_user_id: Some(900.into()),
                 ..Default::default()
             }, // viewer blocks retweeted user
             PostCandidate {
-                tweet_id: 5,
-                author_id: 104,
+                tweet_id: 5.into(),
+                author_id: 104.into(),
                 author_blocks_viewer: Some(false),
                 ..Default::default()
             }, // explicit negative stays
             PostCandidate {
-                tweet_id: 6,
-                author_id: 105,
+                tweet_id: 6.into(),
+                author_id: 105.into(),
                 ..Default::default()
             }, // unhydrated stays neutral
         ];
 
         let result = filter.filter(&query, candidates);
-        let kept_ids: Vec<u64> = result.kept.iter().map(|c| c.tweet_id).collect();
-        assert_eq!(kept_ids, vec![5, 6]);
+        let kept_ids: Vec<_> = result.kept.iter().map(|c| c.tweet_id).collect();
+        assert_eq!(kept_ids, vec![crate::models::pid(5), crate::models::pid(6)]);
         assert_eq!(result.removed.len(), 4);
     }
 }

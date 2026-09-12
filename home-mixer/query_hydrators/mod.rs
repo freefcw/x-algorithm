@@ -7,7 +7,6 @@ pub mod past_request_timestamps_query_hydrator;
 pub mod retrieval_sequence_query_hydrator;
 pub mod scoring_sequence_query_hydrator;
 pub mod served_history_query_hydrator;
-pub mod subscribed_user_ids_query_hydrator;
 pub mod user_action_seq_query_hydrator;
 pub mod user_features_query_hydrator;
 pub mod user_safety_features_query_hydrator;

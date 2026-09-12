@@ -8,6 +8,7 @@
 //! 真实 Adapter 需要负责认证、超时、错误语义与批量上限，之后
 //! `BlockedByHydrator` 才能进入装配。
 
+use crate::models::ids::UserId;
 use std::collections::HashSet;
 use tonic::async_trait;
 
@@ -16,7 +17,7 @@ pub trait SocialGraphClientOps: Send + Sync {
     /// 返回 `user_ids` 中反向屏蔽了 `viewer_id` 的用户集合。
     async fn check_blocked_by(
         &self,
-        viewer_id: u64,
-        user_ids: &[u64],
-    ) -> Result<HashSet<u64>, String>;
+        viewer_id: UserId,
+        user_ids: &[UserId],
+    ) -> Result<HashSet<UserId>, String>;
 }

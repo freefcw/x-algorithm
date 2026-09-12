@@ -46,7 +46,7 @@ impl QueryHydrator<ScoredPostsQuery> for UserTopicsQueryHydrator {
 
 async fn read_topics_with_timeout(
     reader: &dyn UserTopicReader,
-    user_id: u64,
+    user_id: crate::models::UserId,
     timeout: Duration,
 ) -> Result<Vec<i64>, String> {
     tokio::time::timeout(timeout, reader.get_supplemental_topic_ids(user_id))
@@ -91,7 +91,7 @@ mod tests {
     impl UserTopicReader for StubUserTopicReader {
         async fn get_supplemental_topic_ids(
             &self,
-            _user_id: u64,
+            _user_id: crate::models::UserId,
         ) -> Result<Vec<i64>, anyhow::Error> {
             match &self.result {
                 StubResult::Topics(topic_ids) => Ok(topic_ids.clone()),
@@ -128,9 +128,10 @@ mod tests {
             result: StubResult::Slow,
         };
 
-        let error = read_topics_with_timeout(&reader, 42, Duration::from_millis(1))
-            .await
-            .expect_err("slow topic profile must time out");
+        let error =
+            read_topics_with_timeout(&reader, crate::models::uid(42), Duration::from_millis(1))
+                .await
+                .expect_err("slow topic profile must time out");
 
         assert!(error.contains("timed out"));
     }

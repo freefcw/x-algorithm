@@ -1,6 +1,6 @@
 # gRPC 网关的跨语言契约测试
 #
-# 网关是 recommendation-service（Rust / proto 契约）与 Phoenix 模型（Python ACTIONS 顺序）
+# 网关是 home-mixer（Rust / proto 契约）与 Phoenix 模型（Python ACTIONS 顺序）
 # 之间的翻译层。这里的映射错一位不会报任何错——请求照常返回、分数照常输出，
 # 只有排序悄悄张冠李戴。因此每个转换点都需要用独立表达方式对拍：
 #
@@ -293,3 +293,12 @@ def test_demo_object_id_is_stable_and_not_time_encoded():
     assert first != demo_object_id(43)
     assert len(first) == 24
     assert all(char in "0123456789abcdef" for char in first)
+
+
+def test_retrieval_demo_corpus_uses_object_id_shaped_authors():
+    from services.grpc_gateway import demo_author_id
+
+    assert demo_author_id(0) == "0000000000000000000000c9"
+    assert demo_author_id(40) == demo_author_id(0)
+    assert len(demo_author_id(1)) == 24
+    assert all(char in "0123456789abcdef" for char in demo_author_id(1))

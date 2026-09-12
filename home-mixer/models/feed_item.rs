@@ -21,14 +21,14 @@ pub struct Advertisement {
     pub ad_id: String,
     pub requested_position: usize,
     pub brand_safety_risk: x_algorithm_proto::home_mixer::BrandSafetyRiskLevel,
-    pub avoid_handles: Vec<i64>,
+    pub avoid_handles: Vec<crate::models::UserId>,
     pub avoid_keywords: Vec<String>,
 }
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct WhoToFollowModule {
     pub module_id: String,
-    pub user_ids: Vec<u64>,
+    pub user_ids: Vec<crate::models::UserId>,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -78,7 +78,10 @@ impl FeedItem {
         }
     }
 
-    pub fn who_to_follow(module_id: impl Into<String>, user_ids: Vec<u64>) -> Self {
+    pub fn who_to_follow(
+        module_id: impl Into<String>,
+        user_ids: Vec<crate::models::UserId>,
+    ) -> Self {
         Self {
             position: 0,
             content: FeedItemContent::WhoToFollow(WhoToFollowModule {
@@ -117,17 +120,19 @@ impl FeedItem {
         }
     }
 
-    pub fn post_id(&self) -> Option<u64> {
+    pub fn post_id(&self) -> Option<crate::models::PostId> {
         match &self.content {
-            FeedItemContent::Post(post) => Some(post.tweet_id),
+            FeedItemContent::Post(post) => crate::models::ObjectId::parse(&post.tweet_id).ok(),
             _ => None,
         }
     }
 
-    pub fn served_post_id(&self) -> Option<u64> {
+    pub fn served_post_id(&self) -> Option<crate::models::PostId> {
         match &self.content {
-            FeedItemContent::Post(post) => Some(post.tweet_id),
-            FeedItemContent::PushToHome(push) => Some(push.post.tweet_id),
+            FeedItemContent::Post(post) => crate::models::ObjectId::parse(&post.tweet_id).ok(),
+            FeedItemContent::PushToHome(push) => {
+                crate::models::ObjectId::parse(&push.post.tweet_id).ok()
+            }
             _ => None,
         }
     }
@@ -140,14 +145,22 @@ impl FeedItem {
                     ad_id: advertisement.ad_id,
                     requested_position: as_proto_position(advertisement.requested_position),
                     brand_safety_risk: advertisement.brand_safety_risk.into(),
-                    avoid_handles: advertisement.avoid_handles,
+                    avoid_handles: advertisement
+                        .avoid_handles
+                        .into_iter()
+                        .map(|id| id.to_string())
+                        .collect(),
                     avoid_keywords: advertisement.avoid_keywords,
                 })
             }
             FeedItemContent::WhoToFollow(module) => {
                 pb::feed_item::Item::WhoToFollow(pb::WhoToFollowModule {
                     module_id: module.module_id,
-                    user_ids: module.user_ids,
+                    user_ids: module
+                        .user_ids
+                        .into_iter()
+                        .map(|id| id.to_string())
+                        .collect(),
                 })
             }
             FeedItemContent::Prompt(prompt) => pb::feed_item::Item::Prompt(pb::Prompt {

@@ -29,11 +29,11 @@ message ImpressionBloomFilterEntry {
 
 // 连续请求可直接复用的帖子候选；仅包含重新打分所需的稳定身份字段。
 message CachedPost {
-  uint64 tweet_id = 1;
-  uint64 author_id = 2;
-  uint64 retweeted_tweet_id = 3;
-  uint64 retweeted_user_id = 4;
-  uint64 in_reply_to_tweet_id = 5;
+  string tweet_id = 1;
+  string author_id = 2;
+  string retweeted_tweet_id = 3;
+  string retweeted_user_id = 4;
+  string in_reply_to_tweet_id = 5;
   int32 served_type = 6;
   string tweet_text = 7;
   string quoted_tweet_text = 8;
@@ -45,13 +45,13 @@ message CachedPost {
   double score = 14;
   string language_code = 15;
   // 被引用帖 ID；缓存命中时用于 ancillary 可见性检查。
-  uint64 quoted_tweet_id = 16;
+  string quoted_tweet_id = 16;
 }
 
 // 评分帖子查询请求 —— 客户端发往 Home Mixer 的 Feed 获取请求
 message ScoredPostsQuery {
   // 当前查看 Feed 的用户 ID（观察者）
-  int64 viewer_id = 1;
+  string viewer_id = 1;
   // 客户端应用 ID（iOS/Android/Web 等不同端）
   int32 client_app_id = 2;
   // 请求所在的国家代码（ISO 3166-1 alpha-2，如 "CN", "US"）
@@ -59,9 +59,9 @@ message ScoredPostsQuery {
   // 请求所在的语言代码（BCP 47，如 "zh", "en"）
   string language_code = 4;
   // 客户端已看过的帖子 ID 列表
-  repeated int64 seen_ids = 5;
+  repeated string seen_ids = 5;
   // 服务端已投递过的帖子 ID 列表
-  repeated int64 served_ids = 6;
+  repeated string served_ids = 6;
   // 是否仅返回网络内（关注者）帖子
   bool in_network_only = 7;
   // 是否为向下滚动加载更多的请求（翻页）
@@ -77,7 +77,7 @@ message ScoredPostsQuery {
   // 请求是否排除视频候选。
   bool exclude_videos = 13;
   // 主 seen 列表不可用时使用的曝光历史。
-  repeated int64 impressed_post_ids = 14;
+  repeated string impressed_post_ids = 14;
   // 过去请求时间戳，用于刷新节奏判断。
   repeated int64 past_request_timestamps_ms = 15;
   // 上一次请求缓存的候选；非空时不访问外部召回源。
@@ -115,16 +115,16 @@ enum BrandSafetyVerdict {
 
 // 单条评分帖子 —— 已经过管道打分后的帖子
 message ScoredPost {
-  // 帖子 ID
-  uint64 tweet_id = 1;
+  // 帖子 ID（24 位小写 hex ObjectId）
+  string tweet_id = 1;
   // 帖子作者 ID
-  uint64 author_id = 2;
-  // 如果是转发帖，原始帖子 ID
-  uint64 retweeted_tweet_id = 3;
-  // 如果是转发帖，原始帖子作者 ID
-  uint64 retweeted_user_id = 4;
-  // 被回复帖的 ID
-  uint64 in_reply_to_tweet_id = 5;
+  string author_id = 2;
+  // 如果是转发帖，原始帖子 ID；空串表示非转发
+  string retweeted_tweet_id = 3;
+  // 如果是转发帖，原始帖子作者 ID；空串表示非转发
+  string retweeted_user_id = 4;
+  // 被回复帖的 ID；空串表示非回复
+  string in_reply_to_tweet_id = 5;
   // 综合排序得分
   float score = 6;
   // 是否来自关注列表网络内
@@ -136,9 +136,9 @@ message ScoredPost {
   // Phoenix 预测请求 ID（用于链路追踪）
   uint64 prediction_request_id = 10;
   // 对话祖先帖子 ID 列表（用于对话线程还原）
-  repeated uint64 ancestors = 11;
+  repeated string ancestors = 11;
   // 帖子相关用户的 screen name 映射（user_id -> screen_name）
-  map<uint64, string> screen_names = 12;
+  map<string, string> screen_names = 12;
   // 可见性过滤原因（如果有内容安全问题）
   optional VisibilityFilteredReason visibility_reason = 13;
   BrandSafetyVerdict brand_safety_verdict = 14;
@@ -175,13 +175,13 @@ message Advertisement {
   string ad_id = 1;
   uint32 requested_position = 2;
   BrandSafetyRiskLevel brand_safety_risk = 3;
-  repeated int64 avoid_handles = 4;  // 广告主指定的规避账号 ID
+  repeated string avoid_handles = 4;  // 广告主指定的规避账号 ID
   repeated string avoid_keywords = 5; // 广告主指定的规避关键词
 }
 
 message WhoToFollowModule {
   string module_id = 1;
-  repeated uint64 user_ids = 2;
+  repeated string user_ids = 2;
 }
 
 message Prompt {
@@ -216,36 +216,9 @@ message ForYouFeedQuery {
   ScoredPostsQuery query = 1;
 }
 
-// Business feed uses mrpyq ObjectID strings end-to-end and is intentionally
-// independent from ScoredPostsQuery/PostCandidate and Snowflake semantics.
-message BusinessFeedQuery {
-  string viewer_account_id = 1;
-  uint32 page_size = 2;
-  string network_page_token = 3;
-  string fallback_page_token = 4;
-  repeated string seen_feed_ids = 5;
-}
-
-message BusinessFeedResultItem {
-  string feed_id = 1;
-  string creator_account_id = 2;
-  string creator_member_id = 3;
-  double score = 4;
-  string source = 5;
-  string reason = 6;
-  uint32 position = 7;
-}
-
-message BusinessFeedResponse {
-  string request_id = 1;
-  repeated BusinessFeedResultItem items = 2;
-  string next_network_page_token = 3;
-  string next_fallback_page_token = 4;
-}
-
 message PipelineStageDebug {
   uint32 count = 1;
-  repeated uint64 tweet_ids = 2;
+  repeated string tweet_ids = 2;
 }
 
 message PipelineDebugInfo {
@@ -277,9 +250,4 @@ service ForYouFeedService {
   rpc GetForYouFeed(ScoredPostsQuery) returns (ForYouFeedResponse);
   // Wrapper-based additive method; the original RPC remains unchanged.
   rpc GetForYouFeedV2(ForYouFeedQuery) returns (ForYouFeedResponse);
-}
-
-// Independent rules-only vertical slice for mrpyq business feeds.
-service BusinessFeedService {
-  rpc GetBusinessFeed(BusinessFeedQuery) returns (BusinessFeedResponse);
 }

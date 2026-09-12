@@ -3,6 +3,7 @@ use home_mixer::feed_stats::{FeedResponseStats, FeedStatsSink, InMemoryFeedStats
 use home_mixer::for_you_server::ForYouFeedServer;
 use home_mixer::models::feed_item::{Advertisement, FeedItem, FeedItemContent, FeedItemKind};
 use home_mixer::models::query::ScoredPostsQuery;
+use home_mixer::models::{pid, uid};
 use home_mixer::scored_posts_server::ScoredPostsOutput;
 use home_mixer::selectors::blender_selector::{AdsBlenderStrategy, BlenderConfig, BlenderSelector};
 use home_mixer::sources::ads_source::AdvertisementSource;
@@ -16,7 +17,7 @@ use xai_candidate_pipeline::source::Source;
 
 fn post(id: u64, score: f32) -> FeedItem {
     FeedItem::post(ScoredPost {
-        tweet_id: id,
+        tweet_id: pid(id).to_string(),
         score,
         ..Default::default()
     })
@@ -24,7 +25,7 @@ fn post(id: u64, score: f32) -> FeedItem {
 
 fn ad_safe_post(id: u64, score: f32) -> FeedItem {
     FeedItem::post(ScoredPost {
-        tweet_id: id,
+        tweet_id: pid(id).to_string(),
         score,
         brand_safety_verdict: BrandSafetyVerdict::SafeForAdjacency as i32,
         ..Default::default()
@@ -50,7 +51,7 @@ fn natural_posts_keep_p3_order_and_receive_final_positions() {
         .map(|item| item.position)
         .collect::<Vec<_>>();
 
-    assert_eq!(post_ids, vec![30, 20, 10]);
+    assert_eq!(post_ids, vec![pid(30), pid(20), pid(10)]);
     assert_eq!(positions, vec![0, 1, 2]);
     assert!(result.non_selected.is_empty());
 }
@@ -69,11 +70,11 @@ fn modules_are_inserted_without_rescoring_or_reordering_posts() {
         post(20, 0.7),
         post(10, 0.6),
         FeedItem::prompt("onboarding"),
-        FeedItem::who_to_follow("people-you-may-know", vec![101, 102]),
+        FeedItem::who_to_follow("people-you-may-know", vec![uid(101), uid(102)]),
         FeedItem::push_to_home(
             "notification-1",
             ScoredPost {
-                tweet_id: 99,
+                tweet_id: pid(99).to_string(),
                 score: 0.1,
                 ..Default::default()
             },
@@ -103,7 +104,7 @@ fn modules_are_inserted_without_rescoring_or_reordering_posts() {
             FeedItemKind::Post,
         ]
     );
-    assert_eq!(post_ids, vec![40, 30, 20, 10]);
+    assert_eq!(post_ids, vec![pid(40), pid(30), pid(20), pid(10)]);
     assert_eq!(
         result
             .selected
@@ -149,12 +150,12 @@ impl ScoredPostsProvider for FakeScoredPostsProvider {
         Ok(ScoredPostsOutput {
             posts: vec![
                 ScoredPost {
-                    tweet_id: 30,
+                    tweet_id: pid(30).to_string(),
                     score: 0.9,
                     ..Default::default()
                 },
                 ScoredPost {
-                    tweet_id: 20,
+                    tweet_id: pid(20).to_string(),
                     score: 0.8,
                     ..Default::default()
                 },
@@ -231,7 +232,7 @@ fn safe_gap_blender_places_ads_only_between_explicitly_safe_posts() {
             .iter()
             .filter_map(FeedItem::post_id)
             .collect::<Vec<_>>(),
-        vec![5, 4, 3, 2, 1]
+        vec![pid(5), pid(4), pid(3), pid(2), pid(1)]
     );
 }
 
@@ -318,7 +319,7 @@ fn partition_organic_matches_upstream_grouping() {
         ..Default::default()
     });
     let unsafe_post = ScoredPost {
-        tweet_id: 9,
+        tweet_id: pid(9).to_string(),
         score: 1.0,
         brand_safety_verdict: BrandSafetyVerdict::AvoidAdjacency as i32,
         ..Default::default()
@@ -353,7 +354,7 @@ fn partition_organic_matches_upstream_grouping() {
             .iter()
             .filter_map(FeedItem::post_id)
             .collect::<Vec<_>>(),
-        vec![8, 7, 9, 6, 5]
+        vec![pid(8), pid(7), pid(9), pid(6), pid(5)]
     );
     assert!(result.non_selected.is_empty());
 }
@@ -363,7 +364,7 @@ fn ad_with_safety(
     ad_id: &str,
     position: usize,
     risk: BrandSafetyRiskLevel,
-    avoid_handles: Vec<i64>,
+    avoid_handles: Vec<home_mixer::models::UserId>,
     avoid_keywords: Vec<&str>,
 ) -> FeedItem {
     FeedItem {
@@ -381,8 +382,8 @@ fn ad_with_safety(
 /// 带作者 ID 的安全帖
 fn ad_safe_post_with_author(id: u64, author_id: u64, text: &str, score: f32) -> FeedItem {
     FeedItem::post(ScoredPost {
-        tweet_id: id,
-        author_id,
+        tweet_id: pid(id).to_string(),
+        author_id: uid(author_id).to_string(),
         score,
         tweet_text: text.to_string(),
         brand_safety_verdict: BrandSafetyVerdict::SafeForAdjacency as i32,
@@ -392,7 +393,7 @@ fn ad_safe_post_with_author(id: u64, author_id: u64, text: &str, score: f32) -> 
 
 fn ad_low_risk_post(id: u64, score: f32) -> FeedItem {
     FeedItem::post(ScoredPost {
-        tweet_id: id,
+        tweet_id: pid(id).to_string(),
         score,
         brand_safety_verdict: BrandSafetyVerdict::LowRisk as i32,
         ..Default::default()
@@ -467,7 +468,7 @@ fn partition_organic_drops_ad_when_adjacent_author_in_avoid_handles() {
         "ad-handle",
         2,
         BrandSafetyRiskLevel::Unspecified,
-        vec![100, 200, 300, 400, 500], // 所有帖子作者都在规避列表
+        vec![uid(100), uid(200), uid(300), uid(400), uid(500)], // 所有帖子作者都在规避列表
         vec![],
     )];
 
@@ -668,7 +669,7 @@ fn domain_items_map_to_distinct_transport_variants() {
     let items = vec![
         post(7, 0.7),
         FeedItem::advertisement("ad-1", 2),
-        FeedItem::who_to_follow("wtf-1", vec![10, 20]),
+        FeedItem::who_to_follow("wtf-1", vec![uid(10), uid(20)]),
         FeedItem::prompt("prompt-1"),
         FeedItem::push_to_home("push-1", ScoredPost::default()),
     ]
@@ -729,7 +730,7 @@ async fn supplemental_sources_are_injected_without_changing_the_scored_posts_por
 }
 
 struct ServedAwareScoredPostsProvider {
-    seen_served_ids: Mutex<Vec<Vec<u64>>>,
+    seen_served_ids: Mutex<Vec<Vec<home_mixer::models::PostId>>>,
 }
 
 #[async_trait]
@@ -739,12 +740,12 @@ impl ScoredPostsProvider for ServedAwareScoredPostsProvider {
             .lock()
             .expect("served request log")
             .push(query.served_ids.clone());
-        let posts = [30_u64, 20_u64]
+        let posts = [pid(30), pid(20)]
             .into_iter()
             .filter(|id| !query.served_ids.contains(id))
             .map(|tweet_id| ScoredPost {
-                tweet_id,
-                score: tweet_id as f32,
+                tweet_id: tweet_id.to_string(),
+                score: tweet_id.to_u64_be_padded().unwrap_or(0) as f32,
                 ..Default::default()
             })
             .collect();
@@ -758,28 +759,40 @@ impl ScoredPostsProvider for ServedAwareScoredPostsProvider {
 #[test]
 fn local_state_truncates_oldest_ids_and_timestamps() {
     let state = InMemoryFeedStateStore::new(2, 1);
-    state.record(42, vec![1, 2], 100).expect("first update");
-    state.record(42, vec![3], 200).expect("second update");
+    state
+        .record(uid(42), vec![pid(1), pid(2)], 100)
+        .expect("first update");
+    state
+        .record(uid(42), vec![pid(3)], 200)
+        .expect("second update");
 
-    let snapshot = state.load(42).expect("state snapshot");
+    let snapshot = state.load(uid(42)).expect("state snapshot");
 
-    assert_eq!(snapshot.served_post_ids, vec![2, 3]);
+    assert_eq!(snapshot.served_post_ids, vec![pid(2), pid(3)]);
     assert_eq!(snapshot.request_timestamps_ms, vec![200]);
 }
 
 #[test]
 fn local_state_evicts_the_least_recently_updated_user() {
     let state = InMemoryFeedStateStore::with_max_users(2, 1, 2);
-    state.record(1, vec![10], 100).expect("user one");
-    state.record(2, vec![20], 200).expect("user two");
-    state.record(3, vec![30], 300).expect("user three");
+    state.record(uid(1), vec![pid(10)], 100).expect("user one");
+    state.record(uid(2), vec![pid(20)], 200).expect("user two");
+    state
+        .record(uid(3), vec![pid(30)], 300)
+        .expect("user three");
 
-    assert_eq!(state.load(1).expect("evicted user"), Default::default());
     assert_eq!(
-        state.load(2).expect("second user").served_post_ids,
-        vec![20]
+        state.load(uid(1)).expect("evicted user"),
+        Default::default()
     );
-    assert_eq!(state.load(3).expect("third user").served_post_ids, vec![30]);
+    assert_eq!(
+        state.load(uid(2)).expect("second user").served_post_ids,
+        vec![pid(20)]
+    );
+    assert_eq!(
+        state.load(uid(3)).expect("third user").served_post_ids,
+        vec![pid(30)]
+    );
 }
 
 struct FailingFeedStats;
@@ -817,7 +830,7 @@ async fn stats_failure_does_not_change_the_feed_response() {
             .iter()
             .filter_map(FeedItem::post_id)
             .collect::<Vec<_>>(),
-        vec![30, 20]
+        vec![pid(30), pid(20)]
     );
 }
 
@@ -838,7 +851,7 @@ async fn local_state_hydrates_the_next_request_and_records_feed_stats() {
 
     let first = server
         .get_for_you_feed(ScoredPostsQuery {
-            user_id: 42,
+            user_id: uid(42),
             request_id: "state-1".to_string(),
             ..Default::default()
         })
@@ -846,7 +859,7 @@ async fn local_state_hydrates_the_next_request_and_records_feed_stats() {
     stats.wait_for_records(1).await;
     let second = server
         .get_for_you_feed(ScoredPostsQuery {
-            user_id: 42,
+            user_id: uid(42),
             request_id: "state-2".to_string(),
             ..Default::default()
         })
@@ -858,7 +871,7 @@ async fn local_state_hydrates_the_next_request_and_records_feed_stats() {
             .iter()
             .filter_map(FeedItem::post_id)
             .collect::<Vec<_>>(),
-        vec![30, 20]
+        vec![pid(30), pid(20)]
     );
     assert!(second.items.is_empty());
     assert_eq!(
@@ -867,7 +880,10 @@ async fn local_state_hydrates_the_next_request_and_records_feed_stats() {
             .lock()
             .expect("served request log")
             .as_slice(),
-        [Vec::<u64>::new(), vec![30, 20]]
+        [
+            Vec::<home_mixer::models::PostId>::new(),
+            vec![pid(30), pid(20)]
+        ]
     );
     let records = stats.records();
     assert_eq!(records[0].request_id, "state-1");
@@ -895,7 +911,7 @@ async fn final_feed_server_bridges_scored_posts_without_changing_order() {
             .iter()
             .filter_map(FeedItem::post_id)
             .collect::<Vec<_>>(),
-        vec![30, 20]
+        vec![pid(30), pid(20)]
     );
     assert_eq!(
         provider

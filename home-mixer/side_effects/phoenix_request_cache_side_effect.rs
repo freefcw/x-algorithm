@@ -49,7 +49,7 @@ impl SideEffect<ScoredPostsQuery, PostCandidate> for PhoenixRequestCacheSideEffe
     ) -> Result<(), String> {
         let user_id = input.query.user_id;
 
-        let post_ids: Vec<u64> = input
+        let post_ids: Vec<crate::models::PostId> = input
             .selected_candidates
             .iter()
             .map(|c| c.tweet_id)
@@ -84,14 +84,17 @@ mod tests {
 
     #[tonic::async_trait]
     impl StratoClient for SlowStratoClient {
-        async fn get_user_features(&self, _user_id: u64) -> Result<Vec<u8>, anyhow::Error> {
+        async fn get_user_features(
+            &self,
+            _user_id: crate::models::UserId,
+        ) -> Result<Vec<u8>, anyhow::Error> {
             Ok(Vec::new())
         }
 
         async fn store_request_info(
             &self,
-            _user_id: u64,
-            _post_ids: Vec<u64>,
+            _user_id: crate::models::UserId,
+            _post_ids: Vec<crate::models::PostId>,
         ) -> Result<Vec<u8>, anyhow::Error> {
             tokio::time::sleep(Duration::from_millis(20)).await;
             Ok(Vec::new())
@@ -104,11 +107,11 @@ mod tests {
             .with_write_timeout(Duration::from_millis(1));
         let input = Arc::new(SideEffectInput {
             query: Arc::new(ScoredPostsQuery {
-                user_id: 42,
+                user_id: 42.into(),
                 ..Default::default()
             }),
             selected_candidates: vec![PostCandidate {
-                tweet_id: 100,
+                tweet_id: 100.into(),
                 ..Default::default()
             }],
             non_selected_candidates: Vec::new(),

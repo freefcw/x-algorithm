@@ -5,10 +5,11 @@
 //! proto 条目。本地公开 proto 已定义 `ImpressionBloomFilterEntry`，因此端口
 //! 直接返回该类型；surface 固定为 Home Timeline，由 Adapter 内部处理。
 
+use crate::models::ids::UserId;
 use tonic::async_trait;
 use x_algorithm_proto::home_mixer::ImpressionBloomFilterEntry;
 
 #[async_trait]
 pub trait ImpressionBloomFilterClient: Send + Sync {
-    async fn get(&self, user_id: u64) -> Result<Vec<ImpressionBloomFilterEntry>, String>;
+    async fn get(&self, user_id: UserId) -> Result<Vec<ImpressionBloomFilterEntry>, String>;
 }
