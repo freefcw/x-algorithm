@@ -109,7 +109,7 @@ TES 相关 hydrator 里 CoreData / Quote / VideoDuration / HasMedia / FilteredTo
 | Strato | `DemoStratoClient` | `DisabledStratoClient` | Degraded 返回空特征；两者都拒绝未配置的持久化写入 |
 | TES | `DemoTESClient` | `DisabledTESClient` | Degraded 缺少 core data，候选可能被过滤 |
 | Gizmoduck（QueryBuilder viewer） | `DemoGizmoduckClient`（Allow 网外） | `DisabledGizmoduckClient`（未知 → 仅网内） | 作者资料 hydrator 默认仍用 Disabled；只有再开冷启动才给 pipeline 注入 Demo 粉丝数 |
-| VF | `DemoVisibilityFilteringClient` | `DisabledVisibilityFilteringClient` | Unavailable 时删除网外、保留网内；附属内容保守删除 |
+| VF | `DemoVisibilityFilteringClient` | `DisabledVisibilityFilteringClient` | Unavailable 时保留候选；成功响应缺帖视为 not_evaluated 删除 |
 | Thunder | 真实简化 gRPC client | 同左 | 500 ms timeout，seen IDs 下推 |
 | Phoenix retrieval | 配置地址后真实 gRPC | 同左 | 标准/MoE 调用上限 3 s |
 | Phoenix prediction | 配置地址后真实 gRPC | 同左 | 调用上限 5 s，失败走 fallback ranking |

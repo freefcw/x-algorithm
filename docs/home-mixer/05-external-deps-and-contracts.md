@@ -8,10 +8,10 @@
 
 | proto | 作用 | `home-mixer` 如何使用 |
 | --- | --- | --- |
-| `home_mixer.proto` | 对外服务协议 | `ScoredPostsService.GetScoredPosts` / `DebugScoredPosts`；`ForYouFeedService.GetForYouFeed` / `GetForYouFeedV2`；`BusinessFeedService.GetBusinessFeed` |
+| `home_mixer.proto` | 对外服务协议 | `ScoredPostsService.GetScoredPosts` / `DebugScoredPosts`；`ForYouFeedService.GetForYouFeed` / `GetForYouFeedV2` |
 | `in_network.proto` | Thunder 协议 | `InNetworkPostsService.GetInNetworkPosts` |
 | `recsys.proto` | Phoenix 协议 | `PhoenixRetrievalService.Retrieve`、`PhoenixPredictionService.PredictNextActions` |
-| `recommendation_data.proto` | BusinessFeed 数据服务协议 | `clients/mrpyq_recommendation_data_client.rs` 消费，支撑 `GetBusinessFeed` |
+| `recommendation_data.proto` | 业务推荐数据合同 | `clients/mrpyq_recommendation_data_client.rs` 消费；尚未装配进请求路径 |
 | `vm_ranker.proto`（可选） | VM Ranker 二次重排 | `VmRankerService.Rank`；默认不装配 |
 
 ```mermaid
@@ -134,7 +134,7 @@ sequenceDiagram
 | `GizmoduckClient` | `QueryBuilder` / `GizmoduckCandidateHydrator` | viewer policy 200 ms；post-selection 作者资料批次 500 ms |
 | `UserTopicReader` / `TopicRetrievalClient` | `UserTopicsQueryHydrator` / `PhoenixTopicsSource` | profile 读取和 Topic 召回各 500 ms 上限 |
 | `PhoenixPredictionClient` | `PhoenixScorer` | 精排预测；总调用上限 5 s，超时保留候选并走 fallback 排序 |
-| `VisibilityFilteringClient` | `VFCandidateHydrator` | 可见性审核；500 ms 上限，未知时拒绝网外、保留网内 |
+| `VisibilityFilteringClient` | `VFCandidateHydrator` | 可见性审核；500 ms 上限，超时/不可用保留候选，成功响应缺帖视为 not_evaluated 删除 |
 
 ## 6. 当前仓库里的实现成熟度
 
@@ -149,7 +149,7 @@ sequenceDiagram
 | `DisabledStratoClient` | disabled adapter | 返回空用户特征；演示模式注入 `DemoStratoClient`（固定关注列表）；两者都明确拒绝未配置的持久化写入，因此写回开关默认关闭 |
 | `DisabledTESClient` | disabled adapter | 所有帖子无 core data；演示模式注入 `DemoTESClient`（占位文本） |
 | `GizmoduckClient` | disabled + Demo adapter | `degraded` 返回未知 viewer policy，QueryBuilder 限制为仅网内；`demo` 明确允许网外并保留空作者资料；真实接入需要确认用户偏好授权语义 |
-| `VisibilityFilteringClient` | disabled + Demo adapter | `demo` 显式返回 Allow；`degraded` 返回 Unavailable，Pipeline 拒绝网外、保留网内；真实合同缺失时 `production_ready` 拒绝启动 |
+| `VisibilityFilteringClient` | disabled + Demo adapter | `demo` 显式返回 Allow；`degraded` 返回 Unavailable，Pipeline 保留候选；成功响应缺帖视为 not_evaluated 删除；真实合同缺失时 `production_ready` 拒绝启动 |
 | `GrpcVMRankerClient` | 真实 gRPC 客户端（可选） | 同时设置 `HOME_MIXER_ENABLE_VM_RANKER=1` 与 `VM_RANKER_GRPC_ADDR` 后调用本仓库 `vm-ranker` 服务；上限 500 ms，失败时 Scorer 按候选数返回错误，由流水线失败隔离处理 |
 
 除上表外，`clients/` 下还有未接入主链的骨架客户端：`impressed_posts_client.rs`、`impression_bloom_filter_client.rs`、`socialgraph_client.rs`、`tweet_mixer_client.rs`，均为 trait + 占位实现，供后续扩展。

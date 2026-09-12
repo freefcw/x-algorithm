@@ -71,10 +71,11 @@ flowchart TD
 | `HOME_MIXER_ENABLE_VM_RANKER` | `feature_policy.rs` | 显式启用 VM Ranker 二次重排 Scorer | 默认关闭；启用但缺少 `VM_RANKER_GRPC_ADDR` 时记录告警并跳过，主链继续 |
 | `HOME_MIXER_ENABLE_AUTHOR_COLD_START` | `feature_policy.rs` | 启用低曝光新作者提升，并在 scorer 前补作者粉丝数 | 默认关闭；当前只允许 `demo`，非 demo 会告警并禁用；候选缺 `view_count` 或作者粉丝数时严格不参与 |
 | `HOME_MIXER_ENABLE_COLD_START_THOMPSON_SAMPLING` | `feature_policy.rs` | 在冷启动候选中启用 Beta Thompson Sampling | 默认关闭；只有 Author Cold Start 同时开启才生效 |
+| `HOME_MIXER_VF_FAILURE_POLICY` | `feature_policy.rs` / `filters/vf_filter.rs` | VF 请求失败/超时、`Unchecked`、成功响应缺帖时的候选保留策略：`allow_all` 全保留，`in_network_only` 仅保留 `in_network == Some(true)` | 默认 `allow_all`；大小写不敏感、trim 后解析，未知值告警并按 `allow_all` |
 | `VM_RANKER_GRPC_ADDR` | `candidate_pipeline/phoenix_candidate_pipeline.rs` | VM Ranker 服务地址；只提供地址不会自动启用 | 未设置时不装配 `VMRanker` Scorer |
 | `VM_RANKER_VALUE_MODEL_ID` | `candidate_pipeline/phoenix_candidate_pipeline.rs` | 选择 value model；上游从 feature switch 读取，本地由装配显式配置 | 未设置时服务端按 `unknown` 记账并使用默认权重 |
-| `MRPYQ_RECOMMENDATION_DATA_ADDR` | `clients/mrpyq_recommendation_data_client.rs` | BusinessFeed 数据服务（MRPYQ）gRPC 地址 | 未设置时装配 Disabled client，BusinessFeed 请求返回 FailedPrecondition |
-| `MRPYQ_RECOMMENDATION_DATA_TIMEOUT_MS` | `clients/mrpyq_recommendation_data_client.rs` | BusinessFeed 数据服务调用超时（毫秒） | 默认 `500`（`params/config.rs`） |
+| `MRPYQ_RECOMMENDATION_DATA_ADDR` | `clients/mrpyq_recommendation_data_client.rs` | mrpyq 推荐数据 gRPC 地址 | 客户端已有，当前未装配进请求路径 |
+| `MRPYQ_RECOMMENDATION_DATA_TIMEOUT_MS` | `clients/mrpyq_recommendation_data_client.rs` | mrpyq 推荐数据调用超时（毫秒） | 默认 `500`（`params/config.rs`） |
 | `HOME_MIXER_DEMO` | `demo.rs` | `HOME_MIXER_MODE=demo` 的旧兼容别名 | 仅兼容已有脚本；新配置使用 `HOME_MIXER_MODE` |
 
 Phoenix 两个主服务地址通常同时指向 `phoenix/scripts/run_grpc_gateway.py` 启动的网关（默认 `http://localhost:50053`）。完整启动组合见 [getting-started 第四步](../getting-started/05-第四步-跑通完整推荐链路.md)。
@@ -113,7 +114,7 @@ Phoenix 两个主服务地址通常同时指向 `phoenix/scripts/run_grpc_gatewa
 
 - 当前只有 disabled VF 边界的构造函数接收这些路径
 - `demo` 注入显式 Allow adapter；`degraded` 注入返回 Unavailable 的 disabled adapter
-- VF 未知时网外候选拒绝、网内候选保留；`production_ready` 在真实 VF 合同缺失时拒绝启动
+- VF 未知（失败/超时/缺帖）时按 `HOME_MIXER_VF_FAILURE_POLICY` 处理：默认 `allow_all` 全保留，`in_network_only` 仅保留网内；`production_ready` 在真实 VF 合同缺失时拒绝启动
 
 ## 4. 服务级参数
 
@@ -134,7 +135,7 @@ Phoenix 两个主服务地址通常同时指向 `phoenix/scripts/run_grpc_gatewa
 | `TOPIC_RETRIEVAL_TIMEOUT_MS` | `500` | Topic 召回上限 |
 | `VF_REQUEST_TIMEOUT_MS` | `500` | 单组可见性检查上限 |
 | `VM_RANKER_TIMEOUT_MS` | `500` | 可选 VM Ranker 二次重排上限 |
-| `MRPYQ_RECOMMENDATION_DATA_TIMEOUT_MS` | `500` | BusinessFeed 数据服务调用上限 |
+| `MRPYQ_RECOMMENDATION_DATA_TIMEOUT_MS` | `500` | mrpyq 推荐数据调用上限 |
 
 ### 4.2 对外监听结构
 
@@ -145,7 +146,6 @@ flowchart LR
 
     G --> S["ScoredPostsService"]
     G --> F["ForYouFeedService"]
-    G --> B["BusinessFeedService"]
     H --> R["空 axum Router"]
 ```
 

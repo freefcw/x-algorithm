@@ -170,7 +170,6 @@ flowchart TD
 - Home Mixer 默认使用 `degraded` 模式；`HOME_MIXER_MODE=demo` 才会注入演示客户端。
 - `HOME_MIXER_MODE=production_ready` 当前会主动拒绝启动，因为真实依赖合同未闭合。
 - VM Ranker、Phoenix MoE、请求缓存副作用、作者冷启动等可选能力默认关闭。
-- Business Feed 是独立规则型垂直链路，依赖 `MRPYQ_RECOMMENDATION_DATA_ADDR`；没有地址时该接口明确返回未配置错误。
 - 本地新增的 SocialGraph 反向屏蔽能力已有端口、Hydrator 和测试，但没有真实 SocialGraph Adapter，因此仍不能算生产启用。
 
 ## 7. “能跑”到“能生产”的距离

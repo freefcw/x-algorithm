@@ -178,7 +178,7 @@ graph LR
 | `retweeted_tweet_id` | `RetweetDeduplicationFilter`、`PhoenixScorer` |
 | `video_duration_ms` | `RankingScorer` 内部 VQV 权重 |
 | `in_network` | `RankingScorer` 内部 OON 调整、`VFCandidateHydrator` |
-| `visibility_decision` | `VFFilter`（未知时网外拒绝、网内保留） |
+| `visibility_decision` | `VFFilter`（Unavailable/Unchecked 保留；Restricted Drop / not_evaluated 删除） |
 | `score` | `TopKScoreSelector`、`DedupConversationFilter` |
 
 ## 6. 这个数据模型的优点和代价

@@ -25,7 +25,7 @@ flowchart LR
 
 ### 2.1 `home-mixer` 负责什么
 
-- 接收 `ScoredPostsService` 的 Get/Debug 请求和 `ForYouFeedService` 的 legacy/V2 请求（另有独立商业链路的 `BusinessFeedService.GetBusinessFeed`，本组文档聚焦推荐主链）
+- 接收 `ScoredPostsService` 的 Get/Debug 请求和 `ForYouFeedService` 的 legacy/V2 请求
 - 由 `QueryBuilder` 构造内部 `ScoredPostsQuery` 与请求/预测身份
 - 通过上游命名 Query Hydrator owners 获取 scoring/retrieval sequence 和 user feature fields
 - 从 Thunder / Phoenix 取候选
@@ -208,7 +208,7 @@ Thunder 对 `home-mixer` 的价值不是“直接返回排好序的网内 Feed�
 | TESClient | `DisabledTESClient`；演示模式注入 `DemoTESClient`（演示文本） |
 | UserActionSequenceOps | `DisabledUserActionSequenceFetcher`；演示模式注入 `DemoUserActionSequenceFetcher`（合成行为序列） |
 | GizmoduckClient | disabled + Demo adapter；未知 viewer policy 只允许网内 |
-| VisibilityFilteringClient | disabled + Demo adapter；不可用时拒绝网外、保留网内 |
+| VisibilityFilteringClient | disabled + Demo adapter；超时/不可用时保留候选，成功响应缺帖视为 not_evaluated 删除 |
 
 这意味着：
 

@@ -215,7 +215,7 @@ flowchart LR
 | `ThunderClient` | 可能能连真实 Thunder，但输入 following 列表为空 |
 | `DisabledTESClient` | 所有帖子 core data 为空 |
 | `PhoenixPredictionClient` | endpoint 未配置时 `Unavailable`，Scorer 走规则 fallback |
-| `VisibilityFilteringClient` | `Unavailable`；网外拒绝、网内保留 |
+| `VisibilityFilteringClient` | `Unavailable`；保留候选 |
 
 ### 5.3 真实退化时序
 

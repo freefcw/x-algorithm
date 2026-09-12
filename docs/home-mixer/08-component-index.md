@@ -74,7 +74,7 @@
 
 | 组件 | 文件 | enable | 读取 | 移除条件 |
 | --- | --- | --- | --- | --- |
-| `VFFilter` | `filters/vf_filter.rs` | 默认启用 | `visibility_decision` `in_network` | Restricted Drop/generic；Unchecked/Unavailable 时移除网外、保留网内 |
+| `VFFilter` | `filters/vf_filter.rs` | 默认启用 | `visibility_decision` | Restricted Drop/generic 始终删除；Unchecked/Unavailable（含响应缺帖）按 `HOME_MIXER_VF_FAILURE_POLICY`：默认 `allow_all` 保留，`in_network_only` 仅保留网内 |
 | `AncillaryVFFilter` | `filters/ancillary_vf_filter.rs` | 默认启用 | `drop_ancillary_posts` | 引用/转发附属帖受限、漏结果或 VF 不可用 |
 | `DedupConversationFilter` | `filters/dedup_conversation_filter.rs` | 默认启用 | `ancestors` `tweet_id` `score` | 同一会话树保留最高分 |
 

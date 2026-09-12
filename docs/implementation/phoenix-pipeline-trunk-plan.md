@@ -1,6 +1,6 @@
 # 以 PhoenixCandidatePipeline 为主干的推荐链路收敛方案
 
-> **状态**：`decision`（已定方向；P0 已在 `mp-trunk` 分支执行完毕，见 §13；待 P1）
+> **状态**：`in-progress`（P0–P3 的可移植部分已落地，真实业务适配器与生产数据面仍按 U3/§10 门禁推进，见 §13）
 > **日期**：2026-09-12
 > **基线**：`mp` = `0300a09`；`mp-slim` = `ffd17eb`（二者同父 `aac24f6`）；上游 `origin/main` = `6bb4594`；`mp` 已吸收的上游锚点 = `902a06f`；主干分支 `mp-trunk` 从 `mp` 拉出
 > **读者**：推荐服务开发、Phoenix 训练、业务后端接口负责人
@@ -13,7 +13,7 @@
 1. **主干**：以 `mp` 分支的 `home-mixer::PhoenixCandidatePipeline`（含 `candidate-pipeline` 框架）为唯一编排主干，放弃 `mp-slim` 的 `recommendation-service` 硬编码流程。理由是持续吸收上游：`mp` 已有 U0–U3 差异分类与逐快照能力清单制度，业务接入在该制度下等于"实现端口 trait + 装配点注入"。
 2. **业务差异只允许四种进入方式**：U1 适配器（外部依赖替换）、U2 增量（本地扩展）、**U4 身份类型替换**（新增）、**U5 产品不适用**（新增）。装配点仍是 `PhoenixCandidatePipeline::build_with_clients()`。
 3. **ID 方案选 A**：流水线内以 Copy newtype `ObjectId([u8; 12])`（别名 `PostId` / `UserId`）为唯一身份；proto 与所有外部边界用 24 位小写 hex 字符串；不保留任何 u64 身份，也不引入哈希映射表。
-4. **删除范围收窄到 U5**：只物理删除引用 / 转推 / 订阅三类的 6 个专用组件（另吸收 `business_feed/` 与 `recommendation-service/`）；其余不需要的能力（ForYou / Blender、广告槽位、话题、MoE、CachedPosts、Kafka 端口等）保留上游形态、不装配。
+4. **删除范围收窄到 U5**：只物理删除引用 / 转推 / 订阅三类的 6 个专用组件（`business_feed/` 已删除；`recommendation-service/` 仍待吸收）；其余不需要的能力（ForYou / Blender、广告槽位、话题、MoE、CachedPosts、Kafka 端口等）保留上游形态、不装配。
 5. **模型引擎**：先用本地移植的小型 Transformer（`phoenix/services` 演示网关 + `data_preprocessor.py`）接真实数据；同时以四项前置动作保留随时切换 xrex 生产引擎的能力，切换时流水线零改动。
 6. **mp-slim 的契约层成果全部保留并落回主干**：string 业务 ID、Phoenix 元数据与响应校验、fail-closed 的 viewer 级鉴权、served 落库成功才响应、deadline 传递、`phoenix/` 上的训练侧改造。
 
@@ -35,7 +35,7 @@
 
 ### 2.2 mp 上的两条互不相通链路
 
-`mp` 的 `PhoenixCandidatePipeline` 使用 u64 与 Demo / Disabled 客户端，从未接过真实业务数据；真正接业务 gRPC（`RecommendationDataService`，string ObjectId，`go_package` 指向业务 Go 后端）的是独立的 `business_feed/` 规则 Feed，它不使用流水线框架。`mp-slim` 演化了后者、删除了前者。本方案把两条合并：让业务数据流过流水线框架。
+`mp` 的 `PhoenixCandidatePipeline` 当时使用 u64 与 Demo / Disabled 客户端，从未接过真实业务数据；真正接业务 gRPC（`RecommendationDataService`，string ObjectId，`go_package` 指向业务 Go 后端）的是独立的 `business_feed/` 规则 Feed，它不使用流水线框架。`mp-slim` 演化了后者、删除了前者。本方案把两条合并：让业务数据流过流水线框架。主干已删除独立 `BusinessFeedService` / `business_feed/`，客户端保留待接入。
 
 ### 2.3 mp-slim 做对与做过头的地方
 
@@ -189,7 +189,7 @@ to_u64_hash(oid) = from_be_bytes(md5(oid 的 12 个原始字节)[0..8]) & 0x7FFF
 | `phoenix_recsys.proto`（string ID）+ `phoenix/` 提交 | cherry-pick（见 P0）；proto 文件名沿用以避开 Python descriptor 撞名 | U0 / U1 |
 | PhoenixRanker 的 metadata + NaN / 重复 / 缺失校验 | `SlimPhoenixPredictionClient` 内部，校验失败返回 `Err` | U1 |
 | 整批规则回退 `ranking::fallback()` | `RuleFallbackScorer`，装配在 `RankingScorer` 之后，读 PhoenixScorer 失败标记 | U2 |
-| `/recommendation/eligibility` fail-closed | `MrpyqVisibilityFilteringClient`：缺项 → Drop、超时 → Unavailable；`VFFilter` 是否把 fail-closed 扩到网内做成本地参数，默认沿用全量拒绝 | U1 / U2 |
+| `/recommendation/eligibility` fail-closed | `MrpyqVisibilityFilteringClient`：缺项 → Drop、超时 → Unavailable；`VFFilter` 故障分支由 `HOME_MIXER_VF_FAILURE_POLICY` 决定：`allow_all`（默认）对 Unchecked/Unavailable 全量保留，`in_network_only` 仅保留网内；成功响应缺帖同样记为 Unavailable 走同一策略 | U1 / U2 |
 | `/recommendation/input`（history / seen / candidates 一次返回） | 拆为三个端口实现：`UserActionSequenceOps` / `ImpressedPostsClient` / `InNetworkPostsClient` | U1 |
 | served 成功才 2xx | `scored_posts_server.rs` 中 `execute()` 之后、响应之前的同步步骤（框架 SideEffect 是 fire-and-forget，不满足训练归因） | U2 |
 | `/v1/feedback` 幂等落库 | 独立 RPC（或 HTTP 薄层）→ 业务适配器 | U2 |
@@ -232,8 +232,8 @@ xrex 未验证点：`use_post_sid=False` 后召回塔回到纯 item hash 的路�
 | 批次 | 内容 | 验收 |
 | --- | --- | --- |
 | **P0 底座**（已完成，见 §13） | 从 `mp`（`0300a09`）拉主干分支；cherry-pick mp-slim 的 phoenix-only 提交 `6395950 7f008f8 1f14e48 6a9ad3d 8f03bae 4452fa2 266ae3b a7ebe0e 2e3e1fc 370a03f 9568373 880ebd4`；`4ff17d1`（proto 改名）与 `25f4f7c`（ID 改 string）涉及 `proto/build.rs`，需手工合并并保留 `mp` 的其余 4 个 proto 文件；在 `upstream-first-maintenance.md` 增加 U4 / U5；本文落库；ID 方案定为 A | `cargo test --workspace` 354 项通过；`cd phoenix && uv run pytest` 通过；`./scripts/run_demo.sh` 可跑 |
-| **P1 ID 替换（U4）** | 新建 `ids.rs`；`model_contract.py` 加派生函数与黄金向量；改 models 与 `home_mixer.proto`；`created_at_ms` 字段 + AgeFilter；`demo.rs` 改 ObjectId；Bloom 改字节输入；thunder / vm-ranker 两个 gRPC 适配器加 feature gate；测试字面量改 `pid(n)` / `uid(n)`。只改类型不改行为 | 318 单测迁移通过；demo-client 端到端 ObjectId 进出；与 P0 相同演示数据下排序一致 |
-| **P2 业务适配器 + 契约落位 + U5 删除** | §5 的 U1 适配器清单；`InNetworkPostsClient` trait 抽取；`FallbackSource`、`FirstStageEligibleFilter`、`RuleFallbackScorer`、ServedPersist、feedback RPC、引擎选择配置；删 Quote / Subscription Hydrator、SubscribedUserIds QH、RetweetDedup / IneligibleSubscription / AncillaryVF Filter、`business_feed/`、`recommendation-service/`；`params/param.rs` 中 retweet / quote / quoted_* 权重设 0；`production_ready` 拒绝条件改为"业务适配器契约未验证" | 真实 fixture 端到端；fail-closed、整批回退、served 阻塞落库各有测试；`cargo clippy --workspace --all-targets -- -D warnings` |
+| **P1 ID 替换（U4）** | 新建 `ids.rs`；`model_contract.py` 加派生函数与黄金向量；改 models 与 `home_mixer.proto`；`created_at_ms` 字段 + AgeFilter；Demo 适配器统一 ObjectId（Thunder 仍保留 legacy integer wire）；Bloom 改字节输入；Thunder / VM Ranker 两个 gRPC 适配器加 feature gate；测试字面量改 `pid(n)` / `uid(n)`。只改类型不改行为 | 385 项根 workspace 单测通过；no-default-features home-mixer 305 项通过；demo-client 端到端 ObjectId 进出；与 P0 相同演示数据下排序一致 |
+| **P2 业务适配器 + 契约落位 + U5 卸装（核心已落地）** | §5 中可在本地验证的部分：`InNetworkPostsClient` trait 抽取；`FallbackSource`、`FirstStageEligibleFilter`、`RuleFallbackScorer`、ServedPersistence、Phoenix engine/response contract；移除 U5 组件装配并物理删除 6 个专用文件；`params/param.rs` 中 retweet / quote / quoted_* 权重设 0；`production_ready` 拒绝条件改为"业务适配器契约未验证"。真实 Mrpyq/TES/Strato/UAS/VF/Gizmoduck、feedback RPC 仍延后；`business_feed/` 已删除 | Demo 35 条端到端；fail-closed、整批回退、served 阻塞落库、非 Demo 不装配 fallback 各有测试；`cargo clippy --workspace --all-targets -- -D warnings` |
 | **P3 追上游与可选部件** | 按 sync procedure 处理 `49815da → 75d93d9 → fee1d0f → 6bb4594`，实测 U4 移植摩擦；按需 `in_network.proto` / `vm_ranker.proto` 改 string 并部署 Thunder / VM Ranker；话题（tag_ids）；AuthorColdStart（需业务曝光数）；多副本共享 served / session 存储 | 四份新的 capability inventory，锚点前移到 `6bb4594`；由容量 / 延迟 / 重复曝光指标触发部件启用 |
 
 ---
@@ -350,9 +350,19 @@ xrex 未验证点：`use_post_sid=False` 后召回塔回到纯 item hash 的路�
 - `uv` 按 `AGENTS_local.md` 使用 `UV_CACHE_DIR=/tmp/uv-cache`；`uv sync` 有一条 `build_system.requires = ["uv-build>=0.9.9,<0.10.0"]` 与当前 `uv 0.12.10` 不匹配的告警，只影响本地 `xai-*` 包的构建后端选择，不影响结果。
 - 仓库有一个名为 `mp` 的远程，`git log mp..HEAD` 会报 `refname 'mp' is ambiguous`，脚本一律使用 `refs/heads/mp`。
 
-**P1 需要注意**：
+**P0→P1 迁移核对结果**：`TEMP(U4-P1)` 已清零；`parse_optional("")` 保留空串语义且 `"0"` fail-closed；Demo Phoenix 召回已使用 24-hex 作者/帖子 ID；Phoenix 文档与协议头注释已改为 home-mixer 调用方。
+### P1（2026-09-12）ID 替换（U4）
 
-1. 全局搜索 `TEMP(U4-P1)`（17 处，7 个文件）即为要删除的桥接；两条回归测试在 P1 应改写为 `PostId::parse` 的等价断言（非法串 → 丢弃并计数），而不是直接删除。
-2. `phoenix_recsys.proto` 的 `in_reply_to_tweet_id` 现在用空串表示"非回复"，桥接同时兼容 `"0"`；P1 的 `parse_optional("")` 应沿用"空串 → `None`"并明确 `"0"` 不再是合法值。
-3. 演示数据：`proto/src/demo.rs` 的 `DEMO_AUTHOR_IDS` / `snowflake_id` 与 `home-mixer/clients/uas_fetcher.rs` 的 Demo UAS 仍是 u64 Snowflake，网关语料是 24-hex；P1 需按 §6.4 统一为 `demo_object_id(seq)` / `from_parts(ts, seq)`，`PhoenixSource` 在演示模式下才会重新有候选。
-4. `phoenix/` 文档与 `phoenix_recsys.proto` 头注释中的 "recommendation-service" 表述要在 P2 删除 `recommendation-service/` 时改写为 home-mixer / PhoenixCandidatePipeline。
+流水线身份改为 `ObjectId([u8; 12])` / `PostId` / `UserId`（`home-mixer/models/ids.rs`）。`home_mixer.proto` 出入口为 24 位小写 hex；空串 = 缺省，`"0"` 不再是合法哨兵。AgeFilter 读 `created_at_ms`，缺失时回退 `timestamp_secs()`。Bloom 对 12 字节做 murmur。`to_u64_hash` 与 `phoenix/services/model_contract.py::object_id_to_u64_hash` 共享 `testdata/object_id_u64_hash.json`。Thunder / VM Ranker 仍是整数 proto，仅对零填充 ID round-trip（`legacy-int-ids` 默认开，**不部署**）。`TEMP(U4-P1)` 十进制桥接已从代码删除。
+
+**验证**：`cargo test --workspace` 通过（当前 382 项）；`cargo test -p home-mixer --no-default-features --lib` 通过（304 项）；`cargo clippy --workspace --all-targets -- -D warnings` 通过；`cd phoenix && uv run pytest -q` 通过（当前 115 项）；`./scripts/run_demo.sh` 通过并返回 35 条，Phoenix 网外召回已恢复。新增验证包括非 Demo 不装配 fallback、Phoenix serving metadata 校验、独立 served persistence 端口。
+
+### P2（2026-09-12）契约落位 + U5 卸装
+
+已落地：`FirstStageEligibleFilter`、`RuleFallbackScorer`（Phoenix 全空则整批规则分 + `degraded_reason=phoenix_unavailable`）、`InNetworkPostsClient` + `FallbackSource`（仅 Demo 装配兜底池，非 Demo 不装配）、`SlimPhoenixPredictionClient`（完整 serving metadata + NaN/重复/缺失/shape fail-closed）、`PHOENIX_ENGINE`（仅 slim；xrex/未知值显式拒绝）、独立 `ServedPersistence` 端口（本地内存实现仅 Demo/测试，生产需真实 adapter；失败 → `Unavailable`）、retweet/quote/quoted_* 权重 = 0、`production_ready` 拒绝文案改为「业务适配器契约未验证」。装配移除并物理删除 Quote/Subscription hydrator、SubscribedUserIds QH、RetweetDedup / IneligibleSubscription / AncillaryVF（路径列入 `upstream-first-maintenance.md` U5 skip，禁止再 `mod`）；ThunderSource 改为依赖 `InNetworkPostsClient`，served history/request timestamp hydrator 与同步落库共用同一 bounded in-memory store。
+
+**未做完（刻意）**：完整 MrpyqTES/Strato/UAS/VF/Gizmoduck、真实 `ServedPersistence` 适配器与 feedback RPC 仍待业务接口确认（§10）；独立 `BusinessFeedService` / `business_feed/` 已删除，`mrpyq_recommendation_data_client` 保留待接入流水线。Thunder/VM Ranker 仍使用 legacy integer proto，已由 `legacy-int-ids` feature 隔离；默认演示可用但不应部署。
+
+### P3（2026-09-12）追上游清单
+
+四份能力清单：`49815da` / `75d93d9` / `fee1d0f` / `6bb4594`。可移植的 xrex FA4、GPU/NUMA 辅助、Kafka 认证参数、copy-port bundle 下载、ContentFeatures proto、xai-configlib class reference、vm-ranker DPP/metrics 已吸收，维护锚点前移到 `6bb4594`。未吸收项已在清单标为 U3：VF/URT、StableHLO bundle、slim 协议不存在的 logits 字段、GPU/Kafka 生产数据面，以及本地 `RankRequest` 不存在的 `seed_tweet_id`。Phoenix/engine compileall、engine tests、根 workspace tests 均通过；macOS 未执行 CUDA/NUMA/Kafka 真实集群验证。

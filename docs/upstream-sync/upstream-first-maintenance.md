@@ -29,11 +29,22 @@ Every intentional difference from upstream belongs to one class:
 | `U2` | Downstream extension | Make the extension additive. Do not rewrite an upstream method signature when a wrapper or adapter is sufficient. Add a regression test. |
 | `U3` | Deferred external capability | Keep the capability in the inventory with its owner, missing contract, enablement state, and re-entry condition. Do not add a production-looking stub. |
 | `U4` | Identity type substitution | Business identities are 96-bit ObjectIds that upstream `u64` cannot carry. Inside the pipeline every identity is `PostId` / `UserId` (a `Copy` newtype). When porting upstream code apply a mechanical substitution: `u64` in ID positions → `PostId` / `UserId`; proto3 sentinel `0` → `Option` / empty string; `to_be_bytes()` → `as_bytes()`; `wrapping_mul` bucketing → `to_u64_hash()`; Snowflake-derived time → hydrated `created_at_ms`. Keep `u64` unchanged for timestamps, counters, thresholds, request-local IDs, and hash arithmetic. |
-| `U5` | Product not applicable | Concepts the product does not have (quote, retweet, subscription, …). Physically delete only the *dedicated* component files and remove them from assembly; keep the corresponding fields in `PostCandidate` / `PhoenixScores` / `UserFeatures` as `None` / empty; keep the related branches in shared filters as no-ops; set the matching action-head weights to 0; record later upstream changes to those dedicated files as "skipped" in the capability inventory. |
+| `U5` | Product not applicable | Concepts the product does not have (quote, retweet, subscription, …). Physically delete only the *dedicated* component files and remove them from assembly; keep the corresponding fields in `PostCandidate` / `PhoenixScores` / `UserFeatures` as `None` / empty; keep the related branches in shared filters as no-ops; set the matching action-head weights to 0; record later upstream changes to those dedicated files as "skipped" in the capability inventory. Do not re-create the files or register them in `mod.rs` / `PhoenixCandidatePipeline`. |
+
+Fixed U5 skip paths (physically deleted; later upstream edits are inventory "skipped"):
+
+| Path | Dedicated component |
+|---|---|
+| `home-mixer/candidate_hydrators/quote_hydrator.rs` | `QuoteHydrator` |
+| `home-mixer/candidate_hydrators/subscription_hydrator.rs` | `SubscriptionHydrator` |
+| `home-mixer/query_hydrators/subscribed_user_ids_query_hydrator.rs` | `SubscribedUserIdsQueryHydrator` |
+| `home-mixer/filters/retweet_deduplication_filter.rs` | `RetweetDeduplicationFilter` |
+| `home-mixer/filters/ineligible_subscription_filter.rs` | `IneligibleSubscriptionFilter` |
+| `home-mixer/filters/ancillary_vf_filter.rs` | `AncillaryVFFilter` |
 
 A difference without one of these classifications is drift and should be removed or documented before more code is built on it.
 
-`U4` and `U5` were introduced by the trunk convergence decision in [`../implementation/phoenix-pipeline-trunk-plan.md`](../implementation/phoenix-pipeline-trunk-plan.md) (§4); that document also fixes the `ObjectId` design and the migration batches (P0–P3). Until the P1 batch lands, `home-mixer` still uses `u64` identities internally and bridges to the string-ID `phoenix_recsys.proto` with decimal parse/format at the Phoenix boundary; every such site is marked `TEMP(U4-P1)` and is removed by P1.
+`U4` and `U5` were introduced by the trunk convergence decision in [`../implementation/phoenix-pipeline-trunk-plan.md`](../implementation/phoenix-pipeline-trunk-plan.md) (§4); that document also fixes the `ObjectId` design and the migration batches (P0–P3). P1 has landed: pipeline identities are `PostId` / `UserId` (`home-mixer/models/ids.rs`); proto and Phoenix boundaries use 24-char lowercase hex. Thunder / VM Ranker integer protos remain behind zero-pad round-trip (`legacy-int-ids`) and are not deployed.
 
 ### Measured upstream-sync friction for `U4`
 

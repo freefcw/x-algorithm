@@ -20,14 +20,14 @@
 - `DisabledStratoClient` 返回空用户特征并拒绝持久化写入，Thunder 缺少关注列表，请求缓存 SideEffect 默认关闭。
 - `DisabledTESClient` 返回空 core data，普通候选可能被 `CoreDataHydrationFilter` 删除。
 - `DisabledGizmoduckClient` 返回未知 viewer policy，`QueryBuilder` 将请求限制为仅网内。
-- `DisabledVisibilityFilteringClient` 返回 `Unavailable`；`VFFilter` 删除网外候选、保留网内候选，附属引用/转发内容保守删除。
+- `DisabledVisibilityFilteringClient` 返回 `Unavailable`；`VFFilter` 对 `Unchecked/Unavailable`（含成功响应缺帖）统一按 `HOME_MIXER_VF_FAILURE_POLICY` 处理：默认 `allow_all` 全保留（fail-open），`in_network_only` 仅保留网内。
 
 因此 degraded 的目标是“明确、保守、可观测地退化”，不是提供完整 Feed。需要本地完整链路时使用 Demo；需要生产流量时必须先让 `production_ready` 的合同校验通过。
 
 ## 3. 已经收口的高风险语义
 
 - Viewer policy 只有明确 Allow 才开放网外；错误和 200 ms 超时都限制为仅网内。
-- VF 使用 `Allowed / Restricted / Unchecked / Unavailable`，不再把缺失结果当作审核通过；调用上限 500 ms。
+- VF 使用 `Allowed / Restricted / Unchecked / Unavailable`，缺失结果记为 `Unavailable` 而非审核通过；故障分支保留范围由 `HOME_MIXER_VF_FAILURE_POLICY` 决定；调用上限 500 ms。
 - Phoenix 标准/MoE 召回上限 3 s，预测上限 5 s；Viewer 为 200 ms；Thunder、VF、Topic profile/recall、UAS、Strato read/write、TES 单批和 Gizmoduck profile 均为 500 ms。超时由对应 Source/Hydrator/Scorer/SideEffect 隔离并记录。
 - `DebugScoredPosts` 默认关闭，启用时要求 metadata token；未签名 `cached_posts` 默认拒绝且只允许显式 Demo fixture。
 - Pipeline 对 Query Hydrator、Source、Hydrator、Scorer、Selector 和 SideEffect 都输出 request-scoped 成功、失败和耗时日志。

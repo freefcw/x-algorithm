@@ -10,8 +10,8 @@
 2. 解析 CLI 参数，再从环境变量解析 `HomeMixerConfig`
 3. `HomeMixerServer::build(config).await`
 4. 构造共享 `QueryBuilder`、内层 `PhoenixCandidatePipeline`、`ScoredPostsServer`
-5. 构造外层 `ForYouCandidatePipeline`、`ForYouFeedServer` 与 `RuleBasedBusinessFeedServer`
-6. `main.rs` 构造 gRPC reflection 服务；`HomeMixerServer::register` 注册三个 gRPC 服务（`ScoredPostsService`/`ForYouFeedService`/`BusinessFeedService`，带压缩和消息大小限制），随后 `main.rs` 把 reflection 加入 routes
+5. 构造外层 `ForYouCandidatePipeline` 与 `ForYouFeedServer`
+6. `main.rs` 构造 gRPC reflection 服务；`HomeMixerServer::register` 注册两个 gRPC 服务（`ScoredPostsService`/`ForYouFeedService`，带压缩和消息大小限制），随后 `main.rs` 把 reflection 加入 routes
 7. 启动 gRPC，以及空的 health/metrics HTTP 监听（端口开着，没有 `/health` 或 `/metrics` 路由）
 
 ```mermaid
@@ -173,7 +173,7 @@ flowchart TD
 这里有两个要点：
 
 1. 返回的是 pipeline 最终保留下来的 `selected_candidates`，不是召回原始结果。
-2. 只有 `Restricted` 且候选最终仍保留时才映射 `visibility_reason`；`Unchecked/Unavailable` 的网外候选会被删除，网内候选按降级策略保留但不伪造审核原因。
+2. 只有 `Restricted` 且候选最终仍保留时才映射 `visibility_reason`；`Unchecked/Unavailable` 保留候选但不伪造审核原因；成功响应缺帖视为 not_evaluated 删除。
 
 ## 7. 一个容易忽略的事实
 
