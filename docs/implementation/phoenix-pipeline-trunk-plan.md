@@ -1,8 +1,8 @@
 # 以 PhoenixCandidatePipeline 为主干的推荐链路收敛方案
 
-> **状态**：`decision`（已定方向，待 P0 执行）
+> **状态**：`decision`（已定方向；P0 已在 `mp-trunk` 分支执行完毕，见 §13；待 P1）
 > **日期**：2026-09-12
-> **基线**：`mp` = `0300a09`；`mp-slim` = `ffd17eb`（二者同父 `aac24f6`）；上游 `origin/main` = `6bb4594`；`mp` 已吸收的上游锚点 = `902a06f`
+> **基线**：`mp` = `0300a09`；`mp-slim` = `ffd17eb`（二者同父 `aac24f6`）；上游 `origin/main` = `6bb4594`；`mp` 已吸收的上游锚点 = `902a06f`；主干分支 `mp-trunk` 从 `mp` 拉出
 > **读者**：推荐服务开发、Phoenix 训练、业务后端接口负责人
 > **事实边界**：本文只记录决策、依据与执行边界；所有数字来自对上述三个分支的源码与 diff 实测，不代表业务已上线。本文随 P0 一并落到主干分支；在 `mp-slim` 上仅作为决策记录。
 
@@ -231,7 +231,7 @@ xrex 未验证点：`use_post_sid=False` 后召回塔回到纯 item hash 的路�
 
 | 批次 | 内容 | 验收 |
 | --- | --- | --- |
-| **P0 底座** | 从 `mp`（`0300a09`）拉主干分支；cherry-pick mp-slim 的 phoenix-only 提交 `6395950 7f008f8 1f14e48 6a9ad3d 8f03bae 4452fa2 266ae3b a7ebe0e 2e3e1fc 370a03f 9568373 880ebd4`；`4ff17d1`（proto 改名）与 `25f4f7c`（ID 改 string）涉及 `proto/build.rs`，需手工合并并保留 `mp` 的其余 4 个 proto 文件；在 `upstream-first-maintenance.md` 增加 U4 / U5；本文落库；ID 方案定为 A | `cargo test --workspace` 354 项通过；`cd phoenix && uv run pytest` 通过；`./scripts/run_demo.sh` 可跑 |
+| **P0 底座**（已完成，见 §13） | 从 `mp`（`0300a09`）拉主干分支；cherry-pick mp-slim 的 phoenix-only 提交 `6395950 7f008f8 1f14e48 6a9ad3d 8f03bae 4452fa2 266ae3b a7ebe0e 2e3e1fc 370a03f 9568373 880ebd4`；`4ff17d1`（proto 改名）与 `25f4f7c`（ID 改 string）涉及 `proto/build.rs`，需手工合并并保留 `mp` 的其余 4 个 proto 文件；在 `upstream-first-maintenance.md` 增加 U4 / U5；本文落库；ID 方案定为 A | `cargo test --workspace` 354 项通过；`cd phoenix && uv run pytest` 通过；`./scripts/run_demo.sh` 可跑 |
 | **P1 ID 替换（U4）** | 新建 `ids.rs`；`model_contract.py` 加派生函数与黄金向量；改 models 与 `home_mixer.proto`；`created_at_ms` 字段 + AgeFilter；`demo.rs` 改 ObjectId；Bloom 改字节输入；thunder / vm-ranker 两个 gRPC 适配器加 feature gate；测试字面量改 `pid(n)` / `uid(n)`。只改类型不改行为 | 318 单测迁移通过；demo-client 端到端 ObjectId 进出；与 P0 相同演示数据下排序一致 |
 | **P2 业务适配器 + 契约落位 + U5 删除** | §5 的 U1 适配器清单；`InNetworkPostsClient` trait 抽取；`FallbackSource`、`FirstStageEligibleFilter`、`RuleFallbackScorer`、ServedPersist、feedback RPC、引擎选择配置；删 Quote / Subscription Hydrator、SubscribedUserIds QH、RetweetDedup / IneligibleSubscription / AncillaryVF Filter、`business_feed/`、`recommendation-service/`；`params/param.rs` 中 retweet / quote / quoted_* 权重设 0；`production_ready` 拒绝条件改为"业务适配器契约未验证" | 真实 fixture 端到端；fail-closed、整批回退、served 阻塞落库各有测试；`cargo clippy --workspace --all-targets -- -D warnings` |
 | **P3 追上游与可选部件** | 按 sync procedure 处理 `49815da → 75d93d9 → fee1d0f → 6bb4594`，实测 U4 移植摩擦；按需 `in_network.proto` / `vm_ranker.proto` 改 string 并部署 Thunder / VM Ranker；话题（tag_ids）；AuthorColdStart（需业务曝光数）；多副本共享 served / session 存储 | 四份新的 capability inventory，锚点前移到 `6bb4594`；由容量 / 延迟 / 重复曝光指标触发部件启用 |
@@ -270,3 +270,89 @@ xrex 未验证点：`use_post_sid=False` 后召回塔回到纯 item hash 的路�
 - 业务数据协议：`proto/definitions/recommendation_data.proto`（`mp` 分支）
 - Phoenix 演示网关与训练契约：`phoenix/services/grpc_gateway.py`、`phoenix/services/model_contract.py`、`phoenix/data_preprocessor.py`
 - xrex 生产栈：`phoenix/README.md`、`phoenix/QUICKSTART.md`、`phoenix/xrex/configs/xrecsys.py`
+
+---
+
+## 13. 执行记录
+
+### P0（2026-09-12）
+
+**分支与位置**：从 `refs/heads/mp`（`0300a09`）新建分支 `mp-trunk`，在与主仓库检出目录同级的 git worktree `../x-algorithm-trunk/` 上执行；`mp` / `mp-slim` 两个分支本身未改动，全程未 push。P0 结束时 `mp-trunk` 领先 `mp` 22 个提交：19 个从 `mp-slim` 按原顺序合入（`git commit -C` 保留原作者与原信息）+ 1 个 home-mixer 桥接 + 2 个 docs。
+
+**合入的 mp-slim 提交（按 `aac24f6..mp-slim` 的原始顺序；左为 mp-slim 短 sha，右为 mp-trunk 上的新 sha）**：
+
+| mp-slim | mp-trunk | 标题 |
+| --- | --- | --- |
+| `6395950` | `30e9606` | feat(phoenix): 将 gRPC 网关绑定到 loopback 并输出 serving 元数据 |
+| `39a21e3` | `c967670` | feat(docs): 将主路径改指向精简后的 Phoenix 推荐服务（仅 `phoenix/` 下的文档改动） |
+| `2113a95` | `fe54a13` | feat(docs): 删除不再使用的 Home Mixer 栈手册（仅 `phoenix/AGENTS.md`、`phoenix/docs/真实数据接入指引.md`） |
+| `1d41a2b` | `d6ff470` | docs: 修正残留的 Home Mixer 表述与 preprocessor 路径（仅 `recsys.proto` 头注释） |
+| `25f4f7c` | `a239ae8` | proto: 推荐链路 ID 全部改为业务字符串，删除整数 ID 映射 |
+| `7f008f8` | `7da1b36` | fix(phoenix): 修复 Linear/RMSNorm 零初始化，支持从零训练 |
+| `1f14e48` | `e6171d7` | feat(phoenix): 负样本按事件时刻帖龄窗口采样 |
+| `6a9ad3d` | `950e3fc` | refactor(phoenix): 抽出训练/服务共享契约 model_contract |
+| `8f03bae` | `9592866` | feat(phoenix): 精排嵌入表可训练、观测头掩码与 step-* bundle 产物 |
+| `4452fa2` | `5987757` | feat(phoenix): 网关与召回训练适配 bundle 加载与观测行为契约 |
+| `266ae3b` | `ad46601` | feat(phoenix): 增加离线基线对照评估脚本 |
+| `a7ebe0e` | `f9695e2` | chore: 配置 ty 解析 phoenix/.venv |
+| `3b00d0d` | `9e5fd97` | docs: separate Phoenix model capability from the live ranking path（仅 `phoenix/` 下的文档改动） |
+| `2e3e1fc` | `d5b3e3c` | phoenix: preserve padding segments in two-tower user inputs |
+| `4ff17d1` | `a036903` | Phoenix：隔离精简链路与生产引擎的 Proto 协议（`proto/build.rs` 手工合并，见下） |
+| `370a03f` | `5962c85` | Phoenix：让精简 Gateway 使用字符串业务 ID |
+| `9568373` | `85f63b1` | Phoenix：删除遗留 published Snowflake 链路 |
+| `880ebd4` | `8e27b01` | Phoenix：生产环境禁止使用模拟依赖 |
+| `ffd17eb` | `0afd778` | 文档：同步精简推荐链路与字符串 ID 契约（`phoenix/AGENTS.md`、`train_ranker.py` 文档串、`services/README.md`） |
+
+每个提交只应用 `phoenix/`、`ty.toml`、`.gitignore`、`proto/definitions/`、`proto/build.rs` 五类路径；根目录 `docs/`、`README*.md`、`recommendation-service/`、`scripts/run_recommendation_demo.sh` 的改动一律不带。
+
+**跳过的 mp-slim 提交**：`5ae28e9`（home-mixer 改动，与 `mp` 上的 `0300a09` 同一内容）；`05dba64`（recommendation-service 上线 / 下线 Home Mixer 栈——它对 proto 的改动只是删除 `home_mixer.proto`、`in_network.proto`、`recommendation_data.proto`、`vm_ranker.proto` 并把 `proto/build.rs` 缩成一个文件，与 P0"保留 `mp` 其余 4 个 proto"的要求直接冲突，整个提交跳过）；`e54d681`、`208c20f`、`bfbb94e`、`9ff5d5f`、`68f6c8c`（仅 recommendation-service）；`4a4cf35`（仅本文与根 `docs/README.md`，本文改由下面的 docs 提交单独落库）。
+
+**两处预期手工合并的实际情况**：
+
+- `4ff17d1`：`proto/build.rs` 冲突（mp-slim 把文件列表缩成只剩 `phoenix_recsys.proto`）。解法：保留 `mp` 的 5 个文件列表，把 `recsys.proto` 换成 `phoenix_recsys.proto`，并保留 mp-slim 关于"为什么不叫 recsys.proto"的注释。`recsys.proto → phoenix_recsys.proto` 的改名与 `.gitignore`、`phoenix/` 部分由 `git apply -3` 干净应用；`proto/src/lib.rs` 未动（`tonic::include_proto!("recsys")` 按包名工作）。
+- `25f4f7c`：实际**没有**冲突——`mp` 与 `mp-slim` 在该点的 `recsys.proto` 内容一致，ID 字段改 `string` 的 hunk 直接应用。
+
+**与 mp-slim phoenix 树的残差**：`git diff --stat mp-slim -- phoenix ty.toml .gitignore proto/definitions/phoenix_recsys.proto` 为空，即 `phoenix/` 全树、`ty.toml`、`.gitignore`、`phoenix_recsys.proto` 与 `mp-slim` 完全一致，没有任何文档或代码残差。代价是 `phoenix/README_zh.md`、`phoenix/services/README.md`、`phoenix/docs/*.md` 与 `phoenix_recsys.proto` 头注释里若干"recommendation-service"的表述照搬了过来，而主干上实际调用方是 home-mixer；这些文字在 P2 吸收并删除 `recommendation-service/` 时一并改写。
+
+**步骤 4：home-mixer 对 string ID 协议的临时桥接（`442ceb7`）**。proto 改 `string` 后 home-mixer 有 16 处编译错误，全部按"只做十进制字符串 ↔ u64 的格式化 / 解析，不做哈希或映射表"的边界处理，改动 7 个文件、+221 / −30 行，17 处 `TEMP(U4-P1)` 标记：
+
+| 文件 | 桥接内容 |
+| --- | --- |
+| `home-mixer/clients/phoenix_prediction_client.rs` | `PredictNextActionsRequest.user_id` 出境 `to_string()` |
+| `home-mixer/clients/phoenix_retrieval_client.rs` | `RetrieveRequest.user_id` 出境 `to_string()` |
+| `home-mixer/uas_compat/mod.rs` | `AggregatedUserAction.tweet_id / author_id` 出境 `to_string()`（保留原有"必须为正整数"校验） |
+| `home-mixer/query_hydrators/user_action_seq_query_hydrator.rs` | `UserActionSequence.user_id` 出境 `to_string()`；两处测试断言改为 `"42"` / `"43"` |
+| `home-mixer/scorers/phoenix_scorer.rs` | 出境 `TweetInfo` 用 `to_string()`；入境预测响应的 `candidate.tweet_id` 用 `parse::<u64>()`，失败的预测整条丢弃并按批 `log::warn!` 一次；`tweet_id → 预测` 的 map 继续以 u64 为键；新增回归测试 `predictions_with_non_decimal_tweet_ids_are_dropped_not_zeroed` |
+| `home-mixer/sources/phoenix_source.rs` | 入境召回候选经 `parse_bridged_tweet_info()` 解析：`tweet_id` / `author_id` 必须是十进制 u64，`in_reply_to_tweet_id` 空串或 `"0"` 表示非回复，任一字段解析失败整条丢弃并按批 `log::warn!` 一次；新增回归测试 `non_decimal_ids_are_dropped_instead_of_becoming_zero` |
+| `home-mixer/sources/phoenix_moe_source.rs` | 复用同一解析函数与丢弃 / 告警策略；测试字面量 `100 / 200` 改为 `"100" / "200"` |
+
+未改动：`models/candidate.rs` 的字段类型、`candidate-pipeline`、任何过滤器 / 打分器的业务逻辑、`clients/uas_fetcher.rs`（其 Demo 实现产出的是内部 Thrift 兼容 i64 类型，转换在 `uas_compat::convert` 完成）、`models/query.rs`（只持有 `recsys::UserActionSequence`，无 ID 字面量）。
+
+**已知限制（P0 阶段预期行为）**：Phoenix 演示网关的召回语料 ID 是 24 位 hex（`demo_object_id()` = md5 截断），无法解析为 u64，因此演示模式下 `PhoenixSource` 把全部召回结果丢弃并 warn 一次、返回 0 条候选；`PhoenixTopicsSource` 与 Thunder 网内召回不受影响；精排路径正常（出境十进制串、网关原样回显、入境解析成功）。这是 P1 迁移到 `PostId` 前的过渡态，不引入哈希来"修复"。
+
+**验证结果**：
+
+| 项 | 基线（`mp` = `0300a09`） | P0 完成后（`mp-trunk`） |
+| --- | --- | --- |
+| `cargo test` home-mixer | 318（lib 291 + `p4_final_feed` 25 + `user_topic_reader_contract` 2） | **320**（lib 293 + 25 + 2；+2 为上表新增的两条桥接回归测试） |
+| `cargo test` candidate-pipeline | 21 | 21 |
+| `cargo test` thunder | 5 | 5 |
+| `cargo test` vm-ranker | 10 | 10 |
+| `cargo test` x-algorithm-proto | 2 | 2 |
+| `cargo clippy --workspace --all-targets` | — | 0 warning / 0 error |
+| `cd phoenix && uv run pytest -q` | （mp 上不可比：无 mp-slim 的测试集） | **112 passed**（61.98s；`uv 0.12.10`、CPython 3.12.13，新建 `.venv`） |
+| `./scripts/run_demo.sh` | — | 通过，36.7s；返回 **35 条**（网内 6 条 + 网外 29 条，网外全部来自 `PhoenixTopicsSource`）；pipeline summary `fetched=[PhoenixTopicsSource=100,ThunderSource=200,PhoenixSource=0]`；home-mixer 日志出现预期告警 `PhoenixSource: dropped 1000 retrieved candidate(s) whose ids are not decimal u64 (e.g. "e305c05a62cd1ef55823cd86")`；网关日志 `Retrieve: user=1 returned=1000`、`PredictNextActions: user=1 candidates=300`，`PhoenixScorer` 无丢弃告警；脚本 trap 清理后 50051 / 50052 / 50053 均已释放，无残留进程 |
+
+**环境问题**：
+
+- 沙箱只允许写工作区目录，worktree 位于工作区之外，`git worktree add` / `git apply` / `git commit` / `cargo build` / `uv sync` 等写操作需以完整权限重跑（报错形态为 `Operation not permitted`）；属本地环境事实，不是代码问题。
+- 沙箱环境把 `CARGO_TARGET_DIR` 重定向到临时缓存目录；`run_demo.sh` 全部通过 `cargo run` 启动二进制，不受影响。
+- `uv` 按 `AGENTS_local.md` 使用 `UV_CACHE_DIR=/tmp/uv-cache`；`uv sync` 有一条 `build_system.requires = ["uv-build>=0.9.9,<0.10.0"]` 与当前 `uv 0.12.10` 不匹配的告警，只影响本地 `xai-*` 包的构建后端选择，不影响结果。
+- 仓库有一个名为 `mp` 的远程，`git log mp..HEAD` 会报 `refname 'mp' is ambiguous`，脚本一律使用 `refs/heads/mp`。
+
+**P1 需要注意**：
+
+1. 全局搜索 `TEMP(U4-P1)`（17 处，7 个文件）即为要删除的桥接；两条回归测试在 P1 应改写为 `PostId::parse` 的等价断言（非法串 → 丢弃并计数），而不是直接删除。
+2. `phoenix_recsys.proto` 的 `in_reply_to_tweet_id` 现在用空串表示"非回复"，桥接同时兼容 `"0"`；P1 的 `parse_optional("")` 应沿用"空串 → `None`"并明确 `"0"` 不再是合法值。
+3. 演示数据：`proto/src/demo.rs` 的 `DEMO_AUTHOR_IDS` / `snowflake_id` 与 `home-mixer/clients/uas_fetcher.rs` 的 Demo UAS 仍是 u64 Snowflake，网关语料是 24-hex；P1 需按 §6.4 统一为 `demo_object_id(seq)` / `from_parts(ts, seq)`，`PhoenixSource` 在演示模式下才会重新有候选。
+4. `phoenix/` 文档与 `phoenix_recsys.proto` 头注释中的 "recommendation-service" 表述要在 P2 删除 `recommendation-service/` 时改写为 home-mixer / PhoenixCandidatePipeline。
