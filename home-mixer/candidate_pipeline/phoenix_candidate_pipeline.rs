@@ -282,11 +282,18 @@ impl PhoenixCandidatePipeline {
         if features.vm_ranker {
             match std::env::var("VM_RANKER_GRPC_ADDR") {
                 Ok(addr) if !addr.trim().is_empty() => {
-                    log::info!("VMRanker scorer enabled via {addr}");
-                    scorers.push(Box::new(VMRanker {
-                        client: Arc::new(GrpcVMRankerClient::new(addr)),
-                        value_model_id: std::env::var("VM_RANKER_VALUE_MODEL_ID").ok(),
-                    }));
+                    match GrpcVMRankerClient::new(addr.clone()) {
+                        Ok(client) => {
+                            log::info!("VMRanker scorer enabled via {addr}");
+                            scorers.push(Box::new(VMRanker {
+                                client: Arc::new(client),
+                                value_model_id: std::env::var("VM_RANKER_VALUE_MODEL_ID").ok(),
+                            }));
+                        }
+                        Err(error) => log::warn!(
+                            "VM_RANKER_GRPC_ADDR={addr} is not a usable endpoint ({error}); disabling VM Ranker scorer"
+                        ),
+                    }
                 }
                 _ => {
                     log::warn!(
@@ -529,6 +536,12 @@ fn features_for_mode(mode: HomeMixerMode, mut features: HomeMixerFeatures) -> Ho
         features.author_cold_start = false;
         features.cold_start_thompson_sampling = false;
     }
+    if mode != HomeMixerMode::Demo && features.vm_ranker {
+        log::warn!(
+            "VM Ranker still uses integer proto and cannot carry real ObjectIds; disabling it outside demo mode"
+        );
+        features.vm_ranker = false;
+    }
     features
 }
 
@@ -630,13 +643,26 @@ mod tests {
         assert!(!features.cold_start_thompson_sampling);
     }
 
+    #[test]
+    fn integer_vm_ranker_is_disabled_outside_demo() {
+        let features = features_for_mode(
+            HomeMixerMode::Degraded,
+            HomeMixerFeatures {
+                vm_ranker: true,
+                ..Default::default()
+            },
+        );
+        assert!(!features.vm_ranker);
+    }
+
     #[tokio::test]
     async fn profile_hydration_runs_only_after_selection() {
         let pipeline = PhoenixCandidatePipeline::assemble_for_mode(
             HomeMixerMode::Demo,
             HomeMixerFeatures::default(),
         )
-        .await;
+        .await
+        .expect("demo assembly");
         let components = pipeline.components();
         let pre_selection = components
             .iter()

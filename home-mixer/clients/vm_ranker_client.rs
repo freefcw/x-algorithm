@@ -68,26 +68,35 @@ pub trait VMRankerClient: Send + Sync {
 /// `HOME_MIXER_ENABLE_VM_RANKER=1` 且提供 `VM_RANKER_GRPC_ADDR` 时注入。
 #[cfg(feature = "legacy-int-ids")]
 pub struct GrpcVMRankerClient {
-    endpoint: String,
-    timeout: std::time::Duration,
+    channel: tonic::transport::Channel,
 }
 
 #[cfg(feature = "legacy-int-ids")]
 impl GrpcVMRankerClient {
-    pub fn new(endpoint: String) -> Self {
-        Self {
-            endpoint,
-            timeout: std::time::Duration::from_millis(crate::params::VM_RANKER_TIMEOUT_MS),
-        }
+    /// 建立可复用的惰性连接。地址非法在装配期就暴露，而不是留到每次请求。
+    pub fn new(endpoint: String) -> Result<Self, String> {
+        let channel = tonic::transport::Endpoint::from_shared(endpoint)
+            .map_err(|e| format!("invalid VM Ranker endpoint: {e}"))?
+            .timeout(std::time::Duration::from_millis(
+                crate::params::VM_RANKER_TIMEOUT_MS,
+            ))
+            .connect_lazy();
+        Ok(Self { channel })
     }
 
-    fn to_u64(id: crate::models::ObjectId) -> u64 {
-        id.to_u64_be_padded().unwrap_or(0)
+    fn to_u64(id: crate::models::ObjectId) -> Option<u64> {
+        id.to_u64_be_padded().filter(|id| *id != 0)
     }
 
-    fn to_proto(request: VmRankRequest) -> pb::RankRequest {
-        pb::RankRequest {
-            viewer_id: Self::to_u64(request.viewer_id),
+    fn require_u64(id: crate::models::ObjectId, field: &str) -> Result<u64, String> {
+        Self::to_u64(id).ok_or_else(|| {
+            format!("VM Ranker adapter cannot round-trip {field} {id} through uint64")
+        })
+    }
+
+    fn to_proto(request: VmRankRequest) -> Result<pb::RankRequest, String> {
+        Ok(pb::RankRequest {
+            viewer_id: Self::require_u64(request.viewer_id, "viewer_id")?,
             value_model_id: request.value_model_id.unwrap_or_default(),
             request_timestamp_ms: u64::try_from(request.request_timestamp_ms).unwrap_or(0),
             viewer_following_count: u32::try_from(request.viewer_following_count).unwrap_or(0),
@@ -99,50 +108,57 @@ impl GrpcVMRankerClient {
             candidates: request
                 .candidates
                 .into_iter()
-                .map(|c| pb::RankCandidate {
-                    tweet_id: Self::to_u64(c.tweet_id),
-                    author_id: Self::to_u64(c.author_id),
-                    in_network: c.in_network,
-                    is_retweet: c.is_retweet,
-                    is_reply: c.is_reply,
-                    author_followers_count: c.author_followers_count,
-                    vqv_ineligible: c.vqv_ineligible,
-                    retweeted_tweet_id: c.retweeted_tweet_id.map(Self::to_u64).unwrap_or(0),
-                    score: c.score,
-                    phoenix_scores: Some(pb::PhoenixScores {
-                        favorite_score: c.phoenix_scores.favorite_score,
-                        reply_score: c.phoenix_scores.reply_score,
-                        retweet_score: c.phoenix_scores.retweet_score,
-                        photo_expand_score: c.phoenix_scores.photo_expand_score,
-                        click_score: c.phoenix_scores.click_score,
-                        profile_click_score: c.phoenix_scores.profile_click_score,
-                        vqv_score: c.phoenix_scores.vqv_score,
-                        share_score: c.phoenix_scores.share_score,
-                        share_via_dm_score: c.phoenix_scores.share_via_dm_score,
-                        share_via_copy_link_score: c.phoenix_scores.share_via_copy_link_score,
-                        dwell_score: c.phoenix_scores.dwell_score,
-                        quote_score: c.phoenix_scores.quote_score,
-                        quoted_click_score: c.phoenix_scores.quoted_click_score,
-                        follow_author_score: c.phoenix_scores.follow_author_score,
-                        not_interested_score: c.phoenix_scores.not_interested_score,
-                        block_author_score: c.phoenix_scores.block_author_score,
-                        mute_author_score: c.phoenix_scores.mute_author_score,
-                        report_score: c.phoenix_scores.report_score,
-                        not_dwelled_score: c.phoenix_scores.not_dwelled_score,
-                        dwell_time: c.phoenix_scores.dwell_time,
-                        click_dwell_time: c.phoenix_scores.click_dwell_time,
-                        video_open_score: c.phoenix_scores.video_open_score,
-                        open_link_score: c.phoenix_scores.open_link_score,
-                        quoted_vqv_score: c.phoenix_scores.quoted_vqv_score,
-                        post_unexplored_score: c.phoenix_scores.post_unexplored_score,
-                        active_secs_5m_residual_norm: c.phoenix_scores.active_secs_5m_residual_norm,
-                    }),
-                    slate_context: None,
-                    head_weights: None,
-                    weighted_score: None,
+                .map(|c| {
+                    Ok(pb::RankCandidate {
+                        tweet_id: Self::require_u64(c.tweet_id, "tweet_id")?,
+                        author_id: Self::require_u64(c.author_id, "author_id")?,
+                        in_network: c.in_network,
+                        is_retweet: c.is_retweet,
+                        is_reply: c.is_reply,
+                        author_followers_count: c.author_followers_count,
+                        vqv_ineligible: c.vqv_ineligible,
+                        retweeted_tweet_id: match c.retweeted_tweet_id {
+                            Some(id) => Self::require_u64(id, "retweeted_tweet_id")?,
+                            None => 0,
+                        },
+                        score: c.score,
+                        phoenix_scores: Some(pb::PhoenixScores {
+                            favorite_score: c.phoenix_scores.favorite_score,
+                            reply_score: c.phoenix_scores.reply_score,
+                            retweet_score: c.phoenix_scores.retweet_score,
+                            photo_expand_score: c.phoenix_scores.photo_expand_score,
+                            click_score: c.phoenix_scores.click_score,
+                            profile_click_score: c.phoenix_scores.profile_click_score,
+                            vqv_score: c.phoenix_scores.vqv_score,
+                            share_score: c.phoenix_scores.share_score,
+                            share_via_dm_score: c.phoenix_scores.share_via_dm_score,
+                            share_via_copy_link_score: c.phoenix_scores.share_via_copy_link_score,
+                            dwell_score: c.phoenix_scores.dwell_score,
+                            quote_score: c.phoenix_scores.quote_score,
+                            quoted_click_score: c.phoenix_scores.quoted_click_score,
+                            follow_author_score: c.phoenix_scores.follow_author_score,
+                            not_interested_score: c.phoenix_scores.not_interested_score,
+                            block_author_score: c.phoenix_scores.block_author_score,
+                            mute_author_score: c.phoenix_scores.mute_author_score,
+                            report_score: c.phoenix_scores.report_score,
+                            not_dwelled_score: c.phoenix_scores.not_dwelled_score,
+                            dwell_time: c.phoenix_scores.dwell_time,
+                            click_dwell_time: c.phoenix_scores.click_dwell_time,
+                            video_open_score: c.phoenix_scores.video_open_score,
+                            open_link_score: c.phoenix_scores.open_link_score,
+                            quoted_vqv_score: c.phoenix_scores.quoted_vqv_score,
+                            post_unexplored_score: c.phoenix_scores.post_unexplored_score,
+                            active_secs_5m_residual_norm: c
+                                .phoenix_scores
+                                .active_secs_5m_residual_norm,
+                        }),
+                        slate_context: None,
+                        head_weights: None,
+                        weighted_score: None,
+                    })
                 })
-                .collect(),
-        }
+                .collect::<Result<Vec<_>, String>>()?,
+        })
     }
 }
 
@@ -150,21 +166,31 @@ impl GrpcVMRankerClient {
 #[async_trait]
 impl VMRankerClient for GrpcVMRankerClient {
     async fn rank(&self, request: VmRankRequest) -> Result<VmRankResponse, String> {
-        let channel = tonic::transport::Endpoint::from_shared(self.endpoint.clone())
-            .map_err(|e| format!("invalid VM Ranker endpoint: {e}"))?
-            .timeout(self.timeout)
-            .connect()
-            .await
-            .map_err(|e| format!("VM Ranker connect failed: {e}"))?;
-        let mut client = pb::vm_ranker_service_client::VmRankerServiceClient::new(channel)
-            .accept_compressed(tonic::codec::CompressionEncoding::Gzip)
-            .send_compressed(tonic::codec::CompressionEncoding::Gzip);
+        let mut client =
+            pb::vm_ranker_service_client::VmRankerServiceClient::new(self.channel.clone())
+                .accept_compressed(tonic::codec::CompressionEncoding::Gzip)
+                .send_compressed(tonic::codec::CompressionEncoding::Gzip);
 
-        let response = client
-            .rank(Self::to_proto(request))
-            .await
-            .map_err(|e| format!("VM Ranker rank failed: {e}"))?
-            .into_inner();
+        let candidate_count = request.candidates.len();
+        let started = std::time::Instant::now();
+        let proto = Self::to_proto(request)?;
+        let response = match client.rank(proto).await {
+            Ok(response) => response.into_inner(),
+            Err(status) => {
+                log::warn!(
+                    "vm_ranker rpc Rank candidates={candidate_count} elapsed_ms={} code={} error={}",
+                    started.elapsed().as_millis(),
+                    status.code(),
+                    status.message(),
+                );
+                return Err(format!("VM Ranker rank failed: {status}"));
+            }
+        };
+        log::info!(
+            "vm_ranker rpc Rank candidates={candidate_count} elapsed_ms={} ranked={}",
+            started.elapsed().as_millis(),
+            response.candidates.len(),
+        );
 
         Ok(VmRankResponse {
             candidates: response
@@ -215,17 +241,24 @@ mod tests {
         }
     }
 
-    #[test]
-    fn phoenix_score_heads_map_to_matching_proto_slots() {
-        let request = VmRankRequest {
+    fn padded_request() -> VmRankRequest {
+        VmRankRequest {
+            viewer_id: crate::models::uid(1),
             candidates: vec![VmRankCandidate {
-                phoenix_scores: distinct_phoenix_scores(),
+                tweet_id: crate::models::pid(11),
+                author_id: crate::models::uid(22),
                 ..Default::default()
             }],
             ..Default::default()
-        };
+        }
+    }
 
-        let proto = GrpcVMRankerClient::to_proto(request);
+    #[test]
+    fn phoenix_score_heads_map_to_matching_proto_slots() {
+        let mut request = padded_request();
+        request.candidates[0].phoenix_scores = distinct_phoenix_scores();
+
+        let proto = GrpcVMRankerClient::to_proto(request).expect("padded ids");
         let scores = proto.candidates[0].phoenix_scores.unwrap();
 
         assert_eq!(scores.favorite_score, Some(1.0));
@@ -281,7 +314,7 @@ mod tests {
             }],
         };
 
-        let proto = GrpcVMRankerClient::to_proto(request);
+        let proto = GrpcVMRankerClient::to_proto(request).expect("padded ids");
 
         assert_eq!(proto.viewer_id, 42);
         assert_eq!(proto.request_timestamp_ms, 1_700_000_000_000);
@@ -306,12 +339,7 @@ mod tests {
     /// 上游以 0 表示"非转推"，缺省的 `value_model_id` 在服务端记为 unknown。
     #[test]
     fn absent_optionals_use_upstream_defaults() {
-        let request = VmRankRequest {
-            candidates: vec![VmRankCandidate::default()],
-            ..Default::default()
-        };
-
-        let proto = GrpcVMRankerClient::to_proto(request);
+        let proto = GrpcVMRankerClient::to_proto(padded_request()).expect("padded ids");
 
         assert_eq!(proto.value_model_id, "");
         assert!(proto.dpp_params.is_none());
@@ -323,14 +351,25 @@ mod tests {
     /// 负时间戳来自上游没有的输入，转换必须落到 0 而不是回绕成巨大的正数。
     #[test]
     fn negative_timestamp_saturates_to_zero() {
-        let request = VmRankRequest {
-            request_timestamp_ms: -1,
-            ..Default::default()
-        };
+        let mut request = padded_request();
+        request.request_timestamp_ms = -1;
 
         assert_eq!(
-            GrpcVMRankerClient::to_proto(request).request_timestamp_ms,
+            GrpcVMRankerClient::to_proto(request)
+                .expect("padded ids")
+                .request_timestamp_ms,
             0
         );
+    }
+
+    #[test]
+    fn real_object_ids_fail_closed_instead_of_viewer_zero() {
+        let real =
+            crate::models::ObjectId::parse("e305c05a62cd1ef55823cd86").expect("real object id");
+        let mut request = padded_request();
+        request.viewer_id = real;
+        let error = GrpcVMRankerClient::to_proto(request).expect_err("must not query viewer 0");
+        assert!(error.contains("viewer_id"));
+        assert!(error.contains("e305c05a62cd1ef55823cd86"));
     }
 }
