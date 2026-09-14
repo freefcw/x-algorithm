@@ -16,7 +16,10 @@
 /// rust_home_mixer_phoenix_max_results = 1000
 pub const PHOENIX_MAX_RESULTS: u32 = 1000;
 /// rust_home_mixer_thunder_max_results = 1200
-pub const THUNDER_MAX_RESULTS: u32 = 1200;
+/// U1: 召回源换成 mrpyq 关注 inbox（单账号硬顶 2000 条、TTL 7 天），而 `AgeFilter`
+/// 只留 `MAX_POST_AGE` 以内、出口只有 `RESULT_SIZE` 条。1200 在这个库存规模下
+/// 既取不满也用不上，按出口的约 10 倍漏斗余量收到 400。
+pub const THUNDER_MAX_RESULTS: u32 = 400;
 /// rust_home_mixer_tweet_mixer_max_results = 800
 pub const TWEET_MIXER_MAX_RESULTS: u32 = 800;
 /// rust_home_mixer_phoenix_moe_max_results = 200
