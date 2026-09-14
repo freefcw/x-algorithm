@@ -25,7 +25,7 @@
 
 use crate::models::ids::UserId;
 use log::{info, warn};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 use tonic::async_trait;
 use tonic::metadata::MetadataMap;
 use tonic::transport::Channel;
@@ -117,15 +117,50 @@ impl PhoenixPredictionClient for ProdPhoenixPredictionClient {
 
         let mut client = PhoenixPredictionServiceClient::new(channel.clone());
         let requested = candidates.clone();
+        let candidate_count = requested.len();
         let request = recsys::PredictNextActionsRequest {
             user_id: user_id.to_string(),
             user_action_sequence: Some(sequence),
             candidates,
         };
-        let response = client.predict_next_actions(request).await?;
-        validate_serving_metadata(response.metadata(), self.allow_random)?;
+
+        let started = Instant::now();
+        let response = match client.predict_next_actions(request).await {
+            Ok(response) => response,
+            Err(status) => {
+                warn!(
+                    "phoenix rpc PredictNextActions candidates={candidate_count} elapsed_ms={} code={} error={}",
+                    started.elapsed().as_millis(),
+                    status.code(),
+                    status.message(),
+                );
+                return Err(status.into());
+            }
+        };
+        // 网络耗时与契约校验耗时分开：调用慢和模型答非所问是两种故障。
+        let elapsed_ms = started.elapsed().as_millis();
+
+        if let Err(error) = validate_serving_metadata(response.metadata(), self.allow_random) {
+            warn!(
+                "phoenix rpc PredictNextActions candidates={candidate_count} elapsed_ms={elapsed_ms} rejected={error:#}"
+            );
+            return Err(error);
+        }
         let inner = response.into_inner();
-        validate_predict_response(&requested, &inner)?;
+        if let Err(error) = validate_predict_response(&requested, &inner) {
+            warn!(
+                "phoenix rpc PredictNextActions candidates={candidate_count} elapsed_ms={elapsed_ms} rejected={error:#}"
+            );
+            return Err(error);
+        }
+
+        info!(
+            "phoenix rpc PredictNextActions candidates={candidate_count} elapsed_ms={elapsed_ms} scored={}",
+            inner
+                .distribution_sets
+                .first()
+                .map_or(0, |set| set.candidate_distributions.len()),
+        );
         Ok(inner)
     }
 }

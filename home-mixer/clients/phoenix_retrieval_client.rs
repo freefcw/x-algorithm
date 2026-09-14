@@ -22,7 +22,7 @@
 use crate::clients::phoenix_prediction_client::validate_serving_metadata;
 use crate::models::ids::UserId;
 use log::{info, warn};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 use tonic::async_trait;
 use tonic::transport::Channel;
 use x_algorithm_proto::recsys;
@@ -132,43 +132,83 @@ impl PhoenixRetrievalClient for ProdPhoenixRetrievalClient {
             user_action_sequence: Some(sequence),
             max_results,
         };
-        let response = client.retrieve(request).await?;
-        validate_serving_metadata(response.metadata(), self.allow_random)?;
+
+        let started = Instant::now();
+        let response = match client.retrieve(request).await {
+            Ok(response) => response,
+            Err(status) => {
+                warn!(
+                    "phoenix rpc Retrieve max_results={max_results} elapsed_ms={} code={} error={}",
+                    started.elapsed().as_millis(),
+                    status.code(),
+                    status.message(),
+                );
+                return Err(status.into());
+            }
+        };
+        // 网络耗时与契约校验耗时分开：调用慢和模型答非所问是两种故障。
+        let elapsed_ms = started.elapsed().as_millis();
+
+        if let Err(error) = validate_serving_metadata(response.metadata(), self.allow_random) {
+            warn!(
+                "phoenix rpc Retrieve max_results={max_results} elapsed_ms={elapsed_ms} rejected={error:#}"
+            );
+            return Err(error);
+        }
         let inner = response.into_inner();
-        let returned: Vec<_> = inner
-            .top_k_candidates
-            .iter()
-            .flat_map(|group| group.candidates.iter())
-            .collect();
-        anyhow::ensure!(
-            returned.len() <= max_results as usize,
-            "Phoenix retrieval returned more candidates than requested"
+        if let Err(error) = validate_retrieve_response(max_results, &inner) {
+            warn!(
+                "phoenix rpc Retrieve max_results={max_results} elapsed_ms={elapsed_ms} rejected={error:#}"
+            );
+            return Err(error);
+        }
+
+        info!(
+            "phoenix rpc Retrieve max_results={max_results} elapsed_ms={elapsed_ms} candidates={}",
+            inner
+                .top_k_candidates
+                .iter()
+                .map(|group| group.candidates.len())
+                .sum::<usize>(),
         );
-        let mut ids = std::collections::HashSet::new();
-        for scored in &returned {
-            let Some(candidate) = scored.candidate.as_ref() else {
-                anyhow::bail!("Phoenix retrieval response has a candidate without TweetInfo");
-            };
-            anyhow::ensure!(
-                !candidate.tweet_id.is_empty(),
-                "Phoenix retrieval response has empty tweet_id"
-            );
-            anyhow::ensure!(
-                ids.insert(candidate.tweet_id.clone()),
-                "Phoenix retrieval response has duplicate tweet_id {}",
-                candidate.tweet_id
-            );
-        }
-        if inner
-            .top_k_candidates
-            .iter()
-            .flat_map(|group| group.candidates.iter())
-            .any(|candidate| !candidate.score.is_finite())
-        {
-            anyhow::bail!("Phoenix retrieval response contains NaN/Inf score");
-        }
         Ok(inner)
     }
+}
+
+/// Adapter-internal validation, mirroring `validate_predict_response`.
+/// PhoenixSource only sees `Result`.
+fn validate_retrieve_response(
+    max_results: u32,
+    inner: &recsys::RetrieveResponse,
+) -> Result<(), anyhow::Error> {
+    let returned: Vec<_> = inner
+        .top_k_candidates
+        .iter()
+        .flat_map(|group| group.candidates.iter())
+        .collect();
+    anyhow::ensure!(
+        returned.len() <= max_results as usize,
+        "Phoenix retrieval returned more candidates than requested"
+    );
+    let mut ids = std::collections::HashSet::new();
+    for scored in &returned {
+        let Some(candidate) = scored.candidate.as_ref() else {
+            anyhow::bail!("Phoenix retrieval response has a candidate without TweetInfo");
+        };
+        anyhow::ensure!(
+            !candidate.tweet_id.is_empty(),
+            "Phoenix retrieval response has empty tweet_id"
+        );
+        anyhow::ensure!(
+            ids.insert(candidate.tweet_id.clone()),
+            "Phoenix retrieval response has duplicate tweet_id {}",
+            candidate.tweet_id
+        );
+    }
+    if returned.iter().any(|scored| !scored.score.is_finite()) {
+        anyhow::bail!("Phoenix retrieval response contains NaN/Inf score");
+    }
+    Ok(())
 }
 
 #[cfg(test)]
