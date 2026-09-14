@@ -52,6 +52,12 @@ pub const TOPIC_RETRIEVAL_TIMEOUT_MS: u64 = 500;
 pub const VM_RANKER_TIMEOUT_MS: u64 = 500;
 pub const MRPYQ_RECOMMENDATION_DATA_TIMEOUT_MS: u64 = 500;
 
+/// Wall-clock budget for one mrpyq recall, across all of its candidate pages.
+/// Pagination is serial, so without this the worst case is
+/// `MAX_LIST_PAGES * MRPYQ_RECOMMENDATION_DATA_TIMEOUT_MS`. Pages already read
+/// are kept when the budget runs out.
+pub const MRPYQ_RECALL_BUDGET_MS: u64 = 1_500;
+
 /// 显式话题和新用户冷启动话题的单次候选上限（本地话题适配器参数）。
 pub const TOPIC_MAX_RESULTS: usize = 100;
 

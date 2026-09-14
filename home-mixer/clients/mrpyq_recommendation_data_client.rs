@@ -2,7 +2,7 @@ use crate::params::MRPYQ_RECOMMENDATION_DATA_TIMEOUT_MS;
 use std::collections::HashSet;
 use std::fmt;
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 use tonic::async_trait;
 use tonic::transport::Channel;
 use x_algorithm_proto::recommendation_data as pb;
@@ -11,7 +11,10 @@ use x_algorithm_proto::recommendation_data::recommendation_data_service_client::
 const ADDRESS_ENV: &str = "MRPYQ_RECOMMENDATION_DATA_ADDR";
 const TIMEOUT_ENV: &str = "MRPYQ_RECOMMENDATION_DATA_TIMEOUT_MS";
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+/// Matches `recommendation_data.proto`: page size and batch hydrate cap.
+pub const MAX_FEED_IDS: usize = 200;
+
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 pub enum CandidateSource {
     Network,
     Fallback,
@@ -31,16 +34,70 @@ pub struct CandidatePage {
     pub source_ready: bool,
 }
 
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub enum IneligibleReason {
+    #[default]
+    Unspecified,
+    Deleted,
+    BusinessNotPublic,
+    TextAuditNotPublic,
+    VideoAuditNotPublic,
+}
+
+impl IneligibleReason {
+    fn from_proto(value: i32) -> Self {
+        match pb::RecommendationIneligibleReason::try_from(value) {
+            Ok(pb::RecommendationIneligibleReason::Deleted) => Self::Deleted,
+            Ok(pb::RecommendationIneligibleReason::BusinessNotPublic) => Self::BusinessNotPublic,
+            Ok(pb::RecommendationIneligibleReason::TextAuditNotPublic) => Self::TextAuditNotPublic,
+            Ok(pb::RecommendationIneligibleReason::VideoAuditNotPublic) => {
+                Self::VideoAuditNotPublic
+            }
+            _ => Self::Unspecified,
+        }
+    }
+
+    pub fn reason_code(self) -> i32 {
+        match self {
+            Self::Unspecified => 0,
+            Self::Deleted => 1,
+            Self::BusinessNotPublic => 2,
+            Self::TextAuditNotPublic => 3,
+            Self::VideoAuditNotPublic => 4,
+        }
+    }
+
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Unspecified => "unspecified",
+            Self::Deleted => "deleted",
+            Self::BusinessNotPublic => "business_not_public",
+            Self::TextAuditNotPublic => "text_audit_not_public",
+            Self::VideoAuditNotPublic => "video_audit_not_public",
+        }
+    }
+}
+
+#[derive(Clone, Debug, Default, PartialEq)]
 pub struct RecommendationContent {
     pub feed_id: String,
     pub creator_account_id: String,
     pub creator_member_id: String,
+    pub creator_user_id: String,
+    pub creator_user_no: i32,
     pub created_at_ms: i64,
+    pub text: String,
+    pub tag_ids: Vec<String>,
+    pub room_id: String,
+    pub section_ids: Vec<String>,
     pub like_count: i32,
     pub comment_count: i32,
     pub gift_value: i32,
+    pub has_image: bool,
+    pub has_video: bool,
+    pub video_duration_ms: i32,
     pub recommendation_eligible: bool,
+    pub ineligible_reason: IneligibleReason,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -183,11 +240,8 @@ impl GrpcMrpyqRecommendationDataClient {
             _ => MrpyqClientError::Unavailable(message),
         }
     }
-}
 
-#[async_trait]
-impl MrpyqRecommendationDataClient for GrpcMrpyqRecommendationDataClient {
-    async fn list_candidates(
+    async fn list_candidates_rpc(
         &self,
         account_id: String,
         source: CandidateSource,
@@ -249,7 +303,7 @@ impl MrpyqRecommendationDataClient for GrpcMrpyqRecommendationDataClient {
         })
     }
 
-    async fn batch_get_contents(
+    async fn batch_get_contents_rpc(
         &self,
         feed_ids: Vec<String>,
     ) -> Result<Vec<RecommendationContent>, MrpyqClientError> {
@@ -275,18 +329,82 @@ impl MrpyqRecommendationDataClient for GrpcMrpyqRecommendationDataClient {
                         "hydrated content has empty or duplicate feed ID".to_string(),
                     ));
                 }
-                Ok(RecommendationContent {
-                    feed_id: content.feed_id,
-                    creator_account_id: content.creator_account_id,
-                    creator_member_id: content.creator_member_id,
-                    created_at_ms: content.created_at_ms,
-                    like_count: content.like_count,
-                    comment_count: content.comment_count,
-                    gift_value: content.gift_value,
-                    recommendation_eligible: content.recommendation_eligible,
-                })
+                Ok(recommendation_content_from_proto(content))
             })
             .collect()
+    }
+}
+
+#[async_trait]
+impl MrpyqRecommendationDataClient for GrpcMrpyqRecommendationDataClient {
+    async fn list_candidates(
+        &self,
+        account_id: String,
+        source: CandidateSource,
+        page_size: usize,
+        page_token: String,
+    ) -> Result<CandidatePage, MrpyqClientError> {
+        let started = Instant::now();
+        let result = self
+            .list_candidates_rpc(account_id, source, page_size, page_token)
+            .await;
+        match &result {
+            Ok(page) => log::info!(
+                "mrpyq rpc ListRecommendationCandidates source={source:?} page_size={page_size} elapsed_ms={} candidates={} ready={}",
+                started.elapsed().as_millis(),
+                page.candidates.len(),
+                page.source_ready,
+            ),
+            Err(error) => log::warn!(
+                "mrpyq rpc ListRecommendationCandidates source={source:?} page_size={page_size} elapsed_ms={} error={error}",
+                started.elapsed().as_millis(),
+            ),
+        }
+        result
+    }
+
+    async fn batch_get_contents(
+        &self,
+        feed_ids: Vec<String>,
+    ) -> Result<Vec<RecommendationContent>, MrpyqClientError> {
+        let started = Instant::now();
+        let feed_count = feed_ids.len();
+        let result = self.batch_get_contents_rpc(feed_ids).await;
+        match &result {
+            Ok(contents) => log::info!(
+                "mrpyq rpc BatchGetRecommendationContents feed_ids={feed_count} elapsed_ms={} contents={}",
+                started.elapsed().as_millis(),
+                contents.len(),
+            ),
+            Err(error) => log::warn!(
+                "mrpyq rpc BatchGetRecommendationContents feed_ids={feed_count} elapsed_ms={} error={error}",
+                started.elapsed().as_millis(),
+            ),
+        }
+        result
+    }
+}
+
+fn recommendation_content_from_proto(content: pb::RecommendationContent) -> RecommendationContent {
+    RecommendationContent {
+        feed_id: content.feed_id,
+        creator_account_id: content.creator_account_id,
+        creator_member_id: content.creator_member_id,
+        creator_user_id: content.creator_user_id,
+        creator_user_no: content.creator_user_no,
+        created_at_ms: content.created_at_ms,
+        text: content.text,
+        tag_ids: content.tag_ids,
+        room_id: content.room_id,
+        section_ids: content.section_ids,
+        like_count: content.like_count,
+        comment_count: content.comment_count,
+        gift_value: content.gift_value,
+        has_image: content.has_image,
+        has_video: content.has_video,
+        video_duration_ms: content.video_duration_ms,
+        recommendation_eligible: content.recommendation_eligible,
+        ineligible_reason: IneligibleReason::from_proto(content.ineligible_reason),
     }
 }
 
@@ -354,5 +472,39 @@ mod tests {
             Duration::from_millis(1)
         )
         .is_err());
+    }
+
+    #[test]
+    fn content_mapping_preserves_mrpyq_feed_fields() {
+        let content = recommendation_content_from_proto(pb::RecommendationContent {
+            feed_id: "e305c05a62cd1ef55823cd86".to_string(),
+            creator_account_id: "6553f1000000000000000007".to_string(),
+            creator_member_id: "member-1".to_string(),
+            creator_user_id: "00000000000000000000000a".to_string(),
+            creator_user_no: 9,
+            created_at_ms: 1_700_000_000_000,
+            text: "hello".to_string(),
+            tag_ids: vec!["tag-1".to_string()],
+            room_id: "room-1".to_string(),
+            section_ids: vec!["section-1".to_string()],
+            like_count: 7,
+            comment_count: 3,
+            gift_value: 11,
+            has_image: true,
+            has_video: true,
+            video_duration_ms: 12_000,
+            recommendation_eligible: false,
+            ineligible_reason: pb::RecommendationIneligibleReason::Deleted as i32,
+        });
+        assert_eq!(content.creator_account_id, "6553f1000000000000000007");
+        assert_eq!(content.text, "hello");
+        assert_eq!(content.like_count, 7);
+        assert_eq!(content.comment_count, 3);
+        assert_eq!(content.gift_value, 11);
+        assert!(content.has_image && content.has_video);
+        assert_eq!(content.video_duration_ms, 12_000);
+        assert!(!content.recommendation_eligible);
+        assert_eq!(content.ineligible_reason, IneligibleReason::Deleted);
+        assert_eq!(content.ineligible_reason.reason_code(), 1);
     }
 }
