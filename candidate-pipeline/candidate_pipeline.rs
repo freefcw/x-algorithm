@@ -33,6 +33,30 @@ pub struct PipelineComponents {
     pub components: Vec<String>,
 }
 
+/// 成功路径上超过该耗时的组件会被提升到 info 级别。外部调用（Phoenix、
+/// Thunder、VM Ranker、mrpyq）都是在组件内部发起的，这条线保证
+/// RUST_LOG=info 下不必打开全量 debug 也能定位到是哪个组件慢。
+const SLOW_COMPONENT_MS: u128 = 50;
+
+/// 成功路径的组件日志：默认 debug，慢组件升级为 info 并标记 `slow=1`。
+fn log_component(
+    request_id: &str,
+    stage: PipelineStage,
+    component: &str,
+    elapsed_ms: u128,
+    detail: std::fmt::Arguments<'_>,
+) {
+    if elapsed_ms >= SLOW_COMPONENT_MS {
+        info!(
+            "request_id={request_id} stage={stage:?} component={component} elapsed_ms={elapsed_ms} slow=1{detail}"
+        );
+    } else {
+        debug!(
+            "request_id={request_id} stage={stage:?} component={component} elapsed_ms={elapsed_ms}{detail}"
+        );
+    }
+}
+
 pub struct PipelineResult<Q, C> {
     pub retrieved_candidates: Vec<C>,
     pub filtered_candidates: Vec<C>,
@@ -252,12 +276,12 @@ where
             match result {
                 Ok(hydrated) => {
                     hydrator.update(&mut hydrated_query, hydrated);
-                    debug!(
-                        "request_id={} stage={:?} component={} elapsed_ms={}",
-                        request_id,
+                    log_component(
+                        &request_id,
                         stage,
                         hydrator.name(),
-                        started.elapsed().as_millis()
+                        started.elapsed().as_millis(),
+                        format_args!(""),
                     );
                 }
                 Err(err) => {
@@ -293,13 +317,12 @@ where
         for (source, started, result) in results {
             match result {
                 Ok(mut candidates) => {
-                    debug!(
-                        "request_id={} stage={:?} component={} output={} elapsed_ms={}",
-                        request_id,
+                    log_component(
+                        &request_id,
                         PipelineStage::Source,
                         source.name(),
-                        candidates.len(),
-                        started.elapsed().as_millis()
+                        started.elapsed().as_millis(),
+                        format_args!(" output={}", candidates.len()),
                     );
                     collected.append(&mut candidates);
                 }
@@ -369,13 +392,12 @@ where
                 );
             }
             hydrator.update_all(&mut candidates, hydrated);
-            debug!(
-                "request_id={} stage={:?} component={} candidates={} elapsed_ms={}",
-                request_id,
+            log_component(
+                &request_id,
                 stage,
                 hydrator.name(),
-                expected_len,
-                started.elapsed().as_millis()
+                started.elapsed().as_millis(),
+                format_args!(" candidates={expected_len}"),
             );
         }
         stats.finish_with_size(candidates.len());
@@ -423,15 +445,15 @@ where
                     let removed_count = result.removed.len();
                     candidates = result.kept;
                     all_removed.extend(result.removed);
-                    debug!(
-                        "request_id={} stage={:?} component={} input={} kept={} removed={} elapsed_ms={}",
-                        request_id,
+                    log_component(
+                        &request_id,
                         stage,
                         filter.name(),
-                        input_count,
-                        candidates.len(),
-                        removed_count,
-                        started.elapsed().as_millis()
+                        started.elapsed().as_millis(),
+                        format_args!(
+                            " input={input_count} kept={} removed={removed_count}",
+                            candidates.len()
+                        ),
                     );
                 }
                 Err(err) => {
@@ -475,13 +497,12 @@ where
                 );
             }
             scorer.update_all(&mut candidates, scored);
-            debug!(
-                "request_id={} stage={:?} component={} candidates={} elapsed_ms={}",
-                request_id,
+            log_component(
+                &request_id,
                 PipelineStage::Scorer,
                 scorer.name(),
-                expected_len,
-                started.elapsed().as_millis()
+                started.elapsed().as_millis(),
+                format_args!(" candidates={expected_len}"),
             );
         }
         stats.finish_with_size(candidates.len());
