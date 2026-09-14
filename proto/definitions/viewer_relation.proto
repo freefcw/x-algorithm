@@ -1,0 +1,30 @@
+syntax = "proto3";
+
+package feed.service.v1;
+
+option go_package = "sencent.com/api/feed/service/v1;v1";
+
+// ViewerRelationService supplies the viewer-side admission inputs that
+// RecommendationDataService deliberately leaves out. A recommendation
+// candidate is not exposable to a viewer until these have been applied to it,
+// so a caller that cannot reach this service has not authorized anything.
+service ViewerRelationService {
+  rpc GetViewerRelations(GetViewerRelationsReq)
+      returns (GetViewerRelationsReply);
+}
+
+message GetViewerRelationsReq {
+  string account_id = 1;
+}
+
+message GetViewerRelationsReply {
+  // Accounts this viewer blocked.
+  repeated string blocked_account_ids = 1;
+  // Accounts that blocked this viewer. Both directions are returned because
+  // neither can be derived from the other.
+  repeated string blocked_by_account_ids = 2;
+  // Accounts this viewer muted or marked not-interested.
+  repeated string muted_account_ids = 3;
+  // Keywords this viewer muted, matched against candidate text.
+  repeated string muted_keywords = 4;
+}

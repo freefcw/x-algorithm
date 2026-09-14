@@ -32,7 +32,8 @@ pub mod home_mixer {
     pub const FILE_DESCRIPTOR_SET: &[u8] = tonic::include_file_descriptor_set!("proto_descriptor");
 }
 
-/// mrpyq Feed Service 推荐数据聚合协议。
+/// mrpyq Feed Service 协议 —— 推荐数据聚合（RecommendationDataService）与
+/// viewer 准入关系（ViewerRelationService）。两者同包同址，Rust 侧共用本模块。
 pub mod recommendation_data {
     tonic::include_proto!("feed.service.v1");
 }

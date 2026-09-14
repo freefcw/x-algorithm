@@ -13,6 +13,14 @@ use std::str::FromStr;
 pub struct ObjectId([u8; 12]);
 
 pub type PostId = ObjectId;
+
+/// A member ("皮"), and the only identity this pipeline knows. Accounts do not
+/// exist here: one account owns several members, and recall, relations and
+/// authorship are all member-to-member.
+///
+/// This is mrpyq's `member_id` / `MemberRef.id`. Do not confuse it with mrpyq's
+/// own `user_id`, which is not an identity but one half of `member_key`
+/// (`{user_id}_{user_no}`) — an alternate encoding of the same member.
 pub type UserId = ObjectId;
 
 #[derive(Clone, Debug, Eq, PartialEq)]
