@@ -1,23 +1,32 @@
+/// What the VF filter does with a candidate whose visibility could not be
+/// established, either because the adapter failed or because it returned no
+/// verdict for that post.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum VfFailurePolicy {
+    /// Unverified is not approved: drop the candidate.
     #[default]
-    AllowAll,
+    FailClosed,
+    /// Keep unverified in-network posts, drop unverified out-of-network ones.
     InNetworkOnly,
+    /// Keep every unverified candidate. Only appropriate where no viewer-level
+    /// visibility contract is expected to exist at all.
+    AllowAll,
 }
 
 impl VfFailurePolicy {
     fn from_value(value: Option<String>) -> Self {
         let Some(value) = value else {
-            return Self::AllowAll;
+            return Self::FailClosed;
         };
         match value.trim().to_ascii_lowercase().as_str() {
-            "" | "allow_all" => Self::AllowAll,
+            "" | "fail_closed" => Self::FailClosed,
             "in_network_only" => Self::InNetworkOnly,
+            "allow_all" => Self::AllowAll,
             value => {
                 log::warn!(
-                    "invalid HOME_MIXER_VF_FAILURE_POLICY={value:?}; defaulting to allow_all"
+                    "invalid HOME_MIXER_VF_FAILURE_POLICY={value:?}; defaulting to fail_closed"
                 );
-                Self::AllowAll
+                Self::FailClosed
             }
         }
     }
@@ -116,19 +125,33 @@ mod tests {
     }
 
     #[test]
-    fn vf_failure_policy_defaults_to_allow_all() {
-        assert_eq!(VfFailurePolicy::from_value(None), VfFailurePolicy::AllowAll);
-        for value in ["", "   ", "ALLOW_ALL", " allow_all "] {
+    fn vf_failure_policy_defaults_to_fail_closed() {
+        assert_eq!(
+            VfFailurePolicy::from_value(None),
+            VfFailurePolicy::FailClosed
+        );
+        for value in ["", "   ", "FAIL_CLOSED", " fail_closed "] {
+            assert_eq!(
+                VfFailurePolicy::from_value(Some(value.to_string())),
+                VfFailurePolicy::FailClosed,
+                "{value:?}"
+            );
+        }
+        assert_eq!(
+            HomeMixerFeatures::from_lookup(|_| None).vf_failure_policy,
+            VfFailurePolicy::FailClosed
+        );
+    }
+
+    #[test]
+    fn vf_failure_policy_allow_all_requires_an_explicit_opt_in() {
+        for value in ["allow_all", "ALLOW_ALL", " Allow_All "] {
             assert_eq!(
                 VfFailurePolicy::from_value(Some(value.to_string())),
                 VfFailurePolicy::AllowAll,
                 "{value:?}"
             );
         }
-        assert_eq!(
-            HomeMixerFeatures::from_lookup(|_| None).vf_failure_policy,
-            VfFailurePolicy::AllowAll
-        );
     }
 
     #[test]
@@ -143,10 +166,10 @@ mod tests {
     }
 
     #[test]
-    fn vf_failure_policy_unknown_value_falls_back_to_allow_all() {
+    fn vf_failure_policy_unknown_value_falls_back_to_fail_closed() {
         assert_eq!(
             VfFailurePolicy::from_value(Some("bogus".to_string())),
-            VfFailurePolicy::AllowAll
+            VfFailurePolicy::FailClosed
         );
     }
 }

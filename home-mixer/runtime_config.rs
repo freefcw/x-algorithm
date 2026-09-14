@@ -1,4 +1,4 @@
-use crate::feature_policy::HomeMixerFeatures;
+use crate::feature_policy::{HomeMixerFeatures, VfFailurePolicy};
 
 /// Runtime intent is explicit so a degraded local assembly cannot be mistaken
 /// for a production-ready recommendation service.
@@ -72,6 +72,13 @@ impl HomeMixerConfig {
         }
         if self.features.unsigned_cached_posts && self.mode != HomeMixerMode::Demo {
             anyhow::bail!("HOME_MIXER_ENABLE_UNSIGNED_CACHED_POSTS is allowed only in demo mode");
+        }
+        if self.features.vf_failure_policy == VfFailurePolicy::AllowAll
+            && self.mode != HomeMixerMode::Demo
+        {
+            log::warn!(
+                "HOME_MIXER_VF_FAILURE_POLICY=allow_all serves candidates whose visibility could not be established; this is an explicit opt-out of the fail-closed default"
+            );
         }
         if self.features.debug_rpc
             && self
