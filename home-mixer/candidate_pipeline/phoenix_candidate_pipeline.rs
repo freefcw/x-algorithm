@@ -11,21 +11,20 @@ use crate::candidate_hydrators::video_duration_candidate_hydrator::VideoDuration
 use crate::clients::gizmoduck_client::{
     DemoGizmoduckClient, DisabledGizmoduckClient, GizmoduckClient,
 };
-#[cfg(not(feature = "legacy-int-ids"))]
-use crate::clients::in_network_posts_client::DisabledInNetworkPostsClient;
 use crate::clients::in_network_posts_client::{DemoFallbackPostsClient, InNetworkPostsClient};
+use crate::clients::mrpyq_adapters::{pipeline_adapters_from_env, MrpyqPipelineAdapters};
 use crate::clients::phoenix_prediction_client::{
     PhoenixPredictionClient, SlimPhoenixPredictionClient,
 };
 use crate::clients::phoenix_retrieval_client::{
     PhoenixRetrievalClient, ProdPhoenixRetrievalClient,
 };
-use crate::clients::s2s::{S2S_CHAIN_PATH, S2S_CRT_PATH, S2S_KEY_PATH};
-use crate::clients::strato_client::{DemoStratoClient, DisabledStratoClient, StratoClient};
+
+use crate::clients::strato_client::{DemoStratoClient, StratoClient};
 #[cfg(feature = "legacy-int-ids")]
 use crate::clients::thunder_client::ThunderClient;
 use crate::clients::topic_retrieval_client::{DemoTopicRetrievalClient, TopicRetrievalClient};
-use crate::clients::tweet_entity_service_client::{DemoTESClient, DisabledTESClient, TESClient};
+use crate::clients::tweet_entity_service_client::{DemoTESClient, TESClient};
 use crate::clients::uas_fetcher::{
     DemoUserActionSequenceFetcher, DisabledUserActionSequenceFetcher, UserActionSequenceOps,
 };
@@ -79,9 +78,8 @@ use crate::sources::phoenix_moe_source::PhoenixMoeSource;
 use crate::sources::phoenix_source::PhoenixSource;
 use crate::sources::phoenix_topics_source::PhoenixTopicsSource;
 use crate::sources::thunder_source::ThunderSource;
-use crate::visibility::vf_client::{
-    DemoVisibilityFilteringClient, DisabledVisibilityFilteringClient, VisibilityFilteringClient,
-};
+use crate::visibility::vf_client::{DemoVisibilityFilteringClient, VisibilityFilteringClient};
+use anyhow::Context;
 use std::sync::Arc;
 use std::time::Duration;
 use tonic::async_trait;
@@ -128,7 +126,7 @@ pub struct PhoenixDependencies {
     pub uas_fetcher: Arc<dyn UserActionSequenceOps>,
     pub phoenix_client: Arc<dyn PhoenixPredictionClient + Send + Sync>,
     pub phoenix_retrieval_client: Arc<dyn PhoenixRetrievalClient + Send + Sync>,
-    pub in_network_client: Arc<dyn InNetworkPostsClient>,
+    pub in_network_client: Option<Arc<dyn InNetworkPostsClient>>,
     pub strato_client: Arc<dyn StratoClient + Send + Sync>,
     pub tes_client: Arc<dyn TESClient + Send + Sync>,
     pub gizmoduck_client: Arc<dyn GizmoduckClient + Send + Sync>,
@@ -202,14 +200,15 @@ impl PhoenixCandidatePipeline {
         });
 
         // Sources follow the upstream order. TweetMixer remains U3 and is omitted.
-        let mut sources: Vec<Box<dyn Source<ScoredPostsQuery, PostCandidate>>> = vec![
-            Box::new(ThunderSource {
-                client: in_network_client,
-            }),
-            Box::new(PhoenixSource {
-                phoenix_retrieval_client,
-            }),
-        ];
+        // Integer Thunder cannot carry real ObjectIds, so the in-network source is
+        // left unassembled when neither mrpyq nor the demo adapter is present.
+        let mut sources: Vec<Box<dyn Source<ScoredPostsQuery, PostCandidate>>> = Vec::new();
+        if let Some(client) = in_network_client {
+            sources.push(Box::new(ThunderSource { client }));
+        }
+        sources.push(Box::new(PhoenixSource {
+            phoenix_retrieval_client,
+        }));
         if let Some(fallback_client) = fallback_client {
             sources.push(Box::new(FallbackSource {
                 client: fallback_client,
@@ -345,18 +344,20 @@ impl PhoenixCandidatePipeline {
     ///
     /// New application code should pass explicit runtime intent through
     /// `assemble_for_mode`; this wrapper only preserves existing callers.
-    pub async fn prod() -> PhoenixCandidatePipeline {
+    pub async fn prod() -> anyhow::Result<PhoenixCandidatePipeline> {
         Self::prod_with_features(HomeMixerFeatures::from_env()).await
     }
 
-    pub async fn prod_with_features(features: HomeMixerFeatures) -> PhoenixCandidatePipeline {
+    pub async fn prod_with_features(
+        features: HomeMixerFeatures,
+    ) -> anyhow::Result<PhoenixCandidatePipeline> {
         Self::assemble_for_mode(Self::compatibility_mode(), features).await
     }
 
     pub async fn assemble_for_mode(
         mode: HomeMixerMode,
         features: HomeMixerFeatures,
-    ) -> PhoenixCandidatePipeline {
+    ) -> anyhow::Result<PhoenixCandidatePipeline> {
         let topic_clients = (mode == HomeMixerMode::Demo).then(|| {
             TopicPersonalizationClients::new(
                 Arc::new(DemoUserTopicReader),
@@ -372,7 +373,7 @@ impl PhoenixCandidatePipeline {
     /// callers must verify the reader and retrieval service contracts first.
     pub async fn prod_with_topic_clients(
         topic_clients: TopicPersonalizationClients,
-    ) -> PhoenixCandidatePipeline {
+    ) -> anyhow::Result<PhoenixCandidatePipeline> {
         Self::assemble_with_optional_topic_clients(
             Self::compatibility_mode(),
             Some(topic_clients),
@@ -393,90 +394,78 @@ impl PhoenixCandidatePipeline {
         mode: HomeMixerMode,
         topic_clients: Option<TopicPersonalizationClients>,
         features: HomeMixerFeatures,
-    ) -> PhoenixCandidatePipeline {
+    ) -> anyhow::Result<PhoenixCandidatePipeline> {
         let demo_mode = mode == HomeMixerMode::Demo;
         let features = features_for_mode(mode, features);
         if demo_mode {
             log::info!("HOME_MIXER_MODE=demo: injecting demo UAS / Strato / TES clients");
         }
 
+        let mrpyq_adapters = pipeline_adapters_from_env(demo_mode)
+            .context("failed to create mrpyq recommendation data adapters")?;
+        if !demo_mode && mrpyq_adapters.is_none() {
+            anyhow::bail!(
+                "MRPYQ_RECOMMENDATION_DATA_ADDR is required; integer Thunder cannot carry real ObjectIds"
+            );
+        }
+        let mrpyq_adapters = mrpyq_adapters.as_ref();
+
         let uas_fetcher: Arc<dyn UserActionSequenceOps> = if demo_mode {
             Arc::new(DemoUserActionSequenceFetcher)
         } else {
-            Arc::new(
-                DisabledUserActionSequenceFetcher::new()
-                    .expect("Failed to create disabled UAS boundary"),
-            )
+            Arc::new(DisabledUserActionSequenceFetcher::new()?)
         };
         let strato_client: Arc<dyn StratoClient + Send + Sync> = if demo_mode {
             Arc::new(DemoStratoClient)
         } else {
-            Arc::new(
-                DisabledStratoClient::new()
-                    .await
-                    .expect("Failed to create disabled Strato boundary"),
+            Arc::clone(
+                &mrpyq_adapters
+                    .expect("non-demo assembly requires mrpyq adapters")
+                    .strato,
             )
         };
         let tes_client: Arc<dyn TESClient + Send + Sync> = if demo_mode {
             Arc::new(DemoTESClient)
         } else {
-            Arc::new(
-                DisabledTESClient::new()
-                    .await
-                    .expect("Failed to create disabled TES boundary"),
+            Arc::clone(
+                &mrpyq_adapters
+                    .expect("non-demo assembly requires mrpyq adapters")
+                    .tes,
             )
         };
 
-        let phoenix_client: Arc<dyn PhoenixPredictionClient + Send + Sync> = Arc::new(
-            SlimPhoenixPredictionClient::new_with_allow_random(demo_mode)
-                .await
-                .expect("Failed to create Phoenix prediction client"),
-        );
-        let phoenix_retrieval_client = Arc::new(
-            ProdPhoenixRetrievalClient::new_with_allow_random(demo_mode)
-                .await
-                .expect("Failed to create Phoenix retrieval client"),
-        );
-        #[cfg(feature = "legacy-int-ids")]
-        let in_network_client: Arc<dyn InNetworkPostsClient> = Arc::new(ThunderClient::new().await);
-        #[cfg(not(feature = "legacy-int-ids"))]
-        let in_network_client: Arc<dyn InNetworkPostsClient> =
-            Arc::new(DisabledInNetworkPostsClient);
-        // A fallback pool is a product/backend contract, not a safe default.
-        // Only Demo gets deterministic fixture data; production/degraded modes
-        // leave the source unassembled until a real adapter is injected.
-        let fallback_client: Option<Arc<dyn InNetworkPostsClient>> =
-            demo_mode.then(|| Arc::new(DemoFallbackPostsClient) as Arc<dyn InNetworkPostsClient>);
+        let phoenix_client: Arc<dyn PhoenixPredictionClient + Send + Sync> =
+            Arc::new(SlimPhoenixPredictionClient::new_with_allow_random(demo_mode).await?);
+        let phoenix_retrieval_client =
+            Arc::new(ProdPhoenixRetrievalClient::new_with_allow_random(demo_mode).await?);
+        let in_network_client = assemble_in_network_client(demo_mode, mrpyq_adapters).await;
+        let fallback_client: Option<Arc<dyn InNetworkPostsClient>> = if demo_mode {
+            Some(Arc::new(DemoFallbackPostsClient) as Arc<dyn InNetworkPostsClient>)
+        } else {
+            mrpyq_adapters.map(|adapters| Arc::clone(&adapters.in_network))
+        };
         let gizmoduck_client: Arc<dyn GizmoduckClient + Send + Sync> =
             if demo_mode && features.author_cold_start {
                 Arc::new(DemoGizmoduckClient)
             } else {
-                Arc::new(
-                    DisabledGizmoduckClient::new()
-                        .await
-                        .expect("Failed to create disabled Gizmoduck boundary"),
-                )
+                Arc::new(DisabledGizmoduckClient::new().await?)
             };
         let vf_client: Arc<dyn VisibilityFilteringClient + Send + Sync> = if demo_mode {
             Arc::new(DemoVisibilityFilteringClient)
         } else {
-            Arc::new(
-                DisabledVisibilityFilteringClient::new(
-                    S2S_CHAIN_PATH.clone(),
-                    S2S_CRT_PATH.clone(),
-                    S2S_KEY_PATH.clone(),
-                )
-                .await
-                .expect("Failed to create disabled VF boundary"),
+            Arc::clone(
+                &mrpyq_adapters
+                    .expect("non-demo assembly requires mrpyq adapters")
+                    .vf,
             )
         };
         let moe_retrieval_client = if features.phoenix_moe {
             match std::env::var("PHOENIX_MOE_GRPC_ADDR") {
-                Ok(addr) => Some(Arc::new(
-                    ProdPhoenixRetrievalClient::from_addr_with_allow_random(addr, demo_mode)
-                        .expect("Failed to create Phoenix MoE retrieval client"),
-                )
-                    as Arc<dyn PhoenixRetrievalClient + Send + Sync>),
+                Ok(addr) => Some(
+                    Arc::new(ProdPhoenixRetrievalClient::from_addr_with_allow_random(
+                        addr, demo_mode,
+                    )?) as Arc<dyn PhoenixRetrievalClient + Send + Sync>,
+                ),
                 Err(_) => {
                     log::warn!(
                         "HOME_MIXER_ENABLE_PHOENIX_MOE is set but PHOENIX_MOE_GRPC_ADDR is missing; disabling Phoenix MoE source"
@@ -493,22 +482,43 @@ impl PhoenixCandidatePipeline {
             );
         }
 
-        PhoenixCandidatePipeline::build_with_clients(PhoenixDependencies {
-            uas_fetcher,
-            phoenix_client,
-            phoenix_retrieval_client,
-            in_network_client,
-            strato_client,
-            tes_client,
-            gizmoduck_client,
-            vf_client,
-            topic_clients,
-            moe_retrieval_client,
-            fallback_client,
-            features,
-        })
-        .await
+        Ok(
+            PhoenixCandidatePipeline::build_with_clients(PhoenixDependencies {
+                uas_fetcher,
+                phoenix_client,
+                phoenix_retrieval_client,
+                in_network_client,
+                strato_client,
+                tes_client,
+                gizmoduck_client,
+                vf_client,
+                topic_clients,
+                moe_retrieval_client,
+                fallback_client,
+                features,
+            })
+            .await,
+        )
     }
+}
+
+/// Real in-network recall is mrpyq. Integer Thunder exists only for explicit
+/// demo mode, because it cannot carry real ObjectIds.
+async fn assemble_in_network_client(
+    demo_mode: bool,
+    mrpyq_adapters: Option<&MrpyqPipelineAdapters>,
+) -> Option<Arc<dyn InNetworkPostsClient>> {
+    #[cfg(not(feature = "legacy-int-ids"))]
+    let _ = demo_mode;
+
+    if let Some(adapters) = mrpyq_adapters {
+        return Some(Arc::clone(&adapters.in_network));
+    }
+    #[cfg(feature = "legacy-int-ids")]
+    if demo_mode {
+        return Some(Arc::new(ThunderClient::new().await));
+    }
+    None
 }
 
 fn features_for_mode(mode: HomeMixerMode, mut features: HomeMixerFeatures) -> HomeMixerFeatures {
@@ -578,7 +588,8 @@ mod tests {
                 ..Default::default()
             },
         )
-        .await;
+        .await
+        .expect("demo assembly");
         let components = pipeline.components();
         let pre_selection = components
             .iter()
@@ -648,5 +659,22 @@ mod tests {
             .components
             .iter()
             .any(|name| name == "VFCandidateHydrator"));
+    }
+
+    #[tokio::test]
+    async fn non_demo_without_mrpyq_fails_assembly() {
+        let result = PhoenixCandidatePipeline::assemble_for_mode(
+            HomeMixerMode::Degraded,
+            HomeMixerFeatures::default(),
+        )
+        .await;
+        let error = match result {
+            Err(error) => error,
+            Ok(_) => panic!("real traffic cannot start without mrpyq"),
+        };
+        assert!(
+            error.to_string().contains("MRPYQ_RECOMMENDATION_DATA_ADDR"),
+            "{error}"
+        );
     }
 }

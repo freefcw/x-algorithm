@@ -30,14 +30,24 @@ fn names(
 }
 
 #[tokio::test]
-async fn degraded_assembly_does_not_use_demo_fallback_data() {
-    let pipeline = PhoenixCandidatePipeline::assemble_for_mode(
+async fn degraded_assembly_without_mrpyq_fails_to_start() {
+    assert!(
+        !std::env::var("MRPYQ_RECOMMENDATION_DATA_ADDR").is_ok_and(|addr| !addr.trim().is_empty()),
+        "unset MRPYQ_RECOMMENDATION_DATA_ADDR to run this test"
+    );
+    let result = PhoenixCandidatePipeline::assemble_for_mode(
         home_mixer::runtime_config::HomeMixerMode::Degraded,
         HomeMixerFeatures::default(),
     )
     .await;
-    let components = pipeline.components();
-    assert!(!names(&components, PipelineStage::Source).contains(&"FallbackSource".to_string()));
+    let error = match result {
+        Err(error) => error,
+        Ok(_) => panic!("real traffic cannot start without mrpyq"),
+    };
+    assert!(
+        error.to_string().contains("MRPYQ_RECOMMENDATION_DATA_ADDR"),
+        "{error}"
+    );
 }
 
 #[tokio::test]
@@ -46,10 +56,20 @@ async fn demo_assembly_contains_p2_fallback_components_and_u5_is_absent() {
         home_mixer::runtime_config::HomeMixerMode::Demo,
         HomeMixerFeatures::default(),
     )
-    .await;
+    .await
+    .expect("demo assembly");
     let components = pipeline.components();
 
-    assert!(names(&components, PipelineStage::Source).contains(&"FallbackSource".to_string()));
+    let sources = names(&components, PipelineStage::Source);
+    assert!(
+        sources.contains(&"FallbackSource".to_string()),
+        "{sources:?}"
+    );
+    #[cfg(feature = "legacy-int-ids")]
+    assert!(
+        sources.contains(&"ThunderSource".to_string()),
+        "demo assembly should keep integer Thunder for padded IDs: {sources:?}"
+    );
     assert!(
         names(&components, PipelineStage::Filter).contains(&"FirstStageEligibleFilter".to_string())
     );
@@ -85,7 +105,8 @@ async fn served_state_is_read_by_the_same_pipeline_that_persists_it() {
         home_mixer::runtime_config::HomeMixerMode::Demo,
         HomeMixerFeatures::default(),
     )
-    .await;
+    .await
+    .expect("demo assembly");
     let store: Arc<dyn FeedStateStore> = Arc::new(InMemoryFeedStateStore::new(10, 10));
     store.record(uid(7), vec![pid(9)], 123).expect("seed state");
     pipeline.install_feed_state_store(store);
@@ -220,6 +241,7 @@ async fn demo_pipeline() -> PhoenixCandidatePipeline {
         HomeMixerFeatures::default(),
     )
     .await
+    .expect("demo assembly")
 }
 
 fn unsigned_cached_posts_query_builder() -> QueryBuilder {

@@ -46,13 +46,29 @@ fn public_reader_contract_can_be_implemented_by_an_external_adapter() {
 
 #[test]
 fn external_topic_adapters_can_enter_service_assembly() {
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .expect("test runtime");
     let clients = TopicPersonalizationClients::new(
         Arc::new(ExternalUserTopicReader),
         Arc::new(ExternalTopicRetrievalClient),
     );
 
-    let pipeline = PhoenixCandidatePipeline::prod_with_topic_clients(clients);
-    drop(pipeline);
+    let pipeline = runtime.block_on(PhoenixCandidatePipeline::prod_with_topic_clients(clients));
+    // Real-mode assembly cannot fall back to integer Thunder.
+    if std::env::var("MRPYQ_RECOMMENDATION_DATA_ADDR").is_ok_and(|addr| !addr.trim().is_empty()) {
+        drop(pipeline.expect("topic adapters can enter assembly"));
+    } else {
+        let error = match pipeline {
+            Err(error) => error,
+            Ok(_) => panic!("real traffic cannot start without mrpyq"),
+        };
+        assert!(
+            error.to_string().contains("MRPYQ_RECOMMENDATION_DATA_ADDR"),
+            "{error}"
+        );
+    }
 
     let _: fn(PhoenixCandidatePipeline) -> ScoredPostsServer = ScoredPostsServer::with_pipeline;
     let _: fn(Arc<ScoredPostsServer>) -> HomeMixerServer =

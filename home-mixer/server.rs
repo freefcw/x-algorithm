@@ -32,7 +32,7 @@ impl HomeMixerServer {
         config.validate()?;
         if config.mode == HomeMixerMode::Degraded {
             log::warn!(
-                "HOME_MIXER_MODE=degraded: mandatory production caller identity, Viewer, UAS, Strato, TES, Gizmoduck, VF, Phoenix, and Thunder contracts are unavailable"
+                "HOME_MIXER_MODE=degraded: caller identity, UAS, Gizmoduck, Phoenix metadata, and served persist contracts are still incomplete"
             );
         }
         let viewer_client: Arc<dyn GizmoduckClient + Send + Sync> = match config.mode {
@@ -44,7 +44,7 @@ impl HomeMixerServer {
         let query_builder = QueryBuilder::new(config.features, viewer_client);
         let pipeline = crate::candidate_pipeline::phoenix_candidate_pipeline::PhoenixCandidatePipeline::
             assemble_for_mode(config.mode, config.features)
-            .await;
+            .await?;
         let debug_access = DebugAccessPolicy::new(config.features.debug_rpc, config.debug_token);
         let scored_posts_server = Arc::new(
             ScoredPostsServer::new(query_builder, pipeline).with_debug_access(debug_access),
@@ -213,19 +213,26 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn degraded_assembly_keeps_the_served_persist_gate() {
-        let server = HomeMixerServer::build(HomeMixerConfig {
+    async fn degraded_assembly_without_mrpyq_fails_to_start() {
+        assert!(
+            !std::env::var("MRPYQ_RECOMMENDATION_DATA_ADDR")
+                .is_ok_and(|addr| !addr.trim().is_empty()),
+            "unset MRPYQ_RECOMMENDATION_DATA_ADDR to run this test"
+        );
+        let result = HomeMixerServer::build(HomeMixerConfig {
             mode: HomeMixerMode::Degraded,
             features: HomeMixerFeatures::default(),
             debug_token: None,
         })
-        .await
-        .expect("degraded assembly");
-
-        server
-            .scored_posts_server
-            .persist_selected(crate::models::uid(7), &[], 1)
-            .expect("in-memory served persist must stay armed outside demo");
+        .await;
+        let error = match result {
+            Err(error) => error,
+            Ok(_) => panic!("real traffic cannot start without mrpyq"),
+        };
+        assert!(
+            error.to_string().contains("MRPYQ_RECOMMENDATION_DATA_ADDR"),
+            "{error}"
+        );
     }
 
     #[test]

@@ -45,8 +45,9 @@ xai_candidate_pipeline = { path = "../candidate-pipeline" }
 x-algorithm-proto = { path = "../proto" }
 
 [features]
-# Thunder / VM Ranker 仍是 i64/u64 proto。默认开启以保留演示链路
-# （仅能 round-trip 零填充 ObjectId）；P3 改 string proto 后删除。
+# Thunder / VM Ranker 仍是 i64/u64 proto。默认开启只为演示链路
+# （仅能 round-trip 零填充 ObjectId）。非 demo 装配不会回退到整数 Thunder；
+# 真实网内召回走 mrpyq。P3 改 string proto 后删除。
 default = ["legacy-int-ids"]
 legacy-int-ids = []
 
