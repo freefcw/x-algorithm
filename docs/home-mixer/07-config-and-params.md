@@ -59,7 +59,7 @@ flowchart TD
 
 | 变量 | 读取位置 | 作用 | 默认行为 |
 | --- | --- | --- | --- |
-| `THUNDER_GRPC_ADDR` | `clients/thunder_client.rs` | Thunder gRPC 地址 | 默认 `http://localhost:50052` |
+| `THUNDER_GRPC_ADDR` | `clients/thunder_client.rs` | Thunder gRPC 地址；仅 `HOME_MIXER_MODE=demo` 装配 | 默认 `http://localhost:50052`。非 demo 必须走 mrpyq，启动不会回退到整数 Thunder |
 | `PHOENIX_PREDICT_GRPC_ADDR` | `clients/phoenix_prediction_client.rs` | Phoenix 精排 gRPC 地址 | 未设置时显式 Unavailable，Scorer 保留候选并走规则 fallback |
 | `PHOENIX_RETRIEVAL_GRPC_ADDR` | `clients/phoenix_retrieval_client.rs` | Phoenix 召回 gRPC 地址 | 未设置时显式 Unavailable，Source 跳过网外召回路 |
 | `PHOENIX_MOE_GRPC_ADDR` | `candidate_pipeline/phoenix_candidate_pipeline.rs` | Phoenix MoE 专家召回地址；只提供地址，不会自动启用 | 未设置时不装配 MoE Source |
@@ -68,13 +68,13 @@ flowchart TD
 | `HOME_MIXER_ENABLE_REQUEST_CACHE_SIDE_EFFECT` | `feature_policy.rs` | 显式启用请求缓存 SideEffect | 默认关闭；启用前必须人工确认真实 Strato adapter、schema、认证和保留策略 |
 | `HOME_MIXER_ENABLE_DEBUG_RPC` | `feature_policy.rs` / `debug_access.rs` | 启用 `DebugScoredPosts` | 默认关闭；开启时必须同时提供 `HOME_MIXER_DEBUG_TOKEN`，调用方通过 `x-home-mixer-debug-token` metadata 传入 |
 | `HOME_MIXER_ENABLE_UNSIGNED_CACHED_POSTS` | `feature_policy.rs` / `runtime_config.rs` / `server.rs` | 允许请求直接携带未签名 `cached_posts` fixture | 默认关闭且只允许 `demo`；生产缓存必须使用服务端状态或签名/opaque 合同 |
-| `HOME_MIXER_ENABLE_VM_RANKER` | `feature_policy.rs` | 显式启用 VM Ranker 二次重排 Scorer | 默认关闭；启用但缺少 `VM_RANKER_GRPC_ADDR` 时记录告警并跳过，主链继续 |
+| `HOME_MIXER_ENABLE_VM_RANKER` | `feature_policy.rs` | 显式启用 VM Ranker 二次重排 Scorer | 默认关闭；整数 proto 只能 round-trip 零填充演示 ID，非 demo 会告警并禁用；demo 下启用但缺少 `VM_RANKER_GRPC_ADDR` 时跳过，主链继续 |
 | `HOME_MIXER_ENABLE_AUTHOR_COLD_START` | `feature_policy.rs` | 启用低曝光新作者提升，并在 scorer 前补作者粉丝数 | 默认关闭；当前只允许 `demo`，非 demo 会告警并禁用；候选缺 `view_count` 或作者粉丝数时严格不参与 |
 | `HOME_MIXER_ENABLE_COLD_START_THOMPSON_SAMPLING` | `feature_policy.rs` | 在冷启动候选中启用 Beta Thompson Sampling | 默认关闭；只有 Author Cold Start 同时开启才生效 |
-| `HOME_MIXER_VF_FAILURE_POLICY` | `feature_policy.rs` / `filters/vf_filter.rs` | VF 请求失败/超时、`Unchecked`、成功响应缺帖时的候选保留策略：`allow_all` 全保留，`in_network_only` 仅保留 `in_network == Some(true)` | 默认 `allow_all`；大小写不敏感、trim 后解析，未知值告警并按 `allow_all` |
+| `HOME_MIXER_VF_FAILURE_POLICY` | `feature_policy.rs` / `filters/vf_filter.rs` | VF 请求失败/超时、`Unchecked`、成功响应缺帖时的候选保留策略：`fail_closed` 全丢弃，`in_network_only` 仅保留 `in_network == Some(true)`，`allow_all` 全保留 | 默认 `fail_closed`；大小写不敏感、trim 后解析，未知值告警并按 `fail_closed`；非 demo 模式下设成 `allow_all` 会在启动时告警 |
 | `VM_RANKER_GRPC_ADDR` | `candidate_pipeline/phoenix_candidate_pipeline.rs` | VM Ranker 服务地址；只提供地址不会自动启用 | 未设置时不装配 `VMRanker` Scorer |
 | `VM_RANKER_VALUE_MODEL_ID` | `candidate_pipeline/phoenix_candidate_pipeline.rs` | 选择 value model；上游从 feature switch 读取，本地由装配显式配置 | 未设置时服务端按 `unknown` 记账并使用默认权重 |
-| `MRPYQ_RECOMMENDATION_DATA_ADDR` | `clients/mrpyq_recommendation_data_client.rs` | mrpyq 推荐数据 gRPC 地址 | 客户端已有，当前未装配进请求路径 |
+| `MRPYQ_RECOMMENDATION_DATA_ADDR` | `clients/mrpyq_adapters.rs` / `clients/mrpyq_recommendation_data_client.rs` / `clients/mrpyq_viewer_relation_client.rs` | mrpyq gRPC 地址，同址提供 `RecommendationDataService` 与 `ViewerRelationService` | 非 demo **必填**：装配 TES / 网内 / 兜底 / VF / Strato，网内召回以 24-hex ObjectId 原样下发。未设置或地址不合法则启动失败，不回退到整数 Thunder |
 | `MRPYQ_RECOMMENDATION_DATA_TIMEOUT_MS` | `clients/mrpyq_recommendation_data_client.rs` | mrpyq 推荐数据调用超时（毫秒） | 默认 `500`（`params/config.rs`） |
 | `HOME_MIXER_DEMO` | `demo.rs` | `HOME_MIXER_MODE=demo` 的旧兼容别名 | 仅兼容已有脚本；新配置使用 `HOME_MIXER_MODE` |
 
@@ -114,7 +114,7 @@ Phoenix 两个主服务地址通常同时指向 `phoenix/scripts/run_grpc_gatewa
 
 - 当前只有 disabled VF 边界的构造函数接收这些路径
 - `demo` 注入显式 Allow adapter；`degraded` 注入返回 Unavailable 的 disabled adapter
-- VF 未知（失败/超时/缺帖）时按 `HOME_MIXER_VF_FAILURE_POLICY` 处理：默认 `allow_all` 全保留，`in_network_only` 仅保留网内；`production_ready` 在真实 VF 合同缺失时拒绝启动
+- VF 未知（失败/超时/缺帖）时按 `HOME_MIXER_VF_FAILURE_POLICY` 处理：默认 `fail_closed` 全丢弃，`in_network_only` 仅保留网内，`allow_all` 需显式配置；`production_ready` 在真实 VF 合同缺失时拒绝启动
 
 ## 4. 服务级参数
 
@@ -158,7 +158,7 @@ flowchart LR
 
 | 常量 | 值 | 影响组件 | 影响说明 |
 | --- | --- | --- | --- |
-| `THUNDER_MAX_RESULTS` | `1200` | `ThunderSource` | 网内召回上限 |
+| `THUNDER_MAX_RESULTS` | `400`（上游 `1200`，U1 下调） | `ThunderSource` | 网内召回上限；召回源是 mrpyq 关注 inbox（硬顶 2000 条），`AgeFilter` 只留 `MAX_POST_AGE` 以内、出口 `RESULT_SIZE` 条，1200 取不满也用不上 |
 | `PHOENIX_MAX_RESULTS` | `1000` | `PhoenixSource` | 网外召回上限 |
 | `TOPIC_MAX_RESULTS` | `100` | `PhoenixTopicsSource` | 话题源单次上限 |
 | `TWEET_MIXER_MAX_RESULTS` | `800` | `TweetMixerSource`（端口已定义，默认不装配） | TweetMixer 召回上限 |

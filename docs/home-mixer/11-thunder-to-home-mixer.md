@@ -65,7 +65,7 @@ Thunder 对外返回的不是完整帖子，而是 `LightPost`。
 | --- | --- |
 | `user_id` | `query.user_id` |
 | `following_user_ids` | `query.user_features.followed_user_ids` |
-| `max_results` | `THUNDER_MAX_RESULTS = 1200` |
+| `max_results` | `THUNDER_MAX_RESULTS = 400`（上游 `1200`，U1 下调） |
 | `exclude_tweet_ids` | `query.seen_ids` |
 | `algorithm` | 固定 `"default"` |
 | `debug` | 固定 `false` |

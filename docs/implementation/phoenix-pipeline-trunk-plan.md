@@ -189,7 +189,7 @@ to_u64_hash(oid) = from_be_bytes(md5(oid 的 12 个原始字节)[0..8]) & 0x7FFF
 | `phoenix_recsys.proto`（string ID）+ `phoenix/` 提交 | cherry-pick（见 P0）；proto 文件名沿用以避开 Python descriptor 撞名 | U0 / U1 |
 | PhoenixRanker 的 metadata + NaN / 重复 / 缺失校验 | `SlimPhoenixPredictionClient` 内部，校验失败返回 `Err` | U1 |
 | 整批规则回退 `ranking::fallback()` | `RuleFallbackScorer`，装配在 `RankingScorer` 之后，读 PhoenixScorer 失败标记 | U2 |
-| `/recommendation/eligibility` fail-closed | `MrpyqVisibilityFilteringClient`：缺项 → Drop、超时 → Unavailable；`VFFilter` 故障分支由 `HOME_MIXER_VF_FAILURE_POLICY` 决定：`allow_all`（默认）对 Unchecked/Unavailable 全量保留，`in_network_only` 仅保留网内；成功响应缺帖同样记为 Unavailable 走同一策略 | U1 / U2 |
+| `/recommendation/eligibility` fail-closed | 拆成两半：帖子维度由 `MrpyqFirstStageEligibilityClient` 承载（只是 mrpyq 的一阶段 `recommendation_eligible`，与 viewer 无关，`FirstStageEligibleFilter` 上游已消费同一标志）；viewer 维度由 `MrpyqStratoClient`（`ViewerRelationService` 的 block / mute / 屏蔽词）承载。`VFFilter` 故障分支由 `HOME_MIXER_VF_FAILURE_POLICY` 决定：`fail_closed`（默认）对 Unchecked/Unavailable 全量丢弃，`in_network_only` 仅保留网内，`allow_all` 需显式配置；成功响应缺帖同样记为 Unavailable 走同一策略 | U1 / U2 |
 | `/recommendation/input`（history / seen / candidates 一次返回） | 拆为三个端口实现：`UserActionSequenceOps` / `ImpressedPostsClient` / `InNetworkPostsClient` | U1 |
 | served 成功才 2xx | `scored_posts_server.rs` 中 `execute()` 之后、响应之前的同步步骤（框架 SideEffect 是 fire-and-forget，不满足训练归因） | U2 |
 | `/v1/feedback` 幂等落库 | 独立 RPC（或 HTTP 薄层）→ 业务适配器 | U2 |

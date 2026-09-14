@@ -15,7 +15,7 @@ Thunder 当前对外只有一个接口：
 |---|---|
 | `user_id` | 用于过滤“转发了请求用户自己内容”的 retweet，也用于必要时查 following list |
 | `following_user_ids` | 最关键输入，决定要从哪些作者的时间线里取帖 |
-| `max_results` | 为 0 时使用默认值：普通请求 1000，视频请求 200。当前 `ThunderSource` 恒传 `THUNDER_MAX_RESULTS=1200`，Thunder 按请求值截断，不会再压回 1000 |
+| `max_results` | 为 0 时使用默认值：普通请求 1000，视频请求 200。当前 `ThunderSource` 恒传 `THUNDER_MAX_RESULTS=400`，Thunder 按请求值截断，不会再压回 1000 |
 | `exclude_tweet_ids` | 查询前先转成 `HashSet`，用于排除已曝光帖子 |
 | `algorithm` | 当前未使用 |
 | `debug` | 仅控制请求日志；不影响数据查询语义 |
