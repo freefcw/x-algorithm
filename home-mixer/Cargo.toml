@@ -20,6 +20,9 @@ futures = "0.3"
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 
+# Feed state persistence
+redis = { version = "0.27.6", features = ["tokio-comp", "connection-manager"] }
+
 # gRPC
 tonic = { version = "0.12", features = ["gzip", "zstd"] }
 tonic-reflection = "0.12"

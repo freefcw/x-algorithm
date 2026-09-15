@@ -1,8 +1,11 @@
+use crate::clients::redis_feed_state_store::RedisFeedStateStore;
 #[cfg(test)]
 use crate::feature_policy::HomeMixerFeatures;
+use crate::feed_state::{FeedStateStore, InMemoryFeedStateStore};
 use crate::for_you_server::ForYouFeedServer;
 #[cfg(test)]
 use crate::models::query::ScoredPostsQuery;
+use crate::runtime_config::FeedStateConfig;
 use crate::scored_posts_server::ScoredPostsServer;
 use log::info;
 use std::sync::Arc;
@@ -35,8 +38,20 @@ impl HomeMixerServer {
             assemble_for_mode(config.mode, config.features)
             .await?;
         let debug_access = DebugAccessPolicy::new(config.features.debug_rpc, config.debug_token);
+        let state_store: Arc<dyn FeedStateStore> = match config.feed_state {
+            FeedStateConfig::InMemory => Arc::new(InMemoryFeedStateStore::new(
+                crate::params::LOCAL_SERVED_HISTORY_LIMIT,
+                crate::params::LOCAL_REQUEST_TIMESTAMP_LIMIT,
+            )),
+            FeedStateConfig::Redis(redis) => Arc::new(
+                RedisFeedStateStore::new(redis)
+                    .await
+                    .map_err(anyhow::Error::msg)?,
+            ),
+        };
         let scored_posts_server = Arc::new(
-            ScoredPostsServer::new(query_builder, pipeline).with_debug_access(debug_access),
+            ScoredPostsServer::with_state(query_builder, pipeline, state_store)
+                .with_debug_access(debug_access),
         );
         Ok(Self::with_scored_posts_server(scored_posts_server))
     }
@@ -191,6 +206,42 @@ mod tests {
     use super::*;
     use crate::models::query::TopicRecallMode;
 
+    #[tokio::test]
+    async fn business_assembly_rejects_local_state_before_external_clients() {
+        let error = match HomeMixerServer::build(HomeMixerConfig::default()).await {
+            Err(error) => error,
+            Ok(_) => panic!("business deployment must not silently use local history"),
+        };
+        assert!(
+            error.to_string().contains("HOME_MIXER_REDIS_URL"),
+            "{error}"
+        );
+    }
+
+    #[tokio::test]
+    async fn demo_assembly_uses_explicit_local_state() {
+        let server = HomeMixerServer::build(HomeMixerConfig {
+            mode: HomeMixerMode::Demo,
+            feed_state: FeedStateConfig::InMemory,
+            ..Default::default()
+        })
+        .await
+        .expect("self-contained demo");
+        let state = server.scored_posts_server.feed_state_store();
+        state
+            .record(crate::models::uid(7), vec![crate::models::pid(9)], 123)
+            .await
+            .unwrap();
+        assert_eq!(
+            state
+                .load(crate::models::uid(7))
+                .await
+                .unwrap()
+                .served_post_ids,
+            vec![crate::models::pid(9)]
+        );
+    }
+
     #[test]
     fn for_you_wrapper_requires_and_preserves_inner_query() {
         assert!(for_you_query_from_wrapper(pb::ForYouFeedQuery { query: None }).is_none());
@@ -215,6 +266,11 @@ mod tests {
             mode: HomeMixerMode::Degraded,
             features: HomeMixerFeatures::default(),
             debug_token: None,
+            feed_state: FeedStateConfig::Redis(
+                crate::clients::redis_feed_state_store::RedisFeedStateConfig::new(
+                    "redis://localhost:6379/",
+                ),
+            ),
         })
         .await;
         let error = match result {
