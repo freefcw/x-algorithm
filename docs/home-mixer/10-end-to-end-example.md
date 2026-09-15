@@ -3,7 +3,7 @@
 本篇用两个示例把 `home-mixer` 串起来：
 
 1. 一个“说明性最小可用示例”，用于理解设计意图
-2. 一个“按当前默认 stub 代码推导的真实退化示例”
+2. 一个“按当前默认 degraded 装配推导的真实退化示例”
 
 ## 1. 说明
 
@@ -13,7 +13,9 @@
 - 候选如何被补全、过滤和排序
 - 响应字段如何形成
 
-第二个示例才描述当前默认 stub 组合下更接近真实的运行结果。
+为了可读，示例里的 ID 写成短整数；真实协议里 `viewer_id`、`seen_ids`、`tweet_id` 等全部是 24 位小写 hex ObjectId 字符串（如 `"000000000000000000000001"`），流水线内是 `PostId` / `UserId`。
+
+第二个示例才描述当前默认 degraded 装配（`MRPYQ_RECOMMENDATION_DATA_ADDR` 已配置、其余适配器仍为 Disabled）下更接近真实的运行结果。
 
 ## 2. 示例 A：说明性最小可用请求
 
@@ -42,7 +44,6 @@
 - `blocked_user_ids = [4004]`
 - `muted_user_ids = []`
 - `muted_keywords = ["spam"]`
-- `subscribed_user_ids = [3003]`
 
 ### 2.3 假设的 Source 输出
 
@@ -69,13 +70,13 @@
 
 假设 TES / Gizmoduck / VF 等依赖返回最小可用数据：
 
-| tweet_id | tweet_text | in_network | subscription_author_id | author_screen_name |
-| --- | --- | --- | --- | --- |
-| `70001` | `今天发布了新功能` | `true` | `None` | `alice` |
-| `70002` | `回复一下这个话题` | `true` | `None` | `bob` |
-| `71001` | `会员专属长文` | `false` | `3003` | `creator_pro` |
-| `71002` | `普通推荐内容` | `false` | `None` | `blocked_author` |
-| `90001` | `旧的已看过内容` | `false` | `None` | `random_user` |
+| tweet_id | tweet_text | created_at_ms | recommendation_eligible | in_network | author_screen_name |
+| --- | --- | --- | --- | --- | --- |
+| `70001` | `今天发布了新功能` | 1 小时前 | `Some(true)` | `true` | `alice` |
+| `70002` | `回复一下这个话题` | 3 小时前 | `Some(true)` | `true` | `bob` |
+| `71001` | `一篇长文` | 6 小时前 | `Some(true)` | `false` | `creator_pro` |
+| `71002` | `普通推荐内容` | 2 小时前 | `Some(true)` | `false` | `blocked_author` |
+| `90001` | `旧的已看过内容` | 20 小时前 | `Some(true)` | `false` | `random_user` |
 
 ### 3.2 Filter 后
 
@@ -83,11 +84,10 @@
 flowchart LR
     A["5 条候选"] --> B["DropDuplicates: 5"]
     B --> C["CoreDataHydration: 5"]
-    C --> D["Age: 5"]
+    C --> C2["FirstStageEligible: 5"]
+    C2 --> D["Age: 5"]
     D --> E["SelfTweet: 5"]
-    E --> F["RetweetDeduplication: 5"]
-    F --> G["IneligibleSubscription: 5"]
-    G --> H["PreviouslySeenPosts: 5 -> 4"]
+    E --> H["PreviouslySeenPosts: 5 -> 4"]
     H --> I["PreviouslyServedPosts: 4"]
     I --> J["ViewerMutedKeyword: 4"]
     J --> K["AuthorSocialgraph: 4 -> 3"]
@@ -95,9 +95,9 @@ flowchart LR
 
 过滤结果：
 
-- `71001`：订阅内容且 viewer 已订阅作者 `3003`，**保留**（`IneligibleSubscriptionFilter` 只丢掉未订阅的付费帖）
 - `90001`：命中 `seen_ids`，移除
 - `71002`：作者 `4004` 在 `blocked_user_ids`，移除
+- 其余三条 `recommendation_eligible` 都是 `Some(true)`、帖龄都在 48 小时内，`FirstStageEligibleFilter` 与 `AgeFilter` 不动它们
 
 剩余候选：
 
@@ -143,6 +143,8 @@ flowchart LR
 3. `70001`
 
 ## 4. 示例 A：最终响应长什么样
+
+按当前 `home_mixer.proto`，所有 ID 字段都是字符串，可选 ID 缺省时为空串 `""`（不是 `0`），`screen_names` 的键也是 24-hex 字符串；下面为可读仍沿用短整数写法。
 
 ```json
 {
@@ -199,58 +201,70 @@ flowchart LR
 }
 ```
 
-## 5. 示例 B：按当前默认 stub 推导的真实退化路径
+## 5. 示例 B：按当前默认 degraded 装配推导的真实退化路径
 
 ### 5.1 输入请求
 
-假设仍然是同样一份请求。
+假设仍然是同样一份请求，服务以 `HOME_MIXER_MODE=degraded` + `MRPYQ_RECOMMENDATION_DATA_ADDR` 启动，未配置 Phoenix 地址。
 
 ### 5.2 当前默认依赖会返回什么
 
 | 依赖 | 默认行为 |
 | --- | --- |
-| `DisabledUserActionSequenceFetcher` | 空行为序列 |
-| `DisabledStratoClient.get_user_features` | 空 `UserFeatures` |
-| `PhoenixRetrievalClient` | endpoint 未配置时 `Unavailable`，Source 跳过 |
-| `ThunderClient` | 可能能连真实 Thunder，但输入 following 列表为空 |
-| `DisabledTESClient` | 所有帖子 core data 为空 |
-| `PhoenixPredictionClient` | endpoint 未配置时 `Unavailable`，Scorer 走规则 fallback |
-| `VisibilityFilteringClient` | `Unavailable`；保留候选 |
+| `DisabledGizmoduckClient.get_viewer_data` | viewer 资格 `Unknown` → `QueryBuilder` 把请求改成 `in_network_only=true` |
+| `DisabledUserActionSequenceFetcher` | 空行为序列 → 聚合报错 → `scoring_sequence` / `retrieval_sequence` 为 `None` |
+| `MrpyqStratoClient.get_user_features` | mrpyq 尚未实现 `ViewerRelationService` → 调用失败，只记日志 → 空 `UserFeatures` |
+| `PhoenixSource` / `FallbackSource` | `in_network_only=true` → `enable()` 为 false，根本不执行 |
+| `MrpyqInNetworkPostsClient` | 以 `viewer_id`（皮 `member_id`）作为 `account_id` 查 NETWORK 收件箱；皮维度对齐前可能取到空或错误的收件箱 |
+| `MrpyqTESClient` | 用 `BatchGetRecommendationContents` 补作者 / 正文 / `created_at_ms` / `recommendation_eligible`；`creator_member_id` 为空的帖子无 core data |
+| `PhoenixScorer` | 无序列 → 整批 `phoenix_missing_sequence` → `RuleFallbackScorer` 规则分 |
+| `DisabledGizmoduckClient.get_users` | 全部 `None` → 响应 `screen_names` 为空 |
+| `MrpyqFirstStageEligibilityClient` | 只回一级 `recommendation_eligible`；存活候选恒 Allow |
+| `InMemoryServedPersistence` | 写进程内存，重启即丢 |
 
 ### 5.3 真实退化时序
 
 ```mermaid
 sequenceDiagram
     participant Req as 请求
+    participant QB as QueryBuilder
     participant QH as Query Hydration
     participant SRC as Sources
     participant FIL as Filters
+    participant SCO as Scorers
     participant Resp as Response
 
+    Req->>QB: viewer 资格
+    QB-->>Req: Unknown → in_network_only=true
+
     Req->>QH: 获取 user_action_sequence
-    QH-->>Req: 失败，因空行为序列
+    QH-->>Req: 失败，空行为序列（只记日志）
 
     Req->>QH: 获取 user_features
-    QH-->>Req: 成功，但全为空
+    QH-->>Req: 失败，ViewerRelationService 未实现（只记日志）→ 全为空
 
-    Req->>SRC: PhoenixSource
-    SRC-->>Req: 失败，missing user_action_sequence
+    Req->>SRC: PhoenixSource / FallbackSource
+    SRC-->>Req: enable()=false，不执行
 
-    Req->>SRC: ThunderSource
-    SRC-->>Req: following_user_ids 为空，候选很可能为 0
+    Req->>SRC: ThunderSource（mrpyq NETWORK）
+    SRC-->>Req: 收件箱候选，只带 tweet_id
 
-    Req->>FIL: CoreDataHydrationFilter
-    FIL-->>Req: 即便有候选，也可能因 tweet_text 为空被清空
+    Req->>FIL: CoreDataHydration / FirstStageEligible / Age
+    FIL-->>Req: creator_member_id 为空或 recommendation_eligible=false 的候选被移除
 
-    Req-->>Resp: 空结果或极小结果
+    Req->>SCO: PhoenixScorer → RankingScorer → RuleFallbackScorer
+    SCO-->>Req: 整批 phoenix_missing_sequence，按新鲜度 + 网内 + 互动数排序
+
+    Req-->>Resp: 规则排序的关注流；无 screen_names，served 只写内存
 ```
 
 ### 5.4 示例 B 的结论
 
-在当前默认 stub 组合下，最常见的不是“排序差”，而是：
+在当前默认 degraded 装配下，最常见的不是“排序差”，而是：
 
-- 根本没有足够候选进入排序
-- 或者候选在 `CoreDataHydrationFilter` 被清空
+- 链路只走了 mrpyq 关注收件箱这一路，网外召回、兜底池和 Phoenix 精排都不可达
+- 所有请求都由 `RuleFallbackScorer` 排序，模型没有参与
+- 拉黑 / 屏蔽词过滤因为关系后端缺失而不生效
 
 ## 6. 这个示例最该带走什么
 
@@ -271,8 +285,9 @@ sequenceDiagram
 
 这条链路非常依赖外部依赖返回最小可用数据，尤其是：
 
-1. `user_action_sequence`
-2. `followed_user_ids`
-3. `tweet_text`
+1. `user_action_sequence`（决定模型路径是否可达）
+2. viewer 资格 `Allowed`（决定网外 / 兜底召回是否启用）
+3. mrpyq 内容里的 `creator_member_id` 与正文（决定候选能否通过 `CoreDataHydrationFilter`）
+4. viewer 关系（决定拉黑 / 屏蔽词过滤是否生效）
 
-没有这三类数据，整条链路就会快速退化。
+没有这几类数据，整条链路就会退化成规则排序的关注流。

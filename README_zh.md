@@ -100,7 +100,7 @@ cd phoenix && uv sync --dev --group service && cd ..
 1. **召回（双塔模型）**：用户塔把用户编码成向量，物品塔把帖子编码成向量，点积相似度取 Top-K，从全网发现相关内容。
 2. **精排（候选隔离 Transformer）**：输入用户行为历史和候选帖子，输出每条帖子上各种行为（点赞、回复、转发、举报等）的概率；特殊的注意力掩码保证候选之间互不影响。
 
-Phoenix 自带训练脚本（`phoenix/scripts/train_*.py`）、HTTP 服务和 gRPC 网关（`phoenix/scripts/run_grpc_gateway.py`，实现 home-mixer 消费的 `recsys.proto` 契约）。详见 [`phoenix/README.md`](phoenix/README.md)。
+Phoenix 自带训练脚本（`phoenix/scripts/train_*.py`）、HTTP 服务和 gRPC 网关（`phoenix/scripts/run_grpc_gateway.py`，实现 home-mixer 消费的 `proto/definitions/phoenix_recsys.proto` 契约）。详见 [`phoenix/README.md`](phoenix/README.md)。
 
 ### Candidate Pipeline
 
@@ -126,10 +126,9 @@ Phoenix 模型预测多种互动行为的概率，**RankingScorer** 把它们合
 |--------|------|
 | `DropDuplicatesFilter` | 移除重复的帖子 ID |
 | `CoreDataHydrationFilter` | 移除未能补全核心元数据的帖子 |
-| `AgeFilter` | 移除超过时限的旧帖子 |
+| `FirstStageEligibleFilter` | 移除业务一级判定为不可推荐的帖子（已删除 / 未公开 / 审核未过） |
+| `AgeFilter` | 移除超过时限的旧帖子（读 `created_at_ms`，缺失时回退 ObjectId 时间戳） |
 | `SelfTweetFilter` | 移除用户自己的帖子 |
-| `RetweetDeduplicationFilter` | 对同一内容的转发去重 |
-| `IneligibleSubscriptionFilter` | 移除无权访问的付费订阅内容 |
 | `PreviouslySeenPostsFilter` | 移除已经看过的帖子 |
 | `PreviouslySeenPostsBackupFilter` | 请求只有曝光 ID、没有 seen_ids 时的备份去重 |
 | `PreviouslyServedPostsFilter` | 移除本会话已投递过的帖子 |
@@ -142,9 +141,10 @@ Phoenix 模型预测多种互动行为的概率，**RankingScorer** 把它们合
 
 | 过滤器 | 用途 |
 |--------|------|
-| `VFFilter` | 移除已删除/垃圾/暴力等帖子 |
-| `AncillaryVFFilter` | 引用/转发附属内容被审核挡住时一并去掉 |
+| `VFFilter` | 移除已删除/垃圾/暴力等帖子；未能验证可见性的帖子默认也移除（`HOME_MIXER_VF_FAILURE_POLICY=fail_closed`） |
 | `DedupConversationFilter` | 对同一对话线程的多个分支去重 |
+
+引用 / 转推 / 订阅专用组件（`RetweetDeduplicationFilter`、`IneligibleSubscriptionFilter`、`AncillaryVFFilter`、`QuoteHydrator`、`SubscriptionHydrator`）已因目标产品没有这些概念而删除，对应共享字段保留为空。
 
 ## 关键设计决策
 

@@ -25,10 +25,11 @@ flowchart TD
     B --> B3["reload_interval_minutes"]
     B --> B4["chunk_size"]
 
-    C --> C1["THUNDER_GRPC_ADDR"]
+    C --> C0["MRPYQ_RECOMMENDATION_DATA_ADDR<br/>非 demo 必填"]
+    C --> C1["THUNDER_GRPC_ADDR<br/>仅 demo"]
     C --> C2["Phoenix gRPC 地址"]
     C --> C3["HOME_MIXER_MODE"]
-    C --> C4["HOME_MIXER_ENABLE_*<br/>可选集成，默认关闭"]
+    C --> C4["HOME_MIXER_ENABLE_* / HOME_MIXER_VF_FAILURE_POLICY<br/>可选集成与失败策略"]
 
     D --> D1["召回上限"]
     D --> D2["打分权重"]
@@ -63,7 +64,9 @@ flowchart TD
 | `PHOENIX_PREDICT_GRPC_ADDR` | `clients/phoenix_prediction_client.rs` | Phoenix 精排 gRPC 地址 | 未设置时显式 Unavailable，Scorer 保留候选并走规则 fallback |
 | `PHOENIX_RETRIEVAL_GRPC_ADDR` | `clients/phoenix_retrieval_client.rs` | Phoenix 召回 gRPC 地址 | 未设置时显式 Unavailable，Source 跳过网外召回路 |
 | `PHOENIX_MOE_GRPC_ADDR` | `candidate_pipeline/phoenix_candidate_pipeline.rs` | Phoenix MoE 专家召回地址；只提供地址，不会自动启用 | 未设置时不装配 MoE Source |
-| `HOME_MIXER_MODE` | `runtime_config.rs` | 运行意图：`demo` / `degraded` / `production_ready` | 默认 `degraded`；调用方身份、Viewer、UAS、Strato、TES、Gizmoduck、VF、Phoenix、Thunder 合同未全部闭合前，`production_ready` 拒绝启动 |
+| `PHOENIX_EXPECTED_MODEL_VERSION` | `clients/phoenix_prediction_client.rs` | 固定期望的网关 `model-version` trailing metadata | 未设置时只校验非空、非 `random`；设置后不一致的响应被拒绝并走规则回退 |
+| `PHOENIX_ENGINE` | `clients/phoenix_prediction_client.rs` | 精排引擎选择：`slim`（当前唯一实现）/ `xrex`（保留） | 默认 `slim`；`xrex` 或未知值在装配时直接拒绝启动 |
+| `HOME_MIXER_MODE` | `runtime_config.rs` | 运行意图：`demo` / `degraded` / `production_ready` | 默认 `degraded`（需 `MRPYQ_RECOMMENDATION_DATA_ADDR`）；调用方身份、TES、UAS、Strato、VF、网内 / 兜底、Phoenix 元数据、served 落库合同未验收前，`production_ready` 拒绝启动 |
 | `HOME_MIXER_ENABLE_PHOENIX_MOE` | `feature_policy.rs` | 显式启用 Phoenix MoE 旁路召回 | 默认关闭；启用但缺少 `PHOENIX_MOE_GRPC_ADDR` 时记录告警并跳过，主链继续 |
 | `HOME_MIXER_ENABLE_REQUEST_CACHE_SIDE_EFFECT` | `feature_policy.rs` | 显式启用请求缓存 SideEffect | 默认关闭；启用前必须人工确认真实 Strato adapter、schema、认证和保留策略 |
 | `HOME_MIXER_ENABLE_DEBUG_RPC` | `feature_policy.rs` / `debug_access.rs` | 启用 `DebugScoredPosts` | 默认关闭；开启时必须同时提供 `HOME_MIXER_DEBUG_TOKEN`，调用方通过 `x-home-mixer-debug-token` metadata 传入 |
@@ -92,13 +95,13 @@ Phoenix 两个主服务地址通常同时指向 `phoenix/scripts/run_grpc_gatewa
 4. 开关开启但必要地址缺失时，装配层记录告警并跳过组件，不能阻断主链启动。
 5. Ads、Prompt、WhoToFollow、PushToHome 已挂进 ForYou 外层，但 `enable()` 恒 false；Kafka/Redis 和 Grox 模型能力不提供伪开关。
 
-请求缓存 SideEffect 即使显式开启，当前 `DisabledStratoClient` 和 `DemoStratoClient` 也会明确拒绝持久化写入。必须完成人工接入和持久化验收后，才能把它视为生产数据闭环。
+请求缓存 SideEffect 即使显式开启，当前非 demo 的 `MrpyqStratoClient`（mrpyq 没有 served 状态写契约）和 demo 的 `DemoStratoClient` 都会明确拒绝持久化写入。必须完成人工接入和持久化验收后，才能把它视为生产数据闭环。
 
 ### 3.3 QueryBuilder 外部策略
 
 两个 RPC 共用同一个 `QueryBuilder`。它负责 viewer ID 校验、公共 proto 映射、请求 ID、全局/请求级 MoE 开关合并，以及 viewer policy 查询。
 
-`GizmoduckClient::get_viewer_data` 的超时预算固定为 200 ms。只有明确返回 `ViewerEligibility::Allowed` 才允许网外推荐；`Denied`、`Unknown`、错误或超时都记录告警并强制 `in_network_only=true`，保留 Thunder 网内降级链而不绕过用户偏好。
+`GizmoduckClient::get_viewer_data` 的超时预算固定为 200 ms。只有明确返回 `ViewerEligibility::Allowed` 才允许网外推荐；`Denied`、`Unknown`、错误或超时都记录告警并强制 `in_network_only=true`，只保留网内降级链（非 demo 为 mrpyq 收件箱）而不绕过用户偏好。非 demo 当前注入的 `DisabledGizmoduckClient` 恒返回 `Unknown`，因此在接入真实 viewer 资格来源之前，非 demo 的所有请求都是仅网内。
 
 ### 3.4 证书路径
 
@@ -112,8 +115,8 @@ Phoenix 两个主服务地址通常同时指向 `phoenix/scripts/run_grpc_gatewa
 
 但要注意：
 
-- 当前只有 disabled VF 边界的构造函数接收这些路径
-- `demo` 注入显式 Allow adapter；`degraded` 注入返回 Unavailable 的 disabled adapter
+- 当前没有任何已装配的客户端读取这些路径；mrpyq 与 Phoenix 通道都是明文 gRPC
+- `demo` 注入显式 Allow adapter；`degraded` 注入 `MrpyqFirstStageEligibilityClient`，它只承载 mrpyq 一级 `recommendation_eligible`，没有 viewer 级判定
 - VF 未知（失败/超时/缺帖）时按 `HOME_MIXER_VF_FAILURE_POLICY` 处理：默认 `fail_closed` 全丢弃，`in_network_only` 仅保留网内，`allow_all` 需显式配置；`production_ready` 在真实 VF 合同缺失时拒绝启动
 
 ## 4. 服务级参数
@@ -135,7 +138,8 @@ Phoenix 两个主服务地址通常同时指向 `phoenix/scripts/run_grpc_gatewa
 | `TOPIC_RETRIEVAL_TIMEOUT_MS` | `500` | Topic 召回上限 |
 | `VF_REQUEST_TIMEOUT_MS` | `500` | 单组可见性检查上限 |
 | `VM_RANKER_TIMEOUT_MS` | `500` | 可选 VM Ranker 二次重排上限 |
-| `MRPYQ_RECOMMENDATION_DATA_TIMEOUT_MS` | `500` | mrpyq 推荐数据调用上限 |
+| `MRPYQ_RECOMMENDATION_DATA_TIMEOUT_MS` | `500` | mrpyq 单次 RPC 调用上限（可由同名环境变量覆盖） |
+| `MRPYQ_RECALL_BUDGET_MS` | `1500` | mrpyq 一次召回跨所有分页的总预算；预算耗尽时保留已读页 |
 
 ### 4.2 对外监听结构
 
@@ -174,7 +178,7 @@ Thunder + Phoenix 决定主链进入补全前的候选池规模；话题源另�
 | --- | --- | --- |
 | `FAVORITE_WEIGHT` | `0.5` | 点赞 |
 | `REPLY_WEIGHT` | `5.0` | 回复 |
-| `RETWEET_WEIGHT` | `1.0` | 转发 |
+| `RETWEET_WEIGHT` | `0.0`（上游 `1.0`，产品无转推，U5 置 0） | 转发 |
 | `PHOTO_EXPAND_WEIGHT` | `0.05` | 图片展开 |
 | `VIDEO_OPEN_WEIGHT` | `0.05` | 打开视频 |
 | `CLICK_WEIGHT` | `0.4` | 点击详情 |
@@ -186,8 +190,8 @@ Thunder + Phoenix 决定主链进入补全前的候选池规模；话题源另�
 | `SHARE_VIA_DM_WEIGHT` | `5.0` | 私信分享 |
 | `SHARE_VIA_COPY_LINK_WEIGHT` | `20.0` | 复制链接分享 |
 | `DWELL_WEIGHT` | `0.0` | 二值停留 |
-| `QUOTE_WEIGHT` | `5.0` | 引用转发 |
-| `QUOTED_CLICK_WEIGHT` | `0.05` | 点击引用帖 |
+| `QUOTE_WEIGHT` | `0.0`（上游 `5.0`，产品无引用转发，U5 置 0） | 引用转发 |
+| `QUOTED_CLICK_WEIGHT` | `0.0`（上游 `0.05`，U5 置 0） | 点击引用帖 |
 | `QUOTED_VQV_WEIGHT` | `0.0` | 点击引用帖视频（当前恒零） |
 | `FOLLOW_AUTHOR_WEIGHT` | `4.0` | 关注作者 |
 
@@ -327,7 +331,7 @@ ForYou 本地有界内存状态适配器的容量上限（生产持久化策略�
 
 如果后续要走向生产，优先建议动态化的是：
 
-1. Thunder/Phoenix/Strato/TES 等外部服务地址
+1. mrpyq / Phoenix 等外部服务地址与超时
 2. 核心排序权重
 3. 召回上限、TopK、ResultSize
 4. Age / OON / Diversity 等策略阈值

@@ -19,7 +19,8 @@
 | 去重与分页字段 | `seen_ids` `served_ids` `bloom_filter_entries` `is_bottom_request` | 来自 gRPC 请求 |
 | 召回控制字段 | `in_network_only` | 来自 gRPC 请求 |
 | QueryHydrator 补全字段 | `scoring_sequence` `retrieval_sequence` | `ScoringSequenceQueryHydrator` / `RetrievalSequenceQueryHydrator` |
-| QueryHydrator 补全字段 | `user_features` | 四个上游 user-id owner + 本地 safety owner |
+| QueryHydrator 补全字段 | `user_features` | 三个上游 user-id owner（Blocked / Muted / Followed）+ 本地 safety owner |
+| 本地状态补全字段 | `served_ids`（合并）`past_request_timestamps_ms` | `ServedHistoryQueryHydrator` / `PastRequestTimestampsQueryHydrator`（进程内存 `FeedStateStore`） |
 | 追踪字段 | `request_id` `prediction_id` `request_time_ms` | `QueryBuilder` |
 
 ### 1.2 查询对象的演化
@@ -47,35 +48,34 @@ flowchart LR
 
 | 类别 | 字段 | 主要由谁写入 |
 | --- | --- | --- |
-| 标识 | `tweet_id` `author_id` | Source |
+| 标识 | `tweet_id`（`PostId`）`author_id`（`UserId`） | Source；mrpyq 候选的 `author_id` 由 CoreDataHydrator 补回 |
 | 关系 | `in_reply_to_tweet_id` `retweeted_tweet_id` `retweeted_user_id` `ancestors` | Source / CoreDataHydrator |
-| 文本与内容 | `tweet_text` `video_duration_ms` | TES 相关 Hydrator |
+| 文本与内容 | `tweet_text` `created_at_ms` `video_duration_ms` `favorite_count` `reply_count` | TES 相关 Hydrator |
+| 业务准入 | `recommendation_eligible` | CoreDataHydrator（mrpyq 一级 eligibility） |
 | 用户展示 | `author_screen_name` `retweeted_screen_name` | GizmoduckHydrator |
-| 用户侧派生 | `in_network` `subscription_author_id` | InNetwork / Subscription Hydrator |
-| 排序相关 | `phoenix_scores` `weighted_score` `score` | 各类 Scorer |
+| 用户侧派生 | `in_network` | Thunder / Fallback Source 直接标定；其他来源由 InNetworkCandidateHydrator 推断 |
+| 排序相关 | `phoenix_scores` `weighted_score` `score` `degraded_reason` | 各类 Scorer |
 | 追踪 | `prediction_request_id` `last_scored_at_ms` | PhoenixScorer |
-| 安全 | `visibility_decision` | VFCandidateHydrator |
+| 安全 | `visibility_decision` `visibility_action` | VFCandidateHydrator |
 | 来源 | `served_type` | Source |
+| U5 保留位 | `quoted_*` `subscription_author_id` `drop_ancillary_posts` | 无写入方，恒为空；相关过滤分支无操作 |
 
 ### 2.2 候选对象在各阶段的变化
 
 ```mermaid
 flowchart TD
-    S["Source 输出<br/>tweet_id / author_id / served_type / ancestors"] --> H1["InNetworkHydrator<br/>补 in_network"]
-    S --> H2["CoreDataHydrator<br/>补 text / retweet / reply 关系"]
+    S["Source 输出<br/>tweet_id / served_type / in_network（Thunder、Fallback）"] --> H1["InNetworkHydrator<br/>补未标定的 in_network"]
+    S --> H2["CoreDataHydrator<br/>补 author / text / created_at_ms / eligibility / retweet / reply 关系"]
     S --> H3["VideoDurationHydrator<br/>补 video_duration_ms"]
-    S --> H4["SubscriptionHydrator<br/>补 subscription_author_id"]
-    S --> HQ["QuoteHydrator<br/>补 quoted_*"]
 
-    H1 --> F["Pre-selection Filters"]
+    H1 --> F["Pre-selection Filters<br/>含 FirstStageEligible / Age"]
     H2 --> F
     H3 --> F
-    H4 --> F
-    HQ --> F
 
-    F --> P["PhoenixScorer<br/>补 phoenix_scores"]
+    F --> P["PhoenixScorer<br/>补 phoenix_scores 或 degraded_reason"]
     P --> R["RankingScorer<br/>组合 weighted / diversity / OON"]
-    R --> SEL["TopKSelector"]
+    R --> RF["RuleFallbackScorer<br/>Phoenix 头缺失时整批规则分"]
+    RF --> SEL["TopKSelector"]
     SEL --> GIZ["GizmoduckHydrator<br/>补 screen_name / followers"]
     GIZ --> VFH["VFCandidateHydrator<br/>补 visibility_decision"]
     VFH --> PSEL["Post-selection Filters"]
@@ -87,58 +87,58 @@ flowchart TD
 
 ### 3.1 Query Hydrators
 
-1. `ScoringSequenceQueryHydrator`
-2. `RetrievalSequenceQueryHydrator`
-3. `BlockedUserIdsQueryHydrator`
-4. `MutedUserIdsQueryHydrator`
-5. `FollowedUserIdsQueryHydrator`
-6. `SubscribedUserIdsQueryHydrator`
-7. `UserSafetyFeaturesQueryHydrator`（本地 additive owner）
-8. `UserTopicsQueryHydrator`（显式注入 Topic adapter 时）
+1. `ServedHistoryQueryHydrator`（`ScoredPostsServer::with_state` 装配时插到首位，合并本地已下发历史）
+2. `PastRequestTimestampsQueryHydrator`（同上，第二位）
+3. `ScoringSequenceQueryHydrator`
+4. `RetrievalSequenceQueryHydrator`
+5. `BlockedUserIdsQueryHydrator`
+6. `MutedUserIdsQueryHydrator`
+7. `FollowedUserIdsQueryHydrator`
+8. `UserSafetyFeaturesQueryHydrator`（本地 additive owner）
+9. `UserTopicsQueryHydrator`（显式注入 Topic adapter 时）
 
 ### 3.2 Sources
 
-1. `ThunderSource`
+1. `ThunderSource`（有 `InNetworkPostsClient` 时装配：非 demo 为 mrpyq NETWORK 收件箱，demo 为整数 Thunder）
 2. `PhoenixSource`
-3. `PhoenixTopicsSource`（可选）
-4. `PhoenixMoeSource`（可选）
-5. `CachedPostsSource`
+3. `FallbackSource`（有兜底客户端时装配：非 demo 为 mrpyq FALLBACK 池，demo 为 `DemoFallbackPostsClient`）
+4. `PhoenixTopicsSource`（可选）
+5. `PhoenixMoeSource`（可选）
+6. `CachedPostsSource`
 
 ### 3.3 Pre-selection Hydrators
 
 1. `InNetworkCandidateHydrator`
 2. `CoreDataCandidateHydrator`
-3. `QuoteHydrator`
-4. `VideoDurationCandidateHydrator`
-5. `HasMediaHydrator`
-6. `SubscriptionHydrator`
-7. `FilteredTopicsHydrator`（topic request / excluded topics）
-8. `LanguageCodeHydrator`
-9. 仅 demo 且 `HOME_MIXER_ENABLE_AUTHOR_COLD_START` 时再加一个 `GizmoduckCandidateHydrator`（探索前补粉丝数）
+3. `VideoDurationCandidateHydrator`
+4. `HasMediaHydrator`
+5. `FilteredTopicsHydrator`（topic request / excluded topics）
+6. `LanguageCodeHydrator`
+7. 仅 demo 且 `HOME_MIXER_ENABLE_AUTHOR_COLD_START` 时再加一个 `GizmoduckCandidateHydrator`（探索前补粉丝数）
 
 ### 3.4 Pre-selection Filters
 
 1. `DropDuplicatesFilter`
 2. `CoreDataHydrationFilter`
-3. `AgeFilter`
-4. `SelfTweetFilter`
-5. `RetweetDeduplicationFilter`
-6. `IneligibleSubscriptionFilter`
-7. `PreviouslySeenPostsFilter`
-8. `PreviouslySeenPostsBackupFilter`
-9. `PreviouslyServedPostsFilter`
-10. `ViewerMutedKeywordFilter`
-11. `AuthorSocialgraphFilter`
-12. `VideoFilter`
-13. `TopicIdsFilter`
-14. `NewUserTopicIdsFilter`
+3. `FirstStageEligibleFilter`
+4. `AgeFilter`
+5. `SelfTweetFilter`
+6. `PreviouslySeenPostsFilter`
+7. `PreviouslySeenPostsBackupFilter`
+8. `PreviouslyServedPostsFilter`
+9. `ViewerMutedKeywordFilter`
+10. `AuthorSocialgraphFilter`
+11. `VideoFilter`
+12. `TopicIdsFilter`
+13. `NewUserTopicIdsFilter`
 
 ### 3.5 Scorers
 
 1. `PhoenixScorer`
 2. `RankingScorer`（内部保留 Weighted / AuthorDiversity / OON 行为）
-3. 可选 `VMRanker`（`HOME_MIXER_ENABLE_VM_RANKER` + `VM_RANKER_GRPC_ADDR`）
-4. 可选 `AuthorColdStartScorer`（仅 demo，且 `HOME_MIXER_ENABLE_AUTHOR_COLD_START`）
+3. `RuleFallbackScorer`（批内有候选缺 Phoenix 头时整批改用规则分并标 `degraded_reason`）
+4. 可选 `VMRanker`（仅 demo：`HOME_MIXER_ENABLE_VM_RANKER` + `VM_RANKER_GRPC_ADDR`）
+5. 可选 `AuthorColdStartScorer`（仅 demo，且 `HOME_MIXER_ENABLE_AUTHOR_COLD_START`）
 
 ### 3.6 Selector
 
@@ -147,7 +147,7 @@ flowchart TD
 ### 3.7 Post-selection
 
 - Hydrators: `GizmoduckCandidateHydrator`, `VFCandidateHydrator`
-- Filters: `VFFilter`, `AncillaryVFFilter`, `DedupConversationFilter`
+- Filters: `VFFilter`, `DedupConversationFilter`
 
 ### 3.8 Side Effect
 
@@ -171,14 +171,16 @@ graph LR
 
 | 上游写入 | 下游依赖 |
 | --- | --- |
-| `scoring_sequence` / `retrieval_sequence`（各自缺失时都回退 `user_action_sequence`） | `PhoenixScorer` / `PhoenixSource` |
-| `user_features.followed_user_ids` | `ThunderSource`、`InNetworkCandidateHydrator` |
+| `scoring_sequence` / `retrieval_sequence`（各自缺失时都回退 `user_action_sequence`；UAS 失败时三者皆 `None`） | `PhoenixScorer`（无序列 → `phoenix_missing_sequence`）/ `PhoenixSource`（无序列 → 失败） |
+| `user_features.followed_user_ids` | `InNetworkCandidateHydrator`（仅对来源未标 `in_network` 的候选）；demo `ThunderClient` 请求 |
 | `tweet_text` | `CoreDataHydrationFilter`、`ViewerMutedKeywordFilter` |
-| `quoted_tweet_text`（`QuoteHydrator` 写回） | `ViewerMutedKeywordFilter` |
-| `retweeted_tweet_id` | `RetweetDeduplicationFilter`、`PhoenixScorer` |
-| `video_duration_ms` | `RankingScorer` 内部 VQV 权重 |
-| `in_network` | `RankingScorer` 内部 OON 调整、`VFCandidateHydrator` |
-| `visibility_decision` | `VFFilter`（Unavailable/Unchecked 保留；Restricted Drop / not_evaluated 删除） |
+| `created_at_ms` | `AgeFilter`（缺失时回退 ObjectId 时间戳）、`RuleFallbackScorer` 新鲜度项 |
+| `recommendation_eligible` | `FirstStageEligibleFilter`（只丢 `Some(false)`） |
+| `retweeted_tweet_id` | `PhoenixScorer`（模型输入与 lookup key 优先用原帖） |
+| `video_duration_ms` | `RankingScorer` 内部 VQV 权重、`VideoFilter` |
+| `in_network` | `RankingScorer` 内部 OON 调整、`RuleFallbackScorer`、`VFCandidateHydrator`、`VFFilter`（`in_network_only` 策略） |
+| `degraded_reason` | `RuleFallbackScorer`（有任一候选带标记即整批规则分） |
+| `visibility_decision` / `visibility_action` | `VFFilter`（Restricted Drop 删除；Unchecked / Unavailable 按 `HOME_MIXER_VF_FAILURE_POLICY`，默认 `fail_closed` 删除） |
 | `score` | `TopKScoreSelector`、`DedupConversationFilter` |
 
 ## 6. 这个数据模型的优点和代价

@@ -8,23 +8,23 @@
 flowchart TB
     Client["客户端 / Feed 请求方"] --> HM["home-mixer"]
 
-    HM --> Thunder["Thunder<br/>网内帖子实时缓存"]
+    HM --> InNet["网内 / 兜底召回<br/>非 demo：mrpyq 关注收件箱 + FALLBACK 池<br/>demo：Thunder 内存缓存"]
     HM --> PhoenixRetrieve["Phoenix Retrieval<br/>网外召回"]
     HM --> PhoenixPredict["Phoenix Prediction<br/>精排预测"]
-    HM --> Strato["Strato<br/>用户特征 / 请求缓存"]
-    HM --> TES["TES<br/>帖子核心数据 / 媒体 / 订阅"]
-    HM --> Gizmoduck["Gizmoduck<br/>用户资料"]
-    HM --> VF["Visibility Filtering<br/>可见性审核"]
-    HM --> UAS["UAS Fetcher<br/>用户行为序列"]
+    HM --> Strato["Strato 端口<br/>viewer 关系（非 demo：mrpyq ViewerRelationService）"]
+    HM --> TES["TES 端口<br/>帖子内容 / 媒体 / 一级 eligibility（非 demo：mrpyq）"]
+    HM --> Gizmoduck["Gizmoduck 端口<br/>viewer 资格 / 作者资料（非 demo 仍 Disabled）"]
+    HM --> VF["VF 端口<br/>可见性（非 demo：mrpyq 一级 eligibility）"]
+    HM --> UAS["UAS 端口<br/>用户行为序列（非 demo 仍 Disabled）"]
 
-    Thunder --> Kafka["Kafka 事件流"]
+    InNet -. demo .-> Kafka["Thunder ← Kafka 事件流"]
 ```
 
 可以把它理解成“请求时在线编排层”：
 
-- Thunder 负责快
+- 网内源负责快（非 demo 是 mrpyq 收件箱，demo 是 Thunder）
 - Phoenix 负责找更相关的内容
-- TES / Gizmoduck / Strato 负责补数据
+- TES / Gizmoduck / Strato 端口负责补数据（非 demo 下 TES / Strato 由 mrpyq 承载）
 - VF 负责安全与展示约束
 - `home-mixer` 负责把这些结果合成最终可返回的 Feed
 
@@ -36,13 +36,14 @@ flowchart TB
 
 单一来源不够：
 
-- 只有 Thunder，会偏向关注网络，探索性弱
+- 只有网内源，会偏向关注网络，探索性弱
 - 只有 Phoenix Retrieval，会缺少“你关注的人刚发的内容”
 
-所以它把两路候选合并：
+所以它把多路候选合并：
 
-- `ThunderSource` 召回网内内容
+- `ThunderSource` 召回网内内容（非 demo 来自 mrpyq 关注收件箱）
 - `PhoenixSource` 召回网外内容
+- `FallbackSource` 从业务兜底池补网外内容
 
 ### 2.2 请求级个性化
 

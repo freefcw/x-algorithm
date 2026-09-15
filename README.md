@@ -175,7 +175,7 @@ Predicts engagement probabilities for each candidate:
 - Uses special attention masking so candidates cannot attend to each other
 - Outputs probabilities for each action type (like, reply, repost, click, etc.)
 
-Phoenix ships with training scripts (`phoenix/scripts/train_*.py`), HTTP services, and a gRPC gateway (`phoenix/scripts/run_grpc_gateway.py`) that implements the `recsys.proto` contract consumed by Home Mixer. See [`phoenix/README.md`](phoenix/README.md).
+Phoenix ships with training scripts (`phoenix/scripts/train_*.py`), HTTP services, and a gRPC gateway (`phoenix/scripts/run_grpc_gateway.py`) that implements the `proto/definitions/phoenix_recsys.proto` contract consumed by Home Mixer. See [`phoenix/README.md`](phoenix/README.md).
 
 ### Candidate Pipeline
 
@@ -268,10 +268,9 @@ Filters run at two stages:
 |--------|---------|
 | `DropDuplicatesFilter` | Remove duplicate post IDs |
 | `CoreDataHydrationFilter` | Remove posts that failed to hydrate core metadata |
-| `AgeFilter` | Remove posts older than threshold |
+| `FirstStageEligibleFilter` | Remove posts the business first-stage check marked ineligible (deleted / not public / failed audit) |
+| `AgeFilter` | Remove posts older than threshold (`created_at_ms`, falling back to the ObjectId timestamp) |
 | `SelfTweetFilter` | Remove user's own posts |
-| `RetweetDeduplicationFilter` | Dedupe reposts of same content |
-| `IneligibleSubscriptionFilter` | Remove paywalled content user can't access |
 | `PreviouslySeenPostsFilter` | Remove posts user has already seen |
 | `PreviouslySeenPostsBackupFilter` | Backup seen-id filter when the request only has impression IDs |
 | `PreviouslyServedPostsFilter` | Remove posts already served in session |
@@ -283,9 +282,10 @@ Filters run at two stages:
 **Post-Selection Filters:**
 | Filter | Purpose |
 |--------|---------|
-| `VFFilter` | Remove posts that are deleted/spam/violence/gore etc. |
-| `AncillaryVFFilter` | Drop quote/retweet ancillaries when VF says so |
+| `VFFilter` | Remove posts that are deleted/spam/violence/gore etc.; unverified posts are dropped by default (`HOME_MIXER_VF_FAILURE_POLICY=fail_closed`) |
 | `DedupConversationFilter` | Deduplicate multiple branches of the same conversation thread |
+
+Quote / repost / subscription specific components (`RetweetDeduplicationFilter`, `IneligibleSubscriptionFilter`, `AncillaryVFFilter`, `QuoteHydrator`, `SubscriptionHydrator`) were removed because the target product has no such concepts; the shared fields stay empty.
 
 ## Key Design Decisions
 

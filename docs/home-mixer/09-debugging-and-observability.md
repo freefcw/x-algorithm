@@ -137,9 +137,10 @@ Filter 阶段会有总的：
 
 优先怀疑顺序：
 
-1. `PhoenixSource` 因缺少 `user_action_sequence` 失败
-2. `ThunderSource` 因 `followed_user_ids` 为空拿不到内容
-3. `CoreDataHydrationFilter` 把候选清空
+1. `PhoenixSource` / `FallbackSource` 因 viewer 资格未知（非 demo 的 `DisabledGizmoduckClient`）被 `in_network_only` 关闭，或 `PhoenixSource` 因缺少 `user_action_sequence` 失败
+2. `ThunderSource` 拿不到内容：demo 是 `followed_user_ids` 为空；非 demo 看 `mrpyq adapter recall ...` 日志里的 `ready=false`、`posts=0` 或召回预算耗尽
+3. `CoreDataHydrationFilter` 把候选清空（mrpyq 内容缺失、`creator_member_id` 为空或正文为空）
+4. `VFFilter` 在默认 `fail_closed` 下删掉所有 `Unavailable` 候选（日志 `visibility unavailable for N candidates`）
 
 推荐检查链路：
 

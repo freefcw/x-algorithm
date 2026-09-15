@@ -14,16 +14,16 @@
 - 它把一次首页请求拆成查询补全、双路召回、候选补全、过滤、打分、选择、可见性检查和副作用。
 - 真实业务逻辑主要装配在 `home-mixer/candidate_pipeline/phoenix_candidate_pipeline.rs`。
 - 执行语义由 `candidate-pipeline/candidate_pipeline.rs` 决定。
-- 当前仓库里不少外部客户端仍然是 stub，因此文档会明确区分“设计意图”和“当前真实运行效果”。
+- 非 demo 模式的业务数据面是 mrpyq（`MRPYQ_RECOMMENDATION_DATA_ADDR` 必填，承载网内 / 兜底召回、内容补全、一级 eligibility、viewer 关系）；行为序列、viewer 资格、作者资料、持久化曝光这几个端口仍是 stub，因此文档会明确区分“设计意图”和“当前真实运行效果”。
 
 ```mermaid
 flowchart LR
     Client["客户端<br/>ScoredPostsQuery"] --> HM["home-mixer<br/>编排层"]
-    HM --> QH["查询补全<br/>UAS / UserFeatures"]
-    QH --> SRC["候选召回<br/>Thunder + Phoenix + 话题"]
-    SRC --> HYD["候选补全<br/>文本 / 关系 / 视频 / 用户信息"]
-    HYD --> FIL["过滤<br/>去重 / 年龄 / 已看过 / 静音等"]
-    FIL --> SCO["打分<br/>Phoenix + RankingScorer"]
+    HM --> QH["查询补全<br/>UAS / UserFeatures / 已下发历史"]
+    QH --> SRC["候选召回<br/>网内（mrpyq / Thunder）+ Phoenix + 兜底 + 话题"]
+    SRC --> HYD["候选补全<br/>作者 / 文本 / 时间 / eligibility / 视频"]
+    HYD --> FIL["过滤<br/>去重 / 一级 eligibility / 年龄 / 已看过 / 静音等"]
+    FIL --> SCO["打分<br/>Phoenix + RankingScorer + RuleFallbackScorer"]
     SCO --> SEL["选择<br/>Top-50 再裁到 35"]
     SEL --> POST["后处理<br/>VF / 会话去重"]
     POST --> RESP["ScoredPostsResponse / ForYouFeedResponse"]

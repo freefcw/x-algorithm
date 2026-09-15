@@ -1,5 +1,7 @@
 # 11. Thunder 到 home-mixer：网内候选的真实语义
 
+> **适用范围**：本篇描述的是 `HOME_MIXER_MODE=demo` 下装配的整数 Thunder（`legacy-int-ids` feature）。非 demo 的网内召回走 mrpyq 关注收件箱（`MrpyqInNetworkPostsClient`），候选只带 `feed_id`、没有 reply / retweet / conversation 关系，作者与时间由 TES 补回；见 [05 §3](./05-external-deps-and-contracts.md)。Thunder 的整数 proto 无法承载真实 ObjectId，按主干计划留在 workspace 但不部署。
+
 这一篇专门回答两个问题：
 
 1. Thunder 实际返回的“网内帖子”是什么，不是什么
@@ -143,7 +145,7 @@ Thunder 会过滤：
 这和 `home-mixer` 自己的 `AgeFilter(48 小时)` 基本一致，所以形成双层时间约束：
 
 - Thunder 先在存储层保留 2 天窗口
-- `home-mixer` 再在候选层用 Snowflake 年龄做一次过滤
+- `home-mixer` 再在候选层用 `created_at_ms`（`ThunderSource` 由 `LightPost.created_at` 换算）做一次 `AgeFilter` 过滤
 
 ## 6. Thunder 对 reply / retweet 的特殊处理
 

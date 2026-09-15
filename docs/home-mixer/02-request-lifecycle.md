@@ -23,7 +23,7 @@ sequenceDiagram
 
     Main->>Server: HomeMixerServer::build(config)
     Server->>Pipeline: PhoenixCandidatePipeline::assemble_for_mode(config.mode, features)
-    Pipeline->>Clients: 初始化 UAS / Phoenix / Thunder / Strato / TES / VF 等
+    Pipeline->>Clients: 初始化 UAS / Phoenix / mrpyq（网内、兜底、TES、一级 VF、Strato；非 demo 必配）/ Gizmoduck 等
     Clients-->>Pipeline: 返回客户端实例
     Pipeline-->>Server: 内层 pipeline
     Server->>Server: ScoredPosts + ForYou pipeline/server 装配
@@ -36,8 +36,8 @@ sequenceDiagram
 
 真正处理请求的是各自 application server 的 tonic trait 实现，`HomeMixerServer` 只负责构建和注册。所有入口先经过共享 `QueryBuilder`：
 
-1. 校验 `viewer_id > 0`
-2. 做 signed proto 到 unsigned domain ID 的 checked conversion
+1. 校验 `viewer_id` 是非空、非 NIL 的 24 位小写 hex ObjectId
+2. 把 `seen_ids` / `served_ids` / `impressed_post_ids` 解析为 `PostId`，非法串丢弃并计数
 3. 合并 viewer/feature policy
 4. 生成 request ID、prediction ID 和 request time
 5. 调用对应内层或外层 pipeline
@@ -72,7 +72,7 @@ sequenceDiagram
     QH-->>CP: scoring/retrieval sequences + 分字段 user features
 
     CP->>SRC: 并行 fetch_candidates
-    SRC-->>CP: Thunder + Phoenix 候选
+    SRC-->>CP: 网内（mrpyq / Thunder）+ Phoenix + 兜底候选
 
     CP->>HYD: 并行 hydrate candidates
     HYD-->>CP: 文本 / 关系 / 视频 / screen_name / in_network
@@ -102,21 +102,21 @@ sequenceDiagram
 ```mermaid
 flowchart TD
     A["hydrate_query"] -->|"并行"| A1["Scoring / Retrieval Sequence Hydrators"]
-    A -->|"并行"| A2["Blocked / Muted / Followed / Subscribed owners"]
-    A -->|"并行"| A3["Local safety / optional topic owners"]
+    A -->|"并行"| A2["Blocked / Muted / Followed owners"]
+    A -->|"并行"| A3["ServedHistory / PastRequestTimestamps / Local safety / optional topic owners"]
     A --> B["fetch_candidates"]
-    B -->|"并行"| B1["Thunder / Phoenix / optional Topic / MoE / Cached"]
+    B -->|"并行"| B1["Thunder(mrpyq) / Phoenix / Fallback / optional Topic / MoE / Cached"]
     B --> C["hydrate"]
     C -->|"并行"| C1["所有 candidate hydrators"]
     C --> D["filter"]
     D -->|"串行"| D1["Filter1 -> Filter2 -> ..."]
     D --> E["score"]
-    E -->|"串行"| E1["Scorer1 -> Scorer2 -> ..."]
+    E -->|"串行"| E1["PhoenixScorer -> RankingScorer -> RuleFallbackScorer -> ..."]
     E --> F["select"]
     F --> G["post-selection hydrate"]
     G -->|"并行"| G1["GizmoduckCandidateHydrator / VFCandidateHydrator"]
     G --> H["post-selection filters"]
-    H -->|"串行"| H1["VFFilter -> AncillaryVFFilter -> DedupConversationFilter"]
+    H -->|"串行"| H1["VFFilter -> DedupConversationFilter"]
     H --> I["run_side_effects"]
     I -->|"异步 fire-and-forget"| I1["PhoenixRequestCacheSideEffect (default off)"]
 ```
@@ -173,7 +173,8 @@ flowchart TD
 这里有两个要点：
 
 1. 返回的是 pipeline 最终保留下来的 `selected_candidates`，不是召回原始结果。
-2. 只有 `Restricted` 且候选最终仍保留时才映射 `visibility_reason`；`Unchecked/Unavailable` 保留候选但不伪造审核原因；成功响应缺帖视为 not_evaluated 删除。
+2. 只有 `Restricted` 且候选最终仍保留时才映射 `visibility_reason`；`Unchecked/Unavailable`（含成功响应缺帖）由 `VFFilter` 按 `HOME_MIXER_VF_FAILURE_POLICY` 处理，默认 `fail_closed` 删除，即便配置 `allow_all` 保留也不会伪造审核原因。
+3. 响应之前先同步调用 `ServedPersistence::persist` 记录本次下发的帖子；落库失败返回 gRPC `Unavailable` 而不是返回 Feed。当前实现是进程内存。
 
 ## 7. 一个容易忽略的事实
 

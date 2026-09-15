@@ -10,7 +10,7 @@
 4. 候选对象：`PostCandidate`
 5. 排序中间分数：`PhoenixScores`
 6. 对外返回：`home_mixer::ScoredPost`
-7. Thunder 输入对象：`thunder::LightPost`
+7. 网内召回输入对象：mrpyq `RecommendationCandidate` / `RecommendationContent`（非 demo）与 Thunder `LightPost`（demo）
 
 > **收录范围**：本篇只收录对链路行为有直接影响的核心字段，不是逐字段全集。完整字段定义以源文件为准：proto 见 `proto/definitions/home_mixer.proto`，内部结构见 `home-mixer/models/` 对应文件。
 
@@ -22,12 +22,12 @@
 
 | 字段 | 类型 | 含义 | 进入内部后映射到 | 主要影响 |
 | --- | --- | --- | --- | --- |
-| `viewer_id` | `int64` | 请求用户 | `user_id` | 全链路主身份 |
+| `viewer_id` | `string`（24 位小写 hex ObjectId） | 请求用户（皮 `member_id`） | `user_id` | 全链路主身份；空串、`"0"`、非 24-hex 或全零都返回 `InvalidArgument` |
 | `client_app_id` | `int32` | 客户端应用 ID | `client_app_id` | viewer context |
 | `country_code` | `string` | 国家码 | `country_code` | viewer context / VF |
 | `language_code` | `string` | 语言码 | `language_code` | viewer context / VF |
-| `seen_ids` | `repeated int64` | 客户端已看过帖子 | `seen_ids` | `PreviouslySeenPostsFilter` |
-| `served_ids` | `repeated int64` | 服务端已投递过帖子 | `served_ids` | `PreviouslyServedPostsFilter` |
+| `seen_ids` | `repeated string` | 客户端已看过帖子 | `seen_ids` | `PreviouslySeenPostsFilter`；非法串丢弃并计数 |
+| `served_ids` | `repeated string` | 服务端已投递过帖子 | `served_ids`（再与本地已下发历史合并） | `PreviouslyServedPostsFilter` |
 | `in_network_only` | `bool` | 是否只要网内内容 | `in_network_only` | `PhoenixSource.enable()`（还看 cached posts 和 topic 模式） |
 | `is_bottom_request` | `bool` | 是否为翻页请求 | `is_bottom_request` | `PreviouslyServedPostsFilter.enable()` |
 | `bloom_filter_entries` | `repeated ImpressionBloomFilterEntry` | 已读布隆过滤器 | `bloom_filter_entries` | `PreviouslySeenPostsFilter` |
@@ -35,7 +35,7 @@
 | `excluded_topic_ids` | `repeated int64` | 排除话题 | `excluded_topic_ids` | `TopicIdsFilter` |
 | `new_user_topic_ids` | `repeated int64` | 新用户冷启动话题 | `new_user_topic_ids` | `NewUserTopicIdsFilter`、topic recall mode |
 | `exclude_videos` | `bool` | 请求不要视频 | `exclude_videos` | `VideoFilter.enable()` |
-| `impressed_post_ids` | `repeated int64` | 客户端曝光 ID（无 seen_ids 时的备份） | `impressed_post_ids` | `PreviouslySeenPostsBackupFilter` |
+| `impressed_post_ids` | `repeated string` | 客户端曝光 ID（无 seen_ids 时的备份） | `impressed_post_ids` | `PreviouslySeenPostsBackupFilter` |
 | `past_request_timestamps_ms` | `repeated int64` | 历史请求时间戳 | `past_request_timestamps_ms` | ForYou 本地状态维护（`PastRequestTimestampsQueryHydrator` 合并本地状态） |
 | `cached_posts` | `repeated CachedPost` | 请求携带的缓存候选（默认拒绝，仅显式 Demo 放行） | `cached_posts` / `has_cached_posts` | `CachedPostsSource` |
 | `enable_phoenix_moe` | `bool` | 启用 MoE 召回 | `enable_phoenix_moe` | `PhoenixMoeSource.enable()` |
@@ -50,24 +50,24 @@
 
 | 字段 | 类型 | 来源 | 谁写入 | 谁读取 |
 | --- | --- | --- | --- | --- |
-| `user_id` | `u64` | proto `viewer_id` | `QueryBuilder` checked conversion | 几乎所有组件 |
+| `user_id` | `UserId`（`ObjectId`） | proto `viewer_id` | `QueryBuilder` 解析 24-hex | 几乎所有组件；非 demo 作为 `account_id` 发给 mrpyq |
 | `client_app_id` | `i32` | proto | 请求入口 | `get_viewer()` |
 | `country_code` | `String` | proto | 请求入口 | `get_viewer()` |
 | `language_code` | `String` | proto | 请求入口 | `get_viewer()` |
-| `seen_ids` | `Vec<u64>` | proto | `QueryBuilder` 过滤负值 | `PreviouslySeenPostsFilter` |
-| `served_ids` | `Vec<u64>` | proto | `QueryBuilder` 过滤负值 | `PreviouslyServedPostsFilter` |
-| `in_network_only` | `bool` | proto | 请求入口 | `PhoenixSource`、side effect enable |
+| `seen_ids` | `Vec<PostId>` | proto | `QueryBuilder` 丢弃非法串并计数 | `PreviouslySeenPostsFilter` |
+| `served_ids` | `Vec<PostId>` | proto + 本地状态 | `QueryBuilder` 解析；`ServedHistoryQueryHydrator` 再合并 `FeedStateStore` 里的已下发历史 | `PreviouslyServedPostsFilter` |
+| `in_network_only` | `bool` | proto 或 viewer 资格 | 请求入口；viewer 资格非 `Allowed`（含非 demo 的 `Unknown`）时被 `QueryBuilder` 强制置 true | `PhoenixSource` / `FallbackSource` enable、`ThunderSource` 的 `served_type`、side effect enable |
 | `is_bottom_request` | `bool` | proto | 请求入口 | `PreviouslyServedPostsFilter` |
 | `bloom_filter_entries` | `Vec<ImpressionBloomFilterEntry>` | proto | 请求入口 | `PreviouslySeenPostsFilter` |
 | `scoring_sequence` | `Option<UserActionSequence>` | hydrated | `ScoringSequenceQueryHydrator` | `PhoenixScorer` |
 | `retrieval_sequence` | `Option<UserActionSequence>` | hydrated | `RetrievalSequenceQueryHydrator` | `PhoenixSource` / MoE |
 | `user_action_sequence` | `Option<UserActionSequence>` | hydrated | `UserActionSeqQueryHydrator`（拉取 UAS）；`ScoringSequenceQueryHydrator` 缺省时透传 | 上两个 sequence 缺失时的回退输入 |
-| `user_features` | `UserFeatures` | hydrated | upstream-named field owners + local safety owner | `ThunderSource`、多个 Filter/Hydrator |
+| `user_features` | `UserFeatures` | hydrated | upstream-named field owners + local safety owner（非 demo 数据源是 `MrpyqStratoClient`，后端未实现时全空） | `InNetworkCandidateHydrator`、`AuthorSocialgraphFilter`、`ViewerMutedKeywordFilter`、demo `ThunderClient` |
 | `topic_ids` / `excluded_topic_ids` / `new_user_topic_ids` | `Vec<i64>` | proto | `QueryBuilder` | topic recall mode、`TopicIdsFilter`、`NewUserTopicIdsFilter` |
 | `supplemental_topic_ids` | `Vec<i64>` | 内部（无 proto 字段） | 显式注入的 Adapter | 补充话题召回（Blend 模式） |
 | `cached_posts` / `has_cached_posts` | `Vec<PostCandidate>` / `bool` | proto `cached_posts` | `QueryBuilder`（默认拒绝 unsigned，仅 Demo 放行） | `CachedPostsSource` |
 | `exclude_videos` / `enable_phoenix_moe` | `bool` | proto | `QueryBuilder` | `VideoFilter` / `PhoenixMoeSource` |
-| `impressed_post_ids` / `past_request_timestamps_ms` | `Vec<u64>` / `Vec<i64>` | proto（后者由 ForYou 状态 hydrator 写入） | `QueryBuilder` / 状态 Query Hydrator | 备份去重 / 请求频次状态 |
+| `impressed_post_ids` / `past_request_timestamps_ms` | `Vec<PostId>` / `Vec<i64>` | proto（后者还由 `PastRequestTimestampsQueryHydrator` 合并本地状态） | `QueryBuilder` / 状态 Query Hydrator | 备份去重 / 请求频次状态 |
 | `is_preview` / `is_shadow_traffic` / `is_polling` | `bool` | proto | `QueryBuilder` | 透传；`is_shadow_traffic` 仅由默认不装配的 `ServedCandidatesKafkaSideEffect` 读取 |
 | `is_top_request` | `bool` | 内部（无 proto 字段） | `QueryBuilder`（`!is_bottom_request`） | ForYou 流量类型语义 |
 | `ip_address` / `user_agent` | `String` | proto | `QueryBuilder` | `ip_address` 无消费者；`user_agent` 仅未装配的 `TweetMixerSource` 读取 |
@@ -85,13 +85,15 @@
 
 | 字段 | 类型 | 含义 | 主要影响组件 |
 | --- | --- | --- | --- |
-| `muted_keywords` | `Vec<String>` | 屏蔽关键词 | `ViewerMutedKeywordFilter` |
-| `blocked_user_ids` | `Vec<i64>` | 被 viewer 拉黑的作者 | `AuthorSocialgraphFilter` |
-| `blocked_by_user_ids` | `Vec<i64>` | 反向屏蔽 viewer 的作者 | `UserSafetyFeaturesQueryHydrator` 写入；`AuthorSocialgraphFilter` 已消费。候选侧 `author_blocks_viewer` 另由未装配的 `BlockedByHydrator` 写入 |
-| `muted_user_ids` | `Vec<i64>` | 被 viewer 静音的作者 | `AuthorSocialgraphFilter` |
-| `followed_user_ids` | `Vec<i64>` | viewer 关注作者列表 | `ThunderSource`、`InNetworkCandidateHydrator` |
-| `subscribed_user_ids` | `Vec<i64>` | viewer 订阅作者列表 | `IneligibleSubscriptionFilter` |
+| `muted_keywords` | `Vec<String>` | 屏蔽关键词 | `ViewerMutedKeywordFilter`；非 demo 来自 mrpyq `GetViewerRelations.muted_keywords` |
+| `blocked_user_ids` | `Vec<UserId>` | 被 viewer 拉黑的作者 | `AuthorSocialgraphFilter`；非 demo 来自 `blocked_account_ids`（皮 ID，解析失败的单条丢弃并告警） |
+| `blocked_by_user_ids` | `Vec<UserId>` | 反向屏蔽 viewer 的作者 | `UserSafetyFeaturesQueryHydrator` 写入；`AuthorSocialgraphFilter` 已消费；非 demo 来自 `blocked_by_account_ids`。候选侧 `author_blocks_viewer` 另由未装配的 `BlockedByHydrator` 写入 |
+| `muted_user_ids` | `Vec<UserId>` | 被 viewer 静音的作者 | `AuthorSocialgraphFilter`；非 demo 来自 `muted_account_ids` |
+| `followed_user_ids` | `Vec<UserId>` | viewer 关注作者列表 | `InNetworkCandidateHydrator`（仅对来源未标 `in_network` 的候选）、demo `ThunderClient` 请求；mrpyq 无关注图契约，非 demo 恒为空 |
+| `subscribed_user_ids` | `Vec<UserId>` | viewer 订阅作者列表 | 无消费者（U5：`IneligibleSubscriptionFilter` 已删除），恒为空 |
 | `follower_count` | `Option<i64>` | viewer 粉丝数 | VQV 权重粉丝门槛；本地适配器暂不提供，`None` 时门槛不触发 |
+
+非 demo 下 `MrpyqStratoClient` 依赖的 `ViewerRelationService` 尚未由 mrpyq 实现，调用失败只记日志，整个结构保持默认空值。
 
 ## 4. 候选对象字段：`PostCandidate`
 
@@ -103,42 +105,44 @@
 
 | 字段 | 类型 | 初始来源 | 后续作用 |
 | --- | --- | --- | --- |
-| `tweet_id` | `u64` | Source | 唯一标识、去重、响应输出；signed 协议在 adapter 边界 checked conversion |
-| `author_id` | `u64` | Source | 过滤、`in_network` 判定、响应输出 |
+| `tweet_id` | `PostId`（`ObjectId`） | Source | 唯一标识、去重、响应输出；边界上非 24-hex 的 ID 整条丢弃 |
+| `author_id` | `UserId` | Source（Phoenix / demo Thunder）或 `CoreDataCandidateHydrator`（mrpyq 候选来源留 NIL，由 TES 的 `creator_member_id` 补回） | 过滤、`in_network` 推断、响应输出；仍为 NIL 时被 `CoreDataHydrationFilter` 丢弃 |
 | `tweet_text` | `String` | `CoreDataCandidateHydrator` | 文本过滤、内容完整性检查 |
-| `quoted_tweet_text` | `String` | `QuoteHydrator`（TES 共享 batch 算出，由 Quote 写回） | `ViewerMutedKeywordFilter` 同样匹配引用文 |
-| `in_reply_to_tweet_id` | `Option<u64>` | Source / CoreDataHydrator | related ids、响应输出 |
-| `retweeted_tweet_id` | `Option<u64>` | `CoreDataCandidateHydrator` | retweet 去重、Phoenix lookup、响应输出 |
-| `retweeted_user_id` | `Option<u64>` | `CoreDataCandidateHydrator` | retweet screen_name、Phoenix lookup、响应输出 |
-| `quoted_tweet_id` | `Option<u64>` | `QuoteHydrator` | 引用帖 lookup / 附属帖判定 |
-| `quoted_user_id` | `Option<u64>` | `QuoteHydrator` | 引用帖作者关系 |
-| `ancestors` | `Vec<u64>` | `ThunderSource` | 会话去重、响应输出 |
+| `created_at_ms` | `Option<u64>` | Source（demo Thunder）或 `CoreDataCandidateHydrator`（mrpyq `created_at_ms`） | `AgeFilter`（缺失时回退 ObjectId 时间戳）、`RuleFallbackScorer` |
+| `recommendation_eligible` | `Option<bool>` | `CoreDataCandidateHydrator`（mrpyq 一级标志） | `FirstStageEligibleFilter`（只丢 `Some(false)`） |
+| `quoted_tweet_text` | `String` | 无写入方（U5：`QuoteHydrator` 已删除） | `ViewerMutedKeywordFilter` 仍会匹配，但恒为空 |
+| `in_reply_to_tweet_id` | `Option<PostId>` | Source / CoreDataHydrator | related ids、响应输出 |
+| `retweeted_tweet_id` | `Option<PostId>` | `CoreDataCandidateHydrator` / demo Thunder | Phoenix lookup、响应输出；mrpyq 不提供，恒为 `None` |
+| `retweeted_user_id` | `Option<UserId>` | `CoreDataCandidateHydrator` / demo Thunder | retweet screen_name、Phoenix lookup、响应输出 |
+| `quoted_tweet_id` / `quoted_user_id` | `Option<PostId>` / `Option<UserId>` | 无写入方（U5） | `AuthorSocialgraphFilter` 的引用作者分支恒无操作 |
+| `ancestors` | `Vec<PostId>` | demo `ThunderSource`（conversation 关系）；mrpyq 候选为空 | 会话去重、响应输出 |
 
 ### 4.2 排序相关字段
 
 | 字段 | 类型 | 谁写 | 谁读 |
 | --- | --- | --- | --- |
-| `phoenix_scores` | `PhoenixScores` | `PhoenixScorer` | `RankingScorer` |
-| `prediction_request_id` | `Option<u64>` | `PhoenixScorer` 传播 query prediction ID | 响应输出 |
-| `last_scored_at_ms` | `Option<u64>` | `PhoenixScorer` | 响应输出 |
-| `weighted_score` | `Option<f64>` | `RankingScorer` | debug / 响应内部排序解释 |
-| `score` | `Option<f64>` | `RankingScorer`；开了 VM Ranker 时由其覆盖 | selector、会话去重、响应输出 |
-| `favorite_count` | `Option<i64>` | `CoreDataCandidateHydrator` | 冷启动探索的成功次数 |
-| `view_count` | `Option<u64>` | `CoreDataCandidateHydrator` | 冷启动资格与 Thompson Sampling 曝光分母；缺失时不参与 |
+| `phoenix_scores` | `PhoenixScores` | `PhoenixScorer`；`RuleFallbackScorer` 触发时清空 | `RankingScorer`、`RuleFallbackScorer`（判断是否有可用头） |
+| `degraded_reason` | `Option<String>` | `PhoenixScorer`（`phoenix_missing_sequence` / `phoenix_unavailable: …`）；`RuleFallbackScorer` 统一写成 `phoenix_unavailable` | `RuleFallbackScorer`（任一候选带标记即整批规则分）；日志 / 观测 |
+| `prediction_request_id` | `Option<u64>` | `PhoenixScorer` 传播 query prediction ID；规则回退时清空 | 响应输出 |
+| `last_scored_at_ms` | `Option<u64>` | `PhoenixScorer`；规则回退时清空 | 响应输出 |
+| `weighted_score` | `Option<f64>` | `RankingScorer`；规则回退时清空 | debug / 响应内部排序解释 |
+| `score` | `Option<f64>` | `RankingScorer`；`RuleFallbackScorer` 整批覆盖；开了 VM Ranker（仅 demo）时由其覆盖 | selector、会话去重、响应输出 |
+| `favorite_count` / `reply_count` | `Option<i64>` | `CoreDataCandidateHydrator`（mrpyq `like_count` / `comment_count`） | `RuleFallbackScorer` 互动项、冷启动探索 |
+| `view_count` | `Option<u64>` | `CoreDataCandidateHydrator`（mrpyq 不提供，恒 `None`） | 冷启动资格与 Thompson Sampling 曝光分母；缺失时不参与 |
 
 ### 4.3 来源、网络与展示字段
 
 | 字段 | 类型 | 谁写 | 谁读 |
 | --- | --- | --- | --- |
 | `served_type` | `Option<ServedType>` | Source | 响应输出 |
-| `in_network` | `Option<bool>` | `InNetworkCandidateHydrator` | `RankingScorer` 内部 OON 阶段、VF、响应输出 |
-| `video_duration_ms` | `Option<i32>` | `VideoDurationCandidateHydrator` | `RankingScorer` 内部 Weighted 阶段 |
-| `quoted_video_duration_ms` | `Option<i32>` | `QuoteHydrator` | 引用帖 VQV 时长门槛（默认关闭时长检查） |
-| `author_followers_count` | `Option<i32>` | `GizmoduckCandidateHydrator` | `AuthorColdStartScorer` 资格门槛、`VMRanker` 请求映射 |
-| `author_screen_name` | `Option<String>` | `GizmoduckCandidateHydrator` | `get_screen_names()`、响应输出 |
+| `in_network` | `Option<bool>` | `ThunderSource`（`Some(true)`）/ `FallbackSource`（`Some(false)`）在来源处标定；其他来源由 `InNetworkCandidateHydrator` 推断 | `RankingScorer` 内部 OON 阶段、`RuleFallbackScorer`、VF、`VFFilter` 的 `in_network_only` 策略、响应输出 |
+| `video_duration_ms` | `Option<i32>` | `VideoDurationCandidateHydrator`（mrpyq `has_video` + `video_duration_ms`） | `RankingScorer` 内部 Weighted 阶段、`VideoFilter` |
+| `quoted_video_duration_ms` | `Option<i32>` | 无写入方（U5） | 引用帖 VQV 时长门槛（默认关闭时长检查） |
+| `author_followers_count` | `Option<i32>` | `GizmoduckCandidateHydrator`（非 demo 为 Disabled，恒 `None`） | `AuthorColdStartScorer` 资格门槛、`VMRanker` 请求映射 |
+| `author_screen_name` | `Option<String>` | `GizmoduckCandidateHydrator`（非 demo 恒 `None`） | `get_screen_names()`、响应输出 |
 | `retweeted_screen_name` | `Option<String>` | `GizmoduckCandidateHydrator` | `get_screen_names()`、响应输出 |
-| `author_profile_looked_up_for_user_id` | `Option<u64>` | `GizmoduckCandidateHydrator`（请求内复用标记） | 防止其他 hydrator 改作者后复用过期资料 |
-| `retweeted_profile_looked_up_for_user_id` | `Option<u64>` | `GizmoduckCandidateHydrator`（请求内复用标记） | 同上，作用于转推原作者 |
+| `author_profile_looked_up_for_user_id` | `Option<UserId>` | `GizmoduckCandidateHydrator`（请求内复用标记） | 防止其他 hydrator 改作者后复用过期资料 |
+| `retweeted_profile_looked_up_for_user_id` | `Option<UserId>` | `GizmoduckCandidateHydrator`（请求内复用标记） | 同上，作用于转推原作者 |
 | `has_media` | `Option<bool>` | `HasMediaHydrator`（TES media 批次） | 展示信号，当前无过滤消费 |
 | `language_code` | `Option<String>` | `LanguageCodeHydrator` | 展示信号，当前无过滤消费 |
 
@@ -146,11 +150,12 @@
 
 | 字段 | 类型 | 谁写 | 谁读 |
 | --- | --- | --- | --- |
-| `visibility_decision` | `VisibilityDecision` | `VFCandidateHydrator` | `VFFilter`、响应映射 |
-| `subscription_author_id` | `Option<u64>` | `SubscriptionHydrator` | `IneligibleSubscriptionFilter` |
+| `visibility_decision` | `VisibilityDecision` | `VFCandidateHydrator`（非 demo 只有 mrpyq 一级 eligibility 结果） | `VFFilter`（Restricted Drop 删除；`Unchecked / Unavailable` 按 `HOME_MIXER_VF_FAILURE_POLICY`，默认 `fail_closed` 删除）、响应映射 |
+| `visibility_action` | `Option<Action>` | `VFCandidateHydrator`（由 decision 推导） | `VFFilter` 优先读它；显式 `Drop` 一律删除 |
+| `subscription_author_id` | `Option<UserId>` | 无写入方（U5：`SubscriptionHydrator` 已删除） | 无消费者 |
 | `author_blocks_viewer` | `Option<bool>` | `BlockedByHydrator`（CH-09，真实 Adapter 未接入） | 普通作者或转推原作者反向屏蔽标记；`AuthorSocialgraphFilter` 消费 |
 | `quoted_author_blocks_viewer` | `Option<bool>` | `BlockedByHydrator`（CH-09，真实 Adapter 未接入） | 引用作者反向屏蔽标记；`AuthorSocialgraphFilter` 消费，`None` 时中立 |
-| `drop_ancillary_posts` | `Option<bool>` | `VFCandidateHydrator` | `AncillaryVFFilter` |
+| `drop_ancillary_posts` | `Option<bool>` | `VFCandidateHydrator` | 无消费者（U5：`AncillaryVFFilter` 已删除） |
 | `brand_safety_verdict` | `Option<BrandSafetyVerdict>` | 预留（本地无 V2 标签数据源） | 响应输出、ads 混排预留 |
 | `safety_labels` | `Vec<SafetyLabelInfo>` | 预留（当前无写入方） | 安全标签展示预留 |
 
@@ -161,9 +166,9 @@
 | `retrieval_topic_ids` | `Vec<i64>` | `PhoenixTopicsSource` | 话题来源标记 |
 | `filtered_topic_ids` | `Vec<i64>` | `FilteredTopicsHydrator` | `TopicIdsFilter`、`NewUserTopicIdsFilter` |
 | `unfiltered_topic_ids` | `Vec<i64>` | `FilteredTopicsHydrator` | 话题来源对照 |
-| `following_replied_user_ids` | `Vec<u64>` | 预留（当前无写入方） | 上游网内回复关系信号 |
-| `favorite_count` / `reply_count` / `repost_count` / `quote_count` | `Option<i64>` | `CoreDataCandidateHydrator` | 冷启动探索成功次数、展示统计 |
-| `view_count` | `Option<u64>` | `CoreDataCandidateHydrator` | 冷启动资格与 Thompson Sampling 曝光分母 |
+| `following_replied_user_ids` | `Vec<UserId>` | 预留（当前无写入方） | 上游网内回复关系信号 |
+| `favorite_count` / `reply_count` / `repost_count` / `quote_count` | `Option<i64>` | `CoreDataCandidateHydrator`（mrpyq 只提供前两项） | `RuleFallbackScorer` 互动项、冷启动探索成功次数、展示统计 |
+| `view_count` | `Option<u64>` | `CoreDataCandidateHydrator`（mrpyq 不提供） | 冷启动资格与 Thompson Sampling 曝光分母 |
 | `mutual_follow_jaccard` | `Option<f64>` | 社交图补全预留 | 展示信号预留 |
 | `is_mutual_follow_author` | `Option<bool>` | 上游 `BidirectionalFollowHydrator`（本地 U3 未接入） | 双向关注回复/停留加成；`None` 时加成不触发 |
 
@@ -211,35 +216,52 @@
 
 | 字段 | 来源 | 缺失时当前行为 |
 | --- | --- | --- |
-| `tweet_id` | `candidate.tweet_id` | 必有 |
-| `author_id` | `candidate.author_id` | 必有或为默认 0 |
-| `retweeted_tweet_id` | `candidate.retweeted_tweet_id` | `0` |
-| `retweeted_user_id` | `candidate.retweeted_user_id` | `0` |
-| `in_reply_to_tweet_id` | `candidate.in_reply_to_tweet_id` | `0` |
+| `tweet_id` | `candidate.tweet_id` | 必有，24-hex 字符串 |
+| `author_id` | `candidate.author_id` | 必有（NIL 候选已被 `CoreDataHydrationFilter` 丢弃） |
+| `retweeted_tweet_id` | `candidate.retweeted_tweet_id` | 空串 `""` |
+| `retweeted_user_id` | `candidate.retweeted_user_id` | 空串 `""` |
+| `in_reply_to_tweet_id` | `candidate.in_reply_to_tweet_id` | 空串 `""` |
 | `score` | `candidate.score` | `0.0` |
 | `in_network` | `candidate.in_network` | `false` |
 | `served_type` | `candidate.served_type` | 默认枚举值 |
 | `last_scored_timestamp_ms` | `candidate.last_scored_at_ms` | `0` |
 | `prediction_request_id` | `candidate.prediction_request_id` | `0` |
-| `ancestors` | `candidate.ancestors` | `[]` |
-| `screen_names` | `candidate.get_screen_names()` | 空 map |
+| `ancestors` | `candidate.ancestors` | `[]`（mrpyq 候选恒为空） |
+| `screen_names` | `candidate.get_screen_names()` | 空 map（非 demo Gizmoduck 为 Disabled，恒为空） |
 | `visibility_reason` | `candidate.visibility_decision` 中的 `Restricted(reason)` | 其他状态为 `None` |
 | `brand_safety_verdict` | `candidate.brand_safety_verdict` 映射的枚举 | 默认枚举值（本地暂无 V2 标签数据源） |
 | `tweet_text` | `candidate.tweet_text` | 空字符串（依赖 TES 补全） |
 
-## 7. Thunder `LightPost`
+## 7. 网内召回输入对象
+
+### 7.1 mrpyq `RecommendationCandidate` / `RecommendationContent`（非 demo）
+
+来源文件：`proto/definitions/recommendation_data.proto`
+
+| 字段 | 来自哪个 RPC | 进入 `PostCandidate` 后怎样使用 |
+| --- | --- | --- |
+| `feed_id` | `ListRecommendationCandidates` | 映射到 `tweet_id`；适配器先按 ObjectId 时间戳粗筛帖龄 |
+| `creator_member_id` | `BatchGetRecommendationContents` | 映射到 `author_id`；为空则该帖无 core data，被 `CoreDataHydrationFilter` 丢弃 |
+| `text` | 同上 | `tweet_text` |
+| `created_at_ms` | 同上 | `created_at_ms`（`AgeFilter` / `RuleFallbackScorer`） |
+| `like_count` / `comment_count` | 同上 | `favorite_count` / `reply_count` |
+| `has_image` / `has_video` / `video_duration_ms` | 同上 | `has_media` / `video_duration_ms` |
+| `recommendation_eligible` / `ineligible_reason` | 同上 | `recommendation_eligible`（`FirstStageEligibleFilter`）；VF 端口把 `false` 映射为 Restricted Drop |
+| `tag_ids` / `room_id` / `section_ids` / `gift_value` / `creator_account_id` / `creator_user_id` / `creator_user_no` | 同上 | 当前不进入候选 |
+
+### 7.2 Thunder `LightPost`（仅 demo）
 
 来源文件：
 
 - `proto/definitions/in_network.proto`
 
-这个结构虽然不属于 `home-mixer` crate，但它直接影响 `ThunderSource` 如何构造候选。
+这个结构只在 `HOME_MIXER_MODE=demo` 装配整数 Thunder 时使用，整数 ID 以末 8 字节零填充成 ObjectId。
 
 | 字段 | 含义 | 进入 `PostCandidate` 后怎样使用 |
 | --- | --- | --- |
 | `post_id` | 帖子 ID | 映射到 `tweet_id` |
 | `author_id` | 作者 ID | 映射到 `author_id` |
-| `created_at` | 创建时间 | Thunder 内部排序使用，`home-mixer` 不直接保存 |
+| `created_at` | 创建时间（秒） | 映射到 `created_at_ms`（×1000） |
 | `in_reply_to_post_id` | 被回复帖 ID | 映射到 `in_reply_to_tweet_id` |
 | `in_reply_to_user_id` | 被回复用户 ID | 当前 `home-mixer` 不直接保存 |
 | `conversation_id` | 对话根 ID | 用来构造 `ancestors` |
@@ -253,18 +275,20 @@
 
 ```mermaid
 flowchart LR
-    A["proto ScoredPostsQuery.viewer_id"] --> B["internal query.user_id"]
-    B --> C["ThunderSource / PhoenixSource / Filters / Scorers"]
+    A["proto ScoredPostsQuery.viewer_id（24-hex）"] --> B["internal query.user_id: UserId"]
+    B --> C["mrpyq account_id / Phoenix user_id / Filters / Scorers"]
 
-    D["Thunder LightPost.post_id"] --> E["PostCandidate.tweet_id"]
-    D2["Thunder LightPost.conversation_id"] --> F["PostCandidate.ancestors"]
+    D["mrpyq RecommendationCandidate.feed_id<br/>（demo：Thunder LightPost.post_id）"] --> E["PostCandidate.tweet_id"]
+    D2["demo Thunder LightPost.conversation_id"] --> F["PostCandidate.ancestors"]
 
-    G["TES core data.text"] --> H["PostCandidate.tweet_text"]
-    H --> I["CoreDataHydrationFilter / ViewerMutedKeywordFilter"]
+    G["mrpyq RecommendationContent<br/>creator_member_id / text / created_at_ms / recommendation_eligible"] --> H["PostCandidate.author_id / tweet_text / created_at_ms / recommendation_eligible"]
+    H --> I["CoreDataHydrationFilter / FirstStageEligibleFilter / AgeFilter / ViewerMutedKeywordFilter"]
 
-    J["PhoenixPredict probs"] --> K["PostCandidate.phoenix_scores"]
+    J["PhoenixPredict probs（需要行为序列）"] --> K["PostCandidate.phoenix_scores"]
     K --> L["weighted_score"]
     L --> M["score"]
+    J2["无序列 / Phoenix 失败"] --> RF["RuleFallbackScorer"]
+    RF --> M
     M --> N["ScoredPost.score"]
 ```
 
@@ -288,14 +312,14 @@ flowchart LR
 - `author_screen_name`
 - `visibility_decision`
 
-这些字段在结构上都存在，但当前默认依赖多为 stub，所以运行时常常为空。
+这些字段在结构上都存在，但非 demo 下 `tweet_text` 来自 mrpyq、`author_screen_name` 恒为空、`retweeted_user_id` 恒为空、`visibility_decision` 只反映一级 eligibility，运行时要按适配器现状理解。
 
-### 9.3 `created_at` 没进 `PostCandidate`
+### 9.3 `created_at_ms` 是显式字段，ObjectId 时间戳只是回退
 
-这是一个很重要的设计事实：
+- demo Thunder 的 `created_at` 与 mrpyq 的 `created_at_ms` 都会写进 `PostCandidate.created_at_ms`
+- `AgeFilter` 优先读它；缺失时才回退到 `tweet_id` 的 ObjectId 前 4 字节时间戳，两者都缺则丢弃
+- Phoenix 演示网关合成的召回 ID 是 md5 截断，其时间戳位是随机值，所以真实召回路径必须保证 `created_at_ms` 被 TES 补回，不能依赖回退
 
-- Thunder 用 `created_at` 做内部排序
-- `home-mixer` 里候选没有显式保存这个字段
-- 年龄判断转而通过 Snowflake 的 `tweet_id` 推导
+### 9.4 U5 保留位
 
-所以 `AgeFilter` 依赖的是 ID 编码时间，不是 Thunder 返回的 `created_at`。
+`quoted_*`、`subscription_author_id`、`subscribed_user_ids`、`drop_ancillary_posts` 仍在结构里，但已没有写入方或消费者（引用 / 转推 / 订阅专用组件按 U5 删除），读代码时把它们当常量空值即可。

@@ -12,7 +12,7 @@
 flowchart LR
     Client["客户端"] --> HM["home-mixer"]
     HM --> Q["查询补全"]
-    Q --> R["双路召回<br/>Thunder + Phoenix"]
+    Q --> R["多路召回<br/>网内（mrpyq / Thunder）+ Phoenix + 兜底"]
     R --> H["候选补全"]
     H --> F["过滤"]
     F --> S["打分"]
@@ -28,9 +28,9 @@ flowchart LR
 - 接收 `ScoredPostsService` 的 Get/Debug 请求和 `ForYouFeedService` 的 legacy/V2 请求
 - 由 `QueryBuilder` 构造内部 `ScoredPostsQuery` 与请求/预测身份
 - 通过上游命名 Query Hydrator owners 获取 scoring/retrieval sequence 和 user feature fields
-- 从 Thunder / Phoenix 取候选
+- 从网内源（非 demo：mrpyq 关注收件箱；demo：Thunder）、Phoenix 和兜底池取候选
 - 对候选做补全、过滤、打分、选择
-- 将结果映射为 `ScoredPost`
+- 响应前同步记录本次下发的帖子（`ServedPersistence`），再将结果映射为 `ScoredPost`
 
 ### 2.2 `home-mixer` 不负责什么
 
@@ -115,13 +115,13 @@ flowchart TD
 
 ## 6. 召回策略
 
-`home-mixer` 默认是双路召回，演示里还会加上话题源。
+`home-mixer` 默认是多路召回，演示里还会加上话题源。
 
 ### 6.1 ThunderSource
 
-- 负责网内候选
-- 输入依赖 `followed_user_ids`
-- 输出轻量候选，附带 reply / conversation 关系
+- 负责网内候选；名字沿用上游，实际依赖 `InNetworkPostsClient`：非 demo 是 mrpyq NETWORK 关注收件箱（`MRPYQ_RECOMMENDATION_DATA_ADDR` 必填），demo 是整数 Thunder
+- 非 demo 候选只带帖子 ID，作者 / 正文 / 时间靠 TES（同一 mrpyq 服务）补全；demo 的 Thunder 候选另带 reply / conversation 关系
+- 在来源处就标 `in_network = Some(true)`
 - 请求带未签名 cached posts 时关闭
 
 ### 6.2 PhoenixSource
@@ -131,7 +131,12 @@ flowchart TD
 - 设 `PHOENIX_RETRIEVAL_GRPC_ADDR` 后真连网关；没设就跳过这一路
 - 网内限定、严格话题、或已有 cached posts 时关闭
 
-Demo 还会装配 `PhoenixTopicsSource`。`CachedPostsSource` 一直在列表里，只有显式打开未签名 fixture 才会出数。
+### 6.3 FallbackSource
+
+- 负责兜底候选（非 demo：mrpyq FALLBACK 池；demo：合成数据），在来源处标 `in_network = Some(false)`
+- 网内限定或已有 cached posts 时关闭
+
+非 demo 有一个决定性前置条件：viewer 资格只有明确 `Allowed` 才放开网外，而当前非 demo 注入的 `DisabledGizmoduckClient` 返回 `Unknown`，于是每个请求都被限制为仅网内，`PhoenixSource` 与 `FallbackSource` 实际不会启用。Demo 还会装配 `PhoenixTopicsSource`。`CachedPostsSource` 一直在列表里，只有显式打开未签名 fixture 才会出数。
 
 ## 7. 补全、过滤和排序
 
@@ -139,12 +144,12 @@ Demo 还会装配 `PhoenixTopicsSource`。`CachedPostsSource` 一直在列表里
 
 当前主要补：
 
-- `in_network`
-- `tweet_text`
+- `in_network`（来源未标定时）
+- `author_id`（mrpyq 候选来源留空，由 TES 补回）、`tweet_text`、`created_at_ms`
+- `recommendation_eligible`（mrpyq 一级不可推荐标志）
 - `retweeted_*`
 - `video_duration_ms`
-- `subscription_author_id`
-- `author_screen_name`
+- `author_screen_name`（非 demo 为空）
 - `visibility_decision`（后补全，区分 Allowed / Restricted / Unchecked / Unavailable）
 
 ### 7.2 Filters
@@ -153,15 +158,16 @@ Demo 还会装配 `PhoenixTopicsSource`。`CachedPostsSource` 一直在列表里
 
 - 重复内容
 - 内容不完整
-- 过旧内容
+- 业务一级不可推荐（删除 / 未公开 / 审核未过）
+- 过旧内容（`created_at_ms`，缺失时回退 ObjectId 时间戳）
 - viewer 自己的内容
-- retweet 去重
-- 订阅权限
 - 已看过 / 已投递
 - 屏蔽关键词
 - 拉黑 / 静音作者
-- VF 删除
+- VF 删除（未验证的候选默认也删除）
 - 会话级去重
+
+引用 / 转推 / 订阅三类产品不存在的专用过滤器已按 U5 删除。
 
 ### 7.3 Scorers
 
@@ -169,7 +175,8 @@ Demo 还会装配 `PhoenixTopicsSource`。`CachedPostsSource` 一直在列表里
 
 1. `PhoenixScorer`
 2. `RankingScorer`（内部依次组合 Weighted、AuthorDiversity、OON 行为）
-3. 可选 `VMRanker`、`AuthorColdStartScorer`（都要显式开开关）
+3. `RuleFallbackScorer`（Phoenix 头缺失时整批改用规则分）
+4. 可选 `VMRanker`、`AuthorColdStartScorer`（仅 demo，且要显式开开关）
 
 含义是：
 
@@ -177,10 +184,11 @@ Demo 还会装配 `PhoenixTopicsSource`。`CachedPostsSource` 一直在列表里
 - 再加权合成相关性
 - 再做作者多样性衰减
 - 最后给网外内容降权；网内回复/转发默认也乘同一因子
+- 模型不可用（无行为序列、超时、契约校验失败）时整批换成“新鲜度 + 网内 + 互动数”的规则分
 
-## 8. Thunder 为什么重要
+## 8. 网内召回源为什么重要
 
-Thunder 对 `home-mixer` 的价值不是“直接返回排好序的网内 Feed”，而是：
+非 demo 的网内源是 mrpyq 关注收件箱，demo 是 Thunder；两者对 `home-mixer` 的价值都不是“直接返回排好序的网内 Feed”，而是：
 
 - 快速给出一批网内轻量候选
 - 提供 reply / retweet / conversation 关系
@@ -201,47 +209,46 @@ Thunder 对 `home-mixer` 的价值不是“直接返回排好序的网内 Feed�
 
 | 依赖 | 当前状态 |
 | --- | --- |
-| ThunderClient | 相对可用（`THUNDER_GRPC_ADDR`） |
-| PhoenixRetrievalClient | 设 `PHOENIX_RETRIEVAL_GRPC_ADDR` 后真连 gRPC 网关；缺失时显式 Unavailable 并跳过该召回路 |
-| PhoenixPredictionClient | 设 `PHOENIX_PREDICT_GRPC_ADDR` 后真连 gRPC 网关；缺失时显式 Unavailable 并走规则排序 |
-| StratoClient | `DisabledStratoClient`；`HOME_MIXER_MODE=demo` 时装配层注入 `DemoStratoClient`（演示关注列表） |
-| TESClient | `DisabledTESClient`；演示模式注入 `DemoTESClient`（演示文本） |
-| UserActionSequenceOps | `DisabledUserActionSequenceFetcher`；演示模式注入 `DemoUserActionSequenceFetcher`（合成行为序列） |
-| GizmoduckClient | disabled + Demo adapter；未知 viewer policy 只允许网内 |
-| VisibilityFilteringClient | disabled + Demo adapter；超时/不可用时保留候选，成功响应缺帖视为 not_evaluated 删除 |
+| InNetworkPostsClient（网内 / 兜底） | 非 demo `MrpyqInNetworkPostsClient`（`MRPYQ_RECOMMENDATION_DATA_ADDR` 必填，缺失则启动失败）；demo `ThunderClient`（`THUNDER_GRPC_ADDR`） |
+| TESClient | 非 demo `MrpyqTESClient`（mrpyq `BatchGetRecommendationContents`）；demo `DemoTESClient`（演示文本） |
+| VisibilityFilteringClient | 非 demo `MrpyqFirstStageEligibilityClient`（只有帖子维度的一级 `recommendation_eligible`，无 viewer 级判定）；demo 显式 Allow。未验证候选按 `HOME_MIXER_VF_FAILURE_POLICY`，默认 `fail_closed` 删除 |
+| StratoClient | 非 demo `MrpyqStratoClient`（mrpyq `ViewerRelationService`，后端尚未实现，当前调用失败、关系为空）；demo `DemoStratoClient`（演示关注列表） |
+| PhoenixRetrievalClient | 设 `PHOENIX_RETRIEVAL_GRPC_ADDR` 后真连 gRPC 网关；缺失时显式 Unavailable 并跳过该召回路；非 demo 拒绝随机权重 |
+| PhoenixPredictionClient | 设 `PHOENIX_PREDICT_GRPC_ADDR` 后真连 gRPC 网关并校验 serving metadata；缺失或校验失败时整批走 `RuleFallbackScorer`；非 demo 拒绝随机权重 |
+| UserActionSequenceOps | 非 demo `DisabledUserActionSequenceFetcher`（空序列）；demo `DemoUserActionSequenceFetcher`（合成行为序列） |
+| GizmoduckClient | 非 demo `DisabledGizmoduckClient`（viewer 资格未知 → 只允许网内；作者资料为空）；demo 允许网外并合成资料 |
+| ServedPersistence | `InMemoryServedPersistence`（进程内存，重启即丢） |
 
 这意味着：
 
 - 框架和装配已经完整
-- 不配置环境变量时业务链大量退化；配好演示组合可端到端跑通（见 [getting-started 第四步](../getting-started/05-第四步-跑通完整推荐链路.md)）
+- 非 demo 已经真实接到 mrpyq 的内容与网内召回，但行为序列、viewer 资格、作者资料、viewer 关系后端和持久化曝光仍缺；配好演示组合可端到端跑通（见 [getting-started 第四步](../getting-started/05-第四步-跑通完整推荐链路.md)）
 
 ## 10. 当前默认运行行为
 
-默认 `degraded` 的 disabled adapter 组合下，最常见的不是“排序不理想”，而是“候选很容易被清空”。
+默认 `degraded` 配上 mrpyq 地址后，最常见的不是“候选被清空”，而是“链路只走了一小段”：
 
-核心原因通常是三条：
-
-1. 没有 `user_action_sequence`，Phoenix 召回/打分不起作用
-2. 没有 `followed_user_ids`，Thunder 候选供给不足
-3. 没有 `tweet_text`，`CoreDataHydrationFilter` 会把候选清掉
+1. 没有 `user_action_sequence`，`PhoenixScorer` 整批标 `phoenix_missing_sequence`，所有请求由 `RuleFallbackScorer` 排序
+2. viewer 资格未知，每个请求都被限制为仅网内，`PhoenixSource` / `FallbackSource` 不会启用
+3. mrpyq 收件箱以皮 `member_id` 作为 `account_id` 查询，皮维度对齐落地前候选供给可能为空；`creator_member_id` 为空的帖子被 `CoreDataHydrationFilter` 清掉
 
 ```mermaid
 flowchart TD
-    A["UAS 为空"] --> B["PhoenixSource 失效"]
-    C["followed_user_ids 为空"] --> D["ThunderSource 候选不足"]
-    E["tweet_text 为空"] --> F["CoreDataHydrationFilter 清空候选"]
-    B --> G["结果变少或为空"]
+    A["UAS 为空"] --> B["PhoenixSource 不可用<br/>PhoenixScorer 整批 fallback"]
+    C["viewer 资格 Unknown"] --> D["in_network_only=true<br/>Phoenix / Fallback 源不启用"]
+    E["mrpyq 皮维度未对齐 / creator_member_id 为空"] --> F["网内候选为空或被 CoreDataHydrationFilter 清掉"]
+    B --> G["结果 = mrpyq 关注流 + 规则排序，或为空"]
     D --> G
     F --> G
 ```
 
-`HOME_MIXER_MODE=demo` 正是针对这三条缺口注入演示数据，让链路不依赖外部平台也能出结果。
+`HOME_MIXER_MODE=demo` 正是针对这些缺口注入演示数据，让链路不依赖外部平台也能出结果。
 
 ## 11. 当前最值得关注的风险
 
-### 11.1 结果为空或过少
+### 11.1 结果为空、过少或“只有规则排序”
 
-主要由外部依赖 stub 叠加导致。
+主要由非 demo 仍缺的适配器（UAS、viewer 资格、viewer 关系后端）和 mrpyq 皮维度契约未落地叠加导致。
 
 ### 11.2 同 stage hydrator 依赖问题
 
@@ -263,8 +270,8 @@ flowchart TD
 配置来源主要有三类：
 
 - CLI 参数：端口等
-- 环境变量：如 `THUNDER_GRPC_ADDR`、`HOME_MIXER_MODE`
-- `params/` 常量：召回上限、权重、Age、TopK、ResultSize
+- 环境变量：如 `HOME_MIXER_MODE`、`MRPYQ_RECOMMENDATION_DATA_ADDR`、`PHOENIX_*_GRPC_ADDR`、`HOME_MIXER_VF_FAILURE_POLICY`；demo 另有 `THUNDER_GRPC_ADDR`
+- `params/` 常量：召回上限、权重、Age、TopK、ResultSize、mrpyq 超时与召回预算
 
 最重要的参数组是：
 
@@ -289,9 +296,10 @@ flowchart TD
 
 如果结果为空，优先怀疑：
 
-- `PhoenixSource` 缺少 `user_action_sequence`
-- `ThunderSource` 因 following 为空拿不到候选
-- `CoreDataHydrationFilter` 清空候选
+- `PhoenixSource` / `FallbackSource` 因 viewer 资格未知被 `in_network_only` 关闭，或缺少 `user_action_sequence`
+- `ThunderSource` 的 mrpyq 收件箱 `source_ready=false`、皮维度未对齐或召回预算耗尽（日志 `mrpyq adapter recall ...`）
+- `CoreDataHydrationFilter` 因 `creator_member_id` / 正文为空清空候选
+- `VFFilter` 在默认 `fail_closed` 下删掉了所有 `Unavailable` 候选（日志 `visibility unavailable for N candidates`）
 
 ## 14. 推荐阅读方式
 
@@ -314,4 +322,4 @@ flowchart TD
 
 ## 15. 一句话结论
 
-`home-mixer` 当前已经是一套结构完整的首页编排系统骨架：链路、阶段、策略位点都很清楚；真正限制它可用性的，不是主流程缺失，而是外部依赖仍大量处于 stub 状态。
+`home-mixer` 当前已经是一套结构完整的首页编排系统骨架：链路、阶段、策略位点都很清楚，非 demo 也已经真实接到 mrpyq 的内容与网内召回；真正限制它可用性的，不是主流程缺失，而是行为序列、viewer 资格与关系、作者资料、持久化曝光这几个适配器仍是 stub，以及 mrpyq 皮维度契约尚未落地。
