@@ -7,4 +7,5 @@
 
 pub mod bloom_filter;
 pub mod candidates_util;
+pub mod composition;
 pub mod request_util;

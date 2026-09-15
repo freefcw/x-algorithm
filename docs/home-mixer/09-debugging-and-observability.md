@@ -193,7 +193,7 @@ flowchart LR
 | 盲点 | 现状 | 影响 |
 | --- | --- | --- |
 | selector 前后规模变化 | 无统一日志/指标 | 很难判断 TopK 阶段缩水多少 |
-| side effect 失败 | 结果被丢弃 | 缓存写回失效不明显 |
+| side effect 失败 | 框架记录组件、错误和耗时；任务仍是 fire-and-forget | 进程关闭时未完成任务仍可能丢失 |
 | 每个具体 filter 的移除量 | 只有阶段总量 | 难判断是哪个 filter 最伤 |
 | post-selection 过滤比例 | 无单独指标 | 难判断是 VF 还是会话去重导致缩水 |
 | HTTP health/metrics | router 为空 | 监控入口名义存在但功能弱 |

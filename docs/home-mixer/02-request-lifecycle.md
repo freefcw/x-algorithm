@@ -119,6 +119,7 @@ flowchart TD
     H -->|"串行"| H1["VFFilter -> DedupConversationFilter"]
     H --> I["run_side_effects"]
     I -->|"异步 fire-and-forget"| I1["PhoenixRequestCacheSideEffect (default off)"]
+    I -->|"异步，5% 采样"| I2["ResponseDiversityStatsSideEffect<br/>内层 final/top10 候选组成"]
 ```
 
 ### 4.1 并行阶段
@@ -148,7 +149,7 @@ flowchart TD
 | Filter | 记录错误，回滚到该 filter 执行前 | 不终止 |
 | Scorer | 记录错误，保留当前得分字段 | 不终止 |
 | Selector | 无统一 `Result` 包装 | 依赖业务实现自身稳定性 |
-| SideEffect | 异步执行，结果被丢弃 | 不影响响应返回 |
+| SideEffect | 异步执行，框架记录成功、失败和耗时 | 主响应不等待完成 |
 
 ## 6. 返回路径：最终响应是如何拼出来的
 

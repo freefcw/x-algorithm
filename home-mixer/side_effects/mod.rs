@@ -1,4 +1,5 @@
 pub mod phoenix_request_cache_side_effect;
 pub mod publish_seen_ids_to_kafka_side_effect;
+pub mod response_diversity_stats_side_effect;
 pub mod response_stats_side_effect;
 pub mod served_candidates_kafka_side_effect;

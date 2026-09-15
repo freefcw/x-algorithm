@@ -104,6 +104,8 @@ TES 相关 hydrator 里 CoreData / VideoDuration / HasMedia / FilteredTopics / L
 
 `PhoenixRequestCacheSideEffect` 默认关闭。启用需要真实持久化合同；执行为 fire-and-forget，但成功、失败和耗时都有 request-scoped 日志。
 
+`ResponseDiversityStatsSideEffect` 默认装配，通过本地日志 adapter 对非空候选结果按 5% 采样。统计内层 pipeline 的 `final` 与按最终分数排序的 `top10`：作者/来源组成、作者集中度和网内比例；不改动候选顺序或分数。这些数据早于外层 ForYou 混排，不代表混排后的 Feed。未接 SID、实验分桶或 `pre_heuristic`：本地缺少前两者的契约，fallback 又会清空 `weighted_score`，无法还原可信的重排基线。
+
 ## 4. 运行模式和依赖成熟度
 
 | 依赖 | Demo | Degraded（需 `MRPYQ_RECOMMENDATION_DATA_ADDR`） | 关键行为 |

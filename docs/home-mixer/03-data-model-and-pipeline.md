@@ -152,6 +152,7 @@ flowchart TD
 ### 3.8 Side Effect
 
 - `PhoenixRequestCacheSideEffect`（默认关闭）
+- `ResponseDiversityStatsSideEffect`（默认装配，非空响应按 5% 采样；记录 final/top10 的作者、来源和网内比例，不改变排序）
 
 ## 4. 一个最重要的语义：同 stage 的 hydrator 彼此看不到新字段
 

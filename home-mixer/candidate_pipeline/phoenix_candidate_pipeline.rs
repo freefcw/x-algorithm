@@ -5,6 +5,7 @@ use crate::candidate_hydrators::has_media_hydrator::HasMediaHydrator;
 use crate::candidate_hydrators::in_network_candidate_hydrator::InNetworkCandidateHydrator;
 use crate::candidate_hydrators::language_code_hydrator::LanguageCodeHydrator;
 
+use crate::candidate_diversity_stats::LoggingCandidateDiversityStats;
 use crate::candidate_hydrators::tes_hydration_provider::TesHydrationProvider;
 use crate::candidate_hydrators::vf_candidate_hydrator::VFCandidateHydrator;
 use crate::candidate_hydrators::video_duration_candidate_hydrator::VideoDurationCandidateHydrator;
@@ -72,6 +73,7 @@ use crate::scorers::rule_fallback_scorer::RuleFallbackScorer;
 use crate::scorers::vm_ranker::VMRanker;
 use crate::selectors::TopKScoreSelector;
 use crate::side_effects::phoenix_request_cache_side_effect::PhoenixRequestCacheSideEffect;
+use crate::side_effects::response_diversity_stats_side_effect::ResponseDiversityStatsSideEffect;
 use crate::sources::cached_posts_source::CachedPostsSource;
 use crate::sources::fallback_source::FallbackSource;
 use crate::sources::phoenix_moe_source::PhoenixMoeSource;
@@ -159,6 +161,18 @@ impl PhoenixCandidatePipeline {
     }
 
     pub async fn build_with_clients(dependencies: PhoenixDependencies) -> PhoenixCandidatePipeline {
+        Self::build_with_clients_and_diversity_stats(
+            dependencies,
+            ResponseDiversityStatsSideEffect::new(Arc::new(LoggingCandidateDiversityStats)),
+        )
+        .await
+    }
+
+    /// Assemble with an explicitly supplied diversity sink and sampling policy.
+    pub async fn build_with_clients_and_diversity_stats(
+        dependencies: PhoenixDependencies,
+        diversity_stats: ResponseDiversityStatsSideEffect,
+    ) -> PhoenixCandidatePipeline {
         let PhoenixDependencies {
             uas_fetcher,
             phoenix_client,
@@ -329,10 +343,13 @@ impl PhoenixCandidatePipeline {
 
         // Side Effects
         let side_effects: Arc<Vec<Box<dyn SideEffect<ScoredPostsQuery, PostCandidate>>>> =
-            Arc::new(vec![Box::new(PhoenixRequestCacheSideEffect::new(
-                strato_client,
-                features.request_cache_side_effect,
-            ))]);
+            Arc::new(vec![
+                Box::new(PhoenixRequestCacheSideEffect::new(
+                    strato_client,
+                    features.request_cache_side_effect,
+                )),
+                Box::new(diversity_stats),
+            ]);
 
         PhoenixCandidatePipeline {
             query_hydrators,

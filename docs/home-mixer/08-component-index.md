@@ -99,6 +99,7 @@ Query hydrator 失败只记 request-scoped error 日志、不中断请求：UAS 
 | 组件 | 文件 | enable | 输入 | 外部依赖 | 说明 |
 | --- | --- | --- | --- | --- | --- |
 | `PhoenixRequestCacheSideEffect` | `side_effects/phoenix_request_cache_side_effect.rs` | `HOME_MIXER_ENABLE_REQUEST_CACHE_SIDE_EFFECT=true` 且请求允许 | `user_id` + 最终候选 tweet ids | `StratoClient.store_request_info` | 默认关闭；fire-and-forget，不阻塞响应 |
+| `ResponseDiversityStatsSideEffect` | `side_effects/response_diversity_stats_side_effect.rs` | 默认装配，非空结果按 5% 采样 | selected candidates 的 `author_id`、`served_type`、`in_network`、`score` | 本地候选多样性 sink，默认日志 adapter | 记录内层 final/top10；不读 weighted_score，不改排序，不记录 SID/实验桶/pre_heuristic |
 
 ## 8. 支撑性工具模块
 
@@ -112,6 +113,7 @@ Query hydrator 失败只记 request-scoped error 日志、不中断请求：UAS 
 | `feed_state` | `feed_state.rs` | 有界进程内存的已下发历史 / 请求时间戳（`InMemoryFeedStateStore`） |
 | `bloom_filter` | `util/bloom_filter.rs` | 支持已看过内容去重（对 12 字节 ObjectId 做 murmur） |
 | `candidates_util` | `util/candidates_util.rs` | 生成 related post ids |
+| `composition` | `util/composition.rs` | 按键分组统计总数、唯一数、最大占比、HHI 和归一化熵；由候选多样性统计消费 |
 | `post_text` | `post_text/mod.rs` | 屏蔽关键词分词与匹配 |
 | `visibility/models` | `visibility/models.rs` | 安全过滤原因和动作模型 |
 
