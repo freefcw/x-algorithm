@@ -263,7 +263,7 @@ def _start_reset_http_server(base_port: int, num_ports: int) -> int | None:
 
 def _init_otel_metrics(
     otel_endpoint: str,
-    export_interval_ms: int = 30_000,
+    export_interval_ms: int = 120_000,
     worker_rank: int = 0,
     training_name: str = "recsys-kafka-loader",
 ) -> bool:
@@ -994,7 +994,7 @@ class PhoenixKafkaDataset(PhoenixDataset):
 
     export_metrics: bool = True
     otel_endpoint: str = ""
-    metrics_export_interval_ms: int = 30_000
+    metrics_export_interval_ms: int = 120_000
 
     num_local_workers: int = 8
 
