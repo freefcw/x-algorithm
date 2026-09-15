@@ -640,7 +640,7 @@ git diff --name-status \
 - **阶段规则**：一次迁移一条可验证纵向能力；外部服务先使用 trait + Demo 实现；没有真实合同的能力保持关闭，不以字段或 stub 代替生产完成。
 - **Todos**：
   - [x] 恢复上游服务入口边界：`HomeMixerConfig -> HomeMixerServer::build/register -> ScoredPostsServer/ForYouFeedServer`；两个 RPC trait 由各自业务 Server 持有。
-  - [x] 恢复当前公共合同下的 `QueryBuilder`：统一 proto 映射和请求 ID；`GizmoduckClient::get_viewer_data` 使用 200 ms 超时，只有 `ViewerEligibility::Allowed` 开放网外，Denied/Unknown/错误/超时均限制为仅网内。
+  - [x] 恢复当前公共合同下的 `QueryBuilder`：统一 proto 映射和请求 ID；不依赖 Gizmoduck viewer RPC，只有请求显式 `in_network_only=true` 才限制为仅网内。
   - [x] 建立默认关闭的 `HomeMixerFeatures`，显式控制 MoE Source 和请求缓存 SideEffect；缺少地址时跳过旁路并保留主链。
   - [x] 建立 ScoredPosts 业务模型和服务边界，同时以 additive proto 字段保持旧 gRPC 客户端兼容。
   - [x] 合并 Retrieval/Scoring sequence 和 Phoenix/Thunder source。

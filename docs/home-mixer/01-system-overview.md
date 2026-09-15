@@ -13,7 +13,7 @@ flowchart TB
     HM --> PhoenixPredict["Phoenix Prediction<br/>精排预测"]
     HM --> Strato["Strato 端口<br/>viewer 关系（非 demo：mrpyq ViewerRelationService）"]
     HM --> TES["TES 端口<br/>帖子内容 / 媒体 / 一级 eligibility（非 demo：mrpyq）"]
-    HM --> Gizmoduck["Gizmoduck 端口<br/>viewer 资格 / 作者资料（非 demo 仍 Disabled）"]
+    HM --> Gizmoduck["Gizmoduck 端口<br/>作者资料（非 demo 仍 Disabled）"]
     HM --> VF["VF 端口<br/>可见性（非 demo：mrpyq 一级 eligibility）"]
     HM --> UAS["UAS 端口<br/>用户行为序列（非 demo 仍 Disabled）"]
 

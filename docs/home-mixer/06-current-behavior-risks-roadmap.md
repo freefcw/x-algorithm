@@ -16,7 +16,7 @@
 
 只设置 `MRPYQ_RECOMMENDATION_DATA_ADDR`、不设置其他环境变量时，一次真实请求会这样走：
 
-- `DisabledGizmoduckClient` 返回未知 viewer policy，`QueryBuilder` 把每个请求限制为仅网内。`PhoenixSource` 与 `FallbackSource` 的 `enable()` 都要求非仅网内，因此实际只有 mrpyq NETWORK 收件箱这一路召回在跑；作者资料为空，响应 `screen_names` 为空。
+- 请求默认 `in_network_only=false`，因此 `FallbackSource` 可以读取 mrpyq FALLBACK 池；QueryBuilder 不依赖 Gizmoduck viewer RPC。`PhoenixSource` 仍会因缺少行为序列而不可用，作者资料为空，响应 `screen_names` 为空。
 - `DisabledUserActionSequenceFetcher` 返回空行为序列，序列聚合报错后 `scoring_sequence` / `retrieval_sequence` 为 `None`：`PhoenixScorer` 整批标 `phoenix_missing_sequence`，`RuleFallbackScorer` 用“新鲜度 + 网内 + 互动数 + 作者多样性”的规则分覆盖整批。即便配置了 `PHOENIX_*_GRPC_ADDR` 和训练权重，模型也不会被调用。
 - `MrpyqInNetworkPostsClient` 以 `query.user_id`（皮的 `member_id`）作为 `account_id` 调 mrpyq NETWORK 收件箱；mrpyq 侧目前按账号键读取，皮维度对齐尚未落地（见 `docs/implementation/mrpyq-member-dimension-requirements.md`）。
 - `MrpyqTESClient` 补作者（`creator_member_id`）、正文、`created_at_ms`、互动计数与一级 `recommendation_eligible`；`creator_member_id` 为空的帖子被 `CoreDataHydrationFilter` 丢弃。
@@ -24,13 +24,13 @@
 - `MrpyqFirstStageEligibilityClient` 只承载一级 `recommendation_eligible`，对经过 `FirstStageEligibleFilter` 存活的候选恒为 Allow，viewer 级可见性没有数据源。`VFFilter` 对 `Unchecked / Unavailable`（含成功响应缺帖）按 `HOME_MIXER_VF_FAILURE_POLICY` 处理：默认 `fail_closed` 全丢弃，`in_network_only` 仅保留网内，`allow_all` 需显式配置且非 demo 下会在启动时告警。
 - served 落库走 `InMemoryServedPersistence`：响应前同步写入进程内存，重启即丢、多副本不共享。
 
-因此 degraded 当前实际等价于“mrpyq 关注收件箱 → 规则排序”的关注流，目标是“明确、保守、可观测地退化”，不是提供完整 Feed。需要本地完整链路时使用 Demo；需要生产流量时必须先让 `production_ready` 的合同校验通过。
+因此 degraded 当前实际等价于“mrpyq NETWORK + FALLBACK 候选 → 规则排序”的全网 Feed 骨架，尚无个性化模型参与。需要本地完整链路时使用 Demo；需要生产流量时必须先让 `production_ready` 的合同校验通过。
 
 ## 3. 已经收口的高风险语义
 
-- Viewer policy 只有明确 Allow 才开放网外；错误和 200 ms 超时都限制为仅网内。
+- 网络范围只由请求字段决定：显式 `in_network_only=true` 才限制为仅网内，否则同时允许网内和网外；QueryBuilder 不持有 Gizmoduck client。
 - VF 使用 `Allowed / Restricted / Unchecked / Unavailable`，缺失结果记为 `Unavailable` 而非审核通过；故障分支保留范围由 `HOME_MIXER_VF_FAILURE_POLICY` 决定；调用上限 500 ms。
-- Phoenix 标准/MoE 召回上限 3 s，预测上限 5 s；Viewer 为 200 ms；Thunder、VF、Topic profile/recall、UAS、Strato read/write、TES 单批和 Gizmoduck profile 均为 500 ms；mrpyq 单次 RPC 500 ms（`MRPYQ_RECOMMENDATION_DATA_TIMEOUT_MS`），一次召回跨页总预算 1500 ms（`MRPYQ_RECALL_BUDGET_MS`）。超时由对应 Source/Hydrator/Scorer/SideEffect 隔离并记录。
+- Phoenix 标准/MoE 召回上限 3 s，预测上限 5 s；Thunder、VF、Topic profile/recall、UAS、Strato read/write、TES 单批和 Gizmoduck profile 均为 500 ms；mrpyq 单次 RPC 500 ms（`MRPYQ_RECOMMENDATION_DATA_TIMEOUT_MS`），一次召回跨页总预算 1500 ms（`MRPYQ_RECALL_BUDGET_MS`）。超时由对应 Source/Hydrator/Scorer/SideEffect 隔离并记录。
 - `DebugScoredPosts` 默认关闭，启用时要求 metadata token；未签名 `cached_posts` 默认拒绝且只允许显式 Demo fixture。
 - Pipeline 对 Query Hydrator、Source、Hydrator、Scorer、Selector 和 SideEffect 都输出 request-scoped 成功、失败和耗时日志。
 - 对外协议与 mrpyq 边界上的身份都是 24 位小写 hex ObjectId 字符串，流水线内是 `PostId` / `UserId`（`models/ids.rs`）；非法串在边界丢弃并计数，`"0"` 不再是合法哨兵。
@@ -56,7 +56,7 @@ Debug RPC 已有独立 token，unsigned cache 已被隔离，但普通 ScoredPos
 
 ### 4.4 非 demo 下模型路径不可达
 
-`DisabledGizmoduckClient` 让每个请求变成仅网内，`DisabledUserActionSequenceFetcher` 让 `PhoenixScorer` 拿不到序列：两者叠加后，网外召回、兜底召回和 Phoenix 精排在 degraded 模式下一个都不会执行，所有请求都由 `RuleFallbackScorer` 排序。接 Viewer 资格与 UAS 适配器之前，不能把“配置了 Phoenix 地址”当成“模型已上线”。
+`DisabledUserActionSequenceFetcher` 让 `PhoenixSource` 和 `PhoenixScorer` 拿不到序列，因此 Phoenix 召回与精排在 degraded 模式下不会执行，所有候选都由 `RuleFallbackScorer` 排序；但默认全网范围下，mrpyq FALLBACK 兜底召回仍然可达。接 UAS 适配器之前，不能把“配置了 Phoenix 地址”当成“模型已上线”。
 
 ### 4.5 viewer 维度准入没有数据源
 
@@ -64,8 +64,8 @@ Debug RPC 已有独立 token，unsigned cache 已被隔离，但普通 ScoredPos
 
 ## 5. 外部合同补齐顺序
 
-1. **Viewer + VF**：先闭合用户选择和内容安全语义、认证、超时、漏返回及审计；viewer 关系后端（mrpyq `ViewerRelationService`）与推荐侧端口迁移同批上线。
-2. **TES + Gizmoduck**：TES 已由 mrpyq `BatchGetRecommendationContents` 承载，待确认 `creator_member_id` 必填；Gizmoduck（viewer 资格 + 作者昵称 / 粉丝数）仍缺。
+1. **Viewer relations + VF**：先闭合用户关系和内容安全语义、认证、超时、漏返回及审计；viewer 关系后端（mrpyq `ViewerRelationService`）与推荐侧端口迁移同批上线。
+2. **TES + Gizmoduck**：TES 已由 mrpyq `BatchGetRecommendationContents` 承载，待确认 `creator_member_id` 必填；Gizmoduck 作者昵称 / 粉丝数适配器仍缺。
 3. **UAS + 持久化 served / feedback**：恢复个性化序列，把 `ServedPersistence` 升格为带 position / event_type 的持久事件流并补 feedback RPC；写回必须有幂等和保留期。
 4. **Phoenix artifact/service**：用真实 LFS artifact 验证 offline/gRPC 一致性、延迟、容量和 fallback。
 5. **普通 RPC 身份边界**：完成调用方身份与 viewer 绑定后，才允许 `production_ready` 启动。

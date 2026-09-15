@@ -32,7 +32,7 @@ Query hydrator 失败只记 request-scoped error 日志、不中断请求：UAS 
 | 组件 | 文件 | enable | 读取 | 产出字段 | 外部依赖 | 说明 |
 | --- | --- | --- | --- | --- | --- | --- |
 | `ThunderSource` | `sources/thunder_source.rs` | 有 `InNetworkPostsClient` 时装配；`has_cached_posts` 时跳过 | `user_id` | `tweet_id` `created_at_ms`（demo Thunder 带，mrpyq 不带）`in_reply_to_tweet_id` `retweeted_*` `ancestors` `served_type` `in_network=Some(true)` | `InNetworkPostsClient`：非 demo `MrpyqInNetworkPostsClient`（mrpyq NETWORK 收件箱），demo `ThunderClient` | 上游顺序第一；mrpyq 候选只带 `feed_id`，作者由 TES 补回；`in_network_only` 时 `served_type=RankedFollowing` |
-| `PhoenixSource` | `sources/phoenix_source.rs` | 非网内限定、非 strict/cold-start topic、无 cached posts | `user_id`、`retrieval_sequence`（缺时回退 `user_action_sequence`） | `tweet_id` `author_id` `in_reply_to_tweet_id` `served_type` | `PhoenixRetrievalClient` | 两个序列都缺失时直接失败；非 demo 下 viewer 资格未知会让它永不启用 |
+| `PhoenixSource` | `sources/phoenix_source.rs` | 非网内限定、非 strict/cold-start topic、无 cached posts | `user_id`、`retrieval_sequence`（缺时回退 `user_action_sequence`） | `tweet_id` `author_id` `in_reply_to_tweet_id` `served_type` | `PhoenixRetrievalClient` | 两个序列都缺失时直接失败；只有请求显式 `in_network_only=true` 才因网络范围关闭 |
 | `FallbackSource` | `sources/fallback_source.rs` | 有兜底客户端时装配（非 demo = mrpyq，demo = `DemoFallbackPostsClient`）；非网内限定且无 cached posts 时启用 | `user_id` | `tweet_id` `served_type=ForYouPhoenixRetrieval` `in_network=Some(false)` | `InNetworkPostsClient::get_fallback_posts`（mrpyq FALLBACK 池，最多 200 条） | U2 新增；`served_type` 复用网外召回枚举，响应中无法与 Phoenix 召回区分 |
 | `PhoenixTopicsSource` | `sources/phoenix_topics_source.rs` | 注入 topic adapter 且有 topic recall | selected topics | `tweet_id` `author_id` `served_type` | `TopicRetrievalClient` | 可选话题候选召回 |
 | `PhoenixMoeSource` | `sources/phoenix_moe_source.rs` | typed switch + endpoint + 请求允许 | `user_id`、`retrieval_sequence` | `tweet_id` `author_id` `served_type` | `PhoenixRetrievalClient` (MoE) | 默认关闭 |
@@ -105,7 +105,7 @@ Query hydrator 失败只记 request-scoped error 日志、不中断请求：UAS 
 | 模块 | 文件 | 作用 |
 | --- | --- | --- |
 | `runtime_config` | `runtime_config.rs` | 解析 Demo/Degraded/ProductionReady 意图并校验启动不变量 |
-| `query_builder` | `query_builder.rs` | 校验公共 proto、读取 viewer policy、生成请求身份并以具名字段构造 domain query |
+| `query_builder` | `query_builder.rs` | 校验公共 proto、原样映射网络范围、生成请求身份并以具名字段构造 domain query |
 | `debug_access` | `debug_access.rs` | 默认关闭的 Debug RPC token 授权策略 |
 | `request_util` | `util/request_util.rs` | 为 `QueryBuilder` 生成请求/预测 ID 和 request time |
 | `ids` | `models/ids.rs` | `ObjectId([u8; 12])` 与别名 `PostId` / `UserId`：24-hex 解析与输出、`timestamp_secs()`（AgeFilter 回退）、`to_u64_hash()`（xrex / 分桶派生，与 `phoenix/services/model_contract.py` 共享黄金向量） |

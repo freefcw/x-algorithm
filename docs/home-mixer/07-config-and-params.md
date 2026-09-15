@@ -99,9 +99,9 @@ Phoenix 两个主服务地址通常同时指向 `phoenix/scripts/run_grpc_gatewa
 
 ### 3.3 QueryBuilder 外部策略
 
-两个 RPC 共用同一个 `QueryBuilder`。它负责 viewer ID 校验、公共 proto 映射、请求 ID、全局/请求级 MoE 开关合并，以及 viewer policy 查询。
+两个 RPC 共用同一个 `QueryBuilder`。它负责 viewer ID 校验、公共 proto 映射、请求 ID 以及全局/请求级 MoE 开关合并。
 
-`GizmoduckClient::get_viewer_data` 的超时预算固定为 200 ms。只有明确返回 `ViewerEligibility::Allowed` 才允许网外推荐；`Denied`、`Unknown`、错误或超时都记录告警并强制 `in_network_only=true`，只保留网内降级链（非 demo 为 mrpyq 收件箱）而不绕过用户偏好。非 demo 当前注入的 `DisabledGizmoduckClient` 恒返回 `Unknown`，因此在接入真实 viewer 资格来源之前，非 demo 的所有请求都是仅网内。
+QueryBuilder 不持有 Gizmoduck client，也不发起 viewer RPC。`in_network_only` 只取请求显式值：`true` 进入网内专用路径，`false` 同时允许网内和网外。Gizmoduck 仅由 candidate hydrator 用于作者资料批量查询，超时预算为 500 ms。
 
 ### 3.4 证书路径
 

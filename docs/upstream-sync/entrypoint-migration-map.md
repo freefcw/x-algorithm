@@ -36,7 +36,7 @@ home-mixer/main.rs
 home-mixer/main.rs
   -> HomeMixerConfig::from_env()
   -> HomeMixerServer::build(config)
-       -> QueryBuilder(viewer policy, feature policy, request identity)
+       -> QueryBuilder(request mapping, feature policy, request identity)
        -> ScoredPostsServer(PhoenixCandidatePipeline)
        -> ForYouFeedServer(ForYouCandidatePipeline)
   -> HomeMixerServer::register(...)
@@ -77,16 +77,16 @@ Exit criteria: both existing RPCs return the same responses, reflection still wo
 
 ### HM-E2: Restore `QueryBuilder` as the request entry
 
-Status: **completed for the current public contract**. `QueryBuilder` is the sole protobuf mapper and request/prediction identity owner, shares one typed feature policy across both RPCs, and uses an upstream-shaped `GizmoduckClient::get_viewer_data` port with a 200 ms timeout. Only explicit viewer Allow enables out-of-network recommendations; errors, timeouts, and unknown policy restrict the request to in-network. Fields absent from the public proto/model (roles, subscription, full device status, trace context, decider params) remain deferred rather than synthesized.
+Status: **completed for the current public contract**. `QueryBuilder` is the sole protobuf mapper and request/prediction identity owner and shares one typed feature policy across both RPCs. Network scope has one source of truth: only an explicit `in_network_only=true` request restricts recommendations to in-network. The local builder does not depend on Gizmoduck viewer data; fields absent from the public proto/model (roles, subscription, full device status, trace context, decider params) remain deferred rather than synthesized.
 
-Current `query_builder.rs::query_from_proto` is private to `QueryBuilder` and only maps public fields. `server.rs` retains a compatibility re-export so upstream-comparable imports remain stable. Upstream `QueryBuilder` also owns request IDs, prediction IDs, viewer data, feature switches, decider context, device context, trace context, and request-level policy.
+Current `query_builder.rs::query_from_proto` is private to `QueryBuilder` and only maps public fields. `server.rs` retains a compatibility re-export so upstream-comparable imports remain stable. Upstream `QueryBuilder` additionally owns viewer data, decider context, device context, trace context, and request-level policy; those responsibilities are intentionally absent from the current local contract.
 
 Required work:
 
 1. Introduce a local `QueryBuilder` and `RequestContext` at the upstream `server.rs` boundary; keep implementation in `query_builder.rs` and a facade re-export in `server.rs`.
 2. Move all protobuf-to-domain mapping out of the RPC facade into `QueryBuilder`.
 3. Keep unavailable feature switches/decider behind the existing local feature-switch interface (`U1`), not in `ScoredPostsQuery` as private types.
-4. Add explicit ports for viewer data and request policy; use public/demo adapters.
+4. Add explicit ports for future request policy only when a public contract and owning query behavior exist; do not route network scope through Gizmoduck.
 5. Generate request/prediction IDs in one place and preserve them across both inner and outer services.
 6. Add table-driven tests for every protobuf field, defaults, invalid viewer IDs, cached posts, topics, device context, and request IDs.
 

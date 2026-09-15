@@ -136,7 +136,7 @@ flowchart TD
 - 负责兜底候选（非 demo：mrpyq FALLBACK 池；demo：合成数据），在来源处标 `in_network = Some(false)`
 - 网内限定或已有 cached posts 时关闭
 
-非 demo 有一个决定性前置条件：viewer 资格只有明确 `Allowed` 才放开网外，而当前非 demo 注入的 `DisabledGizmoduckClient` 返回 `Unknown`，于是每个请求都被限制为仅网内，`PhoenixSource` 与 `FallbackSource` 实际不会启用。Demo 还会装配 `PhoenixTopicsSource`。`CachedPostsSource` 一直在列表里，只有显式打开未签名 fixture 才会出数。
+产品默认是全网 For You，网络范围只有一个真源：请求的 `in_network_only`。只有它显式为 `true` 才切到网内专用路径并关闭 `PhoenixSource` 与 `FallbackSource`。QueryBuilder 不依赖 Gizmoduck viewer RPC；Gizmoduck 只在候选水合阶段补作者资料，当前非 demo 资料为空。Demo 还会装配 `PhoenixTopicsSource`。`CachedPostsSource` 一直在列表里，只有显式打开未签名 fixture 才会出数。
 
 ## 7. 补全、过滤和排序
 
@@ -216,28 +216,28 @@ flowchart TD
 | PhoenixRetrievalClient | 设 `PHOENIX_RETRIEVAL_GRPC_ADDR` 后真连 gRPC 网关；缺失时显式 Unavailable 并跳过该召回路；非 demo 拒绝随机权重 |
 | PhoenixPredictionClient | 设 `PHOENIX_PREDICT_GRPC_ADDR` 后真连 gRPC 网关并校验 serving metadata；缺失或校验失败时整批走 `RuleFallbackScorer`；非 demo 拒绝随机权重 |
 | UserActionSequenceOps | 非 demo `DisabledUserActionSequenceFetcher`（空序列）；demo `DemoUserActionSequenceFetcher`（合成行为序列） |
-| GizmoduckClient | 非 demo `DisabledGizmoduckClient`（viewer 资格未知 → 只允许网内；作者资料为空）；demo 允许网外并合成资料 |
+| GizmoduckClient | 仅补作者资料；非 demo `DisabledGizmoduckClient` 返回空，demo 合成昵称 / 粉丝数 |
 | ServedPersistence | `InMemoryServedPersistence`（进程内存，重启即丢） |
 
 这意味着：
 
 - 框架和装配已经完整
-- 非 demo 已经真实接到 mrpyq 的内容与网内召回，但行为序列、viewer 资格、作者资料、viewer 关系后端和持久化曝光仍缺；配好演示组合可端到端跑通（见 [getting-started 第四步](../getting-started/05-第四步-跑通完整推荐链路.md)）
+- 非 demo 已经真实接到 mrpyq 的内容与网内 / 兜底召回，但行为序列、作者资料、viewer 关系后端和持久化曝光仍缺；配好演示组合可端到端跑通（见 [getting-started 第四步](../getting-started/05-第四步-跑通完整推荐链路.md)）
 
 ## 10. 当前默认运行行为
 
 默认 `degraded` 配上 mrpyq 地址后，最常见的不是“候选被清空”，而是“链路只走了一小段”：
 
 1. 没有 `user_action_sequence`，`PhoenixScorer` 整批标 `phoenix_missing_sequence`，所有请求由 `RuleFallbackScorer` 排序
-2. viewer 资格未知，每个请求都被限制为仅网内，`PhoenixSource` / `FallbackSource` 不会启用
+2. 请求未显式限定网内，因此 `FallbackSource` 可启用；`PhoenixSource` 仍会因缺少行为序列而不可用
 3. mrpyq 收件箱以皮 `member_id` 作为 `account_id` 查询，皮维度对齐落地前候选供给可能为空；`creator_member_id` 为空的帖子被 `CoreDataHydrationFilter` 清掉
 
 ```mermaid
 flowchart TD
     A["UAS 为空"] --> B["PhoenixSource 不可用<br/>PhoenixScorer 整批 fallback"]
-    C["viewer 资格 Unknown"] --> D["in_network_only=true<br/>Phoenix / Fallback 源不启用"]
+    C["in_network_only=false"] --> D["网内 + 网外<br/>Fallback 源可启用"]
     E["mrpyq 皮维度未对齐 / creator_member_id 为空"] --> F["网内候选为空或被 CoreDataHydrationFilter 清掉"]
-    B --> G["结果 = mrpyq 关注流 + 规则排序，或为空"]
+    B --> G["结果 = mrpyq 网内 / 兜底候选 + 规则排序，或为空"]
     D --> G
     F --> G
 ```
@@ -248,7 +248,7 @@ flowchart TD
 
 ### 11.1 结果为空、过少或“只有规则排序”
 
-主要由非 demo 仍缺的适配器（UAS、viewer 资格、viewer 关系后端）和 mrpyq 皮维度契约未落地叠加导致。
+主要由非 demo 仍缺的适配器（UAS、viewer 关系后端、作者资料）和 mrpyq 皮维度契约未落地叠加导致。
 
 ### 11.2 同 stage hydrator 依赖问题
 
@@ -296,7 +296,7 @@ flowchart TD
 
 如果结果为空，优先怀疑：
 
-- `PhoenixSource` / `FallbackSource` 因 viewer 资格未知被 `in_network_only` 关闭，或缺少 `user_action_sequence`
+- `PhoenixSource` 因缺少 `user_action_sequence` 不可用，或请求显式设置 `in_network_only=true` 后 `PhoenixSource` / `FallbackSource` 被关闭
 - `ThunderSource` 的 mrpyq 收件箱 `source_ready=false`、皮维度未对齐或召回预算耗尽（日志 `mrpyq adapter recall ...`）
 - `CoreDataHydrationFilter` 因 `creator_member_id` / 正文为空清空候选
 - `VFFilter` 在默认 `fail_closed` 下删掉了所有 `Unavailable` 候选（日志 `visibility unavailable for N candidates`）
@@ -322,4 +322,4 @@ flowchart TD
 
 ## 15. 一句话结论
 
-`home-mixer` 当前已经是一套结构完整的首页编排系统骨架：链路、阶段、策略位点都很清楚，非 demo 也已经真实接到 mrpyq 的内容与网内召回；真正限制它可用性的，不是主流程缺失，而是行为序列、viewer 资格与关系、作者资料、持久化曝光这几个适配器仍是 stub，以及 mrpyq 皮维度契约尚未落地。
+`home-mixer` 当前已经是一套结构完整的首页编排系统骨架：链路、阶段、策略位点都很清楚，非 demo 也已经真实接到 mrpyq 的内容与网内 / 兜底召回；真正限制它可用性的，不是主流程缺失，而是行为序列、viewer 关系、作者资料、持久化曝光这几个适配器仍是 stub，以及 mrpyq 皮维度契约尚未落地。Gizmoduck 仅负责作者资料，网络范围由请求显式控制。

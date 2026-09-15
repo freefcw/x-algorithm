@@ -7,7 +7,7 @@
 gRPC trait 实现在 `home-mixer/server.rs`，公共 proto 到 domain query 的校验与映射在 `home-mixer/query_builder.rs`：
 
 1. 校验 `viewer_id` 是非空、非 NIL 的 24 位小写 hex ObjectId，并把 `seen_ids` / `served_ids` / `impressed_post_ids` 解析为 `PostId`（非法串丢弃并计数）。
-2. 在 200 ms 内读取 viewer policy；只有明确 Allow 才开放网外推荐（非 demo 的 `DisabledGizmoduckClient` 恒返回 Unknown，因此当前非 demo 请求全部仅网内）。
+2. 原样映射请求的 `in_network_only`；QueryBuilder 不请求 Gizmoduck viewer 数据。
 3. 生成 request ID、prediction ID 和 request time。
 4. 构造 `ScoredPostsQuery` 并调用 `PhoenixCandidatePipeline::execute()`。
 5. Application server 将 `selected_candidates` 映射回响应。
@@ -53,7 +53,7 @@ UAS 与 Strato 各使用一个 request-scoped provider；多个字段 owner 共�
 5. `PhoenixMoeSource`（可选）
 6. `CachedPostsSource`
 
-`PhoenixSource` 与 `FallbackSource` 都要求 `!in_network_only`；非 demo 下 viewer 资格未知会让二者都不启用。`CachedPostsSource` 只接受 QueryBuilder 已批准的显式 Demo unsigned fixture。普通请求默认拒绝携带完整缓存候选。
+`PhoenixSource` 与 `FallbackSource` 都要求 `!in_network_only`；默认全网时可启用，只有请求显式仅网内才关闭。Gizmoduck 只承担候选作者资料补全，不参与这个判断。`CachedPostsSource` 只接受 QueryBuilder 已批准的显式 Demo unsigned fixture。普通请求默认拒绝携带完整缓存候选。
 
 ### 3.3 Pre-selection Hydrators
 
@@ -111,7 +111,7 @@ TES 相关 hydrator 里 CoreData / VideoDuration / HasMedia / FilteredTopics / L
 | UAS | `DemoUserActionSequenceFetcher` | `DisabledUserActionSequenceFetcher` | 空序列让 `PhoenixSource` 不可用、`PhoenixScorer` 整批 `phoenix_missing_sequence`，所有请求由 `RuleFallbackScorer` 排序 |
 | Strato | `DemoStratoClient` | `MrpyqStratoClient`（mrpyq `ViewerRelationService`） | 后端尚未实现，调用失败只记日志，`user_features` 全空；两者都拒绝持久化写入 |
 | TES | `DemoTESClient` | `MrpyqTESClient`（mrpyq `BatchGetRecommendationContents`） | 补作者 / 正文 / `created_at_ms` / 互动数 / 一级 eligibility；`creator_member_id` 为空的帖子被 `CoreDataHydrationFilter` 丢弃 |
-| Gizmoduck（QueryBuilder viewer） | `DemoGizmoduckClient`（Allow 网外） | `DisabledGizmoduckClient`（未知 → 仅网内） | 非 demo 因此永不启用 `PhoenixSource` / `FallbackSource`；作者资料 hydrator 也用 Disabled，`screen_names` 为空 |
+| Gizmoduck（作者资料） | `DemoGizmoduckClient`（演示昵称 / 粉丝数） | `DisabledGizmoduckClient` | 只用于 candidate hydration；非 demo 的 `screen_names` 为空，不参与网络范围决策 |
 | VF | `DemoVisibilityFilteringClient`（Allow） | `MrpyqFirstStageEligibilityClient` | 非 demo 只承载一级 `recommendation_eligible`，无 viewer 级判定；`Unchecked / Unavailable`（含成功响应缺帖）按 `HOME_MIXER_VF_FAILURE_POLICY`，默认 `fail_closed` 删除 |
 | 网内 / 兜底召回 | `ThunderClient`（整数 Thunder，`legacy-int-ids`）+ `DemoFallbackPostsClient` | `MrpyqInNetworkPostsClient`（NETWORK / FALLBACK） | mrpyq 单次 RPC 500 ms，一次召回总预算 1500 ms；以皮 `member_id` 作为 `account_id` 查询，皮维度对齐待 mrpyq 落地 |
 | Phoenix retrieval | 配置地址后真实 gRPC | 同左，且拒绝随机权重 | 标准/MoE 调用上限 3 s |

@@ -44,7 +44,7 @@ sequenceDiagram
 
 `DebugScoredPosts` 与普通 ScoredPosts 共享一次 pipeline 执行，但默认返回 `Unavailable`；只有显式启用并通过 `x-home-mixer-debug-token` 校验才会执行和返回过滤前/后的 ID。`GetForYouFeedV2` 只增加 `ForYouFeedQuery` wrapper，原 RPC 保持不变。
 
-Viewer policy 只有明确 Allow 才启用网外推荐；错误、超时和未知字段降级为仅网内。请求携带未签名 `cached_posts` 默认被拒绝，只有显式 Demo fixture 开关可使用。
+QueryBuilder 不请求 Gizmoduck viewer RPC。`in_network_only` 只取客户端显式值：`true` 只走网内，`false` 同时允许网内和网外。请求携带未签名 `cached_posts` 默认被拒绝，只有显式 Demo fixture 开关可使用。
 
 ## 3. 一次请求的完整时序
 

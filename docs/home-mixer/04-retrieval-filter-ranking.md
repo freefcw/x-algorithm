@@ -22,7 +22,7 @@ flowchart LR
     FB --> M
 ```
 
-非 demo 下有一个决定性的前置条件：`QueryBuilder` 只有拿到明确的 viewer 资格 `Allowed` 才放开网外；当前非 demo 注入的 `DisabledGizmoduckClient` 返回 `Unknown`，于是每个请求都变成 `in_network_only`，`PhoenixSource` 与 `FallbackSource` 都不会启用，实际只有 `ThunderSource` 一路在跑。
+`QueryBuilder` 默认构造全网 For You 请求，网络范围完全由请求的 `in_network_only` 决定。只有显式设置为 `true` 时，`PhoenixSource` 与 `FallbackSource` 才不会启用，`ThunderSource` 则按网内专用语义继续运行。Gizmoduck 只在后续水合阶段补作者资料。
 
 ### 1.1 `ThunderSource`
 

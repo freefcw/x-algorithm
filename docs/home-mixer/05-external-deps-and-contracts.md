@@ -34,7 +34,7 @@ flowchart LR
 | `country_code` / `language_code` | 地域与语言上下文 | VF viewer context |
 | `seen_ids` | 已看过帖子 | `PreviouslySeenPostsFilter` |
 | `served_ids` | 已下发帖子 | `PreviouslyServedPostsFilter` |
-| `in_network_only` | 仅网内；viewer 资格非 `Allowed` 时由 `QueryBuilder` 强制置 true | `PhoenixSource.enable()`（还要求无 cached posts、非 strict/cold-start topic）、`FallbackSource.enable()`、`ThunderSource` 的 `served_type` |
+| `in_network_only` | 唯一的网络范围开关；只有请求显式为 true 才仅网内，否则同时允许网内和网外 | `PhoenixSource.enable()`（还要求无 cached posts、非 strict/cold-start topic）、`FallbackSource.enable()`、`ThunderSource` 的 `served_type` |
 | `is_bottom_request` | 是否翻页 | `PreviouslyServedPostsFilter.enable()` |
 | `bloom_filter_entries` | 客户端布隆过滤器 | `PreviouslySeenPostsFilter` |
 
@@ -153,7 +153,7 @@ sequenceDiagram
 | `PhoenixRetrievalClient` | `PhoenixSource` | 网外召回；3 s 上限 |
 | `InNetworkPostsClient` | `ThunderSource` / `FallbackSource` | 网内与兜底召回；demo 由 `ThunderClient` 实现，非 demo 由 `MrpyqInNetworkPostsClient` 实现 |
 | `TESClient` | 多个 candidate hydrator（共享 `TesHydrationProvider`） | 补作者、正文、`created_at_ms`、互动计数、一级 `recommendation_eligible` 和媒体；每个批次 500 ms 上限 |
-| `GizmoduckClient` | `QueryBuilder` / `GizmoduckCandidateHydrator` | viewer policy 200 ms；post-selection 作者资料批次 500 ms |
+| `GizmoduckClient` | `GizmoduckCandidateHydrator` | post-selection 作者资料批次 500 ms |
 | `UserTopicReader` / `TopicRetrievalClient` | `UserTopicsQueryHydrator` / `PhoenixTopicsSource` | profile 读取和 Topic 召回各 500 ms 上限 |
 | `PhoenixPredictionClient` | `PhoenixScorer` | 精排预测；总调用上限 5 s。超时、失败或没有行为序列时整批标 `degraded_reason`，由 `RuleFallbackScorer` 用规则分覆盖 |
 | `VisibilityFilteringClient` | `VFCandidateHydrator` | 可见性审核；500 ms 上限。超时、不可用与成功响应缺帖都记为 `Unavailable`，`VFFilter` 按 `HOME_MIXER_VF_FAILURE_POLICY` 处理（默认 `fail_closed` 丢弃） |
@@ -174,7 +174,7 @@ sequenceDiagram
 | `PhoenixRetrievalClient` | 真实 gRPC 客户端（可选） | 设置 `PHOENIX_RETRIEVAL_GRPC_ADDR` 后调用 Phoenix 网关；标准/MoE 召回上限 3 s，未设置时显式 Unavailable，由 Source 跳过该召回路。非 demo 拒绝 `random-weights=true` 的网关 |
 | `PhoenixPredictionClient` | `SlimPhoenixPredictionClient`（可选真连） | 设置 `PHOENIX_PREDICT_GRPC_ADDR` 后调用 Phoenix 网关，校验 serving metadata 与响应形状；精排上限 5 s，未设置、失败或校验不通过时整批进入 `RuleFallbackScorer`。非 demo 拒绝随机权重 |
 | `UserActionSequenceOps` | 非 demo `DisabledUserActionSequenceFetcher`；demo `DemoUserActionSequenceFetcher` | 非 demo 返回空行为序列，序列聚合报错，`scoring_sequence` / `retrieval_sequence` 为 `None`：`PhoenixSource` 不能召回，`PhoenixScorer` 整批标 `phoenix_missing_sequence`，即便配置了 Phoenix 地址也不会调用模型 |
-| `GizmoduckClient` | 非 demo `DisabledGizmoduckClient`；demo `DemoGizmoduckClient` | 非 demo 返回未知 viewer policy，`QueryBuilder` 把每个请求限制为仅网内（网外 / 兜底召回因此不会启用），作者资料全部为空；`demo` 明确允许网外并合成资料 |
+| `GizmoduckClient` | 非 demo `DisabledGizmoduckClient`；demo `DemoGizmoduckClient` | 只承担作者资料补全；非 demo 全部为空，`demo` 合成昵称 / 粉丝数 |
 | `ServedPersistence` | `InMemoryServedPersistence` | 进程内存，重启即丢、多副本不共享；响应前同步写入，失败返回 `Unavailable` |
 | `GrpcVMRankerClient` | 真实 gRPC 客户端（可选，仅 demo） | 同时设置 `HOME_MIXER_ENABLE_VM_RANKER=1` 与 `VM_RANKER_GRPC_ADDR` 后调用本仓库 `vm-ranker` 服务；整数 proto 无法承载真实 ObjectId，非 demo 强制禁用 |
 
@@ -196,7 +196,7 @@ sequenceDiagram
 
 禁止仅设置开关就把能力标为“已接入”。开关是人工批准入口，真实完成状态仍以能力台账中的合同和环境验收证据为准。Ads、Prompt、WhoToFollow、PushToHome 已挂进 ForYou 外层 pipeline，但 source 的 `enable()` 恒为 false，默认跑不到；Kafka/Redis 和 Grox 模型组件不会进入默认装配。
 
-Viewer policy 属于请求主边界，不作为可选旁路开关。只有 `ViewerEligibility::Allowed` 才允许网外候选；`Denied`、`Unknown`、真实服务错误或超过 200 ms 时都强制仅网内。VF 结果使用 `Allowed / Restricted / Unchecked / Unavailable` 明确区分；未知结果不再等价于审核通过。
+网络范围只有一个真源：只有请求显式 `in_network_only=true` 才仅网内，否则同时允许网内和网外。QueryBuilder 不请求 Gizmoduck viewer RPC；Gizmoduck 只用于作者资料补全。VF 结果使用 `Allowed / Restricted / Unchecked / Unavailable` 明确区分，它是独立的候选安全策略，也不替代网络范围开关。
 
 演示实现是独立的 `Demo*` 类型，由装配层按 `HOME_MIXER_MODE=demo` 选择注入；`HOME_MIXER_DEMO=1` 仅作为旧脚本兼容别名。默认 `degraded` 必须配置 `MRPYQ_RECOMMENDATION_DATA_ADDR`，否则拒绝启动；调用方身份、TES、UAS、Strato、VF、网内 / 兜底、Phoenix 元数据、served 落库这些合同未全部验收前，`production_ready` 拒绝启动。
 
@@ -208,7 +208,7 @@ flowchart TD
     A --> T["Thunder 整数 gRPC<br/>仅 demo"]
     M --> D["网内 / 兜底候选 + 内容 + 一级 eligibility"]
     P --> E["网外候选 + 行为概率"]
-    C --> F["无行为序列 → 规则排序；<br/>viewer 资格未知 → 仅网内"]
+    C --> F["无行为序列 → 规则排序；<br/>Gizmoduck 只补作者资料"]
 ```
 
 接真实平台时的替换顺序和每个 stub 对应的改造点，见 [getting-started：从演示到真实系统](../getting-started/06-从演示到真实系统.md)。

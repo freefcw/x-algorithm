@@ -27,7 +27,7 @@ SideEffect 失败会记录日志，但 `tokio::spawn` 任务在进程关闭或 r
 
 ### 2.4 框架泛型合同仍允许过宽的降级
 
-Candidate Pipeline 对单个 hydrator/scorer/filter 错误采取逐组件隔离，这是 portable migration 需要的默认语义；内容安全、viewer eligibility 和身份认证因此不能只依赖通用 fallback，必须在对应领域 filter 或 RPC 边界显式定义 fail-safe 状态。当前 VF 和 Viewer 已采用该方式，新增安全组件需要遵循同一约束。
+Candidate Pipeline 对单个 hydrator/scorer/filter 错误采取逐组件隔离，这是 portable migration 需要的默认语义；内容安全、viewer eligibility 和身份认证因此不能只依赖通用 fallback，必须在对应领域 filter 或 RPC 边界显式定义状态。当前 VF 有独立故障策略，网络范围则只由请求的 `in_network_only` 决定；新增安全组件也需要先定义自己的边界语义，不能借用范围开关表达其他策略。
 
 ## 3. 测试重点
 
@@ -36,7 +36,7 @@ Candidate Pipeline 对单个 hydrator/scorer/filter 错误采取逐组件隔离�
 - workspace/Home Mixer 全链路测试
 - Selector 结果顺序和 underfill 相关框架行为测试
 - UAS、Strato、TES 跨用户/跨请求隔离测试
-- Viewer policy、VF 缺失/错误/超时、Debug token、unsigned cache 和 mode validation 测试
+- 请求网络范围映射、VF 缺失/错误/超时、Debug token、unsigned cache 和 mode validation 测试
 - Demo ScoredPosts、ForYou、Debug wire 验收
 
 下一步应优先补：

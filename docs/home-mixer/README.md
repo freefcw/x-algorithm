@@ -14,7 +14,7 @@
 - 它把一次首页请求拆成查询补全、双路召回、候选补全、过滤、打分、选择、可见性检查和副作用。
 - 真实业务逻辑主要装配在 `home-mixer/candidate_pipeline/phoenix_candidate_pipeline.rs`。
 - 执行语义由 `candidate-pipeline/candidate_pipeline.rs` 决定。
-- 非 demo 模式的业务数据面是 mrpyq（`MRPYQ_RECOMMENDATION_DATA_ADDR` 必填，承载网内 / 兜底召回、内容补全、一级 eligibility、viewer 关系）；行为序列、viewer 资格、作者资料、持久化曝光这几个端口仍是 stub，因此文档会明确区分“设计意图”和“当前真实运行效果”。
+- 非 demo 模式的业务数据面是 mrpyq（`MRPYQ_RECOMMENDATION_DATA_ADDR` 必填，承载网内 / 兜底召回、内容补全、一级 eligibility、viewer 关系）；行为序列、作者资料和持久化曝光端口仍是 stub，因此文档会明确区分“设计意图”和“当前真实运行效果”。
 
 ```mermaid
 flowchart LR

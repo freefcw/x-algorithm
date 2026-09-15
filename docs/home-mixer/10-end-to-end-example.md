@@ -211,10 +211,10 @@ flowchart LR
 
 | 依赖 | 默认行为 |
 | --- | --- |
-| `DisabledGizmoduckClient.get_viewer_data` | viewer 资格 `Unknown` → `QueryBuilder` 把请求改成 `in_network_only=true` |
+| QueryBuilder | 不请求 Gizmoduck，原样保留请求的 `in_network_only=false` |
 | `DisabledUserActionSequenceFetcher` | 空行为序列 → 聚合报错 → `scoring_sequence` / `retrieval_sequence` 为 `None` |
 | `MrpyqStratoClient.get_user_features` | mrpyq 尚未实现 `ViewerRelationService` → 调用失败，只记日志 → 空 `UserFeatures` |
-| `PhoenixSource` / `FallbackSource` | `in_network_only=true` → `enable()` 为 false，根本不执行 |
+| `PhoenixSource` / `FallbackSource` | 默认全网；`PhoenixSource` 因行为序列为空而失败，`FallbackSource` 正常读取 mrpyq FALLBACK 池 |
 | `MrpyqInNetworkPostsClient` | 以 `viewer_id`（皮 `member_id`）作为 `account_id` 查 NETWORK 收件箱；皮维度对齐前可能取到空或错误的收件箱 |
 | `MrpyqTESClient` | 用 `BatchGetRecommendationContents` 补作者 / 正文 / `created_at_ms` / `recommendation_eligible`；`creator_member_id` 为空的帖子无 core data |
 | `PhoenixScorer` | 无序列 → 整批 `phoenix_missing_sequence` → `RuleFallbackScorer` 规则分 |
@@ -234,8 +234,8 @@ sequenceDiagram
     participant SCO as Scorers
     participant Resp as Response
 
-    Req->>QB: viewer 资格
-    QB-->>Req: Unknown → in_network_only=true
+    Req->>QB: in_network_only=false
+    QB-->>Req: 原样映射，不请求 Gizmoduck
 
     Req->>QH: 获取 user_action_sequence
     QH-->>Req: 失败，空行为序列（只记日志）
@@ -244,7 +244,7 @@ sequenceDiagram
     QH-->>Req: 失败，ViewerRelationService 未实现（只记日志）→ 全为空
 
     Req->>SRC: PhoenixSource / FallbackSource
-    SRC-->>Req: enable()=false，不执行
+    SRC-->>Req: Phoenix 缺序列失败；Fallback 返回兜底候选
 
     Req->>SRC: ThunderSource（mrpyq NETWORK）
     SRC-->>Req: 收件箱候选，只带 tweet_id
@@ -255,14 +255,14 @@ sequenceDiagram
     Req->>SCO: PhoenixScorer → RankingScorer → RuleFallbackScorer
     SCO-->>Req: 整批 phoenix_missing_sequence，按新鲜度 + 网内 + 互动数排序
 
-    Req-->>Resp: 规则排序的关注流；无 screen_names，served 只写内存
+    Req-->>Resp: 规则排序的全网 Feed；无 screen_names，served 只写内存
 ```
 
 ### 5.4 示例 B 的结论
 
 在当前默认 degraded 装配下，最常见的不是“排序差”，而是：
 
-- 链路只走了 mrpyq 关注收件箱这一路，网外召回、兜底池和 Phoenix 精排都不可达
+- 链路会走 mrpyq NETWORK 与 FALLBACK 两路；Phoenix 召回和精排因缺少行为序列不可达
 - 所有请求都由 `RuleFallbackScorer` 排序，模型没有参与
 - 拉黑 / 屏蔽词过滤因为关系后端缺失而不生效
 
@@ -286,8 +286,8 @@ sequenceDiagram
 这条链路非常依赖外部依赖返回最小可用数据，尤其是：
 
 1. `user_action_sequence`（决定模型路径是否可达）
-2. viewer 资格 `Allowed`（决定网外 / 兜底召回是否启用）
+2. 请求显式 `in_network_only=true`（这是关闭网外 / 兜底召回的唯一范围条件）
 3. mrpyq 内容里的 `creator_member_id` 与正文（决定候选能否通过 `CoreDataHydrationFilter`）
 4. viewer 关系（决定拉黑 / 屏蔽词过滤是否生效）
 
-没有这几类数据，整条链路就会退化成规则排序的关注流。
+没有这几类数据，整条链路会退化成规则排序的全网 Feed 骨架。

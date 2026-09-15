@@ -56,7 +56,7 @@
 | `language_code` | `String` | proto | 请求入口 | `get_viewer()` |
 | `seen_ids` | `Vec<PostId>` | proto | `QueryBuilder` 丢弃非法串并计数 | `PreviouslySeenPostsFilter` |
 | `served_ids` | `Vec<PostId>` | proto + 本地状态 | `QueryBuilder` 解析；`ServedHistoryQueryHydrator` 再合并 `FeedStateStore` 里的已下发历史 | `PreviouslyServedPostsFilter` |
-| `in_network_only` | `bool` | proto 或 viewer 资格 | 请求入口；viewer 资格非 `Allowed`（含非 demo 的 `Unknown`）时被 `QueryBuilder` 强制置 true | `PhoenixSource` / `FallbackSource` enable、`ThunderSource` 的 `served_type`、side effect enable |
+| `in_network_only` | `bool` | proto | 请求入口原样保留；只有请求显式为 true 才仅网内 | `PhoenixSource` / `FallbackSource` enable、`ThunderSource` 的 `served_type`、side effect enable |
 | `is_bottom_request` | `bool` | proto | 请求入口 | `PreviouslyServedPostsFilter` |
 | `bloom_filter_entries` | `Vec<ImpressionBloomFilterEntry>` | proto | 请求入口 | `PreviouslySeenPostsFilter` |
 | `scoring_sequence` | `Option<UserActionSequence>` | hydrated | `ScoringSequenceQueryHydrator` | `PhoenixScorer` |
