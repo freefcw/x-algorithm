@@ -20,7 +20,11 @@ impl QueryHydrator<ScoredPostsQuery> for ServedHistoryQueryHydrator {
         let mut served_ids = query.served_ids.clone();
         append_unique(
             &mut served_ids,
-            self.store.load(query.user_id)?.served_post_ids,
+            query
+                .load_feed_state(self.store.as_ref())
+                .await?
+                .served_post_ids
+                .clone(),
         );
         Ok(ScoredPostsQuery {
             served_ids,

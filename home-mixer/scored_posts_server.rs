@@ -1,5 +1,5 @@
 use crate::candidate_pipeline::phoenix_candidate_pipeline::PhoenixCandidatePipeline;
-use crate::clients::served_persistence::{InMemoryServedPersistence, ServedPersistence};
+use crate::clients::served_persistence::{FeedStateServedPersistence, ServedPersistence};
 use crate::debug_access::{DebugAccessError, DebugAccessPolicy};
 use crate::feed_state::{FeedStateStore, InMemoryFeedStateStore};
 use crate::models::candidate::CandidateHelpers;
@@ -55,7 +55,7 @@ impl ScoredPostsServer {
             pipeline,
             query_builder,
             debug_access: DebugAccessPolicy::default(),
-            served_persist: Arc::new(InMemoryServedPersistence::new(Arc::clone(&state_store))),
+            served_persist: Arc::new(FeedStateServedPersistence::new(Arc::clone(&state_store))),
             feed_state: state_store,
         }
     }
@@ -93,13 +93,15 @@ impl ScoredPostsServer {
         Arc::clone(&self.served_persist)
     }
 
-    pub(crate) fn persist_selected(
+    pub(crate) async fn persist_selected(
         &self,
         user_id: crate::models::UserId,
         ids: &[crate::models::PostId],
         request_time_ms: i64,
     ) -> Result<(), String> {
-        self.served_persist.persist(user_id, ids, request_time_ms)
+        self.served_persist
+            .persist(user_id, ids, request_time_ms)
+            .await
     }
 
     pub async fn score(&self, query: ScoredPostsQuery) -> ScoredPostsOutput {
@@ -107,6 +109,20 @@ impl ScoredPostsServer {
     }
 
     pub(crate) async fn score_with_debug(
+        &self,
+        query: ScoredPostsQuery,
+    ) -> (ScoredPostsOutput, pb::PipelineDebugInfo) {
+        self.score_in_request_with_debug(query.start_request())
+            .await
+    }
+
+    /// Score as part of an enclosing For You request, retaining its FeedState
+    /// snapshot instead of starting a second request context.
+    pub(crate) async fn score_in_request(&self, query: ScoredPostsQuery) -> ScoredPostsOutput {
+        self.score_in_request_with_debug(query).await.0
+    }
+
+    async fn score_in_request_with_debug(
         &self,
         query: ScoredPostsQuery,
     ) -> (ScoredPostsOutput, pb::PipelineDebugInfo) {

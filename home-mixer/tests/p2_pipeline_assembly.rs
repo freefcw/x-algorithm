@@ -107,7 +107,10 @@ async fn served_state_is_read_by_the_same_pipeline_that_persists_it() {
     .await
     .expect("demo assembly");
     let store: Arc<dyn FeedStateStore> = Arc::new(InMemoryFeedStateStore::new(10, 10));
-    store.record(uid(7), vec![pid(9)], 123).expect("seed state");
+    store
+        .record(uid(7), vec![pid(9)], 123)
+        .await
+        .expect("seed state");
     pipeline.install_feed_state_store(store);
     let components = pipeline.components();
     let query_hydrators = names(&components, PipelineStage::QueryHydrator);
@@ -117,8 +120,9 @@ async fn served_state_is_read_by_the_same_pipeline_that_persists_it() {
 
 struct FailingServedPersistence;
 
+#[tonic::async_trait]
 impl ServedPersistence for FailingServedPersistence {
-    fn persist(
+    async fn persist(
         &self,
         _viewer_id: home_mixer::models::UserId,
         _served_post_ids: &[home_mixer::models::PostId],
@@ -175,12 +179,16 @@ impl ScoredPostsProvider for StaticPostsProvider {
 
 struct FailingFeedStateStore;
 
+#[tonic::async_trait]
 impl FeedStateStore for FailingFeedStateStore {
-    fn load(&self, _user_id: home_mixer::models::UserId) -> Result<FeedStateSnapshot, String> {
+    async fn load(
+        &self,
+        _user_id: home_mixer::models::UserId,
+    ) -> Result<FeedStateSnapshot, String> {
         Ok(FeedStateSnapshot::default())
     }
 
-    fn record(
+    async fn record(
         &self,
         _user_id: home_mixer::models::UserId,
         _served_post_ids: Vec<home_mixer::models::PostId>,
@@ -279,6 +287,7 @@ async fn score_does_not_persist_served_ids() {
     assert!(
         store
             .load(uid(7))
+            .await
             .expect("feed state")
             .served_post_ids
             .is_empty(),
@@ -327,7 +336,11 @@ async fn scored_posts_rpc_persists_before_2xx() {
     .expect("served persist success is 2xx");
 
     assert_eq!(
-        store.load(uid(7)).expect("feed state").served_post_ids,
+        store
+            .load(uid(7))
+            .await
+            .expect("feed state")
+            .served_post_ids,
         vec![tweet_id]
     );
 }
@@ -356,7 +369,11 @@ async fn for_you_persist_is_visible_to_the_next_scored_posts_request() {
     .expect("for you persist success is 2xx");
 
     assert_eq!(
-        store.load(uid(7)).expect("feed state").served_post_ids,
+        store
+            .load(uid(7))
+            .await
+            .expect("feed state")
+            .served_post_ids,
         vec![tweet_id],
         "ForYou must persist into the same store ScoredPosts hydrators read"
     );

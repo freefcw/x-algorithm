@@ -20,7 +20,11 @@ impl QueryHydrator<ScoredPostsQuery> for PastRequestTimestampsQueryHydrator {
         let mut past_request_timestamps_ms = query.past_request_timestamps_ms.clone();
         append_unique(
             &mut past_request_timestamps_ms,
-            self.store.load(query.user_id)?.request_timestamps_ms,
+            query
+                .load_feed_state(self.store.as_ref())
+                .await?
+                .request_timestamps_ms
+                .clone(),
         );
         Ok(ScoredPostsQuery {
             past_request_timestamps_ms,

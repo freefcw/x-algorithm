@@ -13,7 +13,7 @@ pub trait ScoredPostsProvider: Send + Sync {
 #[async_trait]
 impl ScoredPostsProvider for ScoredPostsServer {
     async fn score_posts(&self, query: ScoredPostsQuery) -> Result<ScoredPostsOutput, String> {
-        Ok(self.score(query).await)
+        Ok(self.score_in_request(query).await)
     }
 }
 

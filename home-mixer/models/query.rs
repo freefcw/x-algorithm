@@ -1,7 +1,10 @@
+use crate::feed_state::{FeedStateSnapshot, FeedStateStore};
 use crate::models::candidate::PostCandidate;
 use crate::models::ids::{PostId, UserId};
 use crate::models::user_features::UserFeatures;
 use crate::visibility::vf_client::{GetTwitterContextViewer, TwitterContextViewer};
+use std::sync::Arc;
+use tokio::sync::OnceCell;
 use x_algorithm_proto::home_mixer::ImpressionBloomFilterEntry;
 use xai_candidate_pipeline::candidate_pipeline::HasRequestId;
 
@@ -50,9 +53,29 @@ pub struct ScoredPostsQuery {
     pub request_id: String,
     pub prediction_id: u64,
     pub request_time_ms: i64,
+    /// A single FeedState read shared by every pipeline participating in one
+    /// business request. Entry points replace this cell for each invocation.
+    #[doc(hidden)]
+    pub feed_state_snapshot: Arc<OnceCell<Result<FeedStateSnapshot, String>>>,
 }
 
 impl ScoredPostsQuery {
+    pub(crate) fn start_request(mut self) -> Self {
+        self.feed_state_snapshot = Arc::new(OnceCell::new());
+        self
+    }
+
+    pub(crate) async fn load_feed_state(
+        &self,
+        store: &dyn FeedStateStore,
+    ) -> Result<&FeedStateSnapshot, String> {
+        self.feed_state_snapshot
+            .get_or_init(|| async { store.load(self.user_id).await })
+            .await
+            .as_ref()
+            .map_err(Clone::clone)
+    }
+
     pub fn topic_recall_mode(&self) -> TopicRecallMode {
         if !self.topic_ids.is_empty() {
             return TopicRecallMode::Strict;

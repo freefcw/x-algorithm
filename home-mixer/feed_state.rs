@@ -1,9 +1,8 @@
-//! Bounded in-memory served-history and request-timestamp state (U1).
+//! Served-history and request-timestamp state contracts (U1).
 //!
-//! Upstream reads and writes this state through external storage clients and
-//! asynchronous SideEffects. The local port keeps the same observable request
-//! semantics behind `FeedStateStore` until a production history contract
-//! (atomicity, retry, retention, recovery) exists.
+//! This domain module provides the store contract and the bounded in-memory
+//! implementation used by tests and demo mode. Production adapters live under
+//! `clients`.
 
 use std::collections::{HashMap, VecDeque};
 use std::sync::Mutex;
@@ -14,9 +13,10 @@ pub struct FeedStateSnapshot {
     pub request_timestamps_ms: Vec<i64>,
 }
 
+#[tonic::async_trait]
 pub trait FeedStateStore: Send + Sync {
-    fn load(&self, user_id: crate::models::UserId) -> Result<FeedStateSnapshot, String>;
-    fn record(
+    async fn load(&self, user_id: crate::models::UserId) -> Result<FeedStateSnapshot, String>;
+    async fn record(
         &self,
         user_id: crate::models::UserId,
         served_post_ids: Vec<crate::models::PostId>,
@@ -66,8 +66,9 @@ impl InMemoryFeedStateStore {
     }
 }
 
+#[tonic::async_trait]
 impl FeedStateStore for InMemoryFeedStateStore {
-    fn load(&self, user_id: crate::models::UserId) -> Result<FeedStateSnapshot, String> {
+    async fn load(&self, user_id: crate::models::UserId) -> Result<FeedStateSnapshot, String> {
         let mut cache = self
             .cache
             .lock()
@@ -82,7 +83,7 @@ impl FeedStateStore for InMemoryFeedStateStore {
         Ok(snapshot.unwrap_or_default())
     }
 
-    fn record(
+    async fn record(
         &self,
         user_id: crate::models::UserId,
         served_post_ids: Vec<crate::models::PostId>,

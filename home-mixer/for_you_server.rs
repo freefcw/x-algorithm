@@ -1,5 +1,5 @@
 use crate::candidate_pipeline::for_you_candidate_pipeline::ForYouCandidatePipeline;
-use crate::clients::served_persistence::{InMemoryServedPersistence, ServedPersistence};
+use crate::clients::served_persistence::{FeedStateServedPersistence, ServedPersistence};
 use crate::feed_state::FeedStateStore;
 use crate::feed_stats::{FeedStatsSink, LoggingFeedStats};
 use crate::models::feed_item::FeedItem;
@@ -84,7 +84,7 @@ impl ForYouFeedServer {
         served_persist: Option<Arc<dyn ServedPersistence>>,
     ) -> Self {
         let served_persist = served_persist
-            .unwrap_or_else(|| Arc::new(InMemoryServedPersistence::new(Arc::clone(&state_store))));
+            .unwrap_or_else(|| Arc::new(FeedStateServedPersistence::new(Arc::clone(&state_store))));
         Self {
             query_builder,
             pipeline: ForYouCandidatePipeline::with_local_state(
@@ -104,7 +104,7 @@ impl ForYouFeedServer {
 
     pub async fn get_for_you_feed(&self, query: ScoredPostsQuery) -> ForYouFeedOutput {
         let started = Instant::now();
-        let result = self.pipeline.execute(query).await;
+        let result = self.pipeline.execute(query.start_request()).await;
         let request_id = result.query.request_id.clone();
         let persist_error = if let Some(persist) = &self.served_persist {
             let served_post_ids = result
@@ -118,6 +118,7 @@ impl ForYouFeedServer {
                     &served_post_ids,
                     result.query.request_time_ms,
                 )
+                .await
                 .err()
         } else {
             None

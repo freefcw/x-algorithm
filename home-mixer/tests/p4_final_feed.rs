@@ -787,41 +787,58 @@ impl ScoredPostsProvider for ServedAwareScoredPostsProvider {
     }
 }
 
-#[test]
-fn local_state_truncates_oldest_ids_and_timestamps() {
+#[tokio::test]
+async fn local_state_truncates_oldest_ids_and_timestamps() {
     let state = InMemoryFeedStateStore::new(2, 1);
     state
         .record(uid(42), vec![pid(1), pid(2)], 100)
+        .await
         .expect("first update");
     state
         .record(uid(42), vec![pid(3)], 200)
+        .await
         .expect("second update");
 
-    let snapshot = state.load(uid(42)).expect("state snapshot");
+    let snapshot = state.load(uid(42)).await.expect("state snapshot");
 
     assert_eq!(snapshot.served_post_ids, vec![pid(2), pid(3)]);
     assert_eq!(snapshot.request_timestamps_ms, vec![200]);
 }
 
-#[test]
-fn local_state_evicts_the_least_recently_updated_user() {
+#[tokio::test]
+async fn local_state_evicts_the_least_recently_updated_user() {
     let state = InMemoryFeedStateStore::with_max_users(2, 1, 2);
-    state.record(uid(1), vec![pid(10)], 100).expect("user one");
-    state.record(uid(2), vec![pid(20)], 200).expect("user two");
+    state
+        .record(uid(1), vec![pid(10)], 100)
+        .await
+        .expect("user one");
+    state
+        .record(uid(2), vec![pid(20)], 200)
+        .await
+        .expect("user two");
     state
         .record(uid(3), vec![pid(30)], 300)
+        .await
         .expect("user three");
 
     assert_eq!(
-        state.load(uid(1)).expect("evicted user"),
+        state.load(uid(1)).await.expect("evicted user"),
         Default::default()
     );
     assert_eq!(
-        state.load(uid(2)).expect("second user").served_post_ids,
+        state
+            .load(uid(2))
+            .await
+            .expect("second user")
+            .served_post_ids,
         vec![pid(20)]
     );
     assert_eq!(
-        state.load(uid(3)).expect("third user").served_post_ids,
+        state
+            .load(uid(3))
+            .await
+            .expect("third user")
+            .served_post_ids,
         vec![pid(30)]
     );
 }
