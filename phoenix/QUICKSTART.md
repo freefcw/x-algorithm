@@ -23,6 +23,10 @@ export PYTHONPATH=$PWD
 The engine extra is required for training and serving. The first model run may
 take a few minutes while JAX compiles.
 
+The combined two-tower H100/GB300 presets use the CuTeDSL FA4 attention
+implementation. To run those presets on Linux, install the additional FA4
+dependencies with `uv sync --extra engine --extra fa4`.
+
 Verify the install with random weights:
 
 ```bash
