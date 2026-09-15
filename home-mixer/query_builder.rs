@@ -1,36 +1,23 @@
-use crate::clients::gizmoduck_client::{
-    DisabledGizmoduckClient, GizmoduckClient, ViewerData, ViewerEligibility,
-};
 use crate::feature_policy::HomeMixerFeatures;
 use crate::models::candidate::PostCandidate;
-use crate::models::ids::{parse_wire_id, ObjectId, UserId};
+use crate::models::ids::{parse_wire_id, ObjectId};
 use crate::models::query::ScoredPostsQuery;
 use crate::util::request_util::{current_time_ms, generate_request_id};
-use std::sync::Arc;
-use std::time::Duration;
 use tonic::Status;
 use x_algorithm_proto::home_mixer as pb;
 
-const VIEWER_DATA_TIMEOUT_MS: u64 = 200;
-
 /// Builds request-domain objects at the RPC boundary.
 ///
-/// Viewer policy is fail-safe: only an explicit allow enables out-of-network
-/// recommendations. Additional viewer fields require public adapters and
-/// explicit query ownership before they can be enabled.
+/// Full-network recommendations are the product default. Only the explicit
+/// request option can restrict the query to in-network.
 #[derive(Clone)]
 pub struct QueryBuilder {
     features: HomeMixerFeatures,
-    gizmoduck_client: Arc<dyn GizmoduckClient + Send + Sync>,
-    viewer_data_timeout: Duration,
 }
 
 impl Default for QueryBuilder {
     fn default() -> Self {
-        Self::new(
-            HomeMixerFeatures::default(),
-            Arc::new(DisabledGizmoduckClient),
-        )
+        Self::new(HomeMixerFeatures::default())
     }
 }
 
@@ -39,20 +26,8 @@ pub struct RequestContext {
 }
 
 impl QueryBuilder {
-    pub fn new(
-        features: HomeMixerFeatures,
-        gizmoduck_client: Arc<dyn GizmoduckClient + Send + Sync>,
-    ) -> Self {
-        Self {
-            features,
-            gizmoduck_client,
-            viewer_data_timeout: Duration::from_millis(VIEWER_DATA_TIMEOUT_MS),
-        }
-    }
-
-    pub fn with_viewer_data_timeout(mut self, timeout: Duration) -> Self {
-        self.viewer_data_timeout = timeout;
-        self
+    pub fn new(features: HomeMixerFeatures) -> Self {
+        Self { features }
     }
 
     pub async fn build(&self, proto_query: pb::ScoredPostsQuery) -> Result<RequestContext, Status> {
@@ -71,52 +46,15 @@ impl QueryBuilder {
             ));
         }
 
-        let viewer_data = self.fetch_viewer_data(viewer_id).await;
         Ok(RequestContext {
-            query: query_from_proto(proto_query, self.features, viewer_data),
+            query: query_from_proto(proto_query, self.features),
         })
-    }
-
-    async fn fetch_viewer_data(&self, viewer_id: UserId) -> ViewerData {
-        match tokio::time::timeout(
-            self.viewer_data_timeout,
-            self.gizmoduck_client.get_viewer_data(viewer_id),
-        )
-        .await
-        {
-            Ok(Ok(data)) => {
-                if data.for_you_eligibility == ViewerEligibility::Unknown {
-                    log::warn!(
-                        "viewer eligibility is unknown for user {}; restricting request to in-network recommendations",
-                        viewer_id
-                    );
-                }
-                data
-            }
-            Ok(Err(error)) => {
-                log::warn!(
-                    "viewer data unavailable for user {}: {}; restricting request to in-network recommendations",
-                    viewer_id,
-                    error
-                );
-                ViewerData::default()
-            }
-            Err(_) => {
-                log::warn!(
-                    "viewer data timed out for user {} after {} ms; restricting request to in-network recommendations",
-                    viewer_id,
-                    self.viewer_data_timeout.as_millis()
-                );
-                ViewerData::default()
-            }
-        }
     }
 }
 
 fn query_from_proto(
     proto_query: pb::ScoredPostsQuery,
     features: HomeMixerFeatures,
-    viewer_data: ViewerData,
 ) -> ScoredPostsQuery {
     let pb::ScoredPostsQuery {
         viewer_id,
@@ -196,7 +134,6 @@ fn query_from_proto(
     if invalid_ids > 0 {
         log::warn!("QueryBuilder: dropped {invalid_ids} illegal identity string(s)");
     }
-    let in_network_only = in_network_only || !viewer_data.for_you_eligibility.allows_for_you();
     let enable_phoenix_moe = features.phoenix_moe && enable_phoenix_moe;
 
     ScoredPostsQuery {

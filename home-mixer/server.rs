@@ -1,8 +1,3 @@
-use crate::clients::gizmoduck_client::{
-    DemoGizmoduckClient, DisabledGizmoduckClient, GizmoduckClient,
-};
-#[cfg(test)]
-use crate::clients::gizmoduck_client::{ViewerData, ViewerEligibility};
 #[cfg(test)]
 use crate::feature_policy::HomeMixerFeatures;
 use crate::for_you_server::ForYouFeedServer;
@@ -35,13 +30,7 @@ impl HomeMixerServer {
                 "HOME_MIXER_MODE=degraded: caller identity, UAS, Gizmoduck, Phoenix metadata, and served persist contracts are still incomplete"
             );
         }
-        let viewer_client: Arc<dyn GizmoduckClient + Send + Sync> = match config.mode {
-            HomeMixerMode::Demo => Arc::new(DemoGizmoduckClient),
-            HomeMixerMode::Degraded | HomeMixerMode::ProductionReady => {
-                Arc::new(DisabledGizmoduckClient)
-            }
-        };
-        let query_builder = QueryBuilder::new(config.features, viewer_client);
+        let query_builder = QueryBuilder::new(config.features);
         let pipeline = crate::candidate_pipeline::phoenix_candidate_pipeline::PhoenixCandidatePipeline::
             assemble_for_mode(config.mode, config.features)
             .await?;
@@ -194,10 +183,7 @@ impl pb::scored_posts_service_server::ScoredPostsService for ScoredPostsServer {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::models::candidate_features::GizmoduckUserResult;
     use crate::models::query::TopicRecallMode;
-    use std::collections::HashMap;
-    use std::time::Duration;
 
     #[test]
     fn for_you_wrapper_requires_and_preserves_inner_query() {
@@ -244,46 +230,11 @@ mod tests {
         assert_for_you::<ForYouFeedServer>();
     }
 
-    enum ViewerResponse {
-        Data(ViewerData),
-        Error,
-        Slow(ViewerData),
-    }
-
-    struct TestGizmoduckClient {
-        response: ViewerResponse,
-    }
-
-    #[tonic::async_trait]
-    impl GizmoduckClient for TestGizmoduckClient {
-        async fn get_viewer_data(
-            &self,
-            _viewer_id: crate::models::UserId,
-        ) -> Result<ViewerData, anyhow::Error> {
-            match &self.response {
-                ViewerResponse::Data(data) => Ok(data.clone()),
-                ViewerResponse::Error => anyhow::bail!("viewer service unavailable"),
-                ViewerResponse::Slow(data) => {
-                    tokio::time::sleep(Duration::from_millis(20)).await;
-                    Ok(data.clone())
-                }
-            }
-        }
-
-        async fn get_users(
-            &self,
-            _user_ids: Vec<crate::models::UserId>,
-        ) -> Result<HashMap<crate::models::UserId, Option<GizmoduckUserResult>>, anyhow::Error>
-        {
-            Ok(HashMap::new())
-        }
-    }
-
     async fn build_query(
         proto_query: pb::ScoredPostsQuery,
         features: HomeMixerFeatures,
     ) -> ScoredPostsQuery {
-        QueryBuilder::new(features, Arc::new(DisabledGizmoduckClient))
+        QueryBuilder::new(features)
             .build(proto_query)
             .await
             .expect("valid query")
@@ -394,76 +345,15 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn viewer_policy_can_force_in_network_only() {
-        let client = Arc::new(TestGizmoduckClient {
-            response: ViewerResponse::Data(ViewerData {
-                for_you_eligibility: ViewerEligibility::Denied,
-            }),
-        });
-        let query = QueryBuilder::new(HomeMixerFeatures::default(), client)
-            .build(pb::ScoredPostsQuery {
+    async fn request_defaults_to_full_network() {
+        let query = build_query(
+            pb::ScoredPostsQuery {
                 viewer_id: "00000000000000000000002a".to_string(),
                 ..Default::default()
-            })
-            .await
-            .expect("valid query")
-            .query;
-
-        assert!(query.in_network_only);
-    }
-
-    #[tokio::test]
-    async fn unavailable_viewer_policy_restricts_to_in_network() {
-        let client = Arc::new(TestGizmoduckClient {
-            response: ViewerResponse::Error,
-        });
-        let query = QueryBuilder::new(HomeMixerFeatures::default(), client)
-            .build(pb::ScoredPostsQuery {
-                viewer_id: "00000000000000000000002a".to_string(),
-                ..Default::default()
-            })
-            .await
-            .expect("viewer failure must not fail the request")
-            .query;
-
-        assert!(query.in_network_only);
-    }
-
-    #[tokio::test]
-    async fn viewer_policy_timeout_restricts_to_in_network() {
-        let client = Arc::new(TestGizmoduckClient {
-            response: ViewerResponse::Slow(ViewerData {
-                for_you_eligibility: ViewerEligibility::Allowed,
-            }),
-        });
-        let query = QueryBuilder::new(HomeMixerFeatures::default(), client)
-            .with_viewer_data_timeout(Duration::from_millis(1))
-            .build(pb::ScoredPostsQuery {
-                viewer_id: "00000000000000000000002a".to_string(),
-                ..Default::default()
-            })
-            .await
-            .expect("viewer timeout must not fail the request")
-            .query;
-
-        assert!(query.in_network_only);
-    }
-
-    #[tokio::test]
-    async fn explicit_viewer_permission_allows_out_of_network() {
-        let client = Arc::new(TestGizmoduckClient {
-            response: ViewerResponse::Data(ViewerData {
-                for_you_eligibility: ViewerEligibility::Allowed,
-            }),
-        });
-        let query = QueryBuilder::new(HomeMixerFeatures::default(), client)
-            .build(pb::ScoredPostsQuery {
-                viewer_id: "00000000000000000000002a".to_string(),
-                ..Default::default()
-            })
-            .await
-            .expect("known viewer permission")
-            .query;
+            },
+            HomeMixerFeatures::default(),
+        )
+        .await;
 
         assert!(!query.in_network_only);
     }

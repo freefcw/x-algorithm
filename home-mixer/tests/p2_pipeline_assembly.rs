@@ -1,4 +1,3 @@
-use home_mixer::clients::gizmoduck_client::DisabledGizmoduckClient;
 use home_mixer::clients::served_persistence::ServedPersistence;
 use home_mixer::feed_state::{FeedStateSnapshot, FeedStateStore, InMemoryFeedStateStore};
 use home_mixer::feed_stats::InMemoryFeedStats;
@@ -246,13 +245,10 @@ async fn demo_pipeline() -> PhoenixCandidatePipeline {
 }
 
 fn unsigned_cached_posts_query_builder() -> QueryBuilder {
-    QueryBuilder::new(
-        HomeMixerFeatures {
-            unsigned_cached_posts: true,
-            ..Default::default()
-        },
-        Arc::new(DisabledGizmoduckClient),
-    )
+    QueryBuilder::new(HomeMixerFeatures {
+        unsigned_cached_posts: true,
+        ..Default::default()
+    })
 }
 
 #[tokio::test]

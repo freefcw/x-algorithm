@@ -27,44 +27,12 @@ use crate::models::ids::UserId;
 use std::collections::HashMap;
 use tonic::async_trait;
 
-/// Request-level viewer policy used by `QueryBuilder`.
-///
-/// The public replacement currently knows only whether For You recommendations
-/// are allowed. Additional upstream fields must be added only with a verified
-/// user-service contract and an owning query field.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub enum ViewerEligibility {
-    Allowed,
-    Denied,
-    #[default]
-    Unknown,
-}
-
-impl ViewerEligibility {
-    pub fn allows_for_you(self) -> bool {
-        self == Self::Allowed
-    }
-}
-
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
-pub struct ViewerData {
-    pub for_you_eligibility: ViewerEligibility,
-}
-
 /// Gizmoduck 用户资料客户端 trait
 ///
 /// 定义了批量获取用户资料的标准接口。
 /// 生产实现应连接你平台的用户微服务。
 #[async_trait]
 pub trait GizmoduckClient: Send + Sync {
-    /// Fetch request-level viewer policy.
-    ///
-    /// The neutral default keeps the main recommendation path running until a
-    /// public user-service adapter is supplied and manually verified.
-    async fn get_viewer_data(&self, _viewer_id: UserId) -> Result<ViewerData, anyhow::Error> {
-        Ok(ViewerData::default())
-    }
-
     /// 批量获取用户资料
     ///
     /// # Arguments
@@ -80,18 +48,11 @@ pub trait GizmoduckClient: Send + Sync {
     ) -> Result<HashMap<UserId, Option<GizmoduckUserResult>>, anyhow::Error>;
 }
 
-/// Demo viewer and profile adapter. Demo users explicitly permit For You
-/// recommendations so local end-to-end runs exercise both network sources.
+/// Demo viewer and profile adapter.
 pub struct DemoGizmoduckClient;
 
 #[async_trait]
 impl GizmoduckClient for DemoGizmoduckClient {
-    async fn get_viewer_data(&self, _viewer_id: UserId) -> Result<ViewerData, anyhow::Error> {
-        Ok(ViewerData {
-            for_you_eligibility: ViewerEligibility::Allowed,
-        })
-    }
-
     async fn get_users(
         &self,
         user_ids: Vec<UserId>,
@@ -118,8 +79,7 @@ impl GizmoduckClient for DemoGizmoduckClient {
     }
 }
 
-/// Disabled integration placeholder. It deliberately reports viewer policy
-/// as unknown; the application boundary degrades unknown policy to in-network.
+/// Disabled integration placeholder for author profile lookups.
 pub struct DisabledGizmoduckClient;
 
 impl DisabledGizmoduckClient {
