@@ -16,6 +16,7 @@ use xai_candidate_pipeline::candidate_pipeline::CandidatePipeline;
 
 pub struct ScoredPostsOutput {
     pub posts: Vec<ScoredPost>,
+    pub selected_ids: Vec<crate::models::PostId>,
     pub request_id: String,
 }
 
@@ -95,14 +96,10 @@ impl ScoredPostsServer {
     pub(crate) fn persist_selected(
         &self,
         user_id: crate::models::UserId,
-        posts: &[ScoredPost],
+        ids: &[crate::models::PostId],
         request_time_ms: i64,
     ) -> Result<(), String> {
-        let ids = posts
-            .iter()
-            .filter_map(|post| crate::models::ObjectId::parse(&post.tweet_id).ok())
-            .collect::<Vec<_>>();
-        self.served_persist.persist(user_id, &ids, request_time_ms)
+        self.served_persist.persist(user_id, ids, request_time_ms)
     }
 
     pub async fn score(&self, query: ScoredPostsQuery) -> ScoredPostsOutput {
@@ -122,6 +119,11 @@ impl ScoredPostsServer {
             &pipeline_result.filtered_candidates,
             &pipeline_result.selected_candidates,
         );
+        let selected_ids = pipeline_result
+            .selected_candidates
+            .iter()
+            .map(|candidate| candidate.tweet_id)
+            .collect::<Vec<_>>();
         let posts = pipeline_result
             .selected_candidates
             .into_iter()
@@ -134,7 +136,14 @@ impl ScoredPostsServer {
             posts.len(),
             start.elapsed().as_millis()
         );
-        (ScoredPostsOutput { posts, request_id }, debug)
+        (
+            ScoredPostsOutput {
+                posts,
+                selected_ids,
+                request_id,
+            },
+            debug,
+        )
     }
 }
 

@@ -160,6 +160,7 @@ impl ScoredPostsProvider for FakeScoredPostsProvider {
                     ..Default::default()
                 },
             ],
+            selected_ids: vec![pid(30), pid(20)],
             request_id: query.request_id,
         })
     }
@@ -740,9 +741,12 @@ impl ScoredPostsProvider for ServedAwareScoredPostsProvider {
             .lock()
             .expect("served request log")
             .push(query.served_ids.clone());
-        let posts = [pid(30), pid(20)]
+        let selected_ids = [pid(30), pid(20)]
             .into_iter()
             .filter(|id| !query.served_ids.contains(id))
+            .collect::<Vec<_>>();
+        let posts = selected_ids
+            .iter()
             .map(|tweet_id| ScoredPost {
                 tweet_id: tweet_id.to_string(),
                 score: tweet_id.to_u64_be_padded().unwrap_or(0) as f32,
@@ -751,6 +755,7 @@ impl ScoredPostsProvider for ServedAwareScoredPostsProvider {
             .collect();
         Ok(ScoredPostsOutput {
             posts,
+            selected_ids,
             request_id: query.request_id,
         })
     }

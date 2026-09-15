@@ -152,7 +152,7 @@ impl pb::scored_posts_service_server::ScoredPostsService for ScoredPostsServer {
         let user_id = query.user_id;
         let request_time_ms = query.request_time_ms;
         let output = self.score(query).await;
-        if let Err(error) = self.persist_selected(user_id, &output.posts, request_time_ms) {
+        if let Err(error) = self.persist_selected(user_id, &output.selected_ids, request_time_ms) {
             return Err(Status::unavailable(format!(
                 "served persist failed: {error}"
             )));
@@ -177,7 +177,7 @@ impl pb::scored_posts_service_server::ScoredPostsService for ScoredPostsServer {
         let user_id = query.user_id;
         let request_time_ms = query.request_time_ms;
         let (output, debug) = self.score_with_debug(query).await;
-        if let Err(error) = self.persist_selected(user_id, &output.posts, request_time_ms) {
+        if let Err(error) = self.persist_selected(user_id, &output.selected_ids, request_time_ms) {
             return Err(Status::unavailable(format!(
                 "served persist failed: {error}"
             )));

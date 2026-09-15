@@ -168,6 +168,7 @@ impl ScoredPostsProvider for StaticPostsProvider {
                 score: 1.0,
                 ..Default::default()
             }],
+            selected_ids: vec![pid(9)],
             request_id: query.request_id,
         })
     }
@@ -274,6 +275,11 @@ async fn score_does_not_persist_served_ids() {
         .await;
 
     assert_eq!(output.posts.len(), 1);
+    assert_eq!(
+        output.selected_ids,
+        vec![pid(9)],
+        "attribution ids come straight from the selected candidates, no proto re-parse"
+    );
     assert!(
         store
             .load(uid(7))
