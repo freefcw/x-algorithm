@@ -16,20 +16,26 @@ use x_algorithm_proto::home_mixer::{
 use xai_candidate_pipeline::source::Source;
 
 fn post(id: u64, score: f32) -> FeedItem {
-    FeedItem::post(ScoredPost {
-        tweet_id: pid(id).to_string(),
-        score,
-        ..Default::default()
-    })
+    FeedItem::post(
+        ScoredPost {
+            tweet_id: pid(id).to_string(),
+            score,
+            ..Default::default()
+        },
+        pid(id),
+    )
 }
 
 fn ad_safe_post(id: u64, score: f32) -> FeedItem {
-    FeedItem::post(ScoredPost {
-        tweet_id: pid(id).to_string(),
-        score,
-        brand_safety_verdict: BrandSafetyVerdict::SafeForAdjacency as i32,
-        ..Default::default()
-    })
+    FeedItem::post(
+        ScoredPost {
+            tweet_id: pid(id).to_string(),
+            score,
+            brand_safety_verdict: BrandSafetyVerdict::SafeForAdjacency as i32,
+            ..Default::default()
+        },
+        pid(id),
+    )
 }
 
 #[test]
@@ -78,6 +84,7 @@ fn modules_are_inserted_without_rescoring_or_reordering_posts() {
                 score: 0.1,
                 ..Default::default()
             },
+            pid(99),
         ),
     ]);
 
@@ -119,8 +126,16 @@ fn modules_are_inserted_without_rescoring_or_reordering_posts() {
 fn only_one_push_to_home_item_is_selected() {
     let result = BlenderSelector::new(BlenderConfig::default()).blend(vec![
         post(1, 1.0),
-        FeedItem::push_to_home("first", ScoredPost::default()),
-        FeedItem::push_to_home("second", ScoredPost::default()),
+        FeedItem::push_to_home(
+            "first",
+            ScoredPost::default(),
+            home_mixer::models::PostId::NIL,
+        ),
+        FeedItem::push_to_home(
+            "second",
+            ScoredPost::default(),
+            home_mixer::models::PostId::NIL,
+        ),
     ]);
 
     assert_eq!(result.selected[0].kind(), FeedItemKind::PushToHome);
@@ -326,7 +341,7 @@ fn partition_organic_matches_upstream_grouping() {
         ..Default::default()
     };
     let result = selector.blend(vec![
-        FeedItem::post(unsafe_post),
+        FeedItem::post(unsafe_post, pid(9)),
         ad_safe_post(8, 0.9),
         ad_safe_post(7, 0.8),
         ad_safe_post(6, 0.7),
@@ -377,28 +392,35 @@ fn ad_with_safety(
             avoid_handles,
             avoid_keywords: avoid_keywords.into_iter().map(String::from).collect(),
         }),
+        post_id: None,
     }
 }
 
 /// 带作者 ID 的安全帖
 fn ad_safe_post_with_author(id: u64, author_id: u64, text: &str, score: f32) -> FeedItem {
-    FeedItem::post(ScoredPost {
-        tweet_id: pid(id).to_string(),
-        author_id: uid(author_id).to_string(),
-        score,
-        tweet_text: text.to_string(),
-        brand_safety_verdict: BrandSafetyVerdict::SafeForAdjacency as i32,
-        ..Default::default()
-    })
+    FeedItem::post(
+        ScoredPost {
+            tweet_id: pid(id).to_string(),
+            author_id: uid(author_id).to_string(),
+            score,
+            tweet_text: text.to_string(),
+            brand_safety_verdict: BrandSafetyVerdict::SafeForAdjacency as i32,
+            ..Default::default()
+        },
+        pid(id),
+    )
 }
 
 fn ad_low_risk_post(id: u64, score: f32) -> FeedItem {
-    FeedItem::post(ScoredPost {
-        tweet_id: pid(id).to_string(),
-        score,
-        brand_safety_verdict: BrandSafetyVerdict::LowRisk as i32,
-        ..Default::default()
-    })
+    FeedItem::post(
+        ScoredPost {
+            tweet_id: pid(id).to_string(),
+            score,
+            brand_safety_verdict: BrandSafetyVerdict::LowRisk as i32,
+            ..Default::default()
+        },
+        pid(id),
+    )
 }
 
 #[test]
@@ -672,7 +694,11 @@ fn domain_items_map_to_distinct_transport_variants() {
         FeedItem::advertisement("ad-1", 2),
         FeedItem::who_to_follow("wtf-1", vec![uid(10), uid(20)]),
         FeedItem::prompt("prompt-1"),
-        FeedItem::push_to_home("push-1", ScoredPost::default()),
+        FeedItem::push_to_home(
+            "push-1",
+            ScoredPost::default(),
+            home_mixer::models::PostId::NIL,
+        ),
     ]
     .into_iter()
     .map(FeedItem::into_proto)

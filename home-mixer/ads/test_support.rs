@@ -11,12 +11,15 @@ use crate::models::feed_item::{Advertisement, FeedItem, FeedItemContent};
 use x_algorithm_proto::home_mixer::{BrandSafetyRiskLevel, BrandSafetyVerdict, ScoredPost};
 
 pub(crate) fn post(tweet_id: u64, verdict: BrandSafetyVerdict) -> FeedItem {
-    FeedItem::post(ScoredPost {
-        tweet_id: crate::models::pid(tweet_id).to_string(),
-        score: 1.0 - tweet_id as f32 * 0.01,
-        brand_safety_verdict: verdict as i32,
-        ..Default::default()
-    })
+    FeedItem::post(
+        ScoredPost {
+            tweet_id: crate::models::pid(tweet_id).to_string(),
+            score: 1.0 - tweet_id as f32 * 0.01,
+            brand_safety_verdict: verdict as i32,
+            ..Default::default()
+        },
+        crate::models::pid(tweet_id),
+    )
 }
 
 pub(crate) fn safe_post(tweet_id: u64) -> FeedItem {
@@ -32,13 +35,16 @@ pub(crate) fn avoid_post(tweet_id: u64) -> FeedItem {
 }
 
 pub(crate) fn post_with_text(tweet_id: u64, text: &str) -> FeedItem {
-    FeedItem::post(ScoredPost {
-        tweet_id: crate::models::pid(tweet_id).to_string(),
-        score: 1.0 - tweet_id as f32 * 0.01,
-        brand_safety_verdict: BrandSafetyVerdict::SafeForAdjacency as i32,
-        tweet_text: text.to_string(),
-        ..Default::default()
-    })
+    FeedItem::post(
+        ScoredPost {
+            tweet_id: crate::models::pid(tweet_id).to_string(),
+            score: 1.0 - tweet_id as f32 * 0.01,
+            brand_safety_verdict: BrandSafetyVerdict::SafeForAdjacency as i32,
+            tweet_text: text.to_string(),
+            ..Default::default()
+        },
+        crate::models::pid(tweet_id),
+    )
 }
 
 pub(crate) fn advertisement(id: u32, brand_safety_risk: BrandSafetyRiskLevel) -> Advertisement {
@@ -55,6 +61,7 @@ pub(crate) fn ad_item(advertisement: Advertisement) -> FeedItem {
     FeedItem {
         position: 0,
         content: FeedItemContent::Advertisement(advertisement),
+        post_id: None,
     }
 }
 

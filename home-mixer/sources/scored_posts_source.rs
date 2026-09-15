@@ -31,6 +31,16 @@ impl ScoredPostsSource {
 impl Source<ScoredPostsQuery, FeedItem> for ScoredPostsSource {
     async fn source(&self, query: &ScoredPostsQuery) -> Result<Vec<FeedItem>, String> {
         let output = self.provider.score_posts(query.clone()).await?;
-        Ok(output.posts.into_iter().map(FeedItem::post).collect())
+        debug_assert_eq!(
+            output.posts.len(),
+            output.selected_ids.len(),
+            "ScoredPostsProvider must keep posts and selected_ids aligned"
+        );
+        Ok(output
+            .posts
+            .into_iter()
+            .zip(output.selected_ids)
+            .map(|(post, post_id)| FeedItem::post(post, post_id))
+            .collect())
     }
 }

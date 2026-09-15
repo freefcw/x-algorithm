@@ -44,6 +44,7 @@ impl Source<ScoredPostsQuery, FeedItem> for AdvertisementSource {
             .map(|advertisement| FeedItem {
                 position: 0,
                 content: FeedItemContent::Advertisement(advertisement),
+                post_id: None,
             })
             .collect())
     }

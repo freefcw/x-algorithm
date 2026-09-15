@@ -191,6 +191,7 @@ mod tests {
                 author_id: crate::models::uid(u64::MAX).to_string(),
                 ..Default::default()
             }),
+            post_id: None,
         };
 
         assert!(!should_drop_handle(&advertisement, Some(&post), None));
@@ -210,6 +211,7 @@ mod tests {
         FeedItem {
             position: 0,
             content: FeedItemContent::Post(post),
+            post_id: None,
         }
     }
 

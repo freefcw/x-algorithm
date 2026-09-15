@@ -92,10 +92,13 @@ mod tests {
 
         let input = Arc::new(SideEffectInput {
             query: Arc::new(query),
-            selected_candidates: vec![FeedItem::post(ScoredPost {
-                tweet_id: crate::models::pid(9).to_string(),
-                ..Default::default()
-            })],
+            selected_candidates: vec![FeedItem::post(
+                ScoredPost {
+                    tweet_id: crate::models::pid(9).to_string(),
+                    ..Default::default()
+                },
+                crate::models::pid(9),
+            )],
             non_selected_candidates: Vec::new(),
         });
         side_effect.side_effect(input).await.expect("side effect");

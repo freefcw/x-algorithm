@@ -55,13 +55,17 @@ pub enum FeedItemContent {
 pub struct FeedItem {
     pub position: usize,
     pub content: FeedItemContent,
+    /// Domain identity of the contained post, set at construction so
+    /// attribution never re-parses wire strings. `None` for non-post content.
+    pub post_id: Option<crate::models::PostId>,
 }
 
 impl FeedItem {
-    pub fn post(post: ScoredPost) -> Self {
+    pub fn post(post: ScoredPost, post_id: crate::models::PostId) -> Self {
         Self {
             position: 0,
             content: FeedItemContent::Post(post),
+            post_id: Some(post_id),
         }
     }
 
@@ -75,6 +79,7 @@ impl FeedItem {
                 avoid_handles: Vec::new(),
                 avoid_keywords: Vec::new(),
             }),
+            post_id: None,
         }
     }
 
@@ -88,6 +93,7 @@ impl FeedItem {
                 module_id: module_id.into(),
                 user_ids,
             }),
+            post_id: None,
         }
     }
 
@@ -97,16 +103,22 @@ impl FeedItem {
             content: FeedItemContent::Prompt(Prompt {
                 prompt_id: prompt_id.into(),
             }),
+            post_id: None,
         }
     }
 
-    pub fn push_to_home(notification_id: impl Into<String>, post: ScoredPost) -> Self {
+    pub fn push_to_home(
+        notification_id: impl Into<String>,
+        post: ScoredPost,
+        post_id: crate::models::PostId,
+    ) -> Self {
         Self {
             position: 0,
             content: FeedItemContent::PushToHome(PushToHomePost {
                 notification_id: notification_id.into(),
                 post,
             }),
+            post_id: Some(post_id),
         }
     }
 
@@ -122,17 +134,14 @@ impl FeedItem {
 
     pub fn post_id(&self) -> Option<crate::models::PostId> {
         match &self.content {
-            FeedItemContent::Post(post) => crate::models::ObjectId::parse(&post.tweet_id).ok(),
+            FeedItemContent::Post(_) => self.post_id,
             _ => None,
         }
     }
 
     pub fn served_post_id(&self) -> Option<crate::models::PostId> {
         match &self.content {
-            FeedItemContent::Post(post) => crate::models::ObjectId::parse(&post.tweet_id).ok(),
-            FeedItemContent::PushToHome(push) => {
-                crate::models::ObjectId::parse(&push.post.tweet_id).ok()
-            }
+            FeedItemContent::Post(_) | FeedItemContent::PushToHome(_) => self.post_id,
             _ => None,
         }
     }
