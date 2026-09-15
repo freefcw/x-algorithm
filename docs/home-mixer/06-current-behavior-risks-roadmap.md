@@ -22,7 +22,7 @@
 - `MrpyqTESClient` 补作者（`creator_member_id`）、正文、`created_at_ms`、互动计数与一级 `recommendation_eligible`；`creator_member_id` 为空的帖子被 `CoreDataHydrationFilter` 丢弃。
 - `MrpyqStratoClient` 调 `ViewerRelationService`，mrpyq 尚未实现该 RPC；调用失败时框架只记日志，`user_features` 全空，`AuthorSocialgraphFilter` / `ViewerMutedKeywordFilter` 实际不生效（fail-open，根因是 `candidate-pipeline` 对 query hydrator 失败不中断请求）。
 - `MrpyqFirstStageEligibilityClient` 只承载一级 `recommendation_eligible`，对经过 `FirstStageEligibleFilter` 存活的候选恒为 Allow，viewer 级可见性没有数据源。`VFFilter` 对 `Unchecked / Unavailable`（含成功响应缺帖）按 `HOME_MIXER_VF_FAILURE_POLICY` 处理：默认 `fail_closed` 全丢弃，`in_network_only` 仅保留网内，`allow_all` 需显式配置且非 demo 下会在启动时告警。
-- served 落库走 `InMemoryServedPersistence`：响应前同步写入进程内存，重启即丢、多副本不共享。
+- served 历史通过 `FeedStateServedPersistence` 在响应前等待异步写入；Demo 默认内存，业务模式要求 Redis 地址，多副本共享同一份历史，写失败返回 `Unavailable`。
 
 因此 degraded 当前实际等价于“mrpyq NETWORK + FALLBACK 候选 → 规则排序”的全网 Feed 骨架，尚无个性化模型参与。需要本地完整链路时使用 Demo；需要生产流量时必须先让 `production_ready` 的合同校验通过。
 
@@ -52,7 +52,7 @@ Debug RPC 已有独立 token，unsigned cache 已被隔离，但普通 ScoredPos
 
 ### 4.3 本地 Feed 状态不是生产持久层
 
-`InMemoryFeedStateStore` 有 10,000 用户上限，不是无界内存增长；但进程重启会丢失去重历史，多实例也不共享状态。`ServedPersistence` 端口同样只有内存实现，且没有 position / event_type，不能作为训练归因的原始事件源。生产合同仍需定义服务端存储、保留期、并发一致性、隐私删除和恢复策略。
+Demo 的 `InMemoryFeedStateStore` 有 10,000 用户上限，进程重启会丢失历史。业务模式使用 Redis，以原子事务更新有界下发历史和请求时间戳，默认滑动保留七天；同一请求的各个步骤只加载一份快照。Redis 重启或切主后，首次读取会在新连接上重试一次，保证恢复后的第一个请求仍能看到历史；Redis 持久化、备份和恢复由部署策略决定，未开持久化时历史随重启丢失。客户端只连单一端点，原生 Cluster 路由不受支持，部署前需确认复用的 Redis 是单节点或代理端点。该接口没有 position / event_type，不能作为训练归因的原始事件源；历史共享也不等于同一用户并发请求绝不重复下发。
 
 ### 4.4 非 demo 下模型路径不可达
 
@@ -70,7 +70,7 @@ Debug RPC 已有独立 token，unsigned cache 已被隔离，但普通 ScoredPos
 4. **Phoenix artifact/service**：用真实 LFS artifact 验证 offline/gRPC 一致性、延迟、容量和 fallback。
 5. **普通 RPC 身份边界**：完成调用方身份与 viewer 绑定后，才允许 `production_ready` 启动。
 
-Ads、Prompt、WhoToFollow、PushToHome、Kafka/Redis 和 Grox 等旁路能力继续默认关闭；开关存在不等于合同完成。
+Ads、Prompt、WhoToFollow、PushToHome、Kafka 和 Grox 等旁路能力继续默认关闭；开关存在不等于合同完成。Feed state 的 Redis 为业务模式必需配置。
 
 ## 6. 生产验收条件
 

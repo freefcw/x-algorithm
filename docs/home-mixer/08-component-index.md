@@ -15,7 +15,7 @@
 
 | 组件 | 文件 | enable | 读取 | 写回 | 外部依赖 | 下游依赖 |
 | --- | --- | --- | --- | --- | --- | --- |
-| `ServedHistoryQueryHydrator` | `query_hydrators/served_history_query_hydrator.rs` | `ScoredPostsServer::with_state` 通过 `install_feed_state_store` 插到列表首位 | `user_id` `served_ids` | `served_ids`（请求值 + 本地已下发历史去重合并） | `FeedStateStore`（进程内存） | `PreviouslyServedPostsFilter` |
+| `ServedHistoryQueryHydrator` | `query_hydrators/served_history_query_hydrator.rs` | `ScoredPostsServer::with_state` 通过 `install_feed_state_store` 插到列表首位 | `user_id` `served_ids` | `served_ids`（请求值 + 已下发历史去重合并） | 异步 `FeedStateStore`；与时间戳组件共用请求快照 | `PreviouslyServedPostsFilter` |
 | `PastRequestTimestampsQueryHydrator` | `query_hydrators/past_request_timestamps_query_hydrator.rs` | 同上，第二位 | `user_id` | `past_request_timestamps_ms` | `FeedStateStore` | 请求节奏语义（当前无过滤消费） |
 | `ScoringSequenceQueryHydrator` | `query_hydrators/scoring_sequence_query_hydrator.rs` | 默认启用 | `user_id` `request_id` | `user_action_sequence` `scoring_sequence` | 共享 `UserActionSequenceOps` provider | `PhoenixScorer` |
 | `RetrievalSequenceQueryHydrator` | `query_hydrators/retrieval_sequence_query_hydrator.rs` | 默认启用 | `user_id` `request_id` | `retrieval_sequence` | 同一共享 provider | `PhoenixSource` / MoE |
@@ -110,7 +110,7 @@ Query hydrator 失败只记 request-scoped error 日志、不中断请求：UAS 
 | `debug_access` | `debug_access.rs` | 默认关闭的 Debug RPC token 授权策略 |
 | `request_util` | `util/request_util.rs` | 为 `QueryBuilder` 生成请求/预测 ID 和 request time |
 | `ids` | `models/ids.rs` | `ObjectId([u8; 12])` 与别名 `PostId` / `UserId`：24-hex 解析与输出、`timestamp_secs()`（AgeFilter 回退）、`to_u64_hash()`（xrex / 分桶派生，与 `phoenix/services/model_contract.py` 共享黄金向量） |
-| `feed_state` | `feed_state.rs` | 有界进程内存的已下发历史 / 请求时间戳（`InMemoryFeedStateStore`） |
+| `feed_state` | `feed_state.rs` / `clients/redis_feed_state_store.rs` | 有界已下发历史 / 请求时间戳；业务模式 Redis，Demo 默认内存 |
 | `bloom_filter` | `util/bloom_filter.rs` | 支持已看过内容去重（对 12 字节 ObjectId 做 murmur） |
 | `candidates_util` | `util/candidates_util.rs` | 生成 related post ids |
 | `composition` | `util/composition.rs` | 按键分组统计总数、唯一数、最大占比、HHI 和归一化熵；由候选多样性统计消费 |

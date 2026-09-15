@@ -30,7 +30,7 @@ flowchart LR
 - 通过上游命名 Query Hydrator owners 获取 scoring/retrieval sequence 和 user feature fields
 - 从网内源（非 demo：mrpyq 关注收件箱；demo：Thunder）、Phoenix 和兜底池取候选
 - 对候选做补全、过滤、打分、选择
-- 响应前同步记录本次下发的帖子（`ServedPersistence`），再将结果映射为 `ScoredPost`
+- 响应前等待异步记录本次下发的帖子（`ServedPersistence`），再返回 `ScoredPost`
 
 ### 2.2 `home-mixer` 不负责什么
 
@@ -217,7 +217,7 @@ flowchart TD
 | PhoenixPredictionClient | 设 `PHOENIX_PREDICT_GRPC_ADDR` 后真连 gRPC 网关并校验 serving metadata；缺失或校验失败时整批走 `RuleFallbackScorer`；非 demo 拒绝随机权重 |
 | UserActionSequenceOps | 非 demo `DisabledUserActionSequenceFetcher`（空序列）；demo `DemoUserActionSequenceFetcher`（合成行为序列） |
 | GizmoduckClient | 仅补作者资料；非 demo `DisabledGizmoduckClient` 返回空，demo 合成昵称 / 粉丝数 |
-| ServedPersistence | `InMemoryServedPersistence`（进程内存，重启即丢） |
+| ServedPersistence | `FeedStateServedPersistence`：业务模式写共享 Redis，Demo 默认进程内存 |
 
 这意味着：
 

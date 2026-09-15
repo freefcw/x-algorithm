@@ -20,7 +20,7 @@
 | 召回控制字段 | `in_network_only` | 来自 gRPC 请求 |
 | QueryHydrator 补全字段 | `scoring_sequence` `retrieval_sequence` | `ScoringSequenceQueryHydrator` / `RetrievalSequenceQueryHydrator` |
 | QueryHydrator 补全字段 | `user_features` | 三个上游 user-id owner（Blocked / Muted / Followed）+ 本地 safety owner |
-| 本地状态补全字段 | `served_ids`（合并）`past_request_timestamps_ms` | `ServedHistoryQueryHydrator` / `PastRequestTimestampsQueryHydrator`（进程内存 `FeedStateStore`） |
+| 历史状态补全字段 | `served_ids`（合并）`past_request_timestamps_ms` | 两个 QueryHydrator 共用一次请求内的 `FeedStateStore` 快照；业务模式 Redis，Demo 默认内存 |
 | 追踪字段 | `request_id` `prediction_id` `request_time_ms` | `QueryBuilder` |
 
 ### 1.2 查询对象的演化

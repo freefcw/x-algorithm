@@ -157,7 +157,7 @@ sequenceDiagram
 | `UserTopicReader` / `TopicRetrievalClient` | `UserTopicsQueryHydrator` / `PhoenixTopicsSource` | profile 读取和 Topic 召回各 500 ms 上限 |
 | `PhoenixPredictionClient` | `PhoenixScorer` | 精排预测；总调用上限 5 s。超时、失败或没有行为序列时整批标 `degraded_reason`，由 `RuleFallbackScorer` 用规则分覆盖 |
 | `VisibilityFilteringClient` | `VFCandidateHydrator` | 可见性审核；500 ms 上限。超时、不可用与成功响应缺帖都记为 `Unavailable`，`VFFilter` 按 `HOME_MIXER_VF_FAILURE_POLICY` 处理（默认 `fail_closed` 丢弃） |
-| `ServedPersistence` | `ScoredPostsServer` / `ForYouFeedServer` | 响应前同步落库本次下发的帖子，失败返回 `Unavailable`；当前只有进程内存实现 |
+| `ServedPersistence` | `ScoredPostsServer` / `ForYouFeedServer` | 响应前等待异步记录本次下发的帖子，失败返回 `Unavailable`；业务模式使用共享 Redis，Demo 默认内存 |
 
 ## 6. 当前仓库里的实现成熟度
 
@@ -175,7 +175,7 @@ sequenceDiagram
 | `PhoenixPredictionClient` | `SlimPhoenixPredictionClient`（可选真连） | 设置 `PHOENIX_PREDICT_GRPC_ADDR` 后调用 Phoenix 网关，校验 serving metadata 与响应形状；精排上限 5 s，未设置、失败或校验不通过时整批进入 `RuleFallbackScorer`。非 demo 拒绝随机权重 |
 | `UserActionSequenceOps` | 非 demo `DisabledUserActionSequenceFetcher`；demo `DemoUserActionSequenceFetcher` | 非 demo 返回空行为序列，序列聚合报错，`scoring_sequence` / `retrieval_sequence` 为 `None`：`PhoenixSource` 不能召回，`PhoenixScorer` 整批标 `phoenix_missing_sequence`，即便配置了 Phoenix 地址也不会调用模型 |
 | `GizmoduckClient` | 非 demo `DisabledGizmoduckClient`；demo `DemoGizmoduckClient` | 只承担作者资料补全；非 demo 全部为空，`demo` 合成昵称 / 粉丝数 |
-| `ServedPersistence` | `InMemoryServedPersistence` | 进程内存，重启即丢、多副本不共享；响应前同步写入，失败返回 `Unavailable` |
+| `ServedPersistence` | `FeedStateServedPersistence` | 委托注入的 FeedStateStore；业务模式使用 Redis，Demo 默认内存；响应前等待写入，失败返回 `Unavailable` |
 | `GrpcVMRankerClient` | 真实 gRPC 客户端（可选，仅 demo） | 同时设置 `HOME_MIXER_ENABLE_VM_RANKER=1` 与 `VM_RANKER_GRPC_ADDR` 后调用本仓库 `vm-ranker` 服务；整数 proto 无法承载真实 ObjectId，非 demo 强制禁用 |
 
 除上表外，`clients/` 下还有未接入主链的骨架客户端：`impressed_posts_client.rs`、`impression_bloom_filter_client.rs`、`socialgraph_client.rs`、`tweet_mixer_client.rs`，均为 trait + 占位实现，供后续扩展。
@@ -194,7 +194,7 @@ sequenceDiagram
 | 作者冷启动 | `HOME_MIXER_ENABLE_AUTHOR_COLD_START=1` | 仅 demo；缺 `view_count` 或粉丝数的候选不参与 | 不装配 `AuthorColdStartScorer`，也不在预选补粉丝数 |
 | 冷启动 Thompson Sampling | `HOME_MIXER_ENABLE_COLD_START_THOMPSON_SAMPLING=1` | 必须同时开 Author Cold Start | 冷启动仍用确定性槽位，不做 Beta 采样 |
 
-禁止仅设置开关就把能力标为“已接入”。开关是人工批准入口，真实完成状态仍以能力台账中的合同和环境验收证据为准。Ads、Prompt、WhoToFollow、PushToHome 已挂进 ForYou 外层 pipeline，但 source 的 `enable()` 恒为 false，默认跑不到；Kafka/Redis 和 Grox 模型组件不会进入默认装配。
+禁止仅设置开关就把能力标为“已接入”。开关是人工批准入口，真实完成状态仍以能力台账中的合同和环境验收证据为准。Ads、Prompt、WhoToFollow、PushToHome 已挂进 ForYou 外层 pipeline，但 source 的 `enable()` 恒为 false，默认跑不到；Kafka 和 Grox 模型组件不会进入默认装配。Feed state 的 Redis 由业务模式显式配置。
 
 网络范围只有一个真源：只有请求显式 `in_network_only=true` 才仅网内，否则同时允许网内和网外。QueryBuilder 不请求 Gizmoduck viewer RPC；Gizmoduck 只用于作者资料补全。VF 结果使用 `Allowed / Restricted / Unchecked / Unavailable` 明确区分，它是独立的候选安全策略，也不替代网络范围开关。
 

@@ -67,6 +67,11 @@ flowchart TD
 | `PHOENIX_EXPECTED_MODEL_VERSION` | `clients/phoenix_prediction_client.rs` | 固定期望的网关 `model-version` trailing metadata | 未设置时只校验非空、非 `random`；设置后不一致的响应被拒绝并走规则回退 |
 | `PHOENIX_ENGINE` | `clients/phoenix_prediction_client.rs` | 精排引擎选择：`slim`（当前唯一实现）/ `xrex`（保留） | 默认 `slim`；`xrex` 或未知值在装配时直接拒绝启动 |
 | `HOME_MIXER_MODE` | `runtime_config.rs` | 运行意图：`demo` / `degraded` / `production_ready` | 默认 `degraded`（需 `MRPYQ_RECOMMENDATION_DATA_ADDR`）；调用方身份、TES、UAS、Strato、VF、网内 / 兜底、Phoenix 元数据、served 落库合同未验收前，`production_ready` 拒绝启动 |
+| `HOME_MIXER_REDIS_URL` | `runtime_config.rs` / `server.rs` | 共享 FeedStateStore 的 Redis 地址 | 非 Demo 必填；Demo 未配置时使用内存，显式配置后也可使用 Redis。连接失败会拒绝启动 |
+| `HOME_MIXER_REDIS_CONNECT_TIMEOUT_MS` | `runtime_config.rs` | Redis 建连时间上限 | 默认 `1000` 毫秒，必须大于零 |
+| `HOME_MIXER_REDIS_REQUEST_TIMEOUT_MS` | `runtime_config.rs` | 单次 Redis 操作时间上限，包括等待重连 | 默认 `500` 毫秒，必须大于零 |
+| `HOME_MIXER_REDIS_KEY_PREFIX` | `runtime_config.rs` | Redis key 前缀 | 默认 `home_mixer:feed_state`；同一部署的所有副本必须一致，用户 ID 使用 hash tag |
+| `HOME_MIXER_FEED_STATE_TTL_SECS` | `runtime_config.rs` | 两个历史 key 的滑动过期时间，每次记录刷新 | 默认 7 天；`0` 禁用过期，并在下次记录时清除该用户旧 key 的过期时间 |
 | `HOME_MIXER_ENABLE_PHOENIX_MOE` | `feature_policy.rs` | 显式启用 Phoenix MoE 旁路召回 | 默认关闭；启用但缺少 `PHOENIX_MOE_GRPC_ADDR` 时记录告警并跳过，主链继续 |
 | `HOME_MIXER_ENABLE_REQUEST_CACHE_SIDE_EFFECT` | `feature_policy.rs` | 显式启用请求缓存 SideEffect | 默认关闭；启用前必须人工确认真实 Strato adapter、schema、认证和保留策略 |
 | `HOME_MIXER_ENABLE_DEBUG_RPC` | `feature_policy.rs` / `debug_access.rs` | 启用 `DebugScoredPosts` | 默认关闭；开启时必须同时提供 `HOME_MIXER_DEBUG_TOKEN`，调用方通过 `x-home-mixer-debug-token` metadata 传入 |
@@ -87,13 +92,23 @@ Phoenix 两个主服务地址通常同时指向 `phoenix/scripts/run_grpc_gatewa
 
 `HomeMixerConfig::from_env()` 在进程装配时一次性生成 `HomeMixerFeatures`。Source、SideEffect 和其他业务组件不直接读取环境变量。
 
+`HomeMixerConfig.feed_state` 明确选择内存或 Redis，由 `HomeMixerServer::build` 创建实例。业务模式缺少 Redis 配置时直接拒绝启动；Demo 默认内存。Redis adapter 使用异步多路复用连接，同一连接可处理多个并发请求，已移除 `HOME_MIXER_REDIS_POOL_SIZE`。当前客户端支持单节点或提供兼容端点的代理，不支持原生 Cluster 路由。
+
+一次推荐请求只读取一份历史快照，For You 外层和 Scored Posts 内层复用；下一次请求重新读取。连接被服务端关闭（Redis 重启、主从切换、代理回收空闲连接）后，客户端在后台换用新连接，首次读取会在新连接上重试一次，两次尝试共用同一个 `HOME_MIXER_REDIS_REQUEST_TIMEOUT_MS` 预算，超时不重试；因此不会出现“第一次请求读不到历史、却把结果写进历史”的重复下发。读取最终仍失败时沿用流水线的错误隔离行为继续请求，但同一请求的写入通常也会失败并返回 `Unavailable`。写失败返回 gRPC `Unavailable`；写超时可能已经在 Redis 执行，adapter 不自动重放写请求。该存储用于有界下发历史，不是训练曝光事件日志，也不承诺同一用户并发请求之间严格不重复下发。
+
+状态配置与请求快照的回归测试随 `cargo test -p home-mixer` 执行。真实 Redis 测试默认标记为 ignored，需要本机安装 `redis-server` 后单独执行；测试会启动独立进程和 Unix socket，结束后自动清理：
+
+```bash
+cargo test -p home-mixer --test redis_feed_state -- --ignored --test-threads=1
+```
+
 可选集成遵循以下规则：
 
 1. 默认关闭；主推荐链不能依赖旁路功能才能启动或返回结果。
 2. 开关只代表操作员批准启用，不代表外部服务已经完成接入。
 3. 启用前必须人工确认服务 owner、公开 schema、认证、超时、错误语义、降级、测试环境和数据保留策略。
 4. 开关开启但必要地址缺失时，装配层记录告警并跳过组件，不能阻断主链启动。
-5. Ads、Prompt、WhoToFollow、PushToHome 已挂进 ForYou 外层，但 `enable()` 恒 false；Kafka/Redis 和 Grox 模型能力不提供伪开关。
+5. Ads、Prompt、WhoToFollow、PushToHome 已挂进 ForYou 外层，但 `enable()` 恒 false；Kafka 和 Grox 模型能力不提供伪开关。Feed state 的 Redis 配置见上表。
 
 请求缓存 SideEffect 即使显式开启，当前非 demo 的 `MrpyqStratoClient`（mrpyq 没有 served 状态写契约）和 demo 的 `DemoStratoClient` 都会明确拒绝持久化写入。必须完成人工接入和持久化验收后，才能把它视为生产数据闭环。
 
@@ -312,7 +327,7 @@ flowchart LR
 
 ## 12. 本地状态常量（U2，无上游对应）
 
-ForYou 本地有界内存状态适配器的容量上限（生产持久化策略在集成阶段确定）：
+Feed state 每用户的容量上限对内存和 Redis 实现均生效；用户总数上限只适用于内存，Redis 按 TTL 回收：
 
 | 常量 | 值 | 含义 |
 | --- | --- | --- |

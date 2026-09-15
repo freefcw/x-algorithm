@@ -143,11 +143,11 @@ Status: **portable assembly complete**. Root ForYou server, canonical candidate 
 
 Upstream has two query hydrators, five sources, one blender, and eight side effects. The local mapping is:
 
-1. `ServedHistoryQueryHydrator` and `PastRequestTimestampsQueryHydrator` read the bounded in-memory `FeedStateStore` (`U1`) independently.
+1. `ServedHistoryQueryHydrator` and `PastRequestTimestampsQueryHydrator` read the bounded `FeedStateStore` (`U1`) through one request-scoped snapshot shared with the nested Scored Posts pipeline. Business modes use `RedisFeedStateStore`; Demo defaults to the in-memory store.
 2. Sources are ordered ScoredPosts, Ads, WhoToFollow, Prompts, PushToHome. The four non-post adapters return `enable=false`; test-only supplemental sources remain additive.
 3. Root `ads/` owns SafeGap/PartitionOrganic behavior, including the local fail-closed missing-verdict rule (`U2`).
 4. `ForYouResponseStatsSideEffect` wraps the local `FeedStatsSink`. Four Kafka event sinks remain `U3`.
-5. Served history and request timestamp update/truncation remain one synchronous server commit (`U2`) so the next request observes the response immediately. Splitting them into asynchronous production SideEffects requires an atomicity, retry, retention, and recovery contract.
+5. Served history and request timestamp update/truncation remain one server commit awaited before the response (`U2`) so the next request observes the response immediately; the Redis adapter performs it as a single `MULTI`/`EXEC` transaction. Splitting them into asynchronous production SideEffects requires an atomicity, retry, retention, and recovery contract.
 
 Exit evidence: default final feed remains the scored-post order; no external source emits by default; the P4/P5 25-test suite and both public Home Mixer service traits pass.
 

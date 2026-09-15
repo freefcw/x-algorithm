@@ -98,7 +98,7 @@ TES 相关 hydrator 里 CoreData / VideoDuration / HasMedia / FilteredTopics / L
 - Hydrators：`GizmoduckCandidateHydrator`、`VFCandidateHydrator`，两者并行且互不依赖。
 - Filters：`VFFilter`（`Unchecked / Unavailable` 按 `HOME_MIXER_VF_FAILURE_POLICY`，默认 `fail_closed` 删除）、`DedupConversationFilter`。`AncillaryVFFilter` 已按 U5 删除。
 - 结果：最多返回 35 条（上游 `RESULT_SIZE`）；当前不会在 post-selection 删除后从未选候选回补。
-- 服务层：响应前同步调用 `ServedPersistence::persist`，失败返回 `Unavailable`；当前实现为进程内存。
+- 服务层：响应前等待异步 `ServedPersistence::persist`，失败返回 `Unavailable`；业务模式使用 Redis，Demo 默认内存。
 
 ### 3.7 Side Effect
 
@@ -118,7 +118,7 @@ TES 相关 hydrator 里 CoreData / VideoDuration / HasMedia / FilteredTopics / L
 | 网内 / 兜底召回 | `ThunderClient`（整数 Thunder，`legacy-int-ids`）+ `DemoFallbackPostsClient` | `MrpyqInNetworkPostsClient`（NETWORK / FALLBACK） | mrpyq 单次 RPC 500 ms，一次召回总预算 1500 ms；以皮 `member_id` 作为 `account_id` 查询，皮维度对齐待 mrpyq 落地 |
 | Phoenix retrieval | 配置地址后真实 gRPC | 同左，且拒绝随机权重 | 标准/MoE 调用上限 3 s |
 | Phoenix prediction | 配置地址后真实 gRPC | 同左，且拒绝随机权重 | 调用上限 5 s，失败或校验不通过走 `RuleFallbackScorer` |
-| served 落库 | `InMemoryServedPersistence` | 同左 | 进程内存，重启即丢 |
+| served 历史记录 | `FeedStateServedPersistence` | 同左 | 业务模式 Redis，Demo 默认内存；每个请求只加载一份快照 |
 | Topic | Demo adapter | 需显式注入 | Topic retrieval 上限 500 ms |
 
 `production_ready` 当前拒绝启动，直到调用方身份、TES、UAS、Strato、VF、网内 / 兜底、Phoenix 元数据、served 落库等生产合同验收闭合。

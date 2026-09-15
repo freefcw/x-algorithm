@@ -175,7 +175,7 @@ flowchart TD
 
 1. 返回的是 pipeline 最终保留下来的 `selected_candidates`，不是召回原始结果。
 2. 只有 `Restricted` 且候选最终仍保留时才映射 `visibility_reason`；`Unchecked/Unavailable`（含成功响应缺帖）由 `VFFilter` 按 `HOME_MIXER_VF_FAILURE_POLICY` 处理，默认 `fail_closed` 删除，即便配置 `allow_all` 保留也不会伪造审核原因。
-3. 响应之前先同步调用 `ServedPersistence::persist` 记录本次下发的帖子；落库失败返回 gRPC `Unavailable` 而不是返回 Feed。当前实现是进程内存。
+3. 响应之前等待异步 `ServedPersistence::persist` 记录本次下发的帖子；写失败返回 gRPC `Unavailable`。业务模式使用 Redis，Demo 默认内存。
 
 ## 7. 一个容易忽略的事实
 

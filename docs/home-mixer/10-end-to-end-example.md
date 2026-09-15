@@ -205,7 +205,7 @@ flowchart LR
 
 ### 5.1 输入请求
 
-假设仍然是同样一份请求，服务以 `HOME_MIXER_MODE=degraded` + `MRPYQ_RECOMMENDATION_DATA_ADDR` 启动，未配置 Phoenix 地址。
+假设仍然是同样一份请求，服务以 `HOME_MIXER_MODE=degraded` + `MRPYQ_RECOMMENDATION_DATA_ADDR` + `HOME_MIXER_REDIS_URL` 启动，未配置 Phoenix 地址。
 
 ### 5.2 当前默认依赖会返回什么
 
@@ -220,7 +220,7 @@ flowchart LR
 | `PhoenixScorer` | 无序列 → 整批 `phoenix_missing_sequence` → `RuleFallbackScorer` 规则分 |
 | `DisabledGizmoduckClient.get_users` | 全部 `None` → 响应 `screen_names` 为空 |
 | `MrpyqFirstStageEligibilityClient` | 只回一级 `recommendation_eligible`；存活候选恒 Allow |
-| `InMemoryServedPersistence` | 写进程内存，重启即丢 |
+| `FeedStateServedPersistence` | 异步写共享 Redis 历史，成功后才返回响应 |
 
 ### 5.3 真实退化时序
 
@@ -255,7 +255,7 @@ sequenceDiagram
     Req->>SCO: PhoenixScorer → RankingScorer → RuleFallbackScorer
     SCO-->>Req: 整批 phoenix_missing_sequence，按新鲜度 + 网内 + 互动数排序
 
-    Req-->>Resp: 规则排序的全网 Feed；无 screen_names，served 只写内存
+    Req-->>Resp: 规则排序的全网 Feed；无 screen_names，served 写入共享 Redis 后才返回
 ```
 
 ### 5.4 示例 B 的结论
