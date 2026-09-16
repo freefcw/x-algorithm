@@ -45,6 +45,8 @@ pub struct UserAction {
     pub action_time_ms: Option<i64>,
     /// 行为类型代码
     pub action_type: Option<i32>,
+    /// 行为发生的产品入口（0=首页推荐 … 15）。缺省按 0 处理。
+    pub product_surface: Option<i32>,
 }
 
 /// Thrift 格式的聚合用户行为

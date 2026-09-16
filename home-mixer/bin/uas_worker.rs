@@ -431,8 +431,18 @@ mod tests {
         assert_eq!(action.user_id(), home_mixer::models::uid(7));
         assert_eq!(action.action_time_ms(), 1_700_000_000_000);
 
-        let extended = VALID_EVENT.replacen('}', r#","product_surface":"timeline"}"#, 1);
+        let with_surface = VALID_EVENT.replacen('}', r#","product_surface":2}"#, 1);
+        let action = parse_event(&with_surface).expect("integer product_surface is consumed");
+        assert_eq!(action.user_id(), home_mixer::models::uid(7));
+
+        let extended = VALID_EVENT.replacen('}', r#","event_id":"evt-1"}"#, 1);
         assert!(parse_event(&extended).is_ok(), "producers may add fields");
+
+        let as_string = VALID_EVENT.replacen('}', r#","product_surface":"timeline"}"#, 1);
+        assert!(
+            parse_event(&as_string).is_err(),
+            "product_surface must be an integer 0..=15"
+        );
     }
 
     #[test]

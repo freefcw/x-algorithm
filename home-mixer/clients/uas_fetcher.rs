@@ -23,7 +23,10 @@
 // Disabled 实现保留给显式不配置 UAS Redis 的装配路径与测试。
 
 use crate::models::ids::{ObjectId, PostId, UserId};
-use crate::recsys_compat::{is_supported_action_type, MAX_SUPPORTED_ACTION_TYPE};
+use crate::recsys_compat::{
+    is_supported_action_type, is_supported_product_surface, MAX_PRODUCT_SURFACE,
+    MAX_SUPPORTED_ACTION_TYPE,
+};
 use crate::uas_compat;
 use redis::aio::{ConnectionManager, ConnectionManagerConfig};
 use serde::{Deserialize, Serialize};
@@ -101,6 +104,9 @@ pub struct UserActionEvent {
     pub author_id: String,
     pub action_time_ms: i64,
     pub action_type: i32,
+    /// 行为发生的产品入口。省略时按 0（首页推荐）。必须是 `0..=15` 的整数。
+    #[serde(default)]
+    pub product_surface: i32,
 }
 
 /// An event that passed the boundary checks: every id parses and is non-nil,
@@ -114,6 +120,7 @@ pub struct ValidatedUserAction {
     author_id: UserId,
     action_time_ms: i64,
     action_type: i32,
+    product_surface: i32,
 }
 
 impl ValidatedUserAction {
@@ -145,12 +152,18 @@ impl UserActionEvent {
                 "action_type must be between 1 and {MAX_SUPPORTED_ACTION_TYPE}"
             ));
         }
+        if !is_supported_product_surface(self.product_surface) {
+            return Err(format!(
+                "product_surface must be between 0 and {MAX_PRODUCT_SURFACE}"
+            ));
+        }
         Ok(ValidatedUserAction {
             user_id,
             tweet_id,
             author_id,
             action_time_ms: self.action_time_ms,
             action_type: self.action_type,
+            product_surface: self.product_surface,
         })
     }
 }
@@ -166,10 +179,13 @@ struct StoredUserAction {
     author_id: String,
     action_time_ms: i64,
     action_type: i32,
+    #[serde(default)]
+    product_surface: i32,
 }
 
 impl StoredUserAction {
-    const VERSION: u8 = 1;
+    const VERSION: u8 = 2;
+    const LEGACY_VERSION: u8 = 1;
 
     fn from_validated(action: &ValidatedUserAction) -> Self {
         Self {
@@ -178,17 +194,18 @@ impl StoredUserAction {
             author_id: action.author_id.to_string(),
             action_time_ms: action.action_time_ms,
             action_type: action.action_type,
+            product_surface: action.product_surface,
         }
     }
 
     fn into_action(self) -> Result<uas_compat::UserAction, String> {
-        // Only the current layout is known. When VERSION is bumped, keep
-        // decoding the previous layout here until every member written with
-        // it has aged out of the window; the reader skips what it cannot
-        // decode instead of failing the whole sequence.
-        if self.version != Self::VERSION {
-            return Err(format!("unsupported member version {}", self.version));
-        }
+        // v1 members stay readable until they age out of the 7-day window.
+        // They predate product_surface and always decode as 0.
+        let product_surface = match self.version {
+            Self::LEGACY_VERSION => 0,
+            Self::VERSION => self.product_surface,
+            other => return Err(format!("unsupported member version {other}")),
+        };
         let tweet_id = ObjectId::parse(&self.tweet_id)
             .map_err(|error| format!("invalid stored tweet_id: {error}"))?;
         let author_id = ObjectId::parse(&self.author_id)
@@ -196,11 +213,15 @@ impl StoredUserAction {
         if !is_supported_action_type(self.action_type) {
             return Err(format!("unsupported action_type {}", self.action_type));
         }
+        if !is_supported_product_surface(product_surface) {
+            return Err(format!("unsupported product_surface {product_surface}"));
+        }
         Ok(uas_compat::UserAction {
             tweet_id: Some(tweet_id),
             author_id: Some(author_id),
             action_time_ms: Some(self.action_time_ms),
             action_type: Some(self.action_type),
+            product_surface: Some(product_surface),
         })
     }
 }
@@ -570,6 +591,7 @@ impl UserActionSequenceOps for DemoUserActionSequenceFetcher {
                     )),
                     action_time_ms: Some(action_time_ms),
                     action_type: Some(1),
+                    product_surface: Some(0),
                 }
             })
             .collect();
@@ -595,7 +617,18 @@ mod redis_tests {
             author_id: "00000000000000000000000b".to_string(),
             action_time_ms,
             action_type,
+            product_surface: 0,
         }
+    }
+
+    #[test]
+    fn omitted_product_surface_defaults_to_home_timeline() {
+        let event: UserActionEvent = serde_json::from_str(
+            r#"{"user_id":"000000000000000000000007","tweet_id":"000000000000000000000009","author_id":"00000000000000000000000b","action_time_ms":1,"action_type":1}"#,
+        )
+        .expect("legacy payload without surface");
+        assert_eq!(event.product_surface, 0);
+        assert_eq!(event.validate().expect("valid").product_surface, 0);
     }
 
     #[test]
@@ -629,20 +662,40 @@ mod redis_tests {
         let member = serde_json::to_string(&StoredUserAction::from_validated(&action)).unwrap();
         assert_eq!(
             member,
-            r#"{"version":1,"tweet_id":"000000000000000000000009","author_id":"00000000000000000000000b","action_time_ms":1700000000000,"action_type":3}"#
+            r#"{"version":2,"tweet_id":"000000000000000000000009","author_id":"00000000000000000000000b","action_time_ms":1700000000000,"action_type":3,"product_surface":0}"#
         );
         let decoded = decode_stored_member(&member).expect("round trip");
         assert_eq!(decoded.tweet_id, Some(crate::models::pid(9)));
         assert_eq!(decoded.author_id, Some(crate::models::uid(11)));
         assert_eq!(decoded.action_time_ms, Some(1_700_000_000_000));
         assert_eq!(decoded.action_type, Some(3));
+        assert_eq!(decoded.product_surface, Some(0));
+    }
+
+    #[test]
+    fn legacy_v1_members_decode_as_home_timeline_surface() {
+        let decoded = decode_stored_member(
+            r#"{"version":1,"tweet_id":"000000000000000000000009","author_id":"00000000000000000000000b","action_time_ms":1700000000000,"action_type":3}"#,
+        )
+        .expect("v1 members remain readable");
+        assert_eq!(decoded.product_surface, Some(0));
+    }
+
+    #[test]
+    fn event_boundary_rejects_out_of_range_product_surface() {
+        let mut bad = event(1, 1);
+        bad.product_surface = 16;
+        assert!(bad.validate().is_err(), "surface 16 is outside the vocab");
+        let mut ok = event(1, 1);
+        ok.product_surface = 15;
+        assert_eq!(ok.validate().expect("max surface").product_surface, 15);
     }
 
     #[test]
     fn undecodable_members_are_reported_individually() {
         for member in [
             "not json",
-            r#"{"version":2,"tweet_id":"000000000000000000000009","author_id":"00000000000000000000000b","action_time_ms":1,"action_type":3}"#,
+            r#"{"version":3,"tweet_id":"000000000000000000000009","author_id":"00000000000000000000000b","action_time_ms":1,"action_type":3,"product_surface":0}"#,
             r#"{"version":1,"tweet_id":"bad","author_id":"00000000000000000000000b","action_time_ms":1,"action_type":3}"#,
             r#"{"version":1,"tweet_id":"000000000000000000000009","author_id":"00000000000000000000000b","action_time_ms":1,"action_type":99}"#,
         ] {

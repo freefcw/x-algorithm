@@ -68,16 +68,37 @@ pub fn is_supported_action_type(action_type: i32) -> bool {
     (1..=MAX_SUPPORTED_ACTION_TYPE).contains(&action_type)
 }
 
+/// Phoenix `product_surface` embedding 词表大小；合法值是 `0..=15`。
+pub const PRODUCT_SURFACE_VOCAB: i32 = 16;
+
+/// 当前发布模型接受的最大场景编号（含）。
+pub const MAX_PRODUCT_SURFACE: i32 = PRODUCT_SURFACE_VOCAB - 1;
+
+/// 场景码是否落在 embedding 词表内。缺省 0 = 首页推荐。
+pub fn is_supported_product_surface(product_surface: i32) -> bool {
+    (0..=MAX_PRODUCT_SURFACE).contains(&product_surface)
+}
+
 fn validated_action(
     action: &UserAction,
-) -> Option<(crate::models::PostId, crate::models::UserId, i64, usize)> {
+) -> Option<(crate::models::PostId, crate::models::UserId, i64, usize, i32)> {
     let tweet_id = action.tweet_id.filter(|id| !id.is_nil())?;
     let author_id = action.author_id.filter(|id| !id.is_nil())?;
     let action_time_ms = action.action_time_ms.filter(|time| *time >= 0)?;
     let action_type = action
         .action_type
         .filter(|value| is_supported_action_type(*value))?;
-    Some((tweet_id, author_id, action_time_ms, action_type as usize))
+    let product_surface = action.product_surface.unwrap_or(0);
+    if !is_supported_product_surface(product_surface) {
+        return None;
+    }
+    Some((
+        tweet_id,
+        author_id,
+        action_time_ms,
+        action_type as usize,
+        product_surface,
+    ))
 }
 
 impl UserActionAggregator for DefaultAggregator {
@@ -95,7 +116,7 @@ impl UserActionAggregator for DefaultAggregator {
         let mut grouped = HashMap::<crate::models::PostId, AggregatedUserAction>::new();
 
         for action in actions {
-            let Some((tweet_id, author_id, action_time_ms, action_index)) =
+            let Some((tweet_id, author_id, action_time_ms, action_index, product_surface)) =
                 validated_action(action)
             else {
                 continue;
@@ -109,6 +130,7 @@ impl UserActionAggregator for DefaultAggregator {
                 .or_insert_with(|| AggregatedUserAction {
                     tweet_id: Some(tweet_id),
                     action_mask: vec![false; ACTION_MASK_LEN],
+                    product_surface: Some(product_surface),
                     ..Default::default()
                 });
             aggregated.action_mask[action_index] = true;
@@ -118,6 +140,7 @@ impl UserActionAggregator for DefaultAggregator {
             {
                 aggregated.author_id = Some(author_id);
                 aggregated.impressed_time_ms = Some(action_time_ms);
+                aggregated.product_surface = Some(product_surface);
             }
         }
 
@@ -251,6 +274,7 @@ mod tests {
             author_id,
             action_time_ms,
             action_type,
+            product_surface: None,
         }
     }
 
@@ -290,6 +314,51 @@ mod tests {
         assert_eq!(actions[1].tweet_id, Some(pid(2)));
         assert_eq!(actions[1].impressed_time_ms, Some(990));
         assert!(actions[1].action_mask[6]);
+    }
+
+    #[test]
+    fn keeps_product_surface_from_the_earliest_action_on_a_tweet() {
+        let actions = vec![
+            UserAction {
+                tweet_id: Some(pid(1)),
+                author_id: Some(uid(10)),
+                action_time_ms: Some(980),
+                action_type: Some(6),
+                product_surface: Some(2),
+            },
+            UserAction {
+                tweet_id: Some(pid(1)),
+                author_id: Some(uid(10)),
+                action_time_ms: Some(930),
+                action_type: Some(1),
+                product_surface: Some(1),
+            },
+            UserAction {
+                tweet_id: Some(pid(2)),
+                author_id: Some(uid(20)),
+                action_time_ms: Some(990),
+                action_type: Some(1),
+                product_surface: Some(3),
+            },
+            UserAction {
+                tweet_id: Some(pid(3)),
+                author_id: Some(uid(30)),
+                action_time_ms: Some(980),
+                action_type: Some(1),
+                product_surface: Some(16),
+            },
+        ];
+
+        let actions = KeepOriginalUserActionFilter::new().run(actions);
+        let actions = DefaultAggregator.run(&actions, 100, 1_000);
+
+        assert_eq!(actions.len(), 2);
+        assert_eq!(actions[0].tweet_id, Some(pid(1)));
+        assert_eq!(actions[0].product_surface, Some(1));
+        assert!(actions[0].action_mask[1]);
+        assert!(actions[0].action_mask[6]);
+        assert_eq!(actions[1].tweet_id, Some(pid(2)));
+        assert_eq!(actions[1].product_surface, Some(3));
     }
 
     #[test]

@@ -331,6 +331,7 @@ mod tests {
             author_id: Some(crate::models::uid(100 + tweet_seq)),
             action_time_ms: Some(action_time_ms),
             action_type: Some(action_type),
+            product_surface: Some(0),
         }
     }
 

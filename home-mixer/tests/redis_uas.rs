@@ -37,6 +37,7 @@ fn action(user: UserId, post: u64, action_time_ms: i64, action_type: i32) -> Val
         author_id: uid(post + 100).to_string(),
         action_time_ms,
         action_type,
+        product_surface: 0,
     }
     .validate()
     .expect("fixture event is valid")
