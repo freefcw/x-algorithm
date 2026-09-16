@@ -11,12 +11,11 @@ use home_mixer::models::query::ScoredPostsQuery;
 use home_mixer::models::{uid, PostId};
 use home_mixer::query_builder::QueryBuilder;
 use home_mixer::rpc_policy::RpcPolicy;
-use home_mixer::runtime_config::HomeMixerMode;
+use home_mixer::runtime_config::{HomeMixerMode, UasConfig};
 use home_mixer::scored_posts_server::ScoredPostsServer;
 use home_mixer::{HomeMixerFeatures, PhoenixCandidatePipeline};
 use std::sync::Arc;
 use std::time::Duration;
-use xai_candidate_pipeline::observer::PipelineObserver;
 
 fn recent_post_id(sequence: u64) -> PostId {
     let timestamp = std::time::SystemTime::now()
@@ -69,13 +68,15 @@ async fn wait_for(metrics: &Metrics, needle: &str) -> String {
 #[tokio::test]
 async fn one_for_you_request_is_observed_by_both_pipelines_and_their_side_effects() {
     let metrics = Arc::new(Metrics::new());
-    let pipeline = PhoenixCandidatePipeline::assemble_for_mode(
+    // The server's assembly entry: installs the registry as observer.
+    let pipeline = PhoenixCandidatePipeline::assemble_with_uas_and_metrics(
         HomeMixerMode::Demo,
         HomeMixerFeatures::default(),
+        UasConfig::Demo,
+        Arc::clone(&metrics),
     )
     .await
-    .expect("demo pipeline")
-    .with_observer(Arc::clone(&metrics) as Arc<dyn PipelineObserver>);
+    .expect("demo pipeline");
     let scored = Arc::new(
         ScoredPostsServer::with_state(
             QueryBuilder::default(),

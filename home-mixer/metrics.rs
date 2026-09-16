@@ -43,6 +43,7 @@ pub struct Metrics {
     ready: IntGauge,
     rpc: RpcMetrics,
     pipeline: PipelineMetrics,
+    served_events: ServedEventsMetrics,
 }
 
 impl Default for Metrics {
@@ -75,6 +76,7 @@ impl Metrics {
         .expect("valid ready opts");
         let rpc = RpcMetrics::new();
         let pipeline = PipelineMetrics::new();
+        let served_events = ServedEventsMetrics::new();
 
         registry
             .register(Box::new(build_info))
@@ -84,12 +86,14 @@ impl Metrics {
             .expect("register ready");
         rpc.register(&registry);
         pipeline.register(&registry);
+        served_events.register(&registry);
 
         Self {
             registry,
             ready,
             rpc,
             pipeline,
+            served_events,
         }
     }
 
@@ -99,6 +103,10 @@ impl Metrics {
 
     pub fn pipeline(&self) -> &PipelineMetrics {
         &self.pipeline
+    }
+
+    pub fn served_events(&self) -> &ServedEventsMetrics {
+        &self.served_events
     }
 
     pub fn set_ready(&self, ready: bool) {
@@ -444,6 +452,66 @@ impl PipelineObserver for Metrics {
     }
 }
 
+/// Served-candidates exposure log (SE-11) publishing, per event rather than
+/// per side-effect run: the side effect skips empty responses, so this is the
+/// count the offline consumer can reconcile against successful non-empty
+/// responses (`served-candidates-event-contract.md` §7).
+pub struct ServedEventsMetrics {
+    events: IntCounterVec,
+    candidates: prometheus::IntCounter,
+    publish_duration: prometheus::Histogram,
+}
+
+impl ServedEventsMetrics {
+    fn new() -> Self {
+        Self {
+            events: IntCounterVec::new(
+                Opts::new(
+                    "home_mixer_served_events_total",
+                    "Served-candidates exposure events handed to the sink, by publish result",
+                ),
+                &["result"],
+            )
+            .expect("valid served events opts"),
+            candidates: prometheus::IntCounter::new(
+                "home_mixer_served_event_candidates_total",
+                "Candidates carried by successfully published exposure events",
+            )
+            .expect("valid served candidates opts"),
+            publish_duration: prometheus::Histogram::with_opts(
+                HistogramOpts::new(
+                    "home_mixer_served_event_publish_duration_seconds",
+                    "Time one exposure event spent in the sink (Kafka acknowledgement or file write)",
+                )
+                .buckets(RPC_DURATION_BUCKETS.to_vec()),
+            )
+            .expect("valid served publish duration opts"),
+        }
+    }
+
+    fn register(&self, registry: &Registry) {
+        registry
+            .register(Box::new(self.events.clone()))
+            .expect("register served events");
+        registry
+            .register(Box::new(self.candidates.clone()))
+            .expect("register served candidates");
+        registry
+            .register(Box::new(self.publish_duration.clone()))
+            .expect("register served publish duration");
+    }
+
+    /// Record one publish attempt of an event carrying `candidates` posts.
+    pub fn record(&self, candidates: usize, succeeded: bool, elapsed: std::time::Duration) {
+        let result = if succeeded { "ok" } else { "error" };
+        self.events.with_label_values(&[result]).inc();
+        if succeeded {
+            self.candidates.inc_by(candidates as u64);
+        }
+        self.publish_duration.observe(elapsed.as_secs_f64());
+    }
+}
+
 /// Canonical gRPC status names, as used by other language runtimes' metrics.
 pub fn code_label(code: Code) -> &'static str {
     match code {
@@ -615,6 +683,37 @@ mod tests {
         assert!(text.contains(
             "home_mixer_pipeline_underfilled_total{pipeline=\"PhoenixCandidatePipeline\"} 1"
         ));
+    }
+
+    #[test]
+    fn served_event_publishes_count_events_candidates_and_duration() {
+        use std::time::Duration;
+
+        let metrics = Metrics::new();
+        metrics
+            .served_events()
+            .record(35, true, Duration::from_millis(12));
+        metrics
+            .served_events()
+            .record(20, false, Duration::from_millis(5_000));
+
+        let text = metrics.encode().expect("text exposition");
+        assert!(
+            text.contains("home_mixer_served_events_total{result=\"ok\"} 1"),
+            "{text}"
+        );
+        assert!(
+            text.contains("home_mixer_served_events_total{result=\"error\"} 1"),
+            "{text}"
+        );
+        assert!(
+            text.contains("home_mixer_served_event_candidates_total 35"),
+            "failed publishes must not count their candidates\n{text}"
+        );
+        assert!(
+            text.contains("home_mixer_served_event_publish_duration_seconds_count 2"),
+            "{text}"
+        );
     }
 
     #[test]

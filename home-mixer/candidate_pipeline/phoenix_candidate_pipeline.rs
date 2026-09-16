@@ -53,6 +53,7 @@ use crate::filters::topic_ids_filter::TopicIdsFilter;
 use crate::filters::vf_filter::VFFilter;
 use crate::filters::video_filter::VideoFilter;
 use crate::filters::viewer_muted_keyword_filter::ViewerMutedKeywordFilter;
+use crate::metrics::Metrics;
 use crate::models::candidate::PostCandidate;
 use crate::models::query::ScoredPostsQuery;
 use crate::params;
@@ -425,13 +426,44 @@ impl PhoenixCandidatePipeline {
         features: HomeMixerFeatures,
         uas: UasConfig,
     ) -> anyhow::Result<PhoenixCandidatePipeline> {
-        let topic_clients = (mode == HomeMixerMode::Demo).then(|| {
+        Self::assemble_with_optional_topic_clients(
+            mode,
+            Self::demo_topic_clients(mode),
+            features,
+            uas,
+            None,
+        )
+        .await
+    }
+
+    /// Like [`Self::assemble_with_uas`], and additionally reports to the
+    /// process metrics registry: the pipeline's stage summary through the
+    /// observer hook and every served-candidates publish through the metered
+    /// sink wrapper.
+    pub async fn assemble_with_uas_and_metrics(
+        mode: HomeMixerMode,
+        features: HomeMixerFeatures,
+        uas: UasConfig,
+        metrics: Arc<Metrics>,
+    ) -> anyhow::Result<PhoenixCandidatePipeline> {
+        let pipeline = Self::assemble_with_optional_topic_clients(
+            mode,
+            Self::demo_topic_clients(mode),
+            features,
+            uas,
+            Some(Arc::clone(&metrics)),
+        )
+        .await?;
+        Ok(pipeline.with_observer(metrics as Arc<dyn PipelineObserver>))
+    }
+
+    fn demo_topic_clients(mode: HomeMixerMode) -> Option<TopicPersonalizationClients> {
+        (mode == HomeMixerMode::Demo).then(|| {
             TopicPersonalizationClients::new(
                 Arc::new(DemoUserTopicReader),
                 Arc::new(DemoTopicRetrievalClient),
             )
-        });
-        Self::assemble_with_optional_topic_clients(mode, topic_clients, features, uas).await
+        })
     }
 
     /// Builds the pipeline with explicitly supplied topic adapters.
@@ -447,6 +479,7 @@ impl PhoenixCandidatePipeline {
             Some(topic_clients),
             HomeMixerFeatures::from_env(),
             UasConfig::from_env(mode)?,
+            None,
         )
         .await
     }
@@ -464,6 +497,7 @@ impl PhoenixCandidatePipeline {
         topic_clients: Option<TopicPersonalizationClients>,
         features: HomeMixerFeatures,
         uas: UasConfig,
+        metrics: Option<Arc<Metrics>>,
     ) -> anyhow::Result<PhoenixCandidatePipeline> {
         let demo_mode = mode == HomeMixerMode::Demo;
         let features = features_for_mode(mode, features);
@@ -579,7 +613,7 @@ impl PhoenixCandidatePipeline {
         }
         let served_sink_config = ServedCandidatesSinkConfig::from_env()
             .context("invalid served-candidates sink configuration")?;
-        let served_candidates_sink = build_served_candidates_sink(&served_sink_config)
+        let served_candidates_sink = build_served_candidates_sink(&served_sink_config, metrics)
             .await
             .context("failed to create the served-candidates sink")?;
         match &served_sink_config {

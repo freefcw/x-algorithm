@@ -13,12 +13,13 @@
 //! 需要更强的投递保证时由 Kafka 侧 `enable.idempotence` + 消费方按 `request_id`
 //! 去重承担，而不是在请求路径上阻塞。
 
+use crate::metrics::Metrics;
 use crate::side_effects::served_candidates_kafka_side_effect::{
     ServedCandidatesEvent, ServedCandidatesSink,
 };
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 use tokio::io::AsyncWriteExt;
 use tonic::async_trait;
 
@@ -175,16 +176,53 @@ impl ServedCandidatesSinkConfig {
 }
 
 /// Build the adapter selected by `config`. `Disabled` yields `None` so the
-/// assembly leaves the side effect out entirely.
+/// assembly leaves the side effect out entirely. With `metrics`, the adapter
+/// is wrapped so every publish is counted (`home_mixer_served_events_total`).
 pub async fn build_served_candidates_sink(
     config: &ServedCandidatesSinkConfig,
+    metrics: Option<Arc<Metrics>>,
 ) -> anyhow::Result<Option<Arc<dyn ServedCandidatesSink>>> {
-    match config {
-        ServedCandidatesSinkConfig::Disabled => Ok(None),
-        ServedCandidatesSinkConfig::JsonLines(path) => Ok(Some(Arc::new(
-            JsonLinesServedCandidatesSink::open(path).await?,
-        ))),
-        ServedCandidatesSinkConfig::Kafka(kafka) => build_kafka_sink(kafka),
+    let sink: Option<Arc<dyn ServedCandidatesSink>> = match config {
+        ServedCandidatesSinkConfig::Disabled => None,
+        ServedCandidatesSinkConfig::JsonLines(path) => {
+            Some(Arc::new(JsonLinesServedCandidatesSink::open(path).await?))
+        }
+        ServedCandidatesSinkConfig::Kafka(kafka) => build_kafka_sink(kafka)?,
+    };
+    Ok(match (sink, metrics) {
+        (Some(sink), Some(metrics)) => {
+            Some(Arc::new(MeteredServedCandidatesSink::new(sink, metrics)))
+        }
+        (sink, _) => sink,
+    })
+}
+
+/// Counts and times every publish of the wrapped sink. The side effect only
+/// reports "ran / failed" per request; this layer records the events and
+/// candidates that actually reached the transport, which is what the offline
+/// consumer reconciles against.
+pub struct MeteredServedCandidatesSink {
+    inner: Arc<dyn ServedCandidatesSink>,
+    metrics: Arc<Metrics>,
+}
+
+impl MeteredServedCandidatesSink {
+    pub fn new(inner: Arc<dyn ServedCandidatesSink>, metrics: Arc<Metrics>) -> Self {
+        Self { inner, metrics }
+    }
+}
+
+#[async_trait]
+impl ServedCandidatesSink for MeteredServedCandidatesSink {
+    async fn publish(&self, event: &ServedCandidatesEvent) -> Result<(), String> {
+        let started = Instant::now();
+        let result = self.inner.publish(event).await;
+        self.metrics.served_events().record(
+            event.candidates.len(),
+            result.is_ok(),
+            started.elapsed(),
+        );
+        result
     }
 }
 
@@ -461,11 +499,133 @@ mod tests {
             sasl: None,
             delivery_timeout: DEFAULT_DELIVERY_TIMEOUT,
         });
-        let error = build_served_candidates_sink(&config)
+        let error = build_served_candidates_sink(&config, None)
             .await
             .err()
             .expect("kafka needs the feature");
         assert!(error.to_string().contains("--features kafka"));
+    }
+
+    struct FlakySink(std::sync::atomic::AtomicUsize);
+
+    #[async_trait]
+    impl ServedCandidatesSink for FlakySink {
+        async fn publish(&self, _event: &ServedCandidatesEvent) -> Result<(), String> {
+            let call = self.0.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            if call == 0 {
+                Ok(())
+            } else {
+                Err("broker unavailable".to_string())
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn metered_sink_counts_events_and_candidates_by_result() {
+        let metrics = Arc::new(Metrics::new());
+        let sink = MeteredServedCandidatesSink::new(
+            Arc::new(FlakySink(std::sync::atomic::AtomicUsize::new(0))),
+            Arc::clone(&metrics),
+        );
+        let event = ServedCandidatesEvent {
+            schema_version: 1,
+            request_id: "req-1".to_string(),
+            prediction_request_id: 1,
+            viewer_id: uid(42).to_string(),
+            request_time_ms: 1_700_000_000_000,
+            is_shadow_traffic: false,
+            in_network_only: false,
+            is_bottom_request: false,
+            client_app_id: 0,
+            candidates: vec![
+                ServedCandidateRecord {
+                    position: 0,
+                    post_id: pid(9).to_string(),
+                    author_id: uid(8).to_string(),
+                    retweeted_post_id: None,
+                    served_type: None,
+                    in_network: None,
+                    score: None,
+                    weighted_score: None,
+                    degraded_reason: None,
+                    created_at_ms: None,
+                };
+                3
+            ],
+        };
+
+        sink.publish(&event).await.expect("first publish");
+        sink.publish(&event)
+            .await
+            .expect_err("second publish fails");
+
+        let text = metrics.encode().unwrap();
+        assert!(
+            text.contains("home_mixer_served_events_total{result=\"ok\"} 1"),
+            "{text}"
+        );
+        assert!(
+            text.contains("home_mixer_served_events_total{result=\"error\"} 1"),
+            "{text}"
+        );
+        assert!(
+            text.contains("home_mixer_served_event_candidates_total 3"),
+            "{text}"
+        );
+        assert!(
+            text.contains("home_mixer_served_event_publish_duration_seconds_count 2"),
+            "{text}"
+        );
+    }
+
+    #[tokio::test]
+    async fn metrics_wrap_the_configured_sink_and_leave_disabled_alone() {
+        let metrics = Arc::new(Metrics::new());
+        assert!(build_served_candidates_sink(
+            &ServedCandidatesSinkConfig::Disabled,
+            Some(metrics.clone())
+        )
+        .await
+        .unwrap()
+        .is_none());
+
+        let dir = std::env::temp_dir().join(format!(
+            "home-mixer-served-metered-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("served.jsonl");
+        let sink = build_served_candidates_sink(
+            &ServedCandidatesSinkConfig::JsonLines(path.clone()),
+            Some(Arc::clone(&metrics)),
+        )
+        .await
+        .unwrap()
+        .expect("json lines sink");
+        sink.publish(&ServedCandidatesEvent {
+            schema_version: 1,
+            request_id: "req-1".to_string(),
+            prediction_request_id: 1,
+            viewer_id: uid(42).to_string(),
+            request_time_ms: 1,
+            is_shadow_traffic: false,
+            in_network_only: false,
+            is_bottom_request: false,
+            client_app_id: 0,
+            candidates: Vec::new(),
+        })
+        .await
+        .unwrap();
+        assert!(metrics
+            .encode()
+            .unwrap()
+            .contains("home_mixer_served_events_total{result=\"ok\"} 1"));
+        assert_eq!(std::fs::read_to_string(&path).unwrap().lines().count(), 1);
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 
     #[test]

@@ -16,7 +16,6 @@ use tonic::service::RoutesBuilder;
 use tonic::{Request, Response, Status};
 use x_algorithm_proto::home_mixer as pb;
 use x_algorithm_proto::home_mixer::ScoredPostsResponse;
-use xai_candidate_pipeline::observer::PipelineObserver;
 
 use crate::debug_access::DebugAccessError;
 pub use crate::debug_access::DebugAccessPolicy;
@@ -52,12 +51,16 @@ impl HomeMixerServer {
             );
         }
         let query_builder = QueryBuilder::new(config.features);
+        // Stage summaries, side-effect outcomes and exposure-event publishes
+        // land in the same registry the admin port exposes.
         let pipeline = crate::candidate_pipeline::phoenix_candidate_pipeline::PhoenixCandidatePipeline::
-            assemble_with_uas(config.mode, config.features, config.uas)
-            .await?
-            // Stage summaries and side-effect outcomes land in the same
-            // registry the admin port exposes.
-            .with_observer(Arc::clone(&metrics) as Arc<dyn PipelineObserver>);
+            assemble_with_uas_and_metrics(
+                config.mode,
+                config.features,
+                config.uas,
+                Arc::clone(&metrics),
+            )
+            .await?;
         let debug_access = DebugAccessPolicy::new(config.features.debug_rpc, config.debug_token);
         let state_store: Arc<dyn FeedStateStore> = match config.feed_state {
             FeedStateConfig::InMemory => Arc::new(InMemoryFeedStateStore::new(
