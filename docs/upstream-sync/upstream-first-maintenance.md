@@ -10,7 +10,7 @@
 >
 > Previous anchor: `c65aa179db7bdd61e2c2821eac87f208a105c053` (2026-08-14 semantic migration; portable changes landed and U3 lanes recorded in [`../update/20260814.md`](../update/20260814.md))
 >
-> The intermediate `a389166` only removed the `*.npz`/`*.zip` LFS rules. The local `.gitattributes` keeps `*.zip` as a `U2` extension because the legacy Phoenix artifact pointer still depends on it.
+> The intermediate `a389166` only removed the `*.npz`/`*.zip` LFS rules. Local `.gitattributes` no longer keeps a `*.zip` LFS rule; the leftover Phoenix artifact pointer has been removed.
 
 ## Objective
 
