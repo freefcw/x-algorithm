@@ -120,7 +120,7 @@ flowchart TD
 | 问题 | 过滤器 |
 | --- | --- |
 | 候选重复 | `DropDuplicatesFilter` |
-| 内容不完整 | `CoreDataHydrationFilter`（作者为 NIL 或正文为空） |
+| 内容不完整 | `CoreDataHydrationFilter`（作者为 NIL，或无正文且未确认有媒体） |
 | 业务一级不可推荐 | `FirstStageEligibleFilter`（删除 / 未公开 / 审核未过，来自 mrpyq `recommendation_eligible=false`） |
 | 内容过旧 | `AgeFilter` |
 | 不该给自己看 | `SelfTweetFilter` |

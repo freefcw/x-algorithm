@@ -110,8 +110,8 @@ impl TESClient for DisabledTESClient {
 
 /// 演示环境 TES 客户端
 ///
-/// 为每条帖子编造占位文本，让候选能通过 CoreDataHydrationFilter
-/// （该过滤器要求非空文本，否则候选会被全部清空）。
+/// 为每条帖子编造占位文本。CoreDataHydrationFilter 要求作者加正文或媒体；
+/// Demo TES 不补作者，演示链路靠 Source 带上 author_id。
 /// 由装配层在 `HOME_MIXER_MODE=demo` 时注入。
 pub struct DemoTESClient;
 

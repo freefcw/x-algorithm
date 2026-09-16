@@ -174,7 +174,7 @@ graph LR
 | --- | --- |
 | `scoring_sequence` / `retrieval_sequence`（各自缺失时都回退 `user_action_sequence`；UAS 失败时三者皆 `None`） | `PhoenixScorer`（无序列 → `phoenix_missing_sequence`）/ `PhoenixSource`（无序列 → 失败） |
 | `user_features.followed_user_ids` | `InNetworkCandidateHydrator`（仅对来源未标 `in_network` 的候选）；demo `ThunderClient` 请求 |
-| `tweet_text` | `CoreDataHydrationFilter`、`ViewerMutedKeywordFilter` |
+| `tweet_text` / `has_media` | `CoreDataHydrationFilter`、`ViewerMutedKeywordFilter` |
 | `created_at_ms` | `AgeFilter`（缺失时回退 ObjectId 时间戳）、`RuleFallbackScorer` 新鲜度项 |
 | `recommendation_eligible` | `FirstStageEligibleFilter`（只丢 `Some(false)`） |
 | `retweeted_tweet_id` | `PhoenixScorer`（模型输入与 lookup key 优先用原帖） |

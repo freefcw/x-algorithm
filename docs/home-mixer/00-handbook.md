@@ -298,7 +298,7 @@ flowchart TD
 
 - `PhoenixSource` 因缺少 `user_action_sequence` 不可用，或请求显式设置 `in_network_only=true` 后 `PhoenixSource` / `FallbackSource` 被关闭
 - `ThunderSource` 的 mrpyq 收件箱 `source_ready=false`、皮维度未对齐或召回预算耗尽（日志 `mrpyq adapter recall ...`）
-- `CoreDataHydrationFilter` 因 `creator_member_id` / 正文为空清空候选
+- `CoreDataHydrationFilter` 因 `creator_member_id` 为空，或无正文且未确认有媒体而清空候选
 - `VFFilter` 在默认 `fail_closed` 下删掉了所有 `Unavailable` 候选（日志 `visibility unavailable for N candidates`）
 
 ## 14. 推荐阅读方式

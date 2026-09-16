@@ -44,7 +44,7 @@ Query hydrator 失败只记 request-scoped error 日志、不中断请求：UAS 
 | --- | --- | --- | --- | --- | --- | --- |
 | `InNetworkCandidateHydrator` | `candidate_hydrators/in_network_candidate_hydrator.rs` | 默认启用 | `query.user_id` `followed_user_ids` `candidate.author_id` `candidate.in_network` | `in_network`（来源已标 `Some(..)` 时原样保留，只对未标的候选按关注列表 / 本人推断） | 无 | `RankingScorer`、`VFCandidateHydrator`、`RuleFallbackScorer` |
 | `CoreDataCandidateHydrator` | `candidate_hydrators/core_data_candidate_hydrator.rs` | 请求不带 `cached_posts` 时启用 | `candidate.tweet_id` | `author_id`（来源留空时补回）`retweeted_user_id` `retweeted_tweet_id` `in_reply_to_tweet_id` `tweet_text` `created_at_ms` `recommendation_eligible` `favorite_count` `view_count` 等互动计数；共享 batch 里算出的 `quoted_*` 不写回（U5） | `TESClient.get_tweet_core_datas` via shared provider | `CoreDataHydrationFilter`、`FirstStageEligibleFilter`、`AgeFilter`、`ViewerMutedKeywordFilter`、`PhoenixScorer`、`RuleFallbackScorer`、冷启动探索 |
-| `HasMediaHydrator` | `candidate_hydrators/has_media_hydrator.rs` | 请求不带 `cached_posts` 时启用 | shared media batch | `has_media` | `TESClient.get_tweet_media_entities` via shared provider | 展示信号，当前无过滤消费 |
+| `HasMediaHydrator` | `candidate_hydrators/has_media_hydrator.rs` | 请求不带 `cached_posts` 时启用 | shared media batch | `has_media` | `TESClient.get_tweet_media_entities` via shared provider | `CoreDataHydrationFilter`（无正文时靠它判断纯图 / 纯视频是否可留） |
 | `VideoDurationCandidateHydrator` | `candidate_hydrators/video_duration_candidate_hydrator.rs` | 请求不带 `cached_posts` 时启用 | `candidate.tweet_id` | `video_duration_ms` | shared `TESClient` media batch | `VideoFilter`、`RankingScorer` |
 | `GizmoduckCandidateHydrator` | `candidate_hydrators/gizmoduck_hydrator.rs` | post-selection 默认启用；demo Cold Start 显式开启时另在 pre-selection 补粉丝数 | `author_id` `retweeted_user_id` | `author_followers_count` `author_screen_name` `retweeted_screen_name` | `GizmoduckClient`（去重批量读取；非 demo 为 Disabled，全部 `None`） | Cold Start 资格；响应映射；能读取 pre-selection CoreData 已补出的 retweet author |
 | `FilteredTopicsHydrator` | `candidate_hydrators/filtered_topics_hydrator.rs` | 不带 `cached_posts` 且（topic recall / excluded topics） | shared core batch | `filtered_topic_ids` `unfiltered_topic_ids` | shared `TESClient` core batch | `TopicIdsFilter` / `NewUserTopicIdsFilter` |
@@ -58,7 +58,7 @@ Query hydrator 失败只记 request-scoped error 日志、不中断请求：UAS 
 | 组件 | 文件 | enable | 读取 | 移除条件 |
 | --- | --- | --- | --- | --- |
 | `DropDuplicatesFilter` | `filters/drop_duplicates_filter.rs` | 默认启用 | `tweet_id` | 同一 `tweet_id` 重复出现 |
-| `CoreDataHydrationFilter` | `filters/core_data_hydration_filter.rs` | 默认启用 | `author_id` `tweet_text` | 作者为 NIL 或文本 trim 后为空（纯图片 / 视频且无正文的帖子也会被丢） |
+| `CoreDataHydrationFilter` | `filters/core_data_hydration_filter.rs` | 默认启用 | `author_id` `tweet_text` `has_media` | 作者为 NIL，或正文 trim 后为空且 `has_media != Some(true)`。纯图 / 纯视频帖（`HasMediaHydrator` 标了媒体）保留 |
 | `FirstStageEligibleFilter` | `filters/first_stage_eligible_filter.rs` | 默认启用（U2 新增） | `recommendation_eligible` | 只丢 `Some(false)`；`None` 保留（fail-open），以便 Demo TES 不设该字段时仍出结果 |
 | `AgeFilter` | `filters/age_filter.rs` | 默认启用 | `created_at_ms`（缺失时回退 `tweet_id` 的 ObjectId 时间戳） | 帖龄大于 `MAX_POST_AGE`（48 h）；两者都缺时丢弃 |
 | `SelfTweetFilter` | `filters/self_tweet_filter.rs` | 默认启用 | `query.user_id` `author_id` | 作者就是 viewer |

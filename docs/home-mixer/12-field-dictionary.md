@@ -107,7 +107,7 @@
 | --- | --- | --- | --- |
 | `tweet_id` | `PostId`（`ObjectId`） | Source | 唯一标识、去重、响应输出；边界上非 24-hex 的 ID 整条丢弃 |
 | `author_id` | `UserId` | Source（Phoenix / demo Thunder）或 `CoreDataCandidateHydrator`（mrpyq 候选来源留 NIL，由 TES 的 `creator_member_id` 补回） | 过滤、`in_network` 推断、响应输出；仍为 NIL 时被 `CoreDataHydrationFilter` 丢弃 |
-| `tweet_text` | `String` | `CoreDataCandidateHydrator` | 文本过滤、内容完整性检查 |
+| `tweet_text` | `String` | `CoreDataCandidateHydrator` | 文本过滤；与 `has_media` 一起做内容完整性检查 |
 | `created_at_ms` | `Option<u64>` | Source（demo Thunder）或 `CoreDataCandidateHydrator`（mrpyq `created_at_ms`） | `AgeFilter`（缺失时回退 ObjectId 时间戳）、`RuleFallbackScorer` |
 | `recommendation_eligible` | `Option<bool>` | `CoreDataCandidateHydrator`（mrpyq 一级标志） | `FirstStageEligibleFilter`（只丢 `Some(false)`） |
 | `quoted_tweet_text` | `String` | 无写入方（U5：`QuoteHydrator` 已删除） | `ViewerMutedKeywordFilter` 仍会匹配，但恒为空 |
@@ -143,7 +143,7 @@
 | `retweeted_screen_name` | `Option<String>` | `GizmoduckCandidateHydrator` | `get_screen_names()`、响应输出 |
 | `author_profile_looked_up_for_user_id` | `Option<UserId>` | `GizmoduckCandidateHydrator`（请求内复用标记） | 防止其他 hydrator 改作者后复用过期资料 |
 | `retweeted_profile_looked_up_for_user_id` | `Option<UserId>` | `GizmoduckCandidateHydrator`（请求内复用标记） | 同上，作用于转推原作者 |
-| `has_media` | `Option<bool>` | `HasMediaHydrator`（TES media 批次） | 展示信号，当前无过滤消费 |
+| `has_media` | `Option<bool>` | `HasMediaHydrator`（TES media 批次） | `CoreDataHydrationFilter`：无正文时 `Some(true)` 才保留 |
 | `language_code` | `Option<String>` | `LanguageCodeHydrator` | 展示信号，当前无过滤消费 |
 
 ### 4.4 安全与权限字段

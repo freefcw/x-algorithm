@@ -5,7 +5,7 @@
 // 可以在本地跑出非空结果：
 //   - DemoStratoClient 返回固定关注列表（与 thunder --demo-seed-posts 的作者一致）
 //   - DemoUserActionSequenceFetcher 返回一段模拟的用户行为序列
-//   - DemoTESClient 返回模拟帖子文本（否则候选会被 CoreDataHydrationFilter 全部过滤）
+//   - DemoTESClient 返回模拟帖子文本（演示链路通常不补媒体）
 //
 // 该开关只影响装配时注入哪个实现，不改变管道逻辑本身。
 // 演示数据的共享契约（账号集合、Snowflake 工具）在 `x_algorithm_proto::demo`。
