@@ -1,6 +1,6 @@
 # Phoenix 训练数据决策记录（2026-09-16）
 
-> **状态**：`decided`（决策已定，派生的代码改动见 §7，未全部落地）
+> **状态**：`implemented`（决策已定；§7 派生的代码改动已全部落地，见各条标注）
 > **读者**：推荐服务开发、埋点侧、数据 / 训练侧
 > **配套文档**：行为事件流 [uas-event-contract.md](./uas-event-contract.md)；曝光事件流 [served-candidates-event-contract.md](./served-candidates-event-contract.md)；训练样本格式 [training/training_data_spec.md](../training/training_data_spec.md)
 > **为什么单独一份**：这五项决策横跨埋点、home-mixer 权重合同、Phoenix 训练配方和数据侧 join 任务，任何一方单独改都会造成 train/serve 或 gateway/home-mixer 不一致。这里是唯一真源，改动先改这里再改代码。
@@ -125,10 +125,10 @@ score = 0.5·P(点赞) + 5.0·P(评论) − 234.0·P(举报)
 
 - UAS topic 的分区数与预计 QPS（用于 §5 校核，不阻塞建 topic）。
 
-## 7. 派生的代码改动（待执行）
+## 7. 派生的代码改动（已执行，2026-09-16）
 
-1. `home-mixer/clients/phoenix_prediction_client.rs`：`REQUIRED_SUPPORTED_ACTIONS = [1, 2, 18]`，测试同步。
-2. `home-mixer/params/param.rs`：§1.3 列出的权重置 0，注释记录原值与恢复条件（本文 §1.4）。
-3. `phoenix/services/model_contract.py`：`NONZERO_WEIGHT_ACTION_ENUMS = (1, 2, 18)`；`grpc_gateway.create_servicers` 默认支持集合改为引用该常量；契约测试同步。
-4. `phoenix/scripts/train_ranker.py` 文档 / 训练指引：写明 v1 `--observed-actions` 取值。
-5. 数据侧归因 join 任务：`--attribution-window-minutes`（默认 30）、`is_shadow_traffic = false` 过滤。
+1. ✅ `home-mixer/clients/phoenix_prediction_client.rs`：`REQUIRED_SUPPORTED_ACTIONS = [1, 2, 18]`；新增单测 `required_supported_actions_are_exactly_the_non_zero_weight_heads` 把该列表钉到 `params/param.rs` 的非零权重上，两处任一单独改动都会失败。
+2. ✅ `home-mixer/params/param.rs`：§1.3 列出的十个权重置 0，每项注释保留原值与“为什么采不到”；恢复流程见 §1.4。
+3. ✅ `phoenix/services/model_contract.py`：`NONZERO_WEIGHT_ACTION_ENUMS = (1, 2, 18)`；`grpc_gateway.create_servicers` 无 metadata 时的默认集合改为引用该常量；`tests/test_grpc_gateway_contract.py::test_default_supported_actions_are_the_v1_head_set` 锁定。
+4. ✅ `phoenix/scripts/train_ranker.py --observed-actions` 帮助文本与 `phoenix/docs/训练指引.md` §1.2 写明 v1 取值 `favorite,reply,report`。
+5. ✅ 数据侧归因 join：`phoenix/scripts/build_training_inputs.py` 的 `--attribution-window-minutes`（默认 30）与 `is_shadow_traffic` 默认排除（`--include-shadow` 可开）。数仓侧若用 SQL 复刻，按同一规则。

@@ -119,6 +119,8 @@ uv run scripts/run_grpc_gateway.py \
 
 真实候选池：先离线编码可推荐帖子，再让网关加载并定时刷新。索引与 retrieval checkpoint 一一对应，网关拒绝加载模型版本不一致的索引；`corpus-version` trailing metadata（`model@built_at_ms:size`）标出回答请求的是哪一份索引。
 
+网关广播的 `model-version` 是 `<标签>@<12 位内容哈希>`（`services/model_contract.py::checkpoint_model_version`）：标签是 bundle 目录名（如 `step-000200`）或平铺文件的 stem（如 `retrieval_params_step200`），哈希覆盖参数文件和实际加载的嵌入表。两次训练同名 step、或只换嵌入表，都会得到不同版本；`train_ranker.py` 把同一个值写进 `metadata.json` 的 `model_version`，网关启动时重新计算并拒绝不一致的 bundle。home-mixer 的 `PHOENIX_EXPECTED_MODEL_VERSION` 就钉这个字符串，直接从 `metadata.json` 或训练日志里抄。
+
 ```bash
 # 输入至少两列 post_id / author_id（24 位 hex ObjectId：mrpyq feed_id / creator_member_id），
 # 可选 created_at_ms；默认只保留最近 48 小时（与 home-mixer AgeFilter 一致）
@@ -136,6 +138,31 @@ uv run scripts/run_grpc_gateway.py \
 ```
 
 帖子清单由 mrpyq 侧提供（当前 `RecommendationDataService` 没有按时间枚举全部可推荐帖子的接口，这是接入前提）。
+
+### 4.1 管道验证（不依赖真实模型）
+
+在真实训练数据到位之前，可以先用模拟数据训一套"非随机"产物，把"索引 → 网关 → home-mixer 合同 → mrpyq 水合"这条管道跑通。产物的分数没有业务意义，只用来验证接线，不能上真实流量：
+
+```bash
+cd phoenix
+# 1. 精排 bundle（v1 head 集合），召回 checkpoint 复用同一张嵌入表
+uv run scripts/train_ranker.py --steps 20 --batch-size 4 --save-every 20 \
+  --observed-actions favorite,reply,report --ckpt-dir /tmp/plumbing/ckpt
+uv run scripts/train_retrieval.py --steps 20 --batch-size 8 --save-every 20 \
+  --ckpt-dir /tmp/plumbing/ckpt --resume-emb
+# 2. 用 mrpyq 导出的真实 feed_id / creator_member_id 建索引
+uv run scripts/build_retrieval_index.py --posts recommendable_posts.csv \
+  --retrieval-checkpoint /tmp/plumbing/ckpt/retrieval_params_step20.npz \
+  --emb-tables /tmp/plumbing/ckpt/step-000020/embedding_tables.npz \
+  --output /tmp/plumbing/retrieval_index.npz
+# 3. 网关：ranker bundle + 召回 checkpoint + 索引
+uv run scripts/run_grpc_gateway.py --port 50053 \
+  --ranker-checkpoint /tmp/plumbing/ckpt/step-000020 \
+  --retrieval-checkpoint /tmp/plumbing/ckpt/retrieval_params_step20.npz \
+  --corpus-path /tmp/plumbing/retrieval_index.npz --corpus-refresh-seconds 300
+```
+
+网关日志里 `ranker=step-000020@…  retrieval=retrieval_params_step20@…` 两个版本都不是 `random`，trailing metadata 为 `random-weights=false`、`supported-actions=1,2,18`，home-mixer 非 demo 模式会接受。随后以 degraded 模式启动 home-mixer（`MRPYQ_RECOMMENDATION_DATA_ADDR` + `HOME_MIXER_REDIS_URL` + `PHOENIX_RETRIEVAL_GRPC_ADDR` / `PHOENIX_PREDICT_GRPC_ADDR`），用 `uas-worker` 从 stdin 给测试皮投影几条行为后请求 Feed，检查 `PhoenixSource` 的候选在 `CoreDataHydrationFilter` 之后仍然存活——这一步只有索引里的 ID 是 mrpyq 真实 `feed_id` 时才成立。
 
 ## 5. 训练数据需要准备什么
 
@@ -259,7 +286,7 @@ uv run scripts/train_ranker.py \
   --steps 20000
 ```
 
-线上事件接入后用曝光模式训练：`scripts/build_training_inputs.py` 把 home-mixer 的服务端曝光事件（`docs/implementation/served-candidates-event-contract.md`）和 UAS 行为事件（`docs/implementation/uas-event-contract.md`）整理成 `behavior_logs/`（按用户、帖子聚合的多热行为，与线上聚合器同构）、`impressions/`（每条下发候选 + 归因窗口内的标签）和兜底的 `post_metadata.parquet`；`data_preprocessor.py --impressions-dir` 则按"一次下发请求一条样本"构造，负样本是同一请求里看到但没互动的候选，历史只取请求前 7 天。
+线上事件接入后用曝光模式训练：`scripts/build_training_inputs.py` 把 home-mixer 的服务端曝光事件（`docs/implementation/served-candidates-event-contract.md`）和 UAS 行为事件（`docs/implementation/uas-event-contract.md`）整理成 `behavior_logs/`（一行一个行为事件，不预聚合）、`impressions/`（每条下发候选 + 归因窗口内的标签）和兜底的 `post_metadata.parquet`；`data_preprocessor.py --impressions-dir` 则按"一次下发请求一条样本"构造，负样本是同一请求里看到但没互动的候选，历史只取请求前 7 天，并以请求时间为截止按帖子聚合（与线上 `DefaultAggregator` 同构）——请求之后发生的行为是这次曝光的标签，不会混进历史 mask。
 
 ```bash
 uv run scripts/build_training_inputs.py \

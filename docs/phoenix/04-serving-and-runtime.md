@@ -264,4 +264,4 @@ Phoenix 的 `run_services.py` 已经把这个拆分思路体现出来了。
 - 真正的外部特征服务接入。
 - ~~真正的向量索引接入和热刷新~~：gRPC 网关已支持 `--corpus-path` 加载 `scripts/build_retrieval_index.py` 的索引并按 mtime 热替换；HTTP `retrieval_service` 仍用示例候选池。
 - 服务级测试、并发测试、压测数据（网关精排已 jit + 折行批处理：1000 条候选单次约 9 ms，启动预热约 3 s；并发仍靠多副本）。
-- 更严格的模型版本与发布策略（网关已带 `grpc.health.v1` 健康检查与 SIGTERM 优雅停机；ranker bundle 的 `model-version` 仍是文件名 `model_params.npz`，无法区分不同 step）。
+- 更严格的模型版本与发布策略（网关已带 `grpc.health.v1` 健康检查与 SIGTERM 优雅停机；`model-version` 已改为 `<bundle 标签>@<参数 + 嵌入表内容哈希>`，训练写入 `metadata.json`、网关启动时重算并校验，召回索引按同一值绑定；仍缺的是发布 / 回滚流程本身）。

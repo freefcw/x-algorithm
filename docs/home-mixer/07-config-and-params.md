@@ -78,7 +78,7 @@ flowchart TD
 | `PHOENIX_PREDICT_GRPC_ADDR` | `clients/phoenix_prediction_client.rs` | Phoenix 精排 gRPC 地址 | 未设置时显式 Unavailable，Scorer 保留候选并走规则 fallback |
 | `PHOENIX_RETRIEVAL_GRPC_ADDR` | `clients/phoenix_retrieval_client.rs` | Phoenix 召回 gRPC 地址 | 未设置时显式 Unavailable，Source 跳过网外召回路 |
 | `PHOENIX_MOE_GRPC_ADDR` | `candidate_pipeline/phoenix_candidate_pipeline.rs` | Phoenix MoE 专家召回地址；只提供地址，不会自动启用 | 未设置时不装配 MoE Source |
-| `PHOENIX_EXPECTED_MODEL_VERSION` | `clients/phoenix_prediction_client.rs` | 固定期望的网关 `model-version` trailing metadata | 未设置时只校验非空、非 `random`；设置后不一致的响应被拒绝并走规则回退 |
+| `PHOENIX_EXPECTED_MODEL_VERSION` | `clients/phoenix_prediction_client.rs` | 固定期望的网关 `model-version` trailing metadata | 未设置时只校验非空、非 `random`；设置后不一致的响应被拒绝并走规则回退。取值形如 `step-000200@3fa9c1e2b7d4`（bundle 标签 + 参数与嵌入表的内容哈希，见 `phoenix/services/model_contract.py::checkpoint_model_version`），从 checkpoint 的 `metadata.json` `model_version` 抄 |
 | `PHOENIX_ENGINE` | `clients/phoenix_prediction_client.rs` | 精排引擎选择：`slim`（当前唯一实现）/ `xrex`（保留） | 默认 `slim`；`xrex` 或未知值在装配时直接拒绝启动 |
 | `HOME_MIXER_MODE` | `runtime_config.rs` | 运行意图：`demo` / `degraded` / `production_ready` | 默认 `degraded`（需 `MRPYQ_RECOMMENDATION_DATA_ADDR`）；调用方身份、TES、UAS 事件合同、Strato、VF、网内 / 兜底、Phoenix 元数据、served 落库合同未验收前，`production_ready` 拒绝启动 |
 | `HOME_MIXER_REQUEST_TIMEOUT_MS` | `runtime_config.rs` / `rpc_policy.rs` | 单次 RPC 在查询构建之后（流水线执行 + served 落库）的服务端总预算 | 默认 `10000`（`REQUEST_TIMEOUT_MS`），必须为正整数。客户端 `grpc-timeout` 更短时取更短者；更长不会放宽。超时返回 `DeadlineExceeded`，不返回部分结果，日志 `request_id=... deadline_exceeded budget_ms=...` |
