@@ -63,9 +63,18 @@ tower = { version = "0.4", features = ["util"] }
 # 真实网内召回走 mrpyq。P3 改 string proto 后删除。
 default = ["legacy-int-ids"]
 legacy-int-ids = []
-# Kafka consumption in `uas-worker`. Without it the worker still builds and
-# projects newline-delimited JSON from stdin (development only).
+# Kafka consumption in `uas-worker` and the served-candidates Kafka sink.
+# Without it the worker still builds and projects newline-delimited JSON from
+# stdin (development only).
 kafka = ["dep:rdkafka"]
+# `kafka` plus OpenSSL inside librdkafka, linked against the system library.
+# Required for `SSL` / `SASL_SSL` security protocols and for SCRAM mechanisms;
+# the plain `kafka` feature can only speak PLAINTEXT / SASL_PLAINTEXT. Used by
+# the container build (deploy/docker/home-mixer.Dockerfile): the Debian builder
+# has libssl-dev + pkg-config, the runtime image libssl3. On macOS the
+# librdkafka configure step needs `pkg-config` and
+# `PKG_CONFIG_PATH=$(brew --prefix openssl)/lib/pkgconfig` to find OpenSSL.
+kafka-ssl = ["kafka", "rdkafka/ssl"]
 
 [[bin]]
 name = "home-mixer"

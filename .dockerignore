@@ -1,0 +1,32 @@
+# 根目录作为 home-mixer 镜像的构建上下文（deploy/docker/home-mixer.Dockerfile）。
+# 只需要 Rust workspace 的成员；phoenix/ 有自己的上下文与 .dockerignore。
+
+.git
+.gitignore
+.DS_Store
+**/.DS_Store
+
+# 构建产物与本地缓存
+target/
+**/target/
+.ruff_cache/
+**/__pycache__/
+**/.venv/
+
+# 非 Rust workspace 的子项目与文档
+phoenix/
+grox/
+docs/
+testdata/
+scripts/
+*.md
+
+# 本地 agent / IDE 配置
+.empryo/
+.devin/
+.pi/
+.cursor/
+.codex/
+
+# Docker 自身
+deploy/k8s/
