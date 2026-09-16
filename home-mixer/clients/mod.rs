@@ -28,6 +28,7 @@ pub mod phoenix_prediction_client;
 pub mod phoenix_retrieval_client;
 pub mod redis_feed_state_store;
 pub mod s2s;
+pub mod served_candidates_sink;
 pub mod served_persistence;
 pub mod socialgraph_client;
 pub mod strato_client;

@@ -20,6 +20,9 @@ use crate::clients::phoenix_prediction_client::{
 use crate::clients::phoenix_retrieval_client::{
     PhoenixRetrievalClient, ProdPhoenixRetrievalClient,
 };
+use crate::clients::served_candidates_sink::{
+    build_served_candidates_sink, ServedCandidatesSinkConfig,
+};
 
 use crate::clients::strato_client::{DemoStratoClient, StratoClient};
 #[cfg(feature = "legacy-int-ids")]
@@ -75,6 +78,9 @@ use crate::scorers::vm_ranker::VMRanker;
 use crate::selectors::TopKScoreSelector;
 use crate::side_effects::phoenix_request_cache_side_effect::PhoenixRequestCacheSideEffect;
 use crate::side_effects::response_diversity_stats_side_effect::ResponseDiversityStatsSideEffect;
+use crate::side_effects::served_candidates_kafka_side_effect::{
+    ServedCandidatesKafkaSideEffect, ServedCandidatesSink,
+};
 use crate::sources::cached_posts_source::CachedPostsSource;
 use crate::sources::fallback_source::FallbackSource;
 use crate::sources::phoenix_moe_source::PhoenixMoeSource;
@@ -137,6 +143,9 @@ pub struct PhoenixDependencies {
     pub topic_clients: Option<TopicPersonalizationClients>,
     pub moe_retrieval_client: Option<Arc<dyn PhoenixRetrievalClient + Send + Sync>>,
     pub fallback_client: Option<Arc<dyn InNetworkPostsClient>>,
+    /// Exposure log for training and audit (SE-11). `None` leaves the side
+    /// effect unassembled; see `clients/served_candidates_sink.rs`.
+    pub served_candidates_sink: Option<Arc<dyn ServedCandidatesSink>>,
     pub features: HomeMixerFeatures,
 }
 
@@ -186,6 +195,7 @@ impl PhoenixCandidatePipeline {
             topic_clients,
             moe_retrieval_client,
             fallback_client,
+            served_candidates_sink,
             features,
         } = dependencies;
         // Query Hydrators
@@ -343,14 +353,19 @@ impl PhoenixCandidatePipeline {
         ];
 
         // Side Effects
-        let side_effects: Arc<Vec<Box<dyn SideEffect<ScoredPostsQuery, PostCandidate>>>> =
-            Arc::new(vec![
-                Box::new(PhoenixRequestCacheSideEffect::new(
-                    strato_client,
-                    features.request_cache_side_effect,
-                )),
-                Box::new(diversity_stats),
-            ]);
+        let mut side_effects: Vec<Box<dyn SideEffect<ScoredPostsQuery, PostCandidate>>> = vec![
+            Box::new(PhoenixRequestCacheSideEffect::new(
+                strato_client,
+                features.request_cache_side_effect,
+            )),
+            Box::new(diversity_stats),
+        ];
+        // SE-11: the served exposure log is assembled only when a sink is
+        // configured; once assembled it records every request.
+        if let Some(sink) = served_candidates_sink {
+            side_effects.push(Box::new(ServedCandidatesKafkaSideEffect::new(sink)));
+        }
+        let side_effects = Arc::new(side_effects);
 
         PhoenixCandidatePipeline {
             query_hydrators,
@@ -546,6 +561,18 @@ impl PhoenixCandidatePipeline {
                 "request cache side effect was operator-enabled; a production StratoClient contract must be supplied before relying on persisted data"
             );
         }
+        let served_sink_config = ServedCandidatesSinkConfig::from_env()
+            .context("invalid served-candidates sink configuration")?;
+        let served_candidates_sink = build_served_candidates_sink(&served_sink_config)
+            .await
+            .context("failed to create the served-candidates sink")?;
+        match &served_sink_config {
+            // Outside demo this is the missing training-data source, so say so.
+            ServedCandidatesSinkConfig::Disabled if !demo_mode => log::warn!(
+                "served-candidates exposure log is disabled (set SERVED_EVENTS_KAFKA_BROKERS/SERVED_EVENTS_KAFKA_TOPIC or SERVED_EVENTS_JSONL_PATH); no training or audit record of what was served is written"
+            ),
+            config => log::info!("served-candidates exposure log: {}", config.describe()),
+        }
 
         Ok(
             PhoenixCandidatePipeline::build_with_clients(PhoenixDependencies {
@@ -560,6 +587,7 @@ impl PhoenixCandidatePipeline {
                 topic_clients,
                 moe_retrieval_client,
                 fallback_client,
+                served_candidates_sink,
                 features,
             })
             .await,

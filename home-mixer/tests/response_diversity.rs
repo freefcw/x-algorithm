@@ -290,6 +290,7 @@ fn local_dependencies() -> home_mixer::PhoenixDependencies {
         topic_clients: None,
         moe_retrieval_client: None,
         fallback_client: None,
+        served_candidates_sink: None,
         features: HomeMixerFeatures::default(),
     }
 }
