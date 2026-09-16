@@ -97,6 +97,7 @@ impl QueryHydrator<ScoredPostsQuery> for UserFeaturesQueryHydrator {
 
     fn update(&self, query: &mut ScoredPostsQuery, hydrated: ScoredPostsQuery) {
         query.user_features = hydrated.user_features;
+        query.viewer_relations_hydrated = true;
     }
 
     fn name(&self) -> &'static str {

@@ -264,7 +264,7 @@ sequenceDiagram
 
 - 链路会走 mrpyq NETWORK 与 FALLBACK 两路；Phoenix 召回和精排因缺少行为序列不可达
 - 所有请求都由 `RuleFallbackScorer` 排序，模型没有参与
-- 拉黑 / 屏蔽词过滤因为关系后端缺失而不生效
+- 拉黑 / 屏蔽词过滤因为关系后端缺失而 fail-closed，候选被整批丢弃
 
 ## 6. 这个示例最该带走什么
 

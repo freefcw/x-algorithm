@@ -111,7 +111,7 @@ TES 相关 hydrator 里 CoreData / VideoDuration / HasMedia / FilteredTopics / L
 | 依赖 | Demo | Degraded（需 `MRPYQ_RECOMMENDATION_DATA_ADDR`） | 关键行为 |
 | --- | --- | --- | --- |
 | UAS | `DemoUserActionSequenceFetcher` | `RedisUserActionSequenceStore`（读 `uas-worker` 投影到 Redis 的行为；`UAS_REDIS_URL` 缺省复用 `HOME_MIXER_REDIS_URL`） | 没有投影数据的用户序列为空，`PhoenixSource` 不可用、`PhoenixScorer` 整批 `phoenix_missing_sequence`，由 `RuleFallbackScorer` 排序；真实埋点事件流仍待接入 |
-| Strato | `DemoStratoClient` | `MrpyqStratoClient`（mrpyq `ViewerRelationService`） | 后端尚未实现，调用失败只记日志，`user_features` 全空；两者都拒绝持久化写入 |
+| Strato | `DemoStratoClient` | `MrpyqStratoClient`（mrpyq `ViewerRelationService`） | 后端尚未实现，调用失败只记日志，`viewer_relations_hydrated` 保持 false，准入过滤器整批丢弃；两者都拒绝持久化写入 |
 | TES | `DemoTESClient` | `MrpyqTESClient`（mrpyq `BatchGetRecommendationContents`） | 补作者 / 正文 / `created_at_ms` / 互动数 / 一级 eligibility；`creator_member_id` 为空的帖子被 `CoreDataHydrationFilter` 丢弃 |
 | Gizmoduck（作者资料） | `DemoGizmoduckClient`（演示昵称 / 粉丝数） | `DisabledGizmoduckClient` | 只用于 candidate hydration；非 demo 的 `screen_names` 为空，不参与网络范围决策 |
 | VF | `DemoVisibilityFilteringClient`（Allow） | `MrpyqFirstStageEligibilityClient` | 非 demo 只承载一级 `recommendation_eligible`，无 viewer 级判定；`Unchecked / Unavailable`（含成功响应缺帖）按 `HOME_MIXER_VF_FAILURE_POLICY`，默认 `fail_closed` 删除 |

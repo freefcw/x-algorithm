@@ -20,7 +20,7 @@
 - `RedisUserActionSequenceStore` 从 `home_mixer:uas:{user_id}:actions` 读取 `uas-worker` 投影的最近 7 天行为。该用户没有投影数据（job 未运行、事件未接入）时序列为空，聚合报错后 `scoring_sequence` / `retrieval_sequence` 为 `None`：`PhoenixSource` 不可用，`PhoenixScorer` 整批标 `phoenix_missing_sequence`，`RuleFallbackScorer` 用“新鲜度 + 网内 + 互动数 + 作者多样性”的规则分覆盖整批。只有投影 job 持续消费真实行为事件、且 `PHOENIX_*_GRPC_ADDR` 配置了可用网关时，模型才会真正参与。
 - `MrpyqInNetworkPostsClient` 以 `query.user_id`（皮的 `member_id`）作为 `account_id` 调 mrpyq NETWORK 收件箱；mrpyq 侧目前按账号键读取，皮维度对齐尚未落地（见 `docs/implementation/mrpyq-member-dimension-requirements.md`）。
 - `MrpyqTESClient` 补作者（`creator_member_id`）、正文、`created_at_ms`、互动计数与一级 `recommendation_eligible`；`creator_member_id` 为空的帖子被 `CoreDataHydrationFilter` 丢弃。
-- `MrpyqStratoClient` 调 `ViewerRelationService`，mrpyq 尚未实现该 RPC；调用失败时框架只记日志，`user_features` 全空，`AuthorSocialgraphFilter` / `ViewerMutedKeywordFilter` 实际不生效（fail-open，根因是 `candidate-pipeline` 对 query hydrator 失败不中断请求）。
+- `MrpyqStratoClient` 调 `ViewerRelationService`，mrpyq 尚未实现该 RPC；调用失败时框架只记日志、不中断请求，但 `viewer_relations_hydrated` 保持 false，`AuthorSocialgraphFilter` / `ViewerMutedKeywordFilter` 整批丢弃（fail-closed）。关系服务上线前，非 demo feed 会是空的，而不会把拉黑 / 静音当“没人拉黑”。
 - `MrpyqFirstStageEligibilityClient` 只承载一级 `recommendation_eligible`，对经过 `FirstStageEligibleFilter` 存活的候选恒为 Allow，viewer 级可见性没有数据源。`VFFilter` 对 `Unchecked / Unavailable`（含成功响应缺帖）按 `HOME_MIXER_VF_FAILURE_POLICY` 处理：默认 `fail_closed` 全丢弃，`in_network_only` 仅保留网内，`allow_all` 需显式配置且非 demo 下会在启动时告警。
 - served 历史通过 `FeedStateServedPersistence` 在响应前等待异步写入；Demo 默认内存，业务模式要求 Redis 地址，多副本共享同一份历史，写失败返回 `Unavailable`。
 
@@ -60,7 +60,7 @@ Home Mixer 已在非 demo 下装配 Redis UAS adapter，但序列内容完全取
 
 ### 4.5 viewer 维度准入没有数据源
 
-`MrpyqStratoClient` 依赖的 `ViewerRelationService` 尚未由 mrpyq 实现，而框架对 query hydrator 失败只记日志，因此“读不到拉黑名单”和“这个皮没拉黑任何人”在过滤器眼里完全一样。`MrpyqFirstStageEligibilityClient` 只承载帖子维度的一级标志。补齐前，拉黑 / 屏蔽词 / 反向屏蔽都不生效；mrpyq 上线关系服务与推荐侧把 Strato 端口迁到 VF 端口必须同批进行，否则按账号键回答皮维度查询会静默 fail-open（见 `docs/implementation/mrpyq-member-dimension-requirements.md` §6.1）。
+`MrpyqStratoClient` 依赖的 `ViewerRelationService` 尚未由 mrpyq 实现。RPC 失败时 query hydrator 只记日志，但准入过滤器看 `viewer_relations_hydrated`，未水合则整批丢弃，不再把“读不到名单”当成“没人拉黑”。`MrpyqFirstStageEligibilityClient` 只承载帖子维度的一级标志。关系服务一旦以账号键成功返回空列表，仍会标为已水合并放行——mrpyq 上线关系服务与推荐侧把 Strato 端口迁到 VF 端口必须同批进行（见 `docs/implementation/mrpyq-member-dimension-requirements.md` §6.1）。
 
 ## 5. 外部合同补齐顺序
 

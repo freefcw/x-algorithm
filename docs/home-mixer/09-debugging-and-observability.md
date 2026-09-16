@@ -158,7 +158,8 @@ Filter 阶段会有总的：
 1. `PhoenixSource` 因缺少 `user_action_sequence` 失败，或请求显式 `in_network_only=true` 导致 `PhoenixSource` 与 `FallbackSource` 被关闭；QueryBuilder 不依赖 Gizmoduck viewer RPC
 2. `ThunderSource` 拿不到内容：demo 是 `followed_user_ids` 为空；非 demo 看 `mrpyq adapter recall ...` 日志里的 `ready=false`、`posts=0` 或召回预算耗尽
 3. `CoreDataHydrationFilter` 把候选清空（mrpyq 内容缺失、`creator_member_id` 为空，或无正文且未确认有媒体）
-4. `VFFilter` 在默认 `fail_closed` 下删掉所有 `Unavailable` 候选（日志 `visibility unavailable for N candidates`）
+4. `AuthorSocialgraphFilter` / `ViewerMutedKeywordFilter` 因 `viewer_relations_hydrated=false` 整批丢弃（关系 RPC 未实现或失败）
+5. `VFFilter` 在默认 `fail_closed` 下删掉所有 `Unavailable` 候选（日志 `visibility unavailable for N candidates`）
 
 推荐检查链路：
 
@@ -171,7 +172,7 @@ flowchart LR
     D --> F["查 UserFeatures Hydrator / Strato"]
     E --> G["再看 Filter kept/removed"]
     F --> G
-    G --> H["重点查 CoreDataHydrationFilter"]
+    G --> H["重点查 CoreDataHydrationFilter / 关系未水合"]
 ```
 
 ### 5.2 症状：只有网内内容，没有网外内容

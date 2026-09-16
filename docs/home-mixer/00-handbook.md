@@ -212,7 +212,7 @@ flowchart TD
 | InNetworkPostsClient（网内 / 兜底） | 非 demo `MrpyqInNetworkPostsClient`（`MRPYQ_RECOMMENDATION_DATA_ADDR` 必填，缺失则启动失败）；demo `ThunderClient`（`THUNDER_GRPC_ADDR`） |
 | TESClient | 非 demo `MrpyqTESClient`（mrpyq `BatchGetRecommendationContents`）；demo `DemoTESClient`（演示文本） |
 | VisibilityFilteringClient | 非 demo `MrpyqFirstStageEligibilityClient`（只有帖子维度的一级 `recommendation_eligible`，无 viewer 级判定）；demo 显式 Allow。未验证候选按 `HOME_MIXER_VF_FAILURE_POLICY`，默认 `fail_closed` 删除 |
-| StratoClient | 非 demo `MrpyqStratoClient`（mrpyq `ViewerRelationService`，后端尚未实现，当前调用失败、关系为空）；demo `DemoStratoClient`（演示关注列表） |
+| StratoClient | 非 demo `MrpyqStratoClient`（mrpyq `ViewerRelationService`，后端尚未实现，调用失败后准入过滤器 fail-closed 清空候选）；demo `DemoStratoClient`（演示关注列表） |
 | PhoenixRetrievalClient | 设 `PHOENIX_RETRIEVAL_GRPC_ADDR` 后真连 gRPC 网关；缺失时显式 Unavailable 并跳过该召回路；非 demo 拒绝随机权重 |
 | PhoenixPredictionClient | 设 `PHOENIX_PREDICT_GRPC_ADDR` 后真连 gRPC 网关并校验 serving metadata；缺失或校验失败时整批走 `RuleFallbackScorer`；非 demo 拒绝随机权重 |
 | UserActionSequenceOps | 非 demo `RedisUserActionSequenceStore`（读取 `uas-worker` 投影到 Redis 的最近 7 天行为，`UAS_REDIS_URL` 缺省复用 `HOME_MIXER_REDIS_URL`；没有投影数据时序列为空）；demo `DemoUserActionSequenceFetcher`（合成行为序列） |
@@ -226,20 +226,23 @@ flowchart TD
 
 ## 10. 当前默认运行行为
 
-默认 `degraded` 配上 mrpyq 地址后，最常见的不是“候选被清空”，而是“链路只走了一小段”：
+默认 `degraded` 配上 mrpyq 地址后，召回和排序可以先走起来，但 viewer 关系 RPC 未上线时准入过滤器会把结果清掉：
 
 1. 没有 `user_action_sequence`，`PhoenixScorer` 整批标 `phoenix_missing_sequence`，所有请求由 `RuleFallbackScorer` 排序
 2. 请求未显式限定网内，因此 `FallbackSource` 可启用；`PhoenixSource` 仍会因缺少行为序列而不可用
 3. mrpyq 收件箱以皮 `member_id` 作为 `account_id` 查询，皮维度对齐落地前候选供给可能为空；`creator_member_id` 为空的帖子被 `CoreDataHydrationFilter` 清掉
+4. `ViewerRelationService` 未实现或失败时，`viewer_relations_hydrated` 为 false，`AuthorSocialgraphFilter` / `ViewerMutedKeywordFilter` 整批丢弃
 
 ```mermaid
 flowchart TD
     A["UAS 为空"] --> B["PhoenixSource 不可用<br/>PhoenixScorer 整批 fallback"]
     C["in_network_only=false"] --> D["网内 + 网外<br/>Fallback 源可启用"]
     E["mrpyq 皮维度未对齐 / creator_member_id 为空"] --> F["网内候选为空或被 CoreDataHydrationFilter 清掉"]
+    H["ViewerRelationService 未上线"] --> I["准入过滤器 fail-closed"]
     B --> G["结果 = mrpyq 网内 / 兜底候选 + 规则排序，或为空"]
     D --> G
     F --> G
+    I --> G
 ```
 
 `HOME_MIXER_MODE=demo` 正是针对这些缺口注入演示数据，让链路不依赖外部平台也能出结果。
@@ -299,6 +302,7 @@ flowchart TD
 - `PhoenixSource` 因缺少 `user_action_sequence` 不可用，或请求显式设置 `in_network_only=true` 后 `PhoenixSource` / `FallbackSource` 被关闭
 - `ThunderSource` 的 mrpyq 收件箱 `source_ready=false`、皮维度未对齐或召回预算耗尽（日志 `mrpyq adapter recall ...`）
 - `CoreDataHydrationFilter` 因 `creator_member_id` 为空，或无正文且未确认有媒体而清空候选
+- `AuthorSocialgraphFilter` / `ViewerMutedKeywordFilter` 因 viewer 关系未水合而整批丢弃
 - `VFFilter` 在默认 `fail_closed` 下删掉了所有 `Unavailable` 候选（日志 `visibility unavailable for N candidates`）
 
 ## 14. 推荐阅读方式

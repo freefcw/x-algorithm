@@ -32,6 +32,11 @@ pub struct ScoredPostsQuery {
     pub retrieval_sequence: Option<x_algorithm_proto::recsys::UserActionSequence>,
     pub scoring_sequence: Option<x_algorithm_proto::recsys::UserActionSequence>,
     pub user_features: UserFeatures,
+    /// Set by the Strato-backed relation hydrators after a successful read.
+    /// Admission filters fail closed when this is still false, so an
+    /// unimplemented or timed-out `GetViewerRelations` cannot look like
+    /// "this viewer blocked nobody".
+    pub viewer_relations_hydrated: bool,
     pub cached_posts: Vec<PostCandidate>,
     pub has_cached_posts: bool,
     pub topic_ids: Vec<i64>,

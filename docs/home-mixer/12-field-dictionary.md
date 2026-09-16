@@ -63,6 +63,7 @@
 | `retrieval_sequence` | `Option<UserActionSequence>` | hydrated | `RetrievalSequenceQueryHydrator` | `PhoenixSource` / MoE |
 | `user_action_sequence` | `Option<UserActionSequence>` | hydrated | `UserActionSeqQueryHydrator`（拉取 UAS）；`ScoringSequenceQueryHydrator` 缺省时透传 | 上两个 sequence 缺失时的回退输入 |
 | `user_features` | `UserFeatures` | hydrated | upstream-named field owners + local safety owner（非 demo 数据源是 `MrpyqStratoClient`，后端未实现时全空） | `InNetworkCandidateHydrator`、`AuthorSocialgraphFilter`、`ViewerMutedKeywordFilter`、demo `ThunderClient` |
+| `viewer_relations_hydrated` | `bool` | hydrated | 拉黑 / 静音 / 屏蔽词 hydrator 成功 `update` 后为 true；默认 false | `AuthorSocialgraphFilter`、`ViewerMutedKeywordFilter`（未水合则整批丢弃） |
 | `topic_ids` / `excluded_topic_ids` / `new_user_topic_ids` | `Vec<i64>` | proto | `QueryBuilder` | topic recall mode、`TopicIdsFilter`、`NewUserTopicIdsFilter` |
 | `supplemental_topic_ids` | `Vec<i64>` | 内部（无 proto 字段） | 显式注入的 Adapter | 补充话题召回（Blend 模式） |
 | `cached_posts` / `has_cached_posts` | `Vec<PostCandidate>` / `bool` | proto `cached_posts` | `QueryBuilder`（默认拒绝 unsigned，仅 Demo 放行） | `CachedPostsSource` |

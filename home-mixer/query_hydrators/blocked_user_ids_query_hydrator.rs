@@ -33,5 +33,31 @@ impl QueryHydrator<ScoredPostsQuery> for BlockedUserIdsQueryHydrator {
 
     fn update(&self, query: &mut ScoredPostsQuery, hydrated: ScoredPostsQuery) {
         query.user_features.blocked_user_ids = hydrated.user_features.blocked_user_ids;
+        query.viewer_relations_hydrated = true;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::clients::strato_client::DemoStratoClient;
+    use crate::models::uid;
+
+    #[tokio::test]
+    async fn a_successful_read_marks_viewer_relations_ready() {
+        let hydrator = BlockedUserIdsQueryHydrator::new(Arc::new(UserFeaturesQueryHydrator::new(
+            Arc::new(DemoStratoClient),
+        )));
+        let query = ScoredPostsQuery {
+            user_id: uid(42),
+            request_id: "relations-ready".to_string(),
+            ..Default::default()
+        };
+
+        let hydrated = hydrator.hydrate(&query).await.expect("demo relations");
+        let mut updated = query;
+        hydrator.update(&mut updated, hydrated);
+
+        assert!(updated.viewer_relations_hydrated);
     }
 }

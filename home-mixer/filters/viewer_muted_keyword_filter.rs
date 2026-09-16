@@ -23,6 +23,18 @@ impl Filter<ScoredPostsQuery, PostCandidate> for ViewerMutedKeywordFilter {
         query: &ScoredPostsQuery,
         candidates: Vec<PostCandidate>,
     ) -> FilterResult<PostCandidate> {
+        if !query.viewer_relations_hydrated {
+            log::warn!(
+                "request_id={} filter=ViewerMutedKeywordFilter dropping {} candidates because viewer relations were not hydrated",
+                query.request_id,
+                candidates.len()
+            );
+            return FilterResult {
+                kept: Vec::new(),
+                removed: candidates,
+            };
+        }
+
         let muted_keywords = query.user_features.muted_keywords.clone();
 
         if muted_keywords.is_empty() {
@@ -77,6 +89,7 @@ mod tests {
 
     fn create_test_query(muted_keywords: Vec<String>) -> ScoredPostsQuery {
         ScoredPostsQuery {
+            viewer_relations_hydrated: true,
             user_features: UserFeatures {
                 muted_keywords,
                 ..Default::default()
@@ -91,7 +104,10 @@ mod tests {
 
     #[test]
     fn removes_candidate_when_quoted_text_matches_muted_keyword() {
-        let mut query = ScoredPostsQuery::default();
+        let mut query = ScoredPostsQuery {
+            viewer_relations_hydrated: true,
+            ..Default::default()
+        };
         query.user_features.muted_keywords = vec!["spoiler".to_string()];
         let candidates = vec![
             PostCandidate {
@@ -349,5 +365,19 @@ mod tests {
 
         assert_eq!(removed_ids(&result), [crate::models::pid(2)]);
         assert_eq!(result.kept[0].tweet_id, crate::models::pid(1));
+    }
+
+    #[test]
+    fn missing_relation_hydration_drops_every_candidate() {
+        let result = ViewerMutedKeywordFilter::new().filter(
+            &ScoredPostsQuery::default(),
+            vec![
+                create_test_candidate(1, "safe content"),
+                create_test_candidate(2, "also safe"),
+            ],
+        );
+
+        assert!(result.kept.is_empty());
+        assert_eq!(result.removed.len(), 2);
     }
 }

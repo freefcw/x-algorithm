@@ -548,11 +548,12 @@ impl VisibilityFilteringClient for MrpyqFirstStageEligibilityClient {
 /// filling them with defaults would be inventing data.
 ///
 /// The viewer sent below is a member, but `GetViewerRelations` still names its
-/// parameter `account_id` and answers from account-keyed storage. The mismatch
-/// is unreachable today (mrpyq has not shipped the service) and fails open once
-/// it does: no relations found reads as "blocks nobody". This port must move to
-/// VF and revert to Disabled before mrpyq deploys — see
-/// `docs/implementation/mrpyq-member-dimension-requirements.md` §6.1.
+/// parameter `account_id` and answers from account-keyed storage. A failed
+/// read (service not shipped, timeout, transport error) now fails closed at
+/// `AuthorSocialgraphFilter` / `ViewerMutedKeywordFilter`. A successful empty
+/// answer still reads as "blocks nobody", so this port must move to VF and
+/// revert to Disabled before mrpyq deploys account-keyed storage against a
+/// member-id query — see `docs/implementation/mrpyq-member-dimension-requirements.md` §6.1.
 pub struct MrpyqStratoClient {
     client: Arc<dyn MrpyqViewerRelationClient>,
 }

@@ -33,5 +33,6 @@ impl QueryHydrator<ScoredPostsQuery> for UserSafetyFeaturesQueryHydrator {
     fn update(&self, query: &mut ScoredPostsQuery, hydrated: ScoredPostsQuery) {
         query.user_features.muted_keywords = hydrated.user_features.muted_keywords;
         query.user_features.blocked_by_user_ids = hydrated.user_features.blocked_by_user_ids;
+        query.viewer_relations_hydrated = true;
     }
 }

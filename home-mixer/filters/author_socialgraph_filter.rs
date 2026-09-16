@@ -11,6 +11,18 @@ impl Filter<ScoredPostsQuery, PostCandidate> for AuthorSocialgraphFilter {
         query: &ScoredPostsQuery,
         candidates: Vec<PostCandidate>,
     ) -> FilterResult<PostCandidate> {
+        if !query.viewer_relations_hydrated {
+            log::warn!(
+                "request_id={} filter=AuthorSocialgraphFilter dropping {} candidates because viewer relations were not hydrated",
+                query.request_id,
+                candidates.len()
+            );
+            return FilterResult {
+                kept: Vec::new(),
+                removed: candidates,
+            };
+        }
+
         let viewer_blocked_user_ids = query.user_features.blocked_user_ids.clone();
         let blocked_by_user_ids = query.user_features.blocked_by_user_ids.clone();
         let viewer_muted_user_ids = query.user_features.muted_user_ids.clone();
@@ -70,6 +82,7 @@ mod tests {
     fn test_socialgraph_filter() {
         let filter = AuthorSocialgraphFilter;
         let query = ScoredPostsQuery {
+            viewer_relations_hydrated: true,
             user_features: UserFeatures {
                 blocked_user_ids: vec![200.into()],
                 blocked_by_user_ids: vec![400.into()],
@@ -113,6 +126,7 @@ mod tests {
     fn candidate_level_signals_follow_upstream_semantics() {
         let filter = AuthorSocialgraphFilter;
         let query = ScoredPostsQuery {
+            viewer_relations_hydrated: true,
             user_features: UserFeatures {
                 blocked_user_ids: vec![900.into()],
                 ..Default::default()
@@ -162,5 +176,24 @@ mod tests {
         let kept_ids: Vec<_> = result.kept.iter().map(|c| c.tweet_id).collect();
         assert_eq!(kept_ids, vec![crate::models::pid(5), crate::models::pid(6)]);
         assert_eq!(result.removed.len(), 4);
+    }
+
+    #[test]
+    fn missing_relation_hydration_drops_every_candidate() {
+        let query = ScoredPostsQuery::default();
+        let candidates = vec![
+            PostCandidate {
+                author_id: 100.into(),
+                ..Default::default()
+            },
+            PostCandidate {
+                author_id: 200.into(),
+                ..Default::default()
+            },
+        ];
+
+        let result = AuthorSocialgraphFilter.filter(&query, candidates);
+        assert!(result.kept.is_empty());
+        assert_eq!(result.removed.len(), 2);
     }
 }
