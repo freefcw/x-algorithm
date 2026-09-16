@@ -290,8 +290,16 @@ def load_parquet_batch(parquet_path: str, batch_size: int) -> RecsysBatch:
         raise ImportError("读取 Parquet 需要安装 pyarrow：uv add pyarrow")
 
     table = pq.read_table(parquet_path)
+    # 曝光模式（data_preprocessor --include-negative-only-requests）会写出没有正样本的请求，
+    # 其 positive_post 为空串；对比学习把候选位 0 当正样本，必须跳过这些行。
+    if "positive_post" in table.column_names:
+        import pyarrow.compute as pc
+
+        table = table.filter(pc.not_equal(table["positive_post"], ""))
     df = table.to_pydict()
     n = min(batch_size, len(df["user_hashes"]))
+    if n == 0:
+        raise ValueError(f"{parquet_path} 没有带正样本的行")
 
     return RecsysBatch(
         user_hashes=np.array(df["user_hashes"][:n], dtype=np.int32),

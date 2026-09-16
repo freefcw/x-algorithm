@@ -11,12 +11,23 @@
 输入：
     - data/behavior_logs/dt=YYYY-MM-DD/*.parquet  (行为事件表)
     - data/post_metadata.parquet                    (帖子元数据表)
+    - data/impressions/dt=YYYY-MM-DD/*.parquet    (可选：曝光表，一行一条下发候选 + 归因标签)
 
 输出：
     - data/training_samples/train_YYYYMMDD.parquet  (训练样本)
 
+两种样本构造方式：
+    - 只有行为日志：每条正向互动一条样本，负样本从帖子元数据池随机采（模型学的是"互动 vs 随机"）。
+    - 提供曝光表（--impressions-dir，由 scripts/build_training_inputs.py 产出）：每次下发请求一条样本，
+      候选就是这次真正下发的帖子，标签是归因窗口内的行为，没有行为的下发候选就是负样本
+      （模型学的是"看到并互动 vs 看到但没互动"）；行为日志只用来构造历史序列。
+
 使用示例：
-    uv run data_preprocessor.py --behavior-dir data/behavior_logs --post-meta data/post_metadata.parquet --output-dir data/training_samples
+    uv run data_preprocessor.py --behavior-dir data/behavior_logs \
+        --post-meta data/post_metadata.parquet --output-dir data/training_samples
+    uv run data_preprocessor.py --behavior-dir data/behavior_logs \
+        --impressions-dir data/impressions --post-meta data/post_metadata.parquet \
+        --output-dir data/training_samples
 """
 
 import argparse
@@ -47,6 +58,7 @@ NUM_HASHES = 2             # 每个ID的哈希数量
 TABLE_SIZE = 100_000       # 哈希表大小（与训练脚本一致）
 SURFACE_VOCAB = 16         # 场景词汇表大小
 MAX_AGE_DAYS = 7           # 负样本候选的最大帖龄（生产取值需与 Home Mixer AgeFilter 对齐）
+HISTORY_WINDOW_DAYS = 7    # 曝光模式下历史序列只看请求前 N 天（与线上 UAS 保留窗口一致）
 
 # 行为字段名映射（输入日志字段 -> 内部使用）
 BEHAVIOR_FIELDS = [
@@ -239,6 +251,62 @@ def load_behavior_logs(behavior_dir: str, date_str: str | None = None) -> pd.Dat
     return df
 
 
+def load_impressions(impressions_dir: str, date_str: str | None = None) -> pd.DataFrame:
+    """
+    加载曝光表（scripts/build_training_inputs.py 的 impressions/ 输出）。
+
+    每行 = 一次请求里的一条下发候选，必需列：
+        user_id, request_id, event_time(秒), position, post_id, author_id, product_surface,
+        以及 BEHAVIOR_FIELDS 中的 19 个标签列（缺列按 0 补）。
+    返回按 user_id, event_time, request_id, position 稳定排序的 DataFrame。
+    """
+    impressions_path = Path(impressions_dir)
+    if date_str:
+        parquet_files = list(impressions_path.rglob(f"dt={date_str}/**/*.parquet"))
+    else:
+        parquet_files = list(impressions_path.rglob("*.parquet"))
+    if not parquet_files:
+        raise FileNotFoundError(f"在 {impressions_dir} 下未找到任何 Parquet 文件")
+    logger.info(f"找到 {len(parquet_files)} 个曝光文件")
+
+    dfs = []
+    for f in parquet_files:
+        try:
+            dfs.append(pq.read_table(str(f)).to_pandas())
+        except (OSError, pa.ArrowException) as e:
+            logger.warning(f"跳过 {f}: {e}")
+    df = pd.concat(dfs, ignore_index=True)
+
+    required = {"user_id", "request_id", "event_time", "position", "post_id", "author_id"}
+    missing = sorted(required - set(df.columns))
+    if missing:
+        raise ValueError(f"曝光表缺少必需列：{missing}")
+
+    df["event_time"] = pd.to_numeric(df["event_time"], errors="coerce")
+    df = df.dropna(subset=["event_time"]).reset_index(drop=True)
+    df["event_time"] = df["event_time"].astype(np.int64)
+    for column in ("user_id", "request_id", "post_id", "author_id"):
+        df[column] = df[column].astype(str)
+    df["position"] = pd.to_numeric(df["position"], errors="coerce").fillna(0).astype(np.int32)
+    if "product_surface" not in df.columns:
+        df["product_surface"] = 0
+    df["product_surface"] = (
+        pd.to_numeric(df["product_surface"], errors="coerce").fillna(0).astype(np.int32)
+    )
+    for field in BEHAVIOR_FIELDS:
+        if field not in df.columns:
+            df[field] = 0.0
+
+    df = df.sort_values(
+        ["user_id", "event_time", "request_id", "position"], kind="stable"
+    ).reset_index(drop=True)
+    logger.info(
+        f"曝光表加载完成: 共 {len(df)} 条下发候选，{df['request_id'].nunique()} 次请求，"
+        f"{df['user_id'].nunique()} 个用户"
+    )
+    return df
+
+
 def load_post_metadata(post_meta_path: str) -> pd.DataFrame:
     """加载帖子元数据。"""
     df = pq.read_table(post_meta_path).to_pandas()
@@ -297,7 +365,7 @@ class TrainingSampleBuilder:
     def __init__(
         self,
         post_to_author: dict[str, str],
-        active_posts: set[str],
+        active_posts: set[str] | None,
         history_len: int = HISTORY_SEQ_LEN,
         candidate_len: int = CANDIDATE_SEQ_LEN,
         num_actions: int = NUM_ACTIONS,
@@ -306,11 +374,14 @@ class TrainingSampleBuilder:
         max_age_seconds: int = MAX_AGE_DAYS * 86400,
     ):
         self.post_to_author = post_to_author
-        # active_posts 冻结为 frozenset 以支持高效成员判断
-        self.active_posts: frozenset[str] = frozenset(active_posts)
+        # active_posts 冻结为 frozenset 以支持高效成员判断；None 表示没有元数据、不过滤
+        # （只在曝光模式允许：候选来自真实下发，不需要负样本池）。
+        self.active_posts: frozenset[str] | None = (
+            None if active_posts is None else frozenset(active_posts)
+        )
         # 负样本池按 create_time 升序；未提供 create_time 时全池时间为 0（不做过滤）
         if negative_pool is None:
-            posts = sorted(self.active_posts)
+            posts = sorted(self.active_posts or ())
             negative_pool = ([0] * len(posts), posts)
         self._pool_times, self._pool_posts = negative_pool
         self._time_filter = any(t > 0 for t in self._pool_times)
@@ -435,12 +506,9 @@ class TrainingSampleBuilder:
         user_interacted_posts: frozenset = frozenset(r["post_id"] for r in records)
         user_hash = hash_id_to_ints(user_id)
 
-        # ── per-record 预计算（关键：同一事件作为历史最多出现 history_len 次，只算一次）──
-        rec_post_hash: list[list[int]] = [hash_id_to_ints(r["post_id"]) for r in records]
-        rec_author_hash: list[list[int]] = [hash_id_to_ints(r["author_id"]) for r in records]
-        rec_surface: list[int] = [int(r["product_surface"]) % SURFACE_VOCAB for r in records]
-        # numpy → Python list-of-list（pyarrow 接受原生 Python list）
-        rec_actions: list[list[float]] = user_actions.tolist()
+        rec_post_hash, rec_author_hash, rec_surface, rec_actions = self._prepare_records(
+            records, user_actions
+        )
 
         history_len = self.history_len
         num_actions = self.num_actions
@@ -451,7 +519,7 @@ class TrainingSampleBuilder:
             rec = records[pos]
             positive_post = rec["post_id"]
 
-            if positive_post not in self.active_posts:
+            if self.active_posts is not None and positive_post not in self.active_posts:
                 continue
             if pos == 0:
                 continue  # 冷启动：无历史
@@ -522,6 +590,130 @@ class TrainingSampleBuilder:
 
         return samples
 
+    @staticmethod
+    def _prepare_records(
+        records: list[dict], user_actions: np.ndarray
+    ) -> tuple[list[list[int]], list[list[int]], list[int], list[list[float]]]:
+        """per-record 预计算（同一事件作为历史最多出现 history_len 次，只算一次）。"""
+        rec_post_hash = [hash_id_to_ints(r["post_id"]) for r in records]
+        rec_author_hash = [hash_id_to_ints(r["author_id"]) for r in records]
+        rec_surface = [int(r["product_surface"]) % SURFACE_VOCAB for r in records]
+        # numpy → Python list-of-list（pyarrow 接受原生 Python list）
+        rec_actions = user_actions.tolist()
+        return rec_post_hash, rec_author_hash, rec_surface, rec_actions
+
+    def build_impression_samples(
+        self,
+        user_id: str,
+        user_behavior_df: pd.DataFrame,
+        user_actions: np.ndarray,
+        user_impressions_df: pd.DataFrame,
+        impression_labels: np.ndarray,
+        history_window_seconds: int = HISTORY_WINDOW_DAYS * 86400,
+        include_negative_only: bool = False,
+    ) -> list[dict]:
+        """
+        以"一次下发请求"为单位构造样本（曝光模式）。
+
+        候选 = 这次请求真正下发的帖子（正样本排在前面、然后是按位置排列的负样本，截到
+        candidate_len），标签 = 归因到该候选上的行为；历史 = 请求时刻之前、窗口内的行为记录，
+        与线上 UAS 的"请求前 7 天、最近 32 条"一致。候选位 0 保证是正样本，以便召回训练复用
+        同一份样本；没有任何正样本的请求默认丢弃，`include_negative_only=True` 时保留并把
+        `positive_post` 置为空串（召回训练据此跳过）。
+
+        Args:
+            user_behavior_df: 该用户的行为日志（已按 event_time 稳定排序），只用于历史。
+            user_actions: 与 user_behavior_df 行对齐的 (N, num_actions) 行为矩阵。
+            user_impressions_df: 该用户的曝光行（已按 event_time, request_id, position 排序）。
+            impression_labels: 与 user_impressions_df 行对齐的 (M, num_actions) 标签矩阵。
+        """
+        samples: list[dict] = []
+        if len(user_impressions_df) == 0:
+            return samples
+
+        df = user_behavior_df.reset_index(drop=True)
+        records: list[dict] = df.to_dict("records")
+        if not records:
+            return samples  # 冷启动：线上没有序列就不会调用模型，训练同样不构造样本
+        rec_post_hash, rec_author_hash, rec_surface, rec_actions = self._prepare_records(
+            records, user_actions
+        )
+        record_times = [int(r["event_time"]) for r in records]
+        user_hash = hash_id_to_ints(user_id)
+
+        history_len = self.history_len
+        num_actions = self.num_actions
+        pad_hash = [0] * NUM_HASHES
+        pad_action = [0.0] * num_actions
+
+        impressions = user_impressions_df.reset_index(drop=True)
+        label_rows = impression_labels.tolist()
+        for request_id, group in impressions.groupby("request_id", sort=False):
+            group = group.sort_values("position", kind="stable")
+            request_time = int(group["event_time"].iloc[0])
+
+            # ── 历史：请求时刻之前、窗口内的最近 history_len 条记录 ──
+            end = bisect.bisect_left(record_times, request_time)
+            start = max(0, end - history_len)
+            window_start = request_time - history_window_seconds
+            while start < end and record_times[start] < window_start:
+                start += 1
+            if start >= end:
+                continue  # 窗口内无历史，等价于线上无序列
+            actual_len = end - start
+            pad_len = history_len - actual_len
+            hist_post_hashes = rec_post_hash[start:end] + [pad_hash] * pad_len
+            hist_author_hashes = rec_author_hash[start:end] + [pad_hash] * pad_len
+            hist_actions = rec_actions[start:end] + [pad_action] * pad_len
+            hist_surface = rec_surface[start:end] + [0] * pad_len
+
+            # ── 候选：正样本优先，其余按下发位置 ──
+            positives: list[tuple[str, str, int, list[float]]] = []
+            negatives: list[tuple[str, str, int, list[float]]] = []
+            for row_index, row in zip(group.index, group.itertuples(index=False)):
+                if self.active_posts is not None and row.post_id not in self.active_posts:
+                    continue
+                labels_row = label_rows[row_index]
+                surface = int(row.product_surface) % SURFACE_VOCAB
+                entry = (row.post_id, row.author_id, surface, labels_row)
+                (positives if any(v > 0 for v in labels_row) else negatives).append(entry)
+            if not positives and not include_negative_only:
+                continue
+            chosen = (positives + negatives)[: self.candidate_len]
+            if not chosen:
+                continue
+
+            cand_post_hashes = [hash_id_to_ints(post) for post, _, _, _ in chosen]
+            cand_author_hashes = [hash_id_to_ints(author) for _, author, _, _ in chosen]
+            cand_surfaces = [surface for _, _, surface, _ in chosen]
+            labels = [list(row_labels) for _, _, _, row_labels in chosen]
+            cand_pad = self.candidate_len - len(chosen)
+            if cand_pad > 0:
+                pad_surface = cand_surfaces[0]
+                cand_post_hashes.extend([pad_hash] * cand_pad)
+                cand_author_hashes.extend([pad_hash] * cand_pad)
+                cand_surfaces.extend([pad_surface] * cand_pad)
+                labels.extend([pad_action] * cand_pad)
+
+            positive_ids = {post for post, _, _, _ in positives}
+            samples.append({
+                "user_id": user_id,
+                "event_time": request_time,
+                "user_hashes": user_hash,
+                "history_post_hashes": hist_post_hashes,
+                "history_author_hashes": hist_author_hashes,
+                "history_actions": hist_actions,
+                "history_product_surface": hist_surface,
+                "candidate_post_hashes": cand_post_hashes,
+                "candidate_author_hashes": cand_author_hashes,
+                "candidate_product_surface": cand_surfaces,
+                "labels": labels,
+                "positive_post": positives[0][0] if positives else "",
+                "negative_posts": [post for post, _, _, _ in chosen if post not in positive_ids],
+            })
+
+        return samples
+
 
 # ── 主处理流程 ──────────────────────────────────────────────────────────────────
 
@@ -554,21 +746,30 @@ def _samples_to_arrow_table(samples: list[dict]) -> pa.Table:
 
 def process_single_day(
     behavior_df: pd.DataFrame,
-    post_meta_df: pd.DataFrame,
+    post_meta_df: pd.DataFrame | None,
     output_path: str,
     neg_sample_ratio: int = 7,
     seed: int = 42,
     max_age_days: int = MAX_AGE_DAYS,
+    impressions_df: pd.DataFrame | None = None,
+    include_negative_only: bool = False,
+    history_window_days: int = HISTORY_WINDOW_DAYS,
 ):
-    """处理单日的行为日志，生成训练样本。"""
-    
+    """处理单日的行为日志（可选加曝光表），生成训练样本。"""
+
+    if impressions_df is None and post_meta_df is None:
+        raise ValueError("没有曝光表时必须提供帖子元数据（负样本池来自元数据）")
+
     # 构建辅助数据结构
-    post_to_author = build_post_to_author_map(post_meta_df)
-    active_posts = build_active_post_set(post_meta_df)
-    negative_pool = build_negative_pool(post_meta_df)
-    
-    logger.info(f"在线帖子数: {len(active_posts)}，负样本窗口: {max_age_days} 天")
-    
+    if post_meta_df is not None:
+        post_to_author = build_post_to_author_map(post_meta_df)
+        active_posts: set[str] | None = build_active_post_set(post_meta_df)
+        negative_pool = build_negative_pool(post_meta_df)
+        logger.info(f"在线帖子数: {len(active_posts)}，负样本窗口: {max_age_days} 天")
+    else:
+        post_to_author, active_posts, negative_pool = {}, None, ([], [])
+        logger.info("未提供帖子元数据：曝光模式下不做在线帖子过滤")
+
     # 初始化样本构造器
     builder = TrainingSampleBuilder(
         post_to_author=post_to_author,
@@ -584,25 +785,56 @@ def process_single_day(
     global_actions = encode_actions_vectorized(behavior_df)
     logger.info(f"action 矩阵形状: {global_actions.shape}")
 
-    # 为每个用户构造样本
     all_samples = []
-    user_groups = behavior_df.groupby("user_id", sort=False)
+    if impressions_df is None:
+        # 行为模式：每条正向互动一条样本，负样本随机采
+        user_groups = behavior_df.groupby("user_id", sort=False)
+        logger.info(f"开始处理 {len(user_groups)} 个用户...")
+        for user_idx, (user_key, user_df) in enumerate(user_groups):
+            if user_idx % 1000 == 0:
+                logger.info(f"已处理 {user_idx} 个用户...")
 
-    logger.info(f"开始处理 {len(user_groups)} 个用户...")
+            user_id = str(user_key)
+            # 确定性 per-user 种子（md5，不受 PYTHONHASHSEED 影响）
+            rng = random.Random(deterministic_user_seed(seed, user_id))
 
-    for user_idx, (user_key, user_df) in enumerate(user_groups):
-        if user_idx % 1000 == 0:
-            logger.info(f"已处理 {user_idx} 个用户...")
-
-        user_id = str(user_key)
-        # 确定性 per-user 种子（md5，不受 PYTHONHASHSEED 影响）
-        rng = random.Random(deterministic_user_seed(seed, user_id))
-
-        # 用原 index 从全局 actions 矩阵切出该用户的行（groupby 保留原 index）
-        user_actions = global_actions[user_df.index.to_numpy()]
-        samples = builder.build_sample(user_id, user_df, rng, user_actions)
-        if samples:
-            all_samples.extend(samples)
+            # 用原 index 从全局 actions 矩阵切出该用户的行（groupby 保留原 index）
+            user_actions = global_actions[user_df.index.to_numpy()]
+            samples = builder.build_sample(user_id, user_df, rng, user_actions)
+            if samples:
+                all_samples.extend(samples)
+    else:
+        # 曝光模式：每次下发请求一条样本，负样本是看到但没互动的候选
+        impressions_df = impressions_df.reset_index(drop=True)
+        global_labels = encode_actions_vectorized(impressions_df)
+        behavior_groups = {
+            str(user_key): user_df
+            for user_key, user_df in behavior_df.groupby("user_id", sort=False)
+        }
+        impression_groups = impressions_df.groupby("user_id", sort=False)
+        logger.info(
+            f"开始处理 {len(impression_groups)} 个有曝光的用户"
+            f"（历史窗口 {history_window_days} 天，"
+            f"{'保留' if include_negative_only else '丢弃'}无正样本的请求）..."
+        )
+        for user_idx, (user_key, user_impressions) in enumerate(impression_groups):
+            if user_idx % 1000 == 0:
+                logger.info(f"已处理 {user_idx} 个用户...")
+            user_id = str(user_key)
+            user_df = behavior_groups.get(user_id)
+            if user_df is None:
+                continue  # 没有任何行为记录 = 没有历史，线上不会调用模型
+            samples = builder.build_impression_samples(
+                user_id,
+                user_df,
+                global_actions[user_df.index.to_numpy()],
+                user_impressions,
+                global_labels[user_impressions.index.to_numpy()],
+                history_window_seconds=history_window_days * 86400,
+                include_negative_only=include_negative_only,
+            )
+            if samples:
+                all_samples.extend(samples)
 
     logger.info(f"总共生成 {len(all_samples)} 个训练样本")
 
@@ -635,8 +867,28 @@ def main():
     parser.add_argument(
         "--post-meta",
         type=str,
-        required=True,
-        help="帖子元数据 Parquet 文件路径",
+        default=None,
+        help="帖子元数据 Parquet 文件路径（无曝光表时必填；曝光模式下可选，用于过滤已删除帖子）",
+    )
+    parser.add_argument(
+        "--impressions-dir",
+        type=str,
+        default=None,
+        help=(
+            "曝光表目录（scripts/build_training_inputs.py 的 impressions/ 输出，含 dt= 子目录）。"
+            "提供时按下发请求构造样本，负样本来自同一请求里没有互动的候选"
+        ),
+    )
+    parser.add_argument(
+        "--include-negative-only-requests",
+        action="store_true",
+        help="曝光模式下保留没有任何正样本的请求（positive_post 为空，召回训练会跳过）",
+    )
+    parser.add_argument(
+        "--history-window-days",
+        type=int,
+        default=HISTORY_WINDOW_DAYS,
+        help="曝光模式下历史序列只取请求前 N 天的行为（默认 7，与线上 UAS 窗口一致）",
     )
     parser.add_argument(
         "--output-dir",
@@ -670,23 +922,37 @@ def main():
     )
     
     args = parser.parse_args()
-    
+    if args.impressions_dir is None and args.post_meta is None:
+        parser.error("--post-meta 在没有 --impressions-dir 时必填（负样本池来自帖子元数据）")
+    if args.history_window_days <= 0:
+        parser.error("--history-window-days 必须为正整数")
+
     logger.info("=== 数据预处理开始 ===")
-    
+
     # 加载数据
-    logger.info("加载帖子元数据...")
-    post_meta_df = load_post_metadata(args.post_meta)
-    
+    post_meta_df = None
+    if args.post_meta is not None:
+        logger.info("加载帖子元数据...")
+        post_meta_df = load_post_metadata(args.post_meta)
+
     logger.info("加载行为日志...")
-    behavior_df = load_behavior_logs(args.behavior_dir, args.date)
-    
+    # 曝光模式下历史需要请求日之前的行为，所以不按 --date 裁剪行为日志
+    behavior_df = load_behavior_logs(
+        args.behavior_dir, None if args.impressions_dir else args.date
+    )
+
+    impressions_df = None
+    if args.impressions_dir is not None:
+        logger.info("加载曝光表...")
+        impressions_df = load_impressions(args.impressions_dir, args.date)
+
     # 确定输出文件名
     if args.date:
         output_file = f"train_{args.date.replace('-', '')}.parquet"
     else:
         output_file = "train_all.parquet"
     output_path = Path(args.output_dir) / output_file
-    
+
     # 处理
     process_single_day(
         behavior_df=behavior_df,
@@ -695,6 +961,9 @@ def main():
         neg_sample_ratio=args.neg_ratio,
         seed=args.seed,
         max_age_days=args.max_age_days,
+        impressions_df=impressions_df,
+        include_negative_only=args.include_negative_only_requests,
+        history_window_days=args.history_window_days,
     )
     
     logger.info("=== 数据预处理完成 ===")

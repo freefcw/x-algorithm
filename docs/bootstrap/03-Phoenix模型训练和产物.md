@@ -259,6 +259,19 @@ uv run scripts/train_ranker.py \
   --steps 20000
 ```
 
+线上事件接入后用曝光模式训练：`scripts/build_training_inputs.py` 把 home-mixer 的服务端曝光事件（`docs/implementation/served-candidates-event-contract.md`）和 UAS 行为事件（`docs/implementation/uas-event-contract.md`）整理成 `behavior_logs/`（按用户、帖子聚合的多热行为，与线上聚合器同构）、`impressions/`（每条下发候选 + 归因窗口内的标签）和兜底的 `post_metadata.parquet`；`data_preprocessor.py --impressions-dir` 则按"一次下发请求一条样本"构造，负样本是同一请求里看到但没互动的候选，历史只取请求前 7 天。
+
+```bash
+uv run scripts/build_training_inputs.py \
+  --served-events data/raw/served/ --behavior-events data/raw/uas/ \
+  --output-dir data/ --attribution-window-minutes 30
+uv run data_preprocessor.py \
+  --behavior-dir data/behavior_logs --impressions-dir data/impressions \
+  --post-meta data/post_metadata.parquet --output-dir data/training_samples
+```
+
+没有曝光表时仍是旧模式：每条互动一条样本，负样本从元数据池随机采，模型学到的是"互动 vs 随机"而不是"看到并互动 vs 看到没互动"。
+
 真实训练前必须先确认：
 
 - 曝光事件和行为事件时钟是否一致；
