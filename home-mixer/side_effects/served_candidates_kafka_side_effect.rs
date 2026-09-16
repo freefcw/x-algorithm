@@ -104,6 +104,11 @@ impl ServedCandidatesEvent {
 #[async_trait]
 pub trait ServedCandidatesSink: Send + Sync {
     async fn publish(&self, event: &ServedCandidatesEvent) -> Result<(), String>;
+
+    /// 进程关停时调用一次：在 `timeout` 内把传输层缓冲的事件刷出去。默认无事可做
+    /// （同步写文件、测试桩）；Kafka 实现在这里 flush producer，否则进程退出会丢掉
+    /// 已 `publish` 成功返回之前尚在 librdkafka 队列里的消息。
+    async fn shutdown(&self, _timeout: std::time::Duration) {}
 }
 
 pub struct ServedCandidatesKafkaSideEffect {

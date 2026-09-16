@@ -101,6 +101,14 @@ impl HomeMixerServer {
         Arc::clone(self.scored_posts_server.rpc_policy().metrics())
     }
 
+    /// Shutdown step after the listeners have drained: wait up to `timeout`
+    /// for side effects (exposure log, diversity stats) still running behind
+    /// already-returned responses, then flush the exposure sink. Both
+    /// pipelines spawn on one tracker, so this covers For You too.
+    pub async fn drain_side_effects(&self, timeout: std::time::Duration) -> bool {
+        self.scored_posts_server.drain_side_effects(timeout).await
+    }
+
     pub fn register(self: Arc<Self>, routes: &mut RoutesBuilder) {
         routes.add_service(
             pb::scored_posts_service_server::ScoredPostsServiceServer::from_arc(Arc::clone(

@@ -47,6 +47,11 @@ impl ForYouFeedServer {
         server.pipeline.install_observer(
             Arc::clone(scored_posts_server.rpc_policy().metrics()) as Arc<dyn PipelineObserver>
         );
+        // Both pipelines' side effects settle on one tracker, so the inner
+        // server's drain covers the For You stats side effect as well.
+        server
+            .pipeline
+            .install_side_effect_tasks(scored_posts_server.background_tasks());
         server
     }
 

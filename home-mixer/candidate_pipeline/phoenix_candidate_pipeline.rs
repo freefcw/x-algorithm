@@ -91,7 +91,8 @@ use crate::sources::thunder_source::ThunderSource;
 use crate::visibility::vf_client::{DemoVisibilityFilteringClient, VisibilityFilteringClient};
 use anyhow::Context;
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
+use tokio_util::task::TaskTracker;
 use tonic::async_trait;
 use xai_candidate_pipeline::candidate_pipeline::CandidatePipeline;
 use xai_candidate_pipeline::filter::Filter;
@@ -116,6 +117,10 @@ pub struct PhoenixCandidatePipeline {
     /// Metrics sink for the per-request stage summary; installed by the
     /// server so the pipeline stays free of the Prometheus registry.
     observer: Option<Arc<dyn PipelineObserver>>,
+    /// Side-effect tasks run after the response; shutdown waits on this.
+    side_effect_tasks: TaskTracker,
+    /// Kept for `drain_side_effects`, which flushes it once the tasks settle.
+    served_candidates_sink: Option<Arc<dyn ServedCandidatesSink>>,
 }
 
 /// 显式启用补充话题能力所需的原子依赖。
@@ -184,6 +189,40 @@ impl PhoenixCandidatePipeline {
 
     pub fn install_observer(&mut self, observer: Arc<dyn PipelineObserver>) {
         self.observer = Some(observer);
+    }
+
+    /// Tracker of the asynchronous side-effect tasks, shared with the For You
+    /// pipeline so one drain covers both.
+    pub fn background_tasks(&self) -> TaskTracker {
+        self.side_effect_tasks.clone()
+    }
+
+    /// Wait up to `timeout` for the side effects still running after their
+    /// responses were returned, then flush the served-candidates sink.
+    /// Returns whether every task finished within the budget.
+    pub async fn drain_side_effects(&self, timeout: Duration) -> bool {
+        let started = Instant::now();
+        self.side_effect_tasks.close();
+        let pending = self.side_effect_tasks.len();
+        let drained = tokio::time::timeout(timeout, self.side_effect_tasks.wait())
+            .await
+            .is_ok();
+        if drained {
+            log::info!(
+                "side effects drained: {pending} pending at shutdown, {} ms",
+                started.elapsed().as_millis()
+            );
+        } else {
+            log::warn!(
+                "side effects did not drain within {timeout:?}: {} still running",
+                self.side_effect_tasks.len()
+            );
+        }
+        if let Some(sink) = &self.served_candidates_sink {
+            sink.shutdown(timeout.saturating_sub(started.elapsed()))
+                .await;
+        }
+        drained
     }
 
     pub async fn build_with_clients(dependencies: PhoenixDependencies) -> PhoenixCandidatePipeline {
@@ -378,8 +417,10 @@ impl PhoenixCandidatePipeline {
         ];
         // SE-11: the served exposure log is assembled only when a sink is
         // configured; once assembled it records every request.
-        if let Some(sink) = served_candidates_sink {
-            side_effects.push(Box::new(ServedCandidatesKafkaSideEffect::new(sink)));
+        if let Some(sink) = &served_candidates_sink {
+            side_effects.push(Box::new(ServedCandidatesKafkaSideEffect::new(Arc::clone(
+                sink,
+            ))));
         }
         let side_effects = Arc::new(side_effects);
 
@@ -394,6 +435,8 @@ impl PhoenixCandidatePipeline {
             post_selection_filters,
             side_effects,
             observer: None,
+            side_effect_tasks: TaskTracker::new(),
+            served_candidates_sink,
         }
     }
 
@@ -724,6 +767,14 @@ impl CandidatePipeline<ScoredPostsQuery, PostCandidate> for PhoenixCandidatePipe
 
     fn observer(&self) -> Option<Arc<dyn PipelineObserver>> {
         self.observer.clone()
+    }
+
+    fn side_effect_tasks(&self) -> Option<TaskTracker> {
+        Some(self.side_effect_tasks.clone())
+    }
+
+    fn side_effect_timeout(&self) -> Duration {
+        Duration::from_millis(params::SIDE_EFFECT_TIMEOUT_MS)
     }
 }
 

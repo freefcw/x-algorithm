@@ -12,8 +12,15 @@ use futures::future::join_all;
 use log::{debug, error, info, warn};
 use std::any::type_name_of_val;
 use std::sync::Arc;
-use std::time::Instant;
+use std::time::{Duration, Instant};
+use tokio_util::task::TaskTracker;
 use tonic::async_trait;
+
+/// Default upper bound for one side effect run. Side effects run after the
+/// response, so this only stops a stuck transport from holding a task (and
+/// the shutdown drain) open indefinitely; applications with tighter delivery
+/// budgets override [`CandidatePipeline::side_effect_timeout`].
+pub const DEFAULT_SIDE_EFFECT_TIMEOUT: Duration = Duration::from_secs(30);
 
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
 pub enum PipelineStage {
@@ -113,6 +120,21 @@ where
     /// `None` keeps the log line as the only output.
     fn observer(&self) -> Option<Arc<dyn PipelineObserver>> {
         None
+    }
+
+    /// Tracker the asynchronous side-effect tasks are spawned on, so a
+    /// shutting-down process can wait for the ones still running instead of
+    /// dropping them with the runtime. `None` spawns them untracked.
+    fn side_effect_tasks(&self) -> Option<TaskTracker> {
+        None
+    }
+
+    /// Upper bound for one side effect run; a run past it is reported as failed.
+    /// Enforced with `tokio::time::timeout`, so the runtime executing the
+    /// pipeline must have its time driver enabled (`#[tokio::main]` and
+    /// `#[tokio::test]` do by default).
+    fn side_effect_timeout(&self) -> Duration {
+        DEFAULT_SIDE_EFFECT_TIMEOUT
     }
 
     fn finalize(&self, _query: &Q, _candidates: &mut Vec<C>) {}
@@ -556,12 +578,13 @@ where
         result
     }
 
-    // Run all side effects in parallel
+    // Run all side effects in parallel, after the response, on a spawned task.
     fn run_side_effects(&self, input: Arc<SideEffectInput<Q, C>>) {
         let side_effects = self.side_effects();
         let observer = self.observer();
         let pipeline = self.name();
-        tokio::spawn(async move {
+        let timeout = self.side_effect_timeout();
+        let task = async move {
             let request_id = input.query.request_id().to_string();
             let futures = side_effects
                 .iter()
@@ -570,7 +593,13 @@ where
                     let input = Arc::clone(&input);
                     async move {
                         let started = Instant::now();
-                        (side_effect.name(), started, side_effect.run(input).await)
+                        let result = match tokio::time::timeout(timeout, side_effect.run(input))
+                            .await
+                        {
+                            Ok(result) => result,
+                            Err(_) => Err(format!("timed out after {} ms", timeout.as_millis())),
+                        };
+                        (side_effect.name(), started, result)
                     }
                 });
             for (name, started, result) in join_all(futures).await {
@@ -602,7 +631,15 @@ where
                     });
                 }
             }
-        });
+        };
+        match self.side_effect_tasks() {
+            Some(tracker) => {
+                tracker.spawn(task);
+            }
+            None => {
+                tokio::spawn(task);
+            }
+        }
     }
 }
 
@@ -749,6 +786,8 @@ mod tests {
         side_effects: Arc<Vec<Box<dyn SideEffect<TestQuery, i32>>>>,
         selector: TestSelector,
         observer: Option<Arc<dyn PipelineObserver>>,
+        side_effect_tasks: Option<TaskTracker>,
+        side_effect_timeout: Duration,
     }
 
     impl TestPipeline {
@@ -762,6 +801,8 @@ mod tests {
                 side_effects: Arc::new(Vec::new()),
                 selector: TestSelector,
                 observer: None,
+                side_effect_tasks: None,
+                side_effect_timeout: DEFAULT_SIDE_EFFECT_TIMEOUT,
             }
         }
     }
@@ -814,6 +855,14 @@ mod tests {
 
         fn observer(&self) -> Option<Arc<dyn PipelineObserver>> {
             self.observer.clone()
+        }
+
+        fn side_effect_tasks(&self) -> Option<TaskTracker> {
+            self.side_effect_tasks.clone()
+        }
+
+        fn side_effect_timeout(&self) -> Duration {
+            self.side_effect_timeout
         }
     }
 
@@ -871,6 +920,87 @@ mod tests {
         ) -> Result<(), String> {
             Ok(())
         }
+    }
+
+    /// Sleeps for `0`, then records completion; `0` is the sleep duration.
+    struct SlowSideEffect(Duration, Arc<std::sync::atomic::AtomicUsize>);
+
+    #[async_trait]
+    impl SideEffect<TestQuery, i32> for SlowSideEffect {
+        async fn side_effect(
+            &self,
+            _input: Arc<SideEffectInput<TestQuery, i32>>,
+        ) -> Result<(), String> {
+            tokio::time::sleep(self.0).await;
+            self.1.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn tracked_side_effects_can_be_awaited_at_shutdown() {
+        let completed = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let tracker = TaskTracker::new();
+        let mut pipeline = TestPipeline::new();
+        pipeline.side_effects = Arc::new(vec![Box::new(SlowSideEffect(
+            Duration::from_millis(20),
+            Arc::clone(&completed),
+        ))]);
+        pipeline.side_effect_tasks = Some(tracker.clone());
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_time()
+            .build()
+            .expect("test runtime");
+
+        runtime.block_on(async {
+            pipeline.execute(TestQuery::default()).await;
+            // The response is out while the side effect still sleeps.
+            assert_eq!(completed.load(std::sync::atomic::Ordering::SeqCst), 0);
+            assert_eq!(tracker.len(), 1);
+
+            tracker.close();
+            tokio::time::timeout(Duration::from_secs(1), tracker.wait())
+                .await
+                .expect("drain completes once the side effect finishes");
+            assert_eq!(completed.load(std::sync::atomic::Ordering::SeqCst), 1);
+        });
+    }
+
+    #[test]
+    fn a_side_effect_past_its_timeout_is_reported_as_failed() {
+        let observer = Arc::new(RecordingObserver::default());
+        let completed = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let tracker = TaskTracker::new();
+        let mut pipeline = TestPipeline::new();
+        pipeline.side_effects = Arc::new(vec![Box::new(SlowSideEffect(
+            Duration::from_secs(30),
+            Arc::clone(&completed),
+        ))]);
+        pipeline.side_effect_timeout = Duration::from_millis(10);
+        pipeline.side_effect_tasks = Some(tracker.clone());
+        pipeline.observer = Some(Arc::clone(&observer) as Arc<dyn PipelineObserver>);
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_time()
+            .build()
+            .expect("test runtime");
+
+        runtime.block_on(async {
+            pipeline.execute(TestQuery::default()).await;
+            tracker.close();
+            tokio::time::timeout(Duration::from_secs(1), tracker.wait())
+                .await
+                .expect("the timeout releases the task well before the sleep ends");
+        });
+
+        assert_eq!(completed.load(std::sync::atomic::Ordering::SeqCst), 0);
+        assert_eq!(
+            observer.side_effects.lock().unwrap().as_slice(),
+            &[(
+                "TestPipeline".to_string(),
+                "SlowSideEffect".to_string(),
+                false
+            )]
+        );
     }
 
     #[test]
@@ -931,6 +1061,7 @@ mod tests {
             Arc::new(vec![Box::new(NoopSideEffect), Box::new(FailingSideEffect)]);
         pipeline.observer = Some(Arc::clone(&observer) as Arc<dyn PipelineObserver>);
         let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_time()
             .build()
             .expect("test runtime");
 

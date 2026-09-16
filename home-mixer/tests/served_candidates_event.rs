@@ -187,3 +187,83 @@ async fn served_event_mirrors_the_final_response_and_sink_failure_is_isolated() 
         "a failing sink never alters the feed"
     );
 }
+
+/// Holds each publish for `delay`, then records it; `shutdown` records the
+/// budget it was given.
+struct SlowSink {
+    delay: std::time::Duration,
+    events: Mutex<Vec<String>>,
+    shutdown_budgets: Mutex<Vec<std::time::Duration>>,
+}
+
+#[async_trait]
+impl ServedCandidatesSink for SlowSink {
+    async fn publish(&self, event: &ServedCandidatesEvent) -> Result<(), String> {
+        tokio::time::sleep(self.delay).await;
+        self.events.lock().unwrap().push(event.request_id.clone());
+        Ok(())
+    }
+
+    async fn shutdown(&self, timeout: std::time::Duration) {
+        self.shutdown_budgets.lock().unwrap().push(timeout);
+    }
+}
+
+#[tokio::test]
+async fn shutdown_drain_waits_for_in_flight_exposure_events_then_flushes_the_sink() {
+    let sink = Arc::new(SlowSink {
+        delay: std::time::Duration::from_millis(50),
+        events: Mutex::default(),
+        shutdown_budgets: Mutex::default(),
+    });
+    let pipeline = PhoenixCandidatePipeline::build_with_clients(dependencies(
+        Arc::clone(&sink) as Arc<dyn ServedCandidatesSink>
+    ))
+    .await;
+
+    let now_ms = now_ms();
+    pipeline.execute(cached_query(now_ms, "drain-1")).await;
+    pipeline.execute(cached_query(now_ms, "drain-2")).await;
+    // Responses are out; both publishes are still sleeping on tracked tasks.
+    assert!(sink.events.lock().unwrap().is_empty());
+    assert_eq!(pipeline.background_tasks().len(), 2);
+
+    let drained = pipeline
+        .drain_side_effects(std::time::Duration::from_secs(2))
+        .await;
+
+    assert!(drained, "both side effects finish well inside the budget");
+    let mut events = sink.events.lock().unwrap().clone();
+    events.sort();
+    assert_eq!(events, vec!["drain-1".to_string(), "drain-2".to_string()]);
+    let budgets = sink.shutdown_budgets.lock().unwrap();
+    assert_eq!(budgets.len(), 1, "the sink is flushed exactly once");
+    assert!(
+        budgets[0] < std::time::Duration::from_secs(2),
+        "the flush gets what is left of the drain budget, not a fresh one"
+    );
+}
+
+#[tokio::test]
+async fn shutdown_drain_gives_up_on_a_stuck_sink_and_still_flushes_it() {
+    let sink = Arc::new(SlowSink {
+        delay: std::time::Duration::from_secs(30),
+        events: Mutex::default(),
+        shutdown_budgets: Mutex::default(),
+    });
+    let pipeline = PhoenixCandidatePipeline::build_with_clients(dependencies(
+        Arc::clone(&sink) as Arc<dyn ServedCandidatesSink>
+    ))
+    .await;
+    pipeline.execute(cached_query(now_ms(), "stuck")).await;
+
+    let started = std::time::Instant::now();
+    let drained = pipeline
+        .drain_side_effects(std::time::Duration::from_millis(100))
+        .await;
+
+    assert!(!drained);
+    assert!(started.elapsed() < std::time::Duration::from_secs(2));
+    assert!(sink.events.lock().unwrap().is_empty());
+    assert_eq!(sink.shutdown_budgets.lock().unwrap().len(), 1);
+}

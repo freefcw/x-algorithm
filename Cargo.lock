@@ -2569,6 +2569,7 @@ dependencies = [
  "futures",
  "log",
  "tokio",
+ "tokio-util",
  "tonic",
 ]
 

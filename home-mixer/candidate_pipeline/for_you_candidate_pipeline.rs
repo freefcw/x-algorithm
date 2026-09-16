@@ -12,6 +12,8 @@ use crate::sources::push_to_home_source::PushToHomeSource;
 use crate::sources::scored_posts_source::{ScoredPostsProvider, ScoredPostsSource};
 use crate::sources::who_to_follow_source::WhoToFollowSource;
 use std::sync::Arc;
+use std::time::Duration;
+use tokio_util::task::TaskTracker;
 use tonic::async_trait;
 use xai_candidate_pipeline::candidate_pipeline::CandidatePipeline;
 use xai_candidate_pipeline::filter::Filter;
@@ -30,6 +32,7 @@ pub struct ForYouCandidatePipeline {
     side_effects: Arc<Vec<Box<dyn SideEffect<ScoredPostsQuery, FeedItem>>>>,
     result_size: usize,
     observer: Option<Arc<dyn PipelineObserver>>,
+    side_effect_tasks: Option<TaskTracker>,
 }
 
 impl ForYouCandidatePipeline {
@@ -87,6 +90,7 @@ impl ForYouCandidatePipeline {
             side_effects: Arc::new(side_effects),
             result_size: config.max_items,
             observer: None,
+            side_effect_tasks: None,
         }
     }
 
@@ -94,6 +98,12 @@ impl ForYouCandidatePipeline {
     /// inner scorer, so both show up under their own `pipeline` label.
     pub fn install_observer(&mut self, observer: Arc<dyn PipelineObserver>) {
         self.observer = Some(observer);
+    }
+
+    /// Spawn this pipeline's side effects on the tracker the inner scorer
+    /// drains at shutdown.
+    pub fn install_side_effect_tasks(&mut self, tracker: TaskTracker) {
+        self.side_effect_tasks = Some(tracker);
     }
 }
 
@@ -153,5 +163,13 @@ impl CandidatePipeline<ScoredPostsQuery, FeedItem> for ForYouCandidatePipeline {
 
     fn observer(&self) -> Option<Arc<dyn PipelineObserver>> {
         self.observer.clone()
+    }
+
+    fn side_effect_tasks(&self) -> Option<TaskTracker> {
+        self.side_effect_tasks.clone()
+    }
+
+    fn side_effect_timeout(&self) -> Duration {
+        Duration::from_millis(crate::params::SIDE_EFFECT_TIMEOUT_MS)
     }
 }

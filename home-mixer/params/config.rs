@@ -100,6 +100,12 @@ pub const REQUEST_TIMEOUT_MS: u64 = 10_000;
 /// SIGKILL 打断；也应大于 `REQUEST_TIMEOUT_MS`，否则最慢的在途请求排不完。
 pub const SHUTDOWN_DRAIN_TIMEOUT_SECS: u64 = 20;
 
+/// 单个 side effect（曝光事件发布、多样性统计、请求缓存写回）的运行上限。side effect
+/// 在响应之后异步执行，不进请求预算；这里只防止一个卡住的 sink 把任务和关停排空
+/// 无限期挂住。必须大于 Kafka 单条投递上限（`SERVED_EVENTS_KAFKA_DELIVERY_TIMEOUT_MS`
+/// 默认 5 s），小于 `SHUTDOWN_DRAIN_TIMEOUT_SECS`，否则排空阶段等不到它结束。
+pub const SIDE_EFFECT_TIMEOUT_MS: u64 = 10_000;
+
 // =============================================================================
 // 本地状态适配器常量（U2：无上游对应；生产持久化策略在集成阶段确定）
 // =============================================================================

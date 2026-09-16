@@ -7,7 +7,9 @@ edition = "2021"
 tonic = "0.12"
 futures = "0.3"
 log = "0.4"
-tokio = { version = "1.0", features = ["rt"] }
+tokio = { version = "1.0", features = ["rt", "time"] }
+# TaskTracker: lets the application wait for spawned side-effect tasks at shutdown.
+tokio-util = { version = "0.7", features = ["rt"] }
 
 [lib]
 path = "lib.rs"

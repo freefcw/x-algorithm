@@ -224,6 +224,10 @@ impl ServedCandidatesSink for MeteredServedCandidatesSink {
         );
         result
     }
+
+    async fn shutdown(&self, timeout: Duration) {
+        self.inner.shutdown(timeout).await
+    }
 }
 
 #[cfg(feature = "kafka")]
@@ -292,7 +296,7 @@ pub use kafka::KafkaServedCandidatesSink;
 #[cfg(feature = "kafka")]
 mod kafka {
     use super::*;
-    use rdkafka::producer::{FutureProducer, FutureRecord};
+    use rdkafka::producer::{FutureProducer, FutureRecord, Producer};
     use rdkafka::ClientConfig;
 
     pub struct KafkaServedCandidatesSink {
@@ -344,6 +348,23 @@ mod kafka {
                 .await
                 .map(|_| ())
                 .map_err(|(error, _)| format!("Kafka send to {}: {error}", self.topic))
+        }
+
+        /// `publish` only returns after the broker acknowledged, so this is
+        /// for sends whose future was dropped by the shutdown timeout and are
+        /// still queued in librdkafka. `flush` blocks, hence `spawn_blocking`.
+        async fn shutdown(&self, timeout: Duration) {
+            let producer = self.producer.clone();
+            let topic = self.topic.clone();
+            match tokio::task::spawn_blocking(move || producer.flush(timeout)).await {
+                Ok(Ok(())) => log::info!("served-candidates Kafka producer flushed ({topic})"),
+                Ok(Err(error)) => log::warn!(
+                    "served-candidates Kafka producer did not flush within {timeout:?} ({topic}): {error}"
+                ),
+                Err(error) => {
+                    log::warn!("served-candidates Kafka producer flush task failed: {error}")
+                }
+            }
         }
     }
 }

@@ -107,6 +107,17 @@ impl ScoredPostsServer {
         Arc::clone(&self.served_persist)
     }
 
+    /// Tracker of the pipeline's asynchronous side-effect tasks.
+    pub fn background_tasks(&self) -> tokio_util::task::TaskTracker {
+        self.pipeline.background_tasks()
+    }
+
+    /// Wait for outstanding side effects and flush their sinks; see
+    /// `PhoenixCandidatePipeline::drain_side_effects`.
+    pub async fn drain_side_effects(&self, timeout: std::time::Duration) -> bool {
+        self.pipeline.drain_side_effects(timeout).await
+    }
+
     pub(crate) async fn persist_selected(
         &self,
         user_id: crate::models::UserId,

@@ -12,16 +12,19 @@
 //!
 //! On SIGTERM or Ctrl-C the process marks itself draining (`/readyz` → 503),
 //! optionally waits for load balancers to notice, stops accepting new
-//! connections, and lets in-flight requests finish up to `--drain-timeout-secs`.
-//! Any listener failure — including a port already in use — ends the process
-//! with a non-zero exit instead of leaving it alive but not serving.
+//! connections, and lets in-flight requests finish up to `--drain-timeout-secs`;
+//! whatever is left of that budget goes to the side effects still running
+//! behind returned responses (exposure log, stats) and to flushing the
+//! exposure sink. Any listener failure — including a port already in use —
+//! ends the process with a non-zero exit instead of leaving it alive but not
+//! serving.
 
 use anyhow::Context;
 use clap::Parser;
 use log::{info, warn};
 use std::net::SocketAddr;
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 use tokio::net::TcpListener;
 use tokio::sync::watch;
 use tonic::service::RoutesBuilder;
@@ -76,7 +79,9 @@ async fn main() -> anyhow::Result<()> {
 
     let readiness = Readiness::new();
     let metrics = Arc::new(Metrics::new());
-    let (stop_tx, stop_rx) = watch::channel(false);
+    // `Some(instant)` once the listeners must stop; the instant anchors the
+    // drain budget shared by in-flight requests and their side effects.
+    let (stop_tx, stop_rx) = watch::channel(None::<Instant>);
 
     // Termination handling is installed before the slow startup steps so a
     // signal during assembly aborts startup instead of being ignored.
@@ -90,7 +95,7 @@ async fn main() -> anyhow::Result<()> {
             if !shutdown_delay.is_zero() {
                 tokio::time::sleep(shutdown_delay).await;
             }
-            let _ = stop_tx.send(true);
+            let _ = stop_tx.send(Some(Instant::now()));
         });
     }
 
@@ -118,7 +123,7 @@ async fn main() -> anyhow::Result<()> {
         .register_encoded_file_descriptor_set(pb::FILE_DESCRIPTOR_SET)
         .build_v1()?;
     let mut grpc_routes = RoutesBuilder::default();
-    service.register(&mut grpc_routes);
+    Arc::clone(&service).register(&mut grpc_routes);
     grpc_routes.add_service(reflection_service);
 
     // Bind explicitly so an occupied port is an error here, not a panic inside
@@ -150,22 +155,31 @@ async fn main() -> anyhow::Result<()> {
     };
     tokio::select! {
         result = servers => result?,
-        _ = drain_deadline(stop_rx, drain_timeout) => {
+        _ = drain_deadline(stop_rx.clone(), drain_timeout) => {
             warn!("in-flight requests did not finish within {drain_timeout:?}; exiting anyway");
         }
     }
+
+    // Responses already went out, but their side effects (exposure log,
+    // diversity stats) may still be running; spend what is left of the drain
+    // budget on them, then flush the exposure sink.
+    let remaining = stop_rx
+        .borrow()
+        .map(|stopped_at| drain_timeout.saturating_sub(stopped_at.elapsed()))
+        .unwrap_or(drain_timeout);
+    service.drain_side_effects(remaining).await;
     info!("Server stopped");
     Ok(())
 }
 
 /// Resolves once the stop signal has been sent. A dropped sender also
 /// resolves, so a listener never waits on a signal task that is gone.
-async fn stopped(mut stop: watch::Receiver<bool>) {
-    let _ = stop.wait_for(|stop| *stop).await;
+async fn stopped(mut stop: watch::Receiver<Option<Instant>>) {
+    let _ = stop.wait_for(|stop| stop.is_some()).await;
 }
 
 /// Resolves `drain_timeout` after the stop signal.
-async fn drain_deadline(stop: watch::Receiver<bool>, drain_timeout: Duration) {
+async fn drain_deadline(stop: watch::Receiver<Option<Instant>>, drain_timeout: Duration) {
     stopped(stop).await;
     tokio::time::sleep(drain_timeout).await;
 }
