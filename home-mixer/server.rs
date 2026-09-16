@@ -30,12 +30,12 @@ impl HomeMixerServer {
         config.validate()?;
         if config.mode == HomeMixerMode::Degraded {
             log::warn!(
-                "HOME_MIXER_MODE=degraded: caller identity, UAS, Gizmoduck, Phoenix metadata, and served persist contracts are still incomplete"
+                "HOME_MIXER_MODE=degraded: caller identity, Gizmoduck, Phoenix metadata, and served persist contracts are still incomplete"
             );
         }
         let query_builder = QueryBuilder::new(config.features);
         let pipeline = crate::candidate_pipeline::phoenix_candidate_pipeline::PhoenixCandidatePipeline::
-            assemble_for_mode(config.mode, config.features)
+            assemble_with_uas(config.mode, config.features, config.uas)
             .await?;
         let debug_access = DebugAccessPolicy::new(config.features.debug_rpc, config.debug_token);
         let state_store: Arc<dyn FeedStateStore> = match config.feed_state {
@@ -271,6 +271,7 @@ mod tests {
                     "redis://localhost:6379/",
                 ),
             ),
+            uas: crate::runtime_config::UasConfig::Disabled,
         })
         .await;
         let error = match result {

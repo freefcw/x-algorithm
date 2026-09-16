@@ -54,8 +54,19 @@ pub trait UserActionAggregator: Send + Sync {
 /// 只保留请求窗口内的有效行为，按帖子 ID 合并 action mask，并按首次行为时间升序输出。
 pub struct DefaultAggregator;
 
-/// action_mask 的长度：覆盖当前发布模型使用的 proto ActionName 枚举 0..=18
-const ACTION_MASK_LEN: usize = 19;
+/// action_mask 的长度：覆盖当前发布模型使用的 proto ActionName 枚举 0..=18。
+///
+/// 这是行为类型范围的唯一真源：UAS 投影 job 的事件校验与这里的聚合校验
+/// 都通过 [`is_supported_action_type`] 判定，扩枚举时只需改这一处。
+pub const ACTION_MASK_LEN: usize = 19;
+
+/// 当前发布模型接受的最大行为类型编号（含）。
+pub const MAX_SUPPORTED_ACTION_TYPE: i32 = ACTION_MASK_LEN as i32 - 1;
+
+/// 行为类型是否落在当前模型的 action_mask 范围内（0 = UNSPECIFIED 不接受）。
+pub fn is_supported_action_type(action_type: i32) -> bool {
+    (1..=MAX_SUPPORTED_ACTION_TYPE).contains(&action_type)
+}
 
 fn validated_action(
     action: &UserAction,
@@ -63,13 +74,10 @@ fn validated_action(
     let tweet_id = action.tweet_id.filter(|id| !id.is_nil())?;
     let author_id = action.author_id.filter(|id| !id.is_nil())?;
     let action_time_ms = action.action_time_ms.filter(|time| *time >= 0)?;
-    let action_index = usize::try_from(action.action_type?).ok()?;
-    (1..ACTION_MASK_LEN).contains(&action_index).then_some((
-        tweet_id,
-        author_id,
-        action_time_ms,
-        action_index,
-    ))
+    let action_type = action
+        .action_type
+        .filter(|value| is_supported_action_type(*value))?;
+    Some((tweet_id, author_id, action_time_ms, action_type as usize))
 }
 
 impl UserActionAggregator for DefaultAggregator {

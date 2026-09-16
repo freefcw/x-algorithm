@@ -70,6 +70,23 @@ pub const UAS_WINDOW_TIME_MS: u64 = 7 * 24 * 60 * 60 * 1000;
 /// checkpoint history_seq_len=127，保留 300 拉取上限。
 pub const UAS_MAX_SEQUENCE_LENGTH: usize = 300;
 
+/// UAS Redis 投影中单用户保留的**原始行为**条数上限（可用 `UAS_MAX_ACTIONS` 覆盖）。
+///
+/// 与 `UAS_MAX_SEQUENCE_LENGTH` 不是同一个量：后者限制聚合后的帖子数，而一个帖子
+/// 上的点赞、回复、点击各占一条原始行为。按每帖约 2 条行为估算，600 条原始行为
+/// 对应约 300 个聚合帖子；每条成员约 220 字节，单用户 ZSET 上限约 130 KB。
+pub const UAS_STORE_MAX_ACTIONS: usize = 600;
+
+/// 投影 job 接受的行为时间“领先本机时钟”的最大偏差。埋点端与 job 之间的时钟
+/// 偏差在此范围内的事件按原时间戳写入（在 Home Mixer 的读窗口追上之前不可见），
+/// 超出则视为异常时间戳丢弃并计数，不再静默吞掉。
+pub const UAS_MAX_FUTURE_SKEW_MS: u64 = 5 * 60 * 1000;
+
+/// 投影 job 对 Redis 写失败的进程内重试总预算。UAS 写入是幂等的，所以重试安全；
+/// 预算必须明显小于 Kafka `max.poll.interval.ms`（librdkafka 默认 300 000），否则
+/// 消费者会在重试期间被踢出消费组，退化成重启 + rebalance。
+pub const UAS_PROJECTION_RETRY_BUDGET_MS: u64 = 60_000;
+
 // =============================================================================
 // 本地状态适配器常量（U2：无上游对应；生产持久化策略在集成阶段确定）
 // =============================================================================

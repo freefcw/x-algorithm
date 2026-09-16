@@ -27,7 +27,8 @@ use crate::clients::thunder_client::ThunderClient;
 use crate::clients::topic_retrieval_client::{DemoTopicRetrievalClient, TopicRetrievalClient};
 use crate::clients::tweet_entity_service_client::{DemoTESClient, TESClient};
 use crate::clients::uas_fetcher::{
-    DemoUserActionSequenceFetcher, DisabledUserActionSequenceFetcher, UserActionSequenceOps,
+    DemoUserActionSequenceFetcher, DisabledUserActionSequenceFetcher, RedisUserActionSequenceStore,
+    UserActionSequenceOps,
 };
 use crate::clients::user_topic_reader::{DemoUserTopicReader, UserTopicReader};
 #[cfg(feature = "legacy-int-ids")]
@@ -64,7 +65,7 @@ use crate::query_hydrators::user_action_seq_query_hydrator::UserActionSeqQueryHy
 use crate::query_hydrators::user_features_query_hydrator::UserFeaturesQueryHydrator;
 use crate::query_hydrators::user_safety_features_query_hydrator::UserSafetyFeaturesQueryHydrator;
 use crate::query_hydrators::user_topics_query_hydrator::UserTopicsQueryHydrator;
-use crate::runtime_config::HomeMixerMode;
+use crate::runtime_config::{HomeMixerMode, UasConfig};
 use crate::scorers::author_cold_start::{AuthorColdStart, AuthorColdStartScorer, ColdStartConfig};
 use crate::scorers::phoenix_scorer::PhoenixScorer;
 use crate::scorers::ranking_scorer::RankingScorer;
@@ -378,9 +379,20 @@ impl PhoenixCandidatePipeline {
         Self::assemble_for_mode(Self::compatibility_mode(), features).await
     }
 
+    /// Assembles for an explicit mode, resolving the UAS adapter from the
+    /// environment like the other external addresses. `HomeMixerServer` uses
+    /// [`Self::assemble_with_uas`] with the config it already validated.
     pub async fn assemble_for_mode(
         mode: HomeMixerMode,
         features: HomeMixerFeatures,
+    ) -> anyhow::Result<PhoenixCandidatePipeline> {
+        Self::assemble_with_uas(mode, features, UasConfig::from_env(mode)?).await
+    }
+
+    pub async fn assemble_with_uas(
+        mode: HomeMixerMode,
+        features: HomeMixerFeatures,
+        uas: UasConfig,
     ) -> anyhow::Result<PhoenixCandidatePipeline> {
         let topic_clients = (mode == HomeMixerMode::Demo).then(|| {
             TopicPersonalizationClients::new(
@@ -388,7 +400,7 @@ impl PhoenixCandidatePipeline {
                 Arc::new(DemoTopicRetrievalClient),
             )
         });
-        Self::assemble_with_optional_topic_clients(mode, topic_clients, features).await
+        Self::assemble_with_optional_topic_clients(mode, topic_clients, features, uas).await
     }
 
     /// Builds the pipeline with explicitly supplied topic adapters.
@@ -398,10 +410,12 @@ impl PhoenixCandidatePipeline {
     pub async fn prod_with_topic_clients(
         topic_clients: TopicPersonalizationClients,
     ) -> anyhow::Result<PhoenixCandidatePipeline> {
+        let mode = Self::compatibility_mode();
         Self::assemble_with_optional_topic_clients(
-            Self::compatibility_mode(),
+            mode,
             Some(topic_clients),
             HomeMixerFeatures::from_env(),
+            UasConfig::from_env(mode)?,
         )
         .await
     }
@@ -418,11 +432,13 @@ impl PhoenixCandidatePipeline {
         mode: HomeMixerMode,
         topic_clients: Option<TopicPersonalizationClients>,
         features: HomeMixerFeatures,
+        uas: UasConfig,
     ) -> anyhow::Result<PhoenixCandidatePipeline> {
         let demo_mode = mode == HomeMixerMode::Demo;
         let features = features_for_mode(mode, features);
+        uas.validate(mode)?;
         if demo_mode {
-            log::info!("HOME_MIXER_MODE=demo: injecting demo UAS / Strato / TES clients");
+            log::info!("HOME_MIXER_MODE=demo: injecting demo Strato / TES clients");
         }
 
         let mrpyq_adapters = pipeline_adapters_from_env(demo_mode)
@@ -434,10 +450,35 @@ impl PhoenixCandidatePipeline {
         }
         let mrpyq_adapters = mrpyq_adapters.as_ref();
 
-        let uas_fetcher: Arc<dyn UserActionSequenceOps> = if demo_mode {
-            Arc::new(DemoUserActionSequenceFetcher)
-        } else {
-            Arc::new(DisabledUserActionSequenceFetcher::new()?)
+        let uas_fetcher: Arc<dyn UserActionSequenceOps> = match uas {
+            UasConfig::Demo => {
+                log::info!("UAS: demo synthetic sequence");
+                Arc::new(DemoUserActionSequenceFetcher)
+            }
+            UasConfig::Disabled => {
+                log::warn!(
+                    "UAS: no Redis configured (UAS_REDIS_URL / HOME_MIXER_REDIS_URL); Phoenix retrieval and ranking are skipped and every request is ranked by the rule fallback"
+                );
+                Arc::new(DisabledUserActionSequenceFetcher::new()?)
+            }
+            UasConfig::Redis(config) => {
+                // The projection job and Home Mixer share HOME_MIXER_REDIS_URL
+                // by default; UAS_REDIS_URL points at a dedicated Redis when
+                // feed state and UAS are operated separately.
+                let store = RedisUserActionSequenceStore::new(config)
+                    .await
+                    .map_err(|error| {
+                        // Name both variables: outside demo the UAS target is
+                        // usually the shared HOME_MIXER_REDIS_URL, so a Redis
+                        // outage surfaces here first and must not read as a
+                        // UAS-only misconfiguration.
+                        anyhow::anyhow!(
+                            "failed to initialize the Redis UAS adapter (UAS_REDIS_URL, or HOME_MIXER_REDIS_URL when unset): {error}"
+                        )
+                    })?;
+                log::info!("UAS: Redis adapter enabled");
+                Arc::new(store)
+            }
         };
         let strato_client: Arc<dyn StratoClient + Send + Sync> = if demo_mode {
             Arc::new(DemoStratoClient)

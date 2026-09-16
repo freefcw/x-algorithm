@@ -17,8 +17,8 @@
 // Home Mixer 从 UAS 存储服务获取 Thrift 格式数据后，
 // 聚合处理并转换为 Protobuf 发送给 Phoenix。
 //
-// 当前为 stub 实现，定义了必要的 Thrift 兼容类型。
-// TODO: 当你的平台用户行为追踪系统就绪后，对接真实数据
+// 这些类型是本地 Thrift 兼容合同。线上数据由 UAS 投影 job 写入 Redis，
+// Home Mixer 的 Redis adapter 将其还原为这里定义的序列，再复用现有聚合逻辑。
 
 /// Thrift 格式的用户行为序列元数据
 ///

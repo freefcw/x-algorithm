@@ -1,6 +1,125 @@
 use crate::clients::redis_feed_state_store::RedisFeedStateConfig;
+use crate::clients::uas_fetcher::RedisUserActionSequenceConfig;
 use crate::feature_policy::{HomeMixerFeatures, VfFailurePolicy};
 use std::time::Duration;
+
+/// Which `UserActionSequenceOps` adapter the assembly injects.
+///
+/// Resolved once at startup from `UAS_REDIS_URL`, falling back to the shared
+/// `HOME_MIXER_REDIS_URL` outside demo mode. Demo keeps its synthetic sequence
+/// unless a UAS Redis is named explicitly, so enabling Redis feed state in a
+/// demo does not silently switch the demo off personalization.
+#[derive(Clone, Debug, Default)]
+pub enum UasConfig {
+    /// Synthetic sequence; only valid in demo mode.
+    #[default]
+    Demo,
+    /// No behavior source at all: Phoenix retrieval and ranking are skipped
+    /// and every request is ranked by the rule fallback. Chosen only when no
+    /// Redis URL is configured on an explicit-mode assembly path.
+    Disabled,
+    Redis(RedisUserActionSequenceConfig),
+}
+
+impl UasConfig {
+    pub fn from_env(mode: HomeMixerMode) -> anyhow::Result<Self> {
+        Self::from_lookup(mode, |name| std::env::var(name).ok())
+    }
+
+    fn from_lookup(
+        mode: HomeMixerMode,
+        lookup: impl Fn(&str) -> Option<String>,
+    ) -> anyhow::Result<Self> {
+        let explicit = non_empty(lookup("UAS_REDIS_URL"));
+        let url = if mode == HomeMixerMode::Demo {
+            explicit
+        } else {
+            explicit.or_else(|| non_empty(lookup("HOME_MIXER_REDIS_URL")))
+        };
+        let config = match url {
+            Some(url) => Self::Redis(redis_uas_config_from_lookup(url, &lookup)?),
+            None if mode == HomeMixerMode::Demo => Self::Demo,
+            None => Self::Disabled,
+        };
+        config.validate(mode)?;
+        Ok(config)
+    }
+
+    /// The projection job has no runtime mode: it always needs the Redis
+    /// target and shares the same variables as the server.
+    pub fn redis_from_env() -> anyhow::Result<RedisUserActionSequenceConfig> {
+        Self::redis_from_lookup(|name| std::env::var(name).ok())
+    }
+
+    fn redis_from_lookup(
+        lookup: impl Fn(&str) -> Option<String>,
+    ) -> anyhow::Result<RedisUserActionSequenceConfig> {
+        let url = non_empty(lookup("UAS_REDIS_URL"))
+            .or_else(|| non_empty(lookup("HOME_MIXER_REDIS_URL")))
+            .ok_or_else(|| {
+                anyhow::anyhow!("UAS_REDIS_URL or HOME_MIXER_REDIS_URL must be configured")
+            })?;
+        let config = redis_uas_config_from_lookup(url, &lookup)?;
+        config.validate().map_err(anyhow::Error::msg)?;
+        Ok(config)
+    }
+
+    pub fn validate(&self, mode: HomeMixerMode) -> anyhow::Result<()> {
+        match self {
+            Self::Demo if mode != HomeMixerMode::Demo => anyhow::bail!(
+                "the demo UAS sequence is allowed only in demo mode; configure UAS_REDIS_URL (or HOME_MIXER_REDIS_URL) for a Redis UAS adapter"
+            ),
+            Self::Demo | Self::Disabled => Ok(()),
+            Self::Redis(config) => config.validate().map_err(anyhow::Error::msg),
+        }
+    }
+}
+
+fn non_empty(value: Option<String>) -> Option<String> {
+    value
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
+}
+
+fn redis_uas_config_from_lookup(
+    url: String,
+    lookup: &impl Fn(&str) -> Option<String>,
+) -> anyhow::Result<RedisUserActionSequenceConfig> {
+    let mut config = RedisUserActionSequenceConfig::new(url);
+    if let Some(prefix) = lookup("UAS_REDIS_KEY_PREFIX") {
+        config.key_prefix = prefix.trim().to_string();
+    }
+    if let Some(value) = lookup("UAS_MAX_ACTIONS") {
+        config.max_actions = value
+            .trim()
+            .parse::<usize>()
+            .ok()
+            .filter(|value| *value > 0)
+            .ok_or_else(|| anyhow::anyhow!("UAS_MAX_ACTIONS must be a positive integer"))?;
+    }
+    if let Some(value) = lookup("UAS_REDIS_TTL_SECS") {
+        let ttl = value
+            .trim()
+            .parse::<u64>()
+            .map_err(|_| anyhow::anyhow!("UAS_REDIS_TTL_SECS must be a non-negative integer"))?;
+        config.ttl_secs = (ttl > 0).then_some(ttl);
+    }
+    for (name, target) in [
+        ("UAS_REDIS_CONNECT_TIMEOUT_MS", &mut config.connect_timeout),
+        ("UAS_REDIS_REQUEST_TIMEOUT_MS", &mut config.request_timeout),
+    ] {
+        if let Some(value) = lookup(name) {
+            let millis = value
+                .trim()
+                .parse::<u64>()
+                .ok()
+                .filter(|value| *value > 0)
+                .ok_or_else(|| anyhow::anyhow!("{name} must be a positive integer"))?;
+            *target = Duration::from_millis(millis);
+        }
+    }
+    Ok(config)
+}
 
 /// The backend is selected once at startup. Only demo may use local state.
 #[derive(Clone, Debug, Default)]
@@ -128,6 +247,7 @@ pub struct HomeMixerConfig {
     pub features: HomeMixerFeatures,
     pub debug_token: Option<String>,
     pub feed_state: FeedStateConfig,
+    pub uas: UasConfig,
 }
 
 impl HomeMixerConfig {
@@ -139,7 +259,10 @@ impl HomeMixerConfig {
             debug_token: std::env::var("HOME_MIXER_DEBUG_TOKEN")
                 .ok()
                 .map(|token| token.trim().to_string()),
+            // Feed state first: outside demo it requires HOME_MIXER_REDIS_URL,
+            // which is also the UAS fallback, so its error stays primary.
             feed_state: FeedStateConfig::from_env(mode)?,
+            uas: UasConfig::from_env(mode)?,
         };
         config.validate()?;
         Ok(config)
@@ -148,10 +271,11 @@ impl HomeMixerConfig {
     pub(crate) fn validate(&self) -> anyhow::Result<()> {
         if self.mode == HomeMixerMode::ProductionReady {
             anyhow::bail!(
-                "production_ready is unavailable: business adapter contracts are not verified (caller identity, TES, UAS, Strato, VF, in-network/fallback, Phoenix metadata, served persist)"
+                "production_ready is unavailable: business adapter contracts are not verified (caller identity, TES, UAS event schema/retention, Strato, VF, in-network/fallback, Phoenix metadata, served persist)"
             );
         }
         self.feed_state.validate(self.mode)?;
+        self.uas.validate(self.mode)?;
         if self.features.unsigned_cached_posts && self.mode != HomeMixerMode::Demo {
             anyhow::bail!("HOME_MIXER_ENABLE_UNSIGNED_CACHED_POSTS is allowed only in demo mode");
         }
@@ -263,7 +387,137 @@ mod tests {
             .contains("HOME_MIXER_REDIS_URL"));
         config.feed_state =
             FeedStateConfig::Redis(RedisFeedStateConfig::new("redis://localhost:6379/"));
+        // The default UAS choice is the demo sequence, which a business
+        // deployment must replace explicitly.
+        assert!(config
+            .validate()
+            .unwrap_err()
+            .to_string()
+            .contains("demo UAS sequence"));
+        config.uas = UasConfig::Redis(RedisUserActionSequenceConfig::new(
+            "redis://localhost:6379/",
+        ));
         assert!(config.validate().is_ok());
+        config.uas = UasConfig::Disabled;
+        assert!(config.validate().is_ok());
+    }
+
+    fn uas_config(mode: HomeMixerMode, values: &[(&str, &str)]) -> anyhow::Result<UasConfig> {
+        UasConfig::from_lookup(mode, |name| lookup_in(values, name))
+    }
+
+    fn lookup_in(values: &[(&str, &str)], name: &str) -> Option<String> {
+        values
+            .iter()
+            .find(|(key, _)| *key == name)
+            .map(|(_, value)| (*value).to_string())
+    }
+
+    #[test]
+    fn demo_keeps_the_synthetic_sequence_unless_a_uas_redis_is_explicit() {
+        assert!(matches!(
+            uas_config(HomeMixerMode::Demo, &[]).unwrap(),
+            UasConfig::Demo
+        ));
+        // Redis feed state in a demo must not switch the demo off its sequence.
+        assert!(matches!(
+            uas_config(
+                HomeMixerMode::Demo,
+                &[("HOME_MIXER_REDIS_URL", "redis://localhost:6379/")]
+            )
+            .unwrap(),
+            UasConfig::Demo
+        ));
+        assert!(matches!(
+            uas_config(
+                HomeMixerMode::Demo,
+                &[("UAS_REDIS_URL", "redis://localhost:6379/1")]
+            )
+            .unwrap(),
+            UasConfig::Redis(_)
+        ));
+    }
+
+    #[test]
+    fn business_uas_falls_back_to_the_shared_redis_and_is_disabled_without_one() {
+        let UasConfig::Redis(shared) = uas_config(
+            HomeMixerMode::Degraded,
+            &[("HOME_MIXER_REDIS_URL", " redis://shared:6379/ ")],
+        )
+        .unwrap() else {
+            panic!("shared Redis must back UAS");
+        };
+        assert_eq!(shared.url, "redis://shared:6379/");
+
+        let UasConfig::Redis(dedicated) = uas_config(
+            HomeMixerMode::Degraded,
+            &[
+                ("HOME_MIXER_REDIS_URL", "redis://shared:6379/"),
+                ("UAS_REDIS_URL", "redis://uas:6379/"),
+                ("UAS_REDIS_KEY_PREFIX", " uas:test "),
+                ("UAS_MAX_ACTIONS", "42"),
+                ("UAS_REDIS_TTL_SECS", "0"),
+                ("UAS_REDIS_CONNECT_TIMEOUT_MS", "200"),
+                ("UAS_REDIS_REQUEST_TIMEOUT_MS", "75"),
+            ],
+        )
+        .unwrap() else {
+            panic!("explicit UAS Redis must win");
+        };
+        assert_eq!(dedicated.url, "redis://uas:6379/");
+        assert_eq!(dedicated.key_prefix, "uas:test");
+        assert_eq!(dedicated.max_actions, 42);
+        assert_eq!(dedicated.ttl_secs, None);
+        assert_eq!(dedicated.connect_timeout, Duration::from_millis(200));
+        assert_eq!(dedicated.request_timeout, Duration::from_millis(75));
+
+        // Explicit-mode assembly without any Redis is a deliberate Disabled
+        // adapter, never a silent demo sequence.
+        assert!(matches!(
+            uas_config(HomeMixerMode::Degraded, &[]).unwrap(),
+            UasConfig::Disabled
+        ));
+    }
+
+    #[test]
+    fn invalid_uas_settings_fail_instead_of_degrading() {
+        for (key, value) in [
+            ("UAS_REDIS_URL", "invalid://localhost"),
+            ("UAS_REDIS_KEY_PREFIX", " "),
+            ("UAS_REDIS_KEY_PREFIX", "a{b}"),
+            ("UAS_MAX_ACTIONS", "0"),
+            ("UAS_MAX_ACTIONS", "many"),
+            ("UAS_REDIS_TTL_SECS", "-1"),
+            ("UAS_REDIS_CONNECT_TIMEOUT_MS", "0"),
+            ("UAS_REDIS_REQUEST_TIMEOUT_MS", "invalid"),
+        ] {
+            let mut values = vec![("UAS_REDIS_URL", "redis://localhost:6379/")];
+            if key == "UAS_REDIS_URL" {
+                values.clear();
+            }
+            values.push((key, value));
+            assert!(
+                uas_config(HomeMixerMode::Degraded, &values).is_err(),
+                "{key}={value}"
+            );
+            assert!(
+                UasConfig::redis_from_lookup(|name| lookup_in(&values, name)).is_err(),
+                "worker: {key}={value}"
+            );
+        }
+    }
+
+    #[test]
+    fn the_projection_job_requires_a_redis_target() {
+        let error = UasConfig::redis_from_lookup(|_| None).unwrap_err();
+        assert!(error.to_string().contains("UAS_REDIS_URL"));
+        assert!(error.to_string().contains("HOME_MIXER_REDIS_URL"));
+
+        let config = UasConfig::redis_from_lookup(|name| {
+            lookup_in(&[("HOME_MIXER_REDIS_URL", "redis://shared:6379/")], name)
+        })
+        .unwrap();
+        assert_eq!(config.url, "redis://shared:6379/");
     }
 
     #[test]
@@ -290,6 +544,7 @@ mod tests {
             },
             debug_token: None,
             feed_state: FeedStateConfig::Redis(RedisFeedStateConfig::new("redis://localhost/")),
+            uas: UasConfig::Disabled,
         };
         assert!(config
             .validate()

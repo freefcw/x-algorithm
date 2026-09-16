@@ -1,216 +1,20 @@
 #![cfg(unix)]
 
+mod common;
+
+use common::{object_id, unix_redis_url, RedisFixture};
 use home_mixer::clients::redis_feed_state_store::{RedisFeedStateConfig, RedisFeedStateStore};
 use home_mixer::feed_state::{FeedStateSnapshot, FeedStateStore, InMemoryFeedStateStore};
-use home_mixer::models::{ObjectId, UserId};
+use home_mixer::models::ObjectId;
 use std::fs;
 use std::net::Shutdown;
 use std::os::unix::net::{UnixListener, UnixStream};
-use std::path::{Path, PathBuf};
-use std::process::{Child, Command, Stdio};
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::path::PathBuf;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Barrier as ThreadBarrier};
 use std::thread;
 use std::time::{Duration, Instant};
 use tokio::sync::Barrier;
-
-static FIXTURE_SEQUENCE: AtomicU64 = AtomicU64::new(0);
-
-struct RedisFixture {
-    child: Child,
-    directory: PathBuf,
-    socket: PathBuf,
-    url: String,
-}
-
-impl RedisFixture {
-    fn start() -> Self {
-        let sequence = FIXTURE_SEQUENCE.fetch_add(1, Ordering::Relaxed);
-        let directory = PathBuf::from(format!(
-            "/tmp/home-mixer-redis-{}-{sequence}",
-            std::process::id()
-        ));
-        fs::create_dir(&directory).unwrap_or_else(|error| {
-            panic!(
-                "failed to create isolated Redis directory {}: {error}",
-                directory.display()
-            )
-        });
-        let socket = directory.join("redis.sock");
-        let url = unix_redis_url(&socket);
-        let child = spawn_redis_server(&directory, &socket);
-        let child = wait_until_ready(child, &url, &directory);
-
-        Self {
-            child,
-            directory,
-            socket,
-            url,
-        }
-    }
-
-    /// Persist the data set and stop the server, closing every client
-    /// connection. Call `restart` to bring it back with the same data.
-    fn stop_preserving_data(&mut self) {
-        let mut control = self.connection();
-        // The server closes the connection instead of replying, so the
-        // command itself reports an error on success.
-        let _ = redis::cmd("SHUTDOWN").arg("SAVE").query::<()>(&mut control);
-        self.wait_for_exit();
-    }
-
-    /// Kill the server without saving, simulating an outage that loses the
-    /// in-memory data set. Call `restart` to bring back an empty server.
-    fn stop_losing_data(&mut self) {
-        let _ = self.child.kill();
-        self.wait_for_exit();
-        let _ = fs::remove_file(self.directory.join("dump.rdb"));
-    }
-
-    fn wait_for_exit(&mut self) {
-        let deadline = Instant::now() + Duration::from_secs(3);
-        while self
-            .child
-            .try_wait()
-            .expect("check isolated redis-server status")
-            .is_none()
-        {
-            if Instant::now() >= deadline {
-                let _ = self.child.kill();
-                let _ = self.child.wait();
-                break;
-            }
-            thread::sleep(Duration::from_millis(10));
-        }
-    }
-
-    fn restart(&mut self) {
-        let _ = fs::remove_file(&self.socket);
-        let child = spawn_redis_server(&self.directory, &self.socket);
-        self.child = wait_until_ready(child, &self.url, &self.directory);
-    }
-
-    /// Close every client connection except the control connection, the way a
-    /// proxy or a server-side idle timeout would.
-    fn disconnect_clients(&self) {
-        let mut control = self.connection();
-        redis::cmd("CLIENT")
-            .arg("KILL")
-            .arg("TYPE")
-            .arg("normal")
-            .arg("SKIPME")
-            .arg("yes")
-            .query::<i64>(&mut control)
-            .expect("disconnect adapter connections");
-    }
-
-    fn config(
-        &self,
-        key_prefix: &str,
-        max_served_ids: usize,
-        max_request_timestamps: usize,
-    ) -> RedisFeedStateConfig {
-        let mut config = RedisFeedStateConfig::new(self.url.clone());
-        config.key_prefix = key_prefix.to_string();
-        config.max_served_ids = max_served_ids;
-        config.max_request_timestamps = max_request_timestamps;
-        config.connect_timeout = Duration::from_millis(500);
-        config.request_timeout = Duration::from_millis(500);
-        config
-    }
-
-    fn connection(&self) -> redis::Connection {
-        redis::Client::open(self.url.clone())
-            .expect("valid fixture Redis URL")
-            .get_connection()
-            .expect("connect fixture control client")
-    }
-
-    fn key(&self, key_prefix: &str, user_id: UserId, suffix: &str) -> String {
-        format!("{key_prefix}:{{{user_id}}}:{suffix}")
-    }
-}
-
-impl Drop for RedisFixture {
-    fn drop(&mut self) {
-        let _ = self.child.kill();
-        let _ = self.child.wait();
-        let _ = fs::remove_file(&self.socket);
-        let _ = fs::remove_dir_all(&self.directory);
-    }
-}
-
-fn redis_server_binary() -> PathBuf {
-    let homebrew = PathBuf::from("/opt/homebrew/bin/redis-server");
-    if homebrew.is_file() {
-        homebrew
-    } else {
-        PathBuf::from("redis-server")
-    }
-}
-
-fn spawn_redis_server(directory: &Path, socket: &Path) -> Child {
-    let server = redis_server_binary();
-    Command::new(&server)
-        .arg("--port")
-        .arg("0")
-        .arg("--unixsocket")
-        .arg(socket)
-        .arg("--unixsocketperm")
-        .arg("700")
-        .arg("--save")
-        .arg("")
-        .arg("--appendonly")
-        .arg("no")
-        .arg("--dir")
-        .arg(directory)
-        .arg("--daemonize")
-        .arg("no")
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .spawn()
-        .unwrap_or_else(|error| {
-            panic!(
-                "failed to start isolated redis-server at {}: {error}",
-                server.display()
-            )
-        })
-}
-
-fn wait_until_ready(mut child: Child, url: &str, directory: &Path) -> Child {
-    let deadline = Instant::now() + Duration::from_secs(3);
-    loop {
-        if let Some(status) = child
-            .try_wait()
-            .expect("check isolated redis-server status")
-        {
-            let _ = fs::remove_dir_all(directory);
-            panic!("isolated redis-server exited during startup: {status}");
-        }
-        if redis::Client::open(url)
-            .and_then(|client| client.get_connection())
-            .and_then(|mut connection| redis::cmd("PING").query::<String>(&mut connection))
-            .is_ok()
-        {
-            return child;
-        }
-        if Instant::now() >= deadline {
-            let _ = child.kill();
-            let _ = child.wait();
-            let _ = fs::remove_dir_all(directory);
-            panic!("isolated redis-server did not become ready at {url}");
-        }
-        thread::sleep(Duration::from_millis(10));
-    }
-}
-
-fn unix_redis_url(socket: &Path) -> String {
-    format!("redis+unix://{}", socket.display())
-}
-
-fn object_id(value: &str) -> ObjectId {
-    ObjectId::parse(value).expect("valid 96-bit ObjectId fixture")
-}
 
 fn sorted<T: Ord>(mut values: Vec<T>) -> Vec<T> {
     values.sort_unstable();
@@ -627,14 +431,7 @@ async fn first_read_after_an_outage_recovers_without_a_restart_of_the_adapter() 
 }
 
 fn pause_redis(redis: &RedisFixture, duration_ms: u64) {
-    let mut control = redis.connection();
-    let response: String = redis::cmd("CLIENT")
-        .arg("PAUSE")
-        .arg(duration_ms)
-        .arg("ALL")
-        .query(&mut control)
-        .expect("pause isolated Redis");
-    assert_eq!(response, "OK");
+    redis.pause(duration_ms);
 }
 
 struct BlackholeRedis {
@@ -646,12 +443,7 @@ struct BlackholeRedis {
 
 impl BlackholeRedis {
     fn start() -> Self {
-        let sequence = FIXTURE_SEQUENCE.fetch_add(1, Ordering::Relaxed);
-        let directory = PathBuf::from(format!(
-            "/tmp/home-mixer-blackhole-{}-{sequence}",
-            std::process::id()
-        ));
-        fs::create_dir(&directory).expect("create blackhole Redis directory");
+        let directory = common::fixture_directory("blackhole");
         let socket = directory.join("redis.sock");
         let listener = UnixListener::bind(&socket).expect("bind blackhole Redis socket");
         listener
