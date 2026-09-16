@@ -162,7 +162,8 @@ mrpyq 业务事件 ──Kafka topic──▶ uas-worker ──Redis ZSET──�
 | `UAS_KAFKA_GROUP_ID` | `home-mixer-uas-projector` | 消费组 |
 | `UAS_KAFKA_AUTO_OFFSET_RESET` | `earliest` | 无 committed offset 时的起点 |
 | `UAS_KAFKA_SECURITY_PROTOCOL` | `PLAINTEXT` | `PLAINTEXT` / `SSL` / `SASL_PLAINTEXT` / `SASL_SSL` |
-| `UAS_KAFKA_SASL_MECHANISM` / `UAS_KAFKA_SASL_USERNAME` / `UAS_KAFKA_SASL_PASSWORD` | `PLAIN` / — / — | 仅 SASL 协议需要 |
+| `UAS_KAFKA_SASL_MECHANISM` / `UAS_KAFKA_SASL_USERNAME` / `UAS_KAFKA_SASL_PASSWORD` | `PLAIN` / — / — | 仅 SASL 协议需要。`SSL` / `SASL_SSL` / SCRAM 要求以 `--features kafka-ssl` 构建（容器镜像默认如此） |
+| `UAS_WORKER_METRICS_PORT` | `9091` | 管理 HTTP 端口：`/healthz`、`/readyz`（订阅成功后 200）、`/metrics`；`0` 关闭 |
 
 offset 管理：`enable.auto.commit=true` + `enable.auto.offset.store=false`，每条消息处理完（写入、跳过或判定无效）后手工 store，librdkafka 周期提交；收到 SIGTERM / Ctrl-C 时同步提交后退出。Redis 写失败在进程内按 100 ms 起步、5 s 上限指数退避重试，总预算 60 s；预算耗尽 job 退出、该 offset 不提交，由进程管理器重启后重放。
 
@@ -186,7 +187,7 @@ offset 管理：`enable.auto.commit=true` + `enable.auto.offset.store=false`，�
    cat events.jsonl | UAS_REDIS_URL=redis://localhost:6379/ RUST_LOG=info cargo run -p home-mixer --bin uas-worker
    ```
 
-2. **Kafka 试跑**：mrpyq 往测试 topic 发事件，推荐侧以 Kafka 模式运行 `uas-worker`，观察每 60 s 一行的统计日志 `uas-worker: projected=... skipped_outside_window=... skipped_future=... invalid=... storage_retries=... storage_failures=...`。`invalid` 应为 0；`skipped_future` 持续非零说明 mrpyq 侧时钟快。
+2. **Kafka 试跑**：mrpyq 往测试 topic 发事件，推荐侧以 Kafka 模式运行 `uas-worker`，观察每 60 s 一行的统计日志 `uas-worker: projected=... skipped_outside_window=... skipped_future=... invalid=... storage_retries=... storage_failures=...`，或抓 `:9091/metrics` 的 `uas_worker_events_total{outcome}`（两者同源）。`invalid` 应为 0；`skipped_future` 持续非零说明 mrpyq 侧时钟快；`uas_worker_consumer_lag` 不收敛说明单实例吞吐不够。
 
 3. **Redis 内容检查**（注意 key 带 hash tag 花括号）：
 
@@ -222,7 +223,7 @@ offset 管理：`enable.auto.commit=true` + `enable.auto.offset.store=false`，�
 
 ### 8.4 吞吐
 
-`uas-worker` 单实例串行处理，每条事件一次 Redis 往返。事件 QPS 高于单实例能力时按 topic 分区起多实例，ZSET 写入幂等保证多实例安全。目前只有日志统计，没有 consumer lag 指标，接入生产前需补。
+`uas-worker` 单实例串行处理，每条事件一次 Redis 往返。事件 QPS 高于单实例能力时按 topic 分区起多实例，ZSET 写入幂等保证多实例安全。每个实例在 `UAS_WORKER_METRICS_PORT`（默认 9091）暴露 `uas_worker_consumer_lag{topic,partition}`（librdkafka 每 15 s 上报）与 `uas_worker_last_projected_action_timestamp_seconds`；lag 持续增长或投影时间戳落后当前时间过久，就是该加实例的信号。
 
 ---
 

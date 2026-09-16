@@ -190,6 +190,16 @@ graph LR
 
 如果没安装 `prometheus_client`，会退化为 `NoOpMetricsCollector`。
 
+gRPC 网关（`services/grpc_gateway.py`）不用这套通用收集器，而是 `services/gateway_metrics.py` 里带 `phoenix_gateway_` 前缀的独立注册表，`run_grpc_gateway.py --metrics-port 9093`（或 `PHOENIX_METRICS_PORT`）打开，默认关闭：
+
+| 指标 | 含义 |
+| --- | --- |
+| `phoenix_gateway_rpc_requests_total{rpc,code}` / `rpc_duration_seconds{rpc}` / `rpc_in_flight{rpc}` | 两个 RPC 的计数、耗时、在途；网关是 4 线程 + 引擎锁串行，`in_flight` 高于 1 就是在排队 |
+| `phoenix_gateway_engine_duration_seconds{engine}` | 精排 / 召回引擎调用耗时，含等锁 |
+| `phoenix_gateway_rank_candidates` / `retrieval_returned` | 每次请求送入精排的候选数、召回返回数 |
+| `phoenix_gateway_corpus_size` | 当前候选池大小（热替换后随之变化） |
+| `phoenix_gateway_model_info{ranker_version,retrieval_version}` | 对外广播的 model-version |
+
 ## 9. 精排服务请求路径
 
 ```mermaid

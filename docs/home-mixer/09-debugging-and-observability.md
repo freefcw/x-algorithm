@@ -22,7 +22,13 @@
 - `GET /readyz`：只有能接推荐流量时 200 `ready`；装配中 503 `starting`，收到终止信号后 503 `draining`
 - `GET /metrics`：Prometheus 文本，registry 在 `metrics.rs`
 
-指标目前只覆盖 RPC 入口一层（`home_mixer_rpc_requests_total{rpc,code}`、`home_mixer_rpc_duration_seconds{rpc}`、`home_mixer_rpc_in_flight{rpc}`、`home_mixer_ready`、`home_mixer_build_info`，字段说明见 [07 配置](./07-config-and-params.md#43-指标)）。它们回答"请求有没有进来、多久、以什么状态结束"，包括超预算的 `DEADLINE_EXCEEDED` 和客户端先断开的 `CANCELLED`。流水线内部（哪个 source 拿了多少、哪个 filter 删了多少）仍然只有日志，所以排障链路里第二步之后还是看日志。
+指标分三层，字段说明见 [07 配置 §4.3](./07-config-and-params.md#43-指标)：
+
+- RPC 入口：`home_mixer_rpc_requests_total{rpc,code}`、`home_mixer_rpc_duration_seconds{rpc}`、`home_mixer_rpc_in_flight{rpc}`，回答"请求有没有进来、多久、以什么状态结束"，包括超预算的 `DEADLINE_EXCEEDED` 和客户端先断开的 `CANCELLED`。
+- 流水线阶段：`home_mixer_stage_duration_seconds{pipeline,stage}`、`home_mixer_stage_candidates`、`home_mixer_source_candidates_total{source}`、`home_mixer_filter_removed_total{filter}`、`home_mixer_component_failures_total{stage,component}`、`home_mixer_component_failed_candidates_total`、`home_mixer_pipeline_underfilled_total`、`home_mixer_side_effect_runs_total{component,result}`。数据来源与那一行 `Summary:` 日志相同（`candidate-pipeline` 的 `PipelineObserver`），所以"慢在哪个阶段、哪个 filter 删得最多、哪个依赖在失败"不用翻日志就能看到。
+- 曝光事件：`home_mixer_served_events_total{result}`、`home_mixer_served_event_candidates_total`、`home_mixer_served_event_publish_duration_seconds`，与成功响应数对账即曝光丢失率。
+
+仍然只有日志的是：单个组件内部的分支（比如 `PhoenixScorer` 是因为没序列还是网关拒绝而回退，只在 `degraded_reason` 和日志里）、每个具体 filter 的输入规模。
 
 ## 2. 关键日志点
 
@@ -39,6 +45,8 @@
 
 - `shutdown signal received; /readyz now reports draining`
 - 排空超过 `--drain-timeout-secs` 时的 `in-flight requests did not finish within ...; exiting anyway`
+- `side effects drained: N pending at shutdown, X ms`，或 `side effects did not drain within ...: N still running`
+- 配置了 Kafka 曝光 sink 时的 `served-candidates Kafka producer flushed (...)`
 - `Server stopped`
 
 `HOME_MIXER_LOG_FORMAT=json` 时每行是一个 JSON 对象，`msg` 字段保持与文本模式相同的内容，下面 grep 清单里的关键词仍可直接用。
@@ -90,7 +98,7 @@ flowchart TD
     C --> D["组件内部错误字符串"]
 
     E["HTTP 9090"] --> F["/readyz 探活"]
-    E --> G["/metrics<br/>RPC 计数 / 耗时 / 在途"]
+    E --> G["/metrics<br/>RPC 计数 / 耗时 / 在途<br/>阶段耗时 / source 召回 / filter 删除 / 组件失败<br/>曝光事件发布"]
 ```
 
 ## 4. 先看什么：一个最小排障顺序
@@ -202,11 +210,11 @@ flowchart LR
 
 | 盲点 | 现状 | 影响 |
 | --- | --- | --- |
-| selector 前后规模变化 | 无统一日志/指标 | 很难判断 TopK 阶段缩水多少 |
-| side effect 失败 | 框架记录组件、错误和耗时；任务仍是 fire-and-forget | 进程关闭时未完成任务仍可能丢失 |
-| 每个具体 filter 的移除量 | 只有阶段总量 | 难判断是哪个 filter 最伤 |
-| post-selection 过滤比例 | 无单独指标 | 难判断是 VF 还是会话去重导致缩水 |
-| 流水线阶段指标 | 只有 RPC 入口级指标，阶段级仍是日志 | 能看出请求变慢 / 失败，看不出慢在哪个 source 或 scorer |
+| selector 前后规模变化 | 只有 `stage=Selector` 一行日志，无指标 | 很难判断 TopK 阶段缩水多少 |
+| side effect 失败 | 有 `home_mixer_side_effect_runs_total{component,result}`；任务在关停时会被等待（`drain_timeout` 剩余预算），Kafka sink 会 flush | 超出排空预算的任务仍会丢，`side effects did not drain` 日志可见 |
+| 每个具体 filter 的输入规模 | 移除量有 `home_mixer_filter_removed_total{filter}`，输入量只有 debug 日志 | 能看出哪个 filter 删得多，看不出它的删除率 |
+| post-selection 过滤比例 | `filter_removed_total{filter="VFFilter"}` / `{filter="DedupConversationFilter"}` 与 `pipeline_underfilled_total` 可以对着看 | 缩水归因已可做；回补仍未实现 |
+| 组件内部分支 | `PhoenixScorer` 回退原因只在 `degraded_reason` 和日志 | 指标能看到 Phoenix 失败，看不到失败原因分布 |
 
 ## 7. 一份实用 grep 清单
 
@@ -231,11 +239,10 @@ Scored Posts response
 
 如果后续要增强这套系统，我建议优先加：
 
-1. 每个 filter 的 `input_count / kept_count / removed_count`
+1. 每个 filter 的输入规模（配合已有的 `filter_removed_total` 得到删除率）
 2. selector 前后的候选规模和分数分布
-3. side effect 成功/失败日志
-4. `PhoenixSource`、`ThunderSource` 的独立耗时（作为指标，而不只是日志）
-5. post-selection 删除率
+3. `PhoenixScorer` 回退原因（`phoenix_missing_sequence` / `phoenix_unavailable`）按原因计数
+4. mrpyq / Redis / Phoenix 按 RPC 方法拆的调用级指标（目前用阶段耗时与组件失败数代替）
 
 ## 9. 一个务实结论
 
@@ -243,6 +250,7 @@ Scored Posts response
 
 - 有一条还算不错的 request_id + stage 日志主线
 - 有 RPC 入口级的计数、耗时、在途指标和 readiness 探活
-- 但缺少流水线阶段级的指标和细粒度统计
+- 有与日志同源的阶段级指标：慢在哪个阶段、哪个 source 召回了多少、哪个 filter 删了多少、哪个组件在失败、曝光事件发出去多少
+- 缺的是组件内部的分支归因和 selector 前后的分数分布
 
-所以排障不是做不到：服务级"慢了 / 挂了 / 被截断了"能从指标看出来，具体慢在哪一段还要靠工程师对 pipeline 结构的理解去读日志。
+所以排障的前两步（"慢了 / 挂了 / 被截断了"、"慢在哪一段、谁在失败"）都能从指标看出来；只有"这个组件为什么失败"还要回到 request_id 日志。

@@ -110,7 +110,10 @@ uv run scripts/run_services.py retrieval --retrieval-checkpoint ./checkpoints/re
 uv run scripts/run_grpc_gateway.py                # 随机权重，监听 50053（供 home-mixer 调用）
 uv run scripts/run_grpc_gateway.py \
     --ranker-checkpoint checkpoints/step-000200  # 加载完整 checkpoint bundle
+uv run scripts/run_grpc_gateway.py --metrics-port 9093   # 另开 Prometheus /metrics（phoenix_gateway_* 指标）
 ```
+
+容器镜像见仓库 `deploy/docker/phoenix-gateway.Dockerfile`（以 `phoenix/` 为构建上下文）。
 
 实现见 `services/grpc_gateway.py`：真正消费请求里的用户行为序列构造模型输入，
 候选池在启动时合成并用候选塔编码（生产环境应替换为离线向量索引）。

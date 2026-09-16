@@ -74,8 +74,9 @@ Home Mixer ScoredPosts 请求 ──最终下发列表──▶ ServedCandidates
 
 ## 3. 投递语义
 
-- **异步、不进请求预算**：side effect 在响应之后由 `CandidatePipeline::run_side_effects` 用 `tokio::spawn` 执行（`candidate-pipeline/candidate_pipeline.rs`），失败只记 `error` 日志（`stage=SideEffect component=ServedCandidatesKafkaSideEffect failed: ...`），不影响响应、不重试。
-- **at-most-once（生产端）**：进程在发送前崩溃则该请求的曝光丢失。Kafka sink 开启 `enable.idempotence=true`（acks=all），broker 侧重试不会重复。丢失率应由消费方对账（曝光事件数 vs 请求成功数指标）监控，见 §7。
+- **异步、不进请求预算**：side effect 在响应之后由 `CandidatePipeline::run_side_effects` 在进程级任务追踪器上执行（`candidate-pipeline/candidate_pipeline.rs`），失败只记 `error` 日志（`stage=SideEffect component=ServedCandidatesKafkaSideEffect failed: ...`），不影响响应、不重试；单次运行上限 `SIDE_EFFECT_TIMEOUT_MS`（10 s），超时按失败计。
+- **关停排空**：home-mixer 收到 SIGTERM 后先排空 gRPC 在途请求，再把 `--drain-timeout-secs`（默认 20 s）剩余的预算用来等仍在运行的 side effect，最后调用 sink 的 `shutdown` flush librdkafka 队列。正常滚动更新不丢事件。
+- **at-most-once（生产端）**：进程在发送前崩溃、或被 SIGKILL（排空超出平台宽限期）则该请求的曝光丢失。Kafka sink 开启 `enable.idempotence=true`（acks=all），broker 侧重试不会重复。丢失率由 §7 的指标对账。
 - **单条投递上限** `SERVED_EVENTS_KAFKA_DELIVERY_TIMEOUT_MS`（默认 5 s）。
 - **消费方幂等**：按 `request_id` 去重 / 覆盖。
 
@@ -131,8 +132,8 @@ tail -1 /tmp/served.jsonl | python3 -m json.tool
 
 ## 7. 监控与对账
 
-- `home-mixer` 每次 side effect 成功 / 失败都有 request-scoped 日志；接入 Kafka 后应补指标：发布成功数、失败数、发送耗时。
-- 对账口径：`served 事件数 ≈ GetScoredPosts + GetForYouFeed 成功响应数（非空）`。差值即曝光丢失率。
+- 生产端指标（`/metrics`，见 [home-mixer/07 §4.3](../home-mixer/07-config-and-params.md#43-指标)）：`home_mixer_served_events_total{result="ok"|"error"}`（交给 sink 的事件数）、`home_mixer_served_event_candidates_total`（成功事件携带的候选数）、`home_mixer_served_event_publish_duration_seconds`（Kafka ack 耗时）；side effect 层还有 `home_mixer_side_effect_runs_total{component="ServedCandidatesKafkaSideEffect",result}`。每次成功 / 失败也有 request-scoped 日志。
+- 对账口径：`home_mixer_served_events_total{result="ok"} ≈ home_mixer_rpc_requests_total{code="OK"}` 中非空响应的部分（空响应不发事件）。差值即曝光丢失率。
 - 反馈关联率：有 ≥ 1 条行为的曝光占比；异常低说明 join 键或时钟不一致。
 
 ---

@@ -63,10 +63,13 @@ flowchart TD
     D --> E["/readyz 200 ready<br/>日志 Server ready"]
     E -->|SIGTERM / Ctrl-C| F["/readyz 503 draining<br/>等待 shutdown_delay"]
     F --> G["关闭两个监听，排空在途请求<br/>上限 drain_timeout"]
-    G --> H["日志 Server stopped，退出码 0"]
+    G --> G2["drain 预算剩余部分：等 side effect 结束<br/>再 flush 曝光 sink（Kafka producer）"]
+    G2 --> H["日志 Server stopped，退出码 0"]
 ```
 
 任一监听在运行中失败都会让进程以错误退出，不再存在"端口没起来但进程还活着"的状态。
+
+side effect（曝光事件发布、多样性统计、请求缓存写回）在响应之后异步执行，两条流水线共用一个任务追踪器；关停时监听排空后，`drain_timeout` 剩下多少就等它们多久，然后调用曝光 sink 的 `shutdown` 把 librdkafka 队列刷出去。单个 side effect 有 `SIDE_EFFECT_TIMEOUT_MS`（10 s）上限，超时按失败记录，所以排空阶段不会被一个卡住的 sink 拖满。日志：`side effects drained: N pending at shutdown, X ms` 或 `side effects did not drain within ...`。
 
 ## 3. 环境变量
 
@@ -96,8 +99,9 @@ flowchart TD
 | `UAS_REDIS_REQUEST_TIMEOUT_MS` | `runtime_config.rs` | UAS Redis 单次读写上限，包括连接被替换后的一次重试 | 默认 500 毫秒，必须大于零；Home Mixer 侧另有 `UAS_FETCH_TIMEOUT_MS`（500 ms）包在外层 |
 | `UAS_KAFKA_BROKERS` / `UAS_KAFKA_TOPIC` | `bin/uas_worker.rs` | 启用 Kafka 消费模式并指定现有行为 topic | 未设置 broker 时从 stdin 读取换行 JSON；Kafka 模式需要用 `--features kafka` 构建 |
 | `UAS_KAFKA_GROUP_ID` / `UAS_KAFKA_AUTO_OFFSET_RESET` | `bin/uas_worker.rs` | 消费组与首次消费位置 | 默认 `home-mixer-uas-projector` / `earliest` |
-| `UAS_KAFKA_SECURITY_PROTOCOL` | `bin/uas_worker.rs` | Kafka 安全协议 | 默认 `PLAINTEXT`；`SASL_PLAINTEXT` / `SASL_SSL` 还需配置 `UAS_KAFKA_SASL_MECHANISM`（默认 `PLAIN`）、`UAS_KAFKA_SASL_USERNAME`、`UAS_KAFKA_SASL_PASSWORD`；纯 `SSL` 不需要凭据 |
-| `SERVED_EVENTS_KAFKA_BROKERS` / `SERVED_EVENTS_KAFKA_TOPIC` | `clients/served_candidates_sink.rs` | 装配 `ServedCandidatesKafkaSideEffect`，把每次请求的服务端曝光事件发到该 topic（分区键 `viewer_id`，`enable.idempotence=true`） | 两者必须同时设置；未设置时不装配曝光日志，非 demo 启动时告警。Kafka sink 需要 `--features kafka` 构建，否则启动失败 |
+| `UAS_KAFKA_SECURITY_PROTOCOL` | `bin/uas_worker.rs` | Kafka 安全协议 | 默认 `PLAINTEXT`；`SASL_PLAINTEXT` / `SASL_SSL` 还需配置 `UAS_KAFKA_SASL_MECHANISM`（默认 `PLAIN`）、`UAS_KAFKA_SASL_USERNAME`、`UAS_KAFKA_SASL_PASSWORD`；纯 `SSL` 不需要凭据。`SSL` / `SASL_SSL` / SCRAM 要求二进制以 `--features kafka-ssl` 构建（librdkafka 内置 OpenSSL；容器镜像已如此），`--features kafka` 只能 PLAINTEXT |
+| `UAS_WORKER_METRICS_PORT` | `bin/uas_worker.rs` | `uas-worker` 的管理 HTTP 端口：`/healthz`、`/readyz`、`/metrics` | 默认 `9091`；`0` 关闭（stdin 开发模式常用）。Redis 握手前就 bind，订阅成功后 `/readyz` 才 200 |
+| `SERVED_EVENTS_KAFKA_BROKERS` / `SERVED_EVENTS_KAFKA_TOPIC` | `clients/served_candidates_sink.rs` | 装配 `ServedCandidatesKafkaSideEffect`，把每次请求的服务端曝光事件发到该 topic（分区键 `viewer_id`，`enable.idempotence=true`） | 两者必须同时设置；未设置时不装配曝光日志，非 demo 启动时告警。Kafka sink 需要 `--features kafka` 构建（TLS / SCRAM 需 `kafka-ssl`），否则启动失败。关停时先等在途 side effect，再 flush producer |
 | `SERVED_EVENTS_JSONL_PATH` | `clients/served_candidates_sink.rs` | 本地联调 / 离线抓样本：曝光事件追加写入该 JSON Lines 文件 | 与 Kafka 变量互斥；多副本部署不要使用 |
 | `SERVED_EVENTS_KAFKA_SECURITY_PROTOCOL` | `clients/served_candidates_sink.rs` | 曝光 topic 的 Kafka 安全协议 | 默认 `PLAINTEXT`；`SASL_PLAINTEXT` / `SASL_SSL` 还需 `SERVED_EVENTS_KAFKA_SASL_MECHANISM`（默认 `PLAIN`）、`SERVED_EVENTS_KAFKA_SASL_USERNAME`、`SERVED_EVENTS_KAFKA_SASL_PASSWORD` |
 | `SERVED_EVENTS_KAFKA_DELIVERY_TIMEOUT_MS` | `clients/served_candidates_sink.rs` | 单条曝光事件从发送到 broker 确认的上限 | 默认 `5000`，必须为正整数；超时只记 side effect 失败日志，不影响响应 |
@@ -212,6 +216,9 @@ QueryBuilder 不持有 Gizmoduck client，也不发起 viewer RPC。`in_network_
 | `VM_RANKER_TIMEOUT_MS` | `500` | 可选 VM Ranker 二次重排上限 |
 | `MRPYQ_RECOMMENDATION_DATA_TIMEOUT_MS` | `500` | mrpyq 单次 RPC 调用上限（可由同名环境变量覆盖） |
 | `MRPYQ_RECALL_BUDGET_MS` | `1500` | mrpyq 一次召回跨所有分页的总预算；预算耗尽时保留已读页 |
+| `REQUEST_TIMEOUT_MS` | `10000` | 单次 RPC 服务端总预算（可由 `HOME_MIXER_REQUEST_TIMEOUT_MS` 覆盖） |
+| `SHUTDOWN_DRAIN_TIMEOUT_SECS` | `20` | 关停排空上限（可由 `--drain-timeout-secs` 覆盖） |
+| `SIDE_EFFECT_TIMEOUT_MS` | `10000` | 单个 side effect 运行上限；须大于 Kafka 单条投递上限（默认 5 s）、小于排空上限 |
 
 ### 4.2 对外监听结构
 
@@ -232,7 +239,9 @@ flowchart LR
 
 ### 4.3 指标
 
-`metrics.rs` 维护一个进程级 Prometheus registry（显式实例，不用 crate 默认全局表），当前只覆盖 RPC 入口一层：
+`metrics.rs` 维护一个进程级 Prometheus registry（显式实例，不用 crate 默认全局表），分三层：RPC 入口、流水线阶段、曝光事件发布。
+
+RPC 入口：
 
 | 指标 | 类型 | 标签 | 含义 |
 | --- | --- | --- | --- |
@@ -242,7 +251,35 @@ flowchart LR
 | `home_mixer_ready` | gauge | — | `/readyz` 为 200 时是 1 |
 | `home_mixer_build_info` | gauge | `version` | 常量 1，带 crate 版本 |
 
-`rpc` 取值是方法名：`GetScoredPosts`、`DebugScoredPosts`、`GetForYouFeed`、`GetForYouFeedV2`。流水线各阶段（source / filter / scorer 规模与耗时）仍只有 request-scoped 日志，没有指标，见 [09 排障与可观测性](./09-debugging-and-observability.md)。
+`rpc` 取值是方法名：`GetScoredPosts`、`DebugScoredPosts`、`GetForYouFeed`、`GetForYouFeedV2`。
+
+流水线阶段（由 `candidate-pipeline` 的 `PipelineObserver` 在每个请求结束时把 `pipeline_summary` 交给 `Metrics`，与那一行 `Summary:` 日志同源；`pipeline` 标签是 `PhoenixCandidatePipeline` / `ForYouCandidatePipeline`，`stage` 是 `sources` / `hydrators` / `filters` / `scorers` / `post_selection_hydrators` / `post_selection_filters` / `query_hydrators`）：
+
+| 指标 | 类型 | 标签 | 含义 |
+| --- | --- | --- | --- |
+| `home_mixer_pipeline_duration_seconds` | histogram | `pipeline` | 从第一个 query hydrator 到最终列表的耗时 |
+| `home_mixer_pipeline_result_size` | histogram | `pipeline` | 最终列表长度 |
+| `home_mixer_pipeline_underfilled_total` | counter | `pipeline` | 最终列表短于 `result_size()` 的请求数（对应日志 `result_underfilled`） |
+| `home_mixer_stage_duration_seconds` | histogram | `pipeline`、`stage` | 一个阶段（其全部启用组件）的耗时 |
+| `home_mixer_stage_candidates` | histogram | `pipeline`、`stage` | 离开该阶段的候选数（filter 阶段取 kept） |
+| `home_mixer_source_candidates_total` | counter | `pipeline`、`source` | 每个 source 召回的候选数 |
+| `home_mixer_filter_removed_total` | counter | `pipeline`、`filter` | 每个 filter 删除的候选数（含 post-selection） |
+| `home_mixer_component_failures_total` | counter | `pipeline`、`stage`、`component` | 整请求失败并被隔离的组件（query hydrator / source / filter 返回 `Err`）。`UserFeaturesQueryHydrator`、`PhoenixSource` 在这里非零就是 mrpyq 关系服务或 Phoenix 网关不可用 |
+| `home_mixer_component_failed_candidates_total` | counter | `pipeline`、`stage`、`component` | hydrator / scorer 逐候选失败的候选数 |
+| `home_mixer_side_effect_runs_total` | counter | `pipeline`、`component`、`result` | side effect 结算数，`result` 为 `ok` / `error`（含超时） |
+| `home_mixer_side_effect_duration_seconds` | histogram | `pipeline`、`component` | 单次 side effect 耗时 |
+
+曝光事件（`MeteredServedCandidatesSink` 包在配置的 sink 外面，只在装配了 `SERVED_EVENTS_*` 时出现）：
+
+| 指标 | 类型 | 标签 | 含义 |
+| --- | --- | --- | --- |
+| `home_mixer_served_events_total` | counter | `result` | 交给 sink 的曝光事件数，`ok` / `error`。对账口径：`ok` ≈ 非空成功响应数 |
+| `home_mixer_served_event_candidates_total` | counter | — | 成功发布的事件携带的候选总数 |
+| `home_mixer_served_event_publish_duration_seconds` | histogram | — | 单次发布耗时（Kafka ack 或文件写入） |
+
+mrpyq / Redis / Phoenix 没有按 RPC 方法拆的调用级指标；`home_mixer_stage_duration_seconds{stage="hydrators"}`、`{stage="scorers"}` 与 `home_mixer_component_failures_total` 已能定位到是哪个依赖慢或失败，见 [09 排障与可观测性](./09-debugging-and-observability.md)。
+
+`uas-worker` 在 `UAS_WORKER_METRICS_PORT`（默认 9091）上用同一套管理路由暴露自己的家族：`uas_worker_events_total{outcome}`（`projected` / `skipped_outside_window` / `skipped_future` / `invalid` / `storage_failure`，与 60 秒一行的日志同源）、`uas_worker_storage_retries_total`、`uas_worker_last_projected_action_timestamp_seconds`（最新写入行为的发生时间，`time() - 它` 即投影滞后）、`uas_worker_consumer_lag{topic,partition}`（librdkafka 每 15 s 上报的分区 lag，rebalance 后不残留旧分区，未知 lag 不计），外加 `home_mixer_ready` / `home_mixer_build_info`。
 
 ## 5. 召回参数
 
