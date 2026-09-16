@@ -214,7 +214,7 @@ where
 
         let SelectResult {
             selected: selected_candidates,
-            non_selected: mut non_selected_candidates,
+            non_selected: non_selected_candidates,
         } = self.select(&hydrated_query, scored_candidates);
 
         let selected_for_post_selection = selected_candidates.len();
@@ -242,7 +242,8 @@ where
                 non_selected_candidates.len()
             );
         }
-        non_selected_candidates.extend(truncated_candidates);
+        drop(non_selected_candidates);
+        drop(truncated_candidates);
         self.finalize(&hydrated_query, &mut final_candidates);
 
         let observer = self.observer();
@@ -256,10 +257,13 @@ where
         );
 
         let arc_hydrated_query = Arc::new(hydrated_query);
+        // Production side effects only read the served list. Keep the field for
+        // the upstream-shaped API, but do not retain rejected / truncated
+        // candidates for the lifetime of the async tasks.
         let input = Arc::new(SideEffectInput {
             query: arc_hydrated_query.clone(),
             selected_candidates: final_candidates.clone(),
-            non_selected_candidates,
+            non_selected_candidates: Vec::new(),
         });
         self.run_side_effects(input);
 

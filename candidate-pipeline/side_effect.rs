@@ -10,6 +10,8 @@ use tonic::async_trait;
 pub struct SideEffectInput<Q, C> {
     pub query: Arc<Q>,
     pub selected_candidates: Vec<C>,
+    /// Upstream-shaped slot. The pipeline currently leaves this empty because
+    /// no production side effect reads it.
     pub non_selected_candidates: Vec<C>,
 }
 
