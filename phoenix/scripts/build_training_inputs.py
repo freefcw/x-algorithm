@@ -14,9 +14,12 @@
 
 输出（写到 --output-dir）：
     behavior_logs/dt=YYYY-MM-DD/part-0.parquet
-        按 (user_id, post_id) 聚合的多热行为，一行一个"用户对帖子做过什么"，`event_time` 是
-        最早一次行为的秒级时间。这与线上 `DefaultAggregator` 的聚合方式一致（按帖分组、mask
-        取或、时间取最早），训练时它既是历史序列的来源，也是旧模式（无曝光）下的正样本。
+        一行一个行为事件（与 UAS 事件一一对应）：`event_time` 是该行为的秒级时间，
+        `action_type` 是 proto 枚举值，19 个行为列里只有这一位为 1。这里**不**按帖子预聚合：
+        线上 `DefaultAggregator` 只合并请求时刻之前、7 天窗口内的行为，预聚合会把请求之后的
+        行为（往往正是这次曝光的标签）混进历史 mask。`data_preprocessor.py` 在构造样本时按
+        请求时间聚合（曝光模式），或按 (user, post) 全时段聚合成正样本（旧模式，识别
+        `action_type` 列）。
     impressions/dt=YYYY-MM-DD/part-0.parquet
         一行一条下发候选，带归因后的 19 列标签：行为发生在 [request_time, request_time + 窗口]
         内、且该帖在窗口内被多次下发时归到最近的一次下发。没有任何行为的候选就是负样本。
@@ -212,35 +215,44 @@ def load_behavior_events(paths: Iterable[str]) -> pd.DataFrame:
 # ── 变换 ───────────────────────────────────────────────────────────────────────
 
 
-def _multi_hot(actions: pd.Series) -> dict[str, float]:
-    """一组 action_type 枚举 → 19 列 0/1（dwell_time 恒 0）。"""
-    fields = {field: 0.0 for field in BEHAVIOR_FIELDS}
-    for action_type in actions:
-        fields[ENUM_TO_FIELD[int(action_type)]] = 1.0
-    return fields
+BEHAVIOR_LOG_COLUMNS = [
+    "user_id",
+    "post_id",
+    "author_id",
+    "event_time",
+    "action_time_ms",
+    "action_type",
+    "product_surface",
+] + BEHAVIOR_FIELDS
 
 
-def aggregate_behaviors(behaviors: pd.DataFrame) -> pd.DataFrame:
-    """按 (user_id, post_id) 聚合成 behavior_logs 行；与线上 DefaultAggregator 同构。"""
+def behavior_log_rows(behaviors: pd.DataFrame) -> pd.DataFrame:
+    """把校验过的行为事件整理成 behavior_logs 行：一行一个事件，行为列 one-hot。
+
+    不在这里按帖子合并。合并必须以某个参考时刻为截止（线上是请求时间），否则请求之后
+    的行为会进入历史 mask；`data_preprocessor.py` 负责在知道参考时刻的地方聚合。
+    """
     if behaviors.empty:
-        return pd.DataFrame(
-            columns=["user_id", "post_id", "author_id", "event_time", "product_surface"]
-            + BEHAVIOR_FIELDS
-        )
-    ordered = behaviors.sort_values(["user_id", "post_id", "action_time_ms"], kind="stable")
-    rows: list[dict] = []
-    for (user_id, post_id), group in ordered.groupby(["user_id", "post_id"], sort=False):
-        first = group.iloc[0]
-        row = {
-            "user_id": user_id,
-            "post_id": post_id,
-            "author_id": first["author_id"],
-            "event_time": int(first["action_time_ms"] // 1000),
-            "product_surface": int(first["product_surface"]),
+        return pd.DataFrame(columns=BEHAVIOR_LOG_COLUMNS)
+    ordered = behaviors.sort_values(["user_id", "action_time_ms", "post_id"], kind="stable")
+    rows = pd.DataFrame(
+        {
+            "user_id": ordered["user_id"].to_numpy(),
+            "post_id": ordered["post_id"].to_numpy(),
+            "author_id": ordered["author_id"].to_numpy(),
+            "event_time": (ordered["action_time_ms"] // 1000).astype(np.int64).to_numpy(),
+            "action_time_ms": ordered["action_time_ms"].astype(np.int64).to_numpy(),
+            "action_type": ordered["action_type"].astype(np.int32).to_numpy(),
+            "product_surface": ordered["product_surface"].astype(np.int32).to_numpy(),
         }
-        row.update(_multi_hot(group["action_type"]))
-        rows.append(row)
-    return pd.DataFrame(rows)
+    )
+    one_hot = np.zeros((len(rows), len(BEHAVIOR_FIELDS)), dtype=np.float32)
+    column_index = {field: j for j, field in enumerate(BEHAVIOR_FIELDS)}
+    for i, action_type in enumerate(rows["action_type"].tolist()):
+        one_hot[i, column_index[ENUM_TO_FIELD[int(action_type)]]] = 1.0
+    for j, field in enumerate(BEHAVIOR_FIELDS):
+        rows[field] = one_hot[:, j]
+    return rows[BEHAVIOR_LOG_COLUMNS].reset_index(drop=True)
 
 
 def attribute_impressions(
@@ -376,7 +388,7 @@ def build(
     behaviors = load_behavior_events(behavior_paths)
     window_ms = int(window_minutes * 60 * 1000)
 
-    logs = aggregate_behaviors(behaviors)
+    logs = behavior_log_rows(behaviors)
     attributed = attribute_impressions(exposures, behaviors, window_ms)
     impressions = impressions_table(attributed)
     meta = post_metadata(exposures, behaviors)
@@ -399,7 +411,7 @@ def build(
         "posts": len(meta),
     }
     logger.info(
-        "完成：行为事件 %d → 聚合行 %d；曝光候选 %d，其中有行为 %d（%.2f%%）；帖子 %d",
+        "完成：行为事件 %d → behavior_logs %d 行；曝光候选 %d，其中有行为 %d（%.2f%%）；帖子 %d",
         stats["behavior_events"],
         stats["behavior_log_rows"],
         stats["impressions"],

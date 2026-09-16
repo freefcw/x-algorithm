@@ -125,10 +125,13 @@ def test_attribution_uses_window_and_nearest_exposure(tmp_path):
     logs = pd.concat(
         pd.read_parquet(p) for p in (tmp_path / "out" / "behavior_logs").rglob("*.parquet")
     )
-    # 行为日志按 (user, post) 聚合，mask 取或、时间取最早，与线上 DefaultAggregator 同构。
-    post3 = logs[logs["post_id"] == oid(3)].iloc[0]
-    assert post3["reply"] == 1.0 and post3["event_time"] == (t0 - MINUTE_MS) // 1000
-    assert len(logs[logs["post_id"] == oid(2)]) == 1
+    # 行为日志一行一个事件，不预聚合：帖 3 的两次 reply 是两行，各带自己的时间；
+    # 按帖合并留给 data_preprocessor 在知道请求时间的地方做（否则请求之后的行为会进历史）。
+    post3 = logs[logs["post_id"] == oid(3)].sort_values("event_time")
+    assert post3["event_time"].tolist() == [(t0 - MINUTE_MS) // 1000, (t0 + 45 * MINUTE_MS) // 1000]
+    assert (post3["reply"] == 1.0).all() and (post3["action_type"] == REPLY).all()
+    assert post3[[f for f in BEHAVIOR_FIELDS if f != "reply"]].to_numpy().sum() == 0.0
+    assert len(logs[logs["post_id"] == oid(2)]) == 1, "Kafka 重放在事件层去重"
 
     meta = pd.read_parquet(tmp_path / "out" / "post_metadata.parquet")
     assert set(meta["post_id"]) == {oid(1), oid(2), oid(3), oid(4), oid(9)}
@@ -246,6 +249,99 @@ def test_impression_samples_put_positives_first_and_history_before_request():
     )
     assert [s["positive_post"] for s in with_negatives] == [oid(2), ""]
     assert with_negatives[1]["negative_posts"] == [oid(11)]
+
+
+def event_rows(rows):
+    """事件表（build_training_inputs 的 behavior_logs 形状）：一行一个行为，one-hot + action_type。"""
+    df = pd.DataFrame(rows)
+    for field in BEHAVIOR_FIELDS:
+        df[field] = 0.0
+    for i, action_type in enumerate(df["action_type"].tolist()):
+        df.loc[i, etl.ENUM_TO_FIELD[action_type]] = 1.0
+    return df
+
+
+def test_history_mask_only_contains_actions_before_the_request():
+    """历史按帖合并时必须以请求时间为截止；请求之后的行为（往往就是这次曝光的标签）不能进历史。
+
+    线上 `DefaultAggregator` 只看 [请求 - 7 天, 请求] 内的行为，所以：
+      - 帖 A：请求前点赞、请求后评论 → 历史里 A 只有点赞位；
+      - 帖 B：请求前先点击（surface 2）再点赞 → 历史里 B 一条，两位都为 1，surface 取最早的 2；
+      - 排序按最早行为时间：B 在 A 之前；
+      - 请求之后才第一次出现的帖 C 不在历史里。
+    """
+    t_req = 1_700_000_000
+    a, b, c = oid(201), oid(202), oid(203)
+    behaviors = event_rows(
+        [
+            {"user_id": USER, "post_id": b, "author_id": AUTHOR, "event_time": t_req - 300,
+             "product_surface": 2, "action_type": CLICK},
+            {"user_id": USER, "post_id": b, "author_id": AUTHOR, "event_time": t_req - 200,
+             "product_surface": 0, "action_type": FAV},
+            {"user_id": USER, "post_id": a, "author_id": AUTHOR, "event_time": t_req - 100,
+             "product_surface": 0, "action_type": FAV},
+            {"user_id": USER, "post_id": a, "author_id": AUTHOR, "event_time": t_req + 60,
+             "product_surface": 0, "action_type": REPLY},
+            {"user_id": USER, "post_id": c, "author_id": AUTHOR, "event_time": t_req + 120,
+             "product_surface": 0, "action_type": FAV},
+        ]
+    )
+    impressions = impressions_frame(
+        [
+            {"user_id": USER, "request_id": "req-1", "event_time": t_req, "position": 0,
+             "post_id": a, "author_id": AUTHOR, "product_surface": 0, "reply": 1.0},
+            {"user_id": USER, "request_id": "req-1", "event_time": t_req, "position": 1,
+             "post_id": c, "author_id": AUTHOR, "product_surface": 0, "favorite": 1.0},
+        ]
+    )
+    builder = TrainingSampleBuilder(post_to_author={}, active_posts=None)
+    samples = builder.build_impression_samples(
+        USER,
+        behaviors,
+        encode_actions_vectorized(behaviors),
+        impressions,
+        encode_actions_vectorized(impressions),
+    )
+    assert len(samples) == 1
+    history = samples[0]
+    fav_idx, reply_idx, click_idx = (
+        BEHAVIOR_FIELDS.index("favorite"),
+        BEHAVIOR_FIELDS.index("reply"),
+        BEHAVIOR_FIELDS.index("click"),
+    )
+    assert history["history_post_hashes"][:2] == [hash_id_to_ints(b), hash_id_to_ints(a)]
+    assert history["history_post_hashes"][2] == [0, 0], "帖 C 首次行为在请求之后，不进历史"
+    b_mask, a_mask = history["history_actions"][0], history["history_actions"][1]
+    assert b_mask[click_idx] == 1.0 and b_mask[fav_idx] == 1.0
+    assert history["history_product_surface"][0] == 2, "surface 取窗口内最早一次行为"
+    assert a_mask[fav_idx] == 1.0
+    assert a_mask[reply_idx] == 0.0, "请求之后的评论是这次曝光的标签，不能泄漏进历史"
+    assert history["labels"][0][reply_idx] == 1.0
+
+
+def test_legacy_mode_merges_event_rows_per_post():
+    """行为模式把事件表按 (user, post) 合并成一条多热正样本，不把同一帖的两位拆成互为负样本。"""
+    from data_preprocessor import aggregate_action_events, is_action_event_table
+
+    behaviors = event_rows(
+        [
+            {"user_id": USER, "post_id": oid(1), "author_id": AUTHOR, "event_time": 100,
+             "product_surface": 3, "action_type": FAV},
+            {"user_id": USER, "post_id": oid(1), "author_id": AUTHOR, "event_time": 250,
+             "product_surface": 0, "action_type": REPLY},
+            {"user_id": USER, "post_id": oid(2), "author_id": AUTHOR, "event_time": 300,
+             "product_surface": 0, "action_type": CLICK},
+        ]
+    )
+    assert is_action_event_table(behaviors)
+    merged = aggregate_action_events(behaviors)
+    assert len(merged) == 2 and "action_type" not in merged.columns
+    post1 = merged[merged["post_id"] == oid(1)].iloc[0]
+    assert post1["event_time"] == 100 and post1["product_surface"] == 3
+    assert post1["favorite"] == 1.0 and post1["reply"] == 1.0 and post1["click"] == 0.0
+
+    plain = pd.DataFrame({"user_id": [USER], "post_id": [oid(1)], "event_time": [1], "favorite": [1.0]})
+    assert not is_action_event_table(plain), "多热日志表没有 action_type 列，保持逐行语义"
 
 
 def test_impression_mode_end_to_end_and_retrieval_loader_skips_negative_only(tmp_path):

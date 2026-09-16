@@ -18,9 +18,11 @@
 
 两种样本构造方式：
     - 只有行为日志：每条正向互动一条样本，负样本从帖子元数据池随机采（模型学的是"互动 vs 随机"）。
+      行为日志若是事件表（带 action_type 列，一行一个行为），先按 (user, post) 合并成多热行。
     - 提供曝光表（--impressions-dir，由 scripts/build_training_inputs.py 产出）：每次下发请求一条样本，
       候选就是这次真正下发的帖子，标签是归因窗口内的行为，没有行为的下发候选就是负样本
-      （模型学的是"看到并互动 vs 看到但没互动"）；行为日志只用来构造历史序列。
+      （模型学的是"看到并互动 vs 看到但没互动"）；行为日志只用来构造历史序列，并以请求时间为
+      截止按帖子聚合（与线上 DefaultAggregator 同构），请求之后的行为不会进入历史。
 
 使用示例：
     uv run data_preprocessor.py --behavior-dir data/behavior_logs \
@@ -307,6 +309,40 @@ def load_impressions(impressions_dir: str, date_str: str | None = None) -> pd.Da
     return df
 
 
+def is_action_event_table(df: pd.DataFrame) -> bool:
+    """行为表是否是"一行一个行为事件"的事件表（`scripts/build_training_inputs.py` 的产出）。
+
+    事件表带 `action_type` 列（proto ActionName 枚举值）；`examples/generate_example_data.py`
+    那种"一行一次互动、多热标签"的日志表没有这一列。
+    """
+    return "action_type" in df.columns
+
+
+def aggregate_action_events(df: pd.DataFrame) -> pd.DataFrame:
+    """把事件表按 (user_id, post_id) 全时段聚合成多热行（行为模式的正样本粒度）。
+
+    行为模式把每一行当一条正样本、标签取这一行的行为向量。事件表一行只有一位，直接喂
+    会把"点赞过也评论过"拆成两条互为负样本的行，所以先合并：标签取或（连续列取最大），
+    `event_time` / `author_id` / `product_surface` 取最早一次行为。曝光模式不用这个函数——
+    它在 `TrainingSampleBuilder.build_impression_samples` 里以请求时间为截止逐请求聚合。
+    """
+    if df.empty:
+        return df.drop(columns=[c for c in ("action_type", "action_time_ms") if c in df.columns])
+    ordered = df.sort_values(["user_id", "post_id", "event_time"], kind="stable")
+    first = ordered.groupby(["user_id", "post_id"], sort=False).first()
+    present = [field for field in BEHAVIOR_FIELDS if field in ordered.columns]
+    maxed = ordered.groupby(["user_id", "post_id"], sort=False)[present].max()
+    merged = first.drop(columns=present + ["action_type", "action_time_ms"], errors="ignore")
+    merged = merged.join(maxed).reset_index()
+    for field in BEHAVIOR_FIELDS:
+        if field not in merged.columns:
+            merged[field] = 0.0
+    columns = ["user_id", "post_id", "author_id", "event_time", "product_surface"] + BEHAVIOR_FIELDS
+    extra = [c for c in merged.columns if c not in columns]
+    merged = merged[columns + extra]
+    return merged.sort_values(["user_id", "event_time"], kind="stable").reset_index(drop=True)
+
+
 def load_post_metadata(post_meta_path: str) -> pd.DataFrame:
     """加载帖子元数据。"""
     df = pq.read_table(post_meta_path).to_pandas()
@@ -590,6 +626,41 @@ class TrainingSampleBuilder:
 
         return samples
 
+    def _aggregate_history(
+        self,
+        records: list[dict],
+        record_times: list[int],
+        rec_actions: list[list[float]],
+        start: int,
+        end: int,
+    ) -> list[tuple[int, list[float]]]:
+        """把 records[start:end]（已按时间升序）按帖子聚合，返回最近 history_len 条。
+
+        与线上 `home-mixer/recsys_compat::DefaultAggregator` 同构：同一帖子的多次行为合并成
+        一条，mask 取或（连续列取最大），时间 / 作者 / 场景取该帖在窗口内最早的一次行为，
+        按 (最早时间, post_id) 升序，全零的记录丢弃（`DenseAggregatedActionFilter`），
+        最后只保留最近 history_len 条。返回 [(最早行为的记录下标, 合并后的行为向量)]。
+        """
+        by_post: dict[str, tuple[int, list[float]]] = {}
+        for idx in range(start, end):
+            post_id = records[idx]["post_id"]
+            entry = by_post.get(post_id)
+            if entry is None:
+                by_post[post_id] = (idx, list(rec_actions[idx]))
+                continue
+            merged = entry[1]
+            row = rec_actions[idx]
+            for j, value in enumerate(row):
+                if value > merged[j]:
+                    merged[j] = value
+        entries = [
+            (idx, mask)
+            for idx, mask in by_post.values()
+            if any(value > 0 for value in mask)
+        ]
+        entries.sort(key=lambda entry: (record_times[entry[0]], records[entry[0]]["post_id"]))
+        return entries[-self.history_len :]
+
     @staticmethod
     def _prepare_records(
         records: list[dict], user_actions: np.ndarray
@@ -617,12 +688,15 @@ class TrainingSampleBuilder:
 
         候选 = 这次请求真正下发的帖子（正样本排在前面、然后是按位置排列的负样本，截到
         candidate_len），标签 = 归因到该候选上的行为；历史 = 请求时刻之前、窗口内的行为记录，
-        与线上 UAS 的"请求前 7 天、最近 32 条"一致。候选位 0 保证是正样本，以便召回训练复用
-        同一份样本；没有任何正样本的请求默认丢弃，`include_negative_only=True` 时保留并把
-        `positive_post` 置为空串（召回训练据此跳过）。
+        按帖子聚合后取最近 history_len 条，与线上 `DefaultAggregator` 一致（见
+        `_aggregate_history`）。候选位 0 保证是正样本，以便召回训练复用同一份样本；没有任何
+        正样本的请求默认丢弃，`include_negative_only=True` 时保留并把 `positive_post` 置为空串
+        （召回训练据此跳过）。
 
         Args:
-            user_behavior_df: 该用户的行为日志（已按 event_time 稳定排序），只用于历史。
+            user_behavior_df: 该用户的行为记录（已按 event_time 稳定排序），只用于历史。
+                一行一个行为事件（`build_training_inputs.py` 的 behavior_logs）或一行一次多热
+                互动都可以；聚合在这里按请求时间做，所以请求之后的行为不会进历史。
             user_actions: 与 user_behavior_df 行对齐的 (N, num_actions) 行为矩阵。
             user_impressions_df: 该用户的曝光行（已按 event_time, request_id, position 排序）。
             impression_labels: 与 user_impressions_df 行对齐的 (M, num_actions) 标签矩阵。
@@ -652,20 +726,21 @@ class TrainingSampleBuilder:
             group = group.sort_values("position", kind="stable")
             request_time = int(group["event_time"].iloc[0])
 
-            # ── 历史：请求时刻之前、窗口内的最近 history_len 条记录 ──
-            end = bisect.bisect_left(record_times, request_time)
-            start = max(0, end - history_len)
-            window_start = request_time - history_window_seconds
-            while start < end and record_times[start] < window_start:
-                start += 1
+            # ── 历史：请求时刻之前、窗口内的行为，按帖子聚合后取最近 history_len 条 ──
+            end = bisect.bisect_left(record_times, request_time)  # 严格早于请求
+            start = bisect.bisect_left(record_times, request_time - history_window_seconds)
             if start >= end:
                 continue  # 窗口内无历史，等价于线上无序列
-            actual_len = end - start
-            pad_len = history_len - actual_len
-            hist_post_hashes = rec_post_hash[start:end] + [pad_hash] * pad_len
-            hist_author_hashes = rec_author_hash[start:end] + [pad_hash] * pad_len
-            hist_actions = rec_actions[start:end] + [pad_action] * pad_len
-            hist_surface = rec_surface[start:end] + [0] * pad_len
+            history_entries = self._aggregate_history(
+                records, record_times, rec_actions, start, end
+            )
+            if not history_entries:
+                continue
+            pad_len = history_len - len(history_entries)
+            hist_post_hashes = [rec_post_hash[i] for i, _ in history_entries] + [pad_hash] * pad_len
+            hist_author_hashes = [rec_author_hash[i] for i, _ in history_entries] + [pad_hash] * pad_len
+            hist_actions = [mask for _, mask in history_entries] + [pad_action] * pad_len
+            hist_surface = [rec_surface[i] for i, _ in history_entries] + [0] * pad_len
 
             # ── 候选：正样本优先，其余按下发位置 ──
             positives: list[tuple[str, str, int, list[float]]] = []
@@ -778,6 +853,12 @@ def process_single_day(
         negative_pool=negative_pool,
         max_age_seconds=max_age_days * 86400,
     )
+
+    if impressions_df is None and is_action_event_table(behavior_df):
+        # 行为模式以"一行一条正样本"构样本；事件表一行只有一位，先按 (user, post) 合并。
+        before = len(behavior_df)
+        behavior_df = aggregate_action_events(behavior_df)
+        logger.info(f"事件表按 (user, post) 聚合：{before} 行 → {len(behavior_df)} 行")
 
     # 全局向量化预编码 19 个行为字段（替代循环内逐行 encode_action_value 的 55 亿次调用）
     logger.info("向量化编码 action 特征...")
