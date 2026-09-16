@@ -119,8 +119,6 @@ pub struct PhoenixCandidatePipeline {
     observer: Option<Arc<dyn PipelineObserver>>,
     /// Side-effect tasks run after the response; shutdown waits on this.
     side_effect_tasks: TaskTracker,
-    /// Kept for `drain_side_effects`, which flushes it once the tasks settle.
-    served_candidates_sink: Option<Arc<dyn ServedCandidatesSink>>,
 }
 
 /// 显式启用补充话题能力所需的原子依赖。
@@ -198,8 +196,9 @@ impl PhoenixCandidatePipeline {
     }
 
     /// Wait up to `timeout` for the side effects still running after their
-    /// responses were returned, then flush the served-candidates sink.
-    /// Returns whether every task finished within the budget.
+    /// responses were returned, then let every side effect flush its
+    /// transport with what is left of the budget. Returns whether every task
+    /// finished within the budget.
     pub async fn drain_side_effects(&self, timeout: Duration) -> bool {
         let started = Instant::now();
         self.side_effect_tasks.close();
@@ -218,10 +217,11 @@ impl PhoenixCandidatePipeline {
                 self.side_effect_tasks.len()
             );
         }
-        if let Some(sink) = &self.served_candidates_sink {
-            sink.shutdown(timeout.saturating_sub(started.elapsed()))
-                .await;
-        }
+        shutdown_side_effects(
+            self.side_effects.iter(),
+            timeout.saturating_sub(started.elapsed()),
+        )
+        .await;
         drained
     }
 
@@ -417,10 +417,8 @@ impl PhoenixCandidatePipeline {
         ];
         // SE-11: the served exposure log is assembled only when a sink is
         // configured; once assembled it records every request.
-        if let Some(sink) = &served_candidates_sink {
-            side_effects.push(Box::new(ServedCandidatesKafkaSideEffect::new(Arc::clone(
-                sink,
-            ))));
+        if let Some(sink) = served_candidates_sink {
+            side_effects.push(Box::new(ServedCandidatesKafkaSideEffect::new(sink)));
         }
         let side_effects = Arc::new(side_effects);
 
@@ -436,7 +434,6 @@ impl PhoenixCandidatePipeline {
             side_effects,
             observer: None,
             side_effect_tasks: TaskTracker::new(),
-            served_candidates_sink,
         }
     }
 
@@ -686,6 +683,17 @@ impl PhoenixCandidatePipeline {
             .await,
         )
     }
+}
+
+/// Give every side effect its shutdown hook with the same remaining budget.
+/// Runs them concurrently: they own independent transports.
+pub(crate) async fn shutdown_side_effects<'a, C>(
+    side_effects: impl Iterator<Item = &'a Box<dyn SideEffect<ScoredPostsQuery, C>>>,
+    timeout: Duration,
+) where
+    C: xai_candidate_pipeline::candidate_pipeline::PipelineCandidate,
+{
+    futures::future::join_all(side_effects.map(|side_effect| side_effect.shutdown(timeout))).await;
 }
 
 /// Real in-network recall is mrpyq. Integer Thunder exists only for explicit

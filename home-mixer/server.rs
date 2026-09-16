@@ -103,10 +103,16 @@ impl HomeMixerServer {
 
     /// Shutdown step after the listeners have drained: wait up to `timeout`
     /// for side effects (exposure log, diversity stats) still running behind
-    /// already-returned responses, then flush the exposure sink. Both
-    /// pipelines spawn on one tracker, so this covers For You too.
+    /// already-returned responses, then give every side effect of both
+    /// pipelines its shutdown hook (the exposure sink flushes its producer
+    /// there). Both pipelines spawn on one tracker, so one wait covers both.
     pub async fn drain_side_effects(&self, timeout: std::time::Duration) -> bool {
-        self.scored_posts_server.drain_side_effects(timeout).await
+        let started = std::time::Instant::now();
+        let drained = self.scored_posts_server.drain_side_effects(timeout).await;
+        self.for_you_feed_server
+            .shutdown_side_effects(timeout.saturating_sub(started.elapsed()))
+            .await;
+        drained
     }
 
     pub fn register(self: Arc<Self>, routes: &mut RoutesBuilder) {

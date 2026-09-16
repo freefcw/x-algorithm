@@ -142,6 +142,11 @@ impl SideEffect<ScoredPostsQuery, PostCandidate> for ServedCandidatesKafkaSideEf
             .await
             .map_err(|error| format!("Served-candidates publish failed: {error}"))
     }
+
+    /// Flush the transport (Kafka producer queue) before the process exits.
+    async fn shutdown(&self, timeout: std::time::Duration) {
+        self.sink.shutdown(timeout).await
+    }
 }
 
 #[cfg(test)]

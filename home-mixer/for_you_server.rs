@@ -123,6 +123,10 @@ impl ForYouFeedServer {
         &self.rpc_policy
     }
 
+    pub(crate) async fn shutdown_side_effects(&self, timeout: std::time::Duration) {
+        self.pipeline.shutdown_side_effects(timeout).await
+    }
+
     pub async fn get_for_you_feed(&self, query: ScoredPostsQuery) -> ForYouFeedOutput {
         let started = Instant::now();
         let result = self.pipeline.execute(query.start_request()).await;

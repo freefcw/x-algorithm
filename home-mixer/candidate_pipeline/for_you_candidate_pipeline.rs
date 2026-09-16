@@ -105,6 +105,13 @@ impl ForYouCandidatePipeline {
     pub fn install_side_effect_tasks(&mut self, tracker: TaskTracker) {
         self.side_effect_tasks = Some(tracker);
     }
+
+    /// Shutdown hook for this pipeline's side effects; the shared tracker has
+    /// already been drained by the inner pipeline when this runs.
+    pub async fn shutdown_side_effects(&self, timeout: Duration) {
+        super::phoenix_candidate_pipeline::shutdown_side_effects(self.side_effects.iter(), timeout)
+            .await;
+    }
 }
 
 fn standard_sources(

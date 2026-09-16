@@ -69,7 +69,7 @@ flowchart TD
 
 任一监听在运行中失败都会让进程以错误退出，不再存在"端口没起来但进程还活着"的状态。
 
-side effect（曝光事件发布、多样性统计、请求缓存写回）在响应之后异步执行，两条流水线共用一个任务追踪器；关停时监听排空后，`drain_timeout` 剩下多少就等它们多久，然后调用曝光 sink 的 `shutdown` 把 librdkafka 队列刷出去。单个 side effect 有 `SIDE_EFFECT_TIMEOUT_MS`（10 s）上限，超时按失败记录，所以排空阶段不会被一个卡住的 sink 拖满。日志：`side effects drained: N pending at shutdown, X ms` 或 `side effects did not drain within ...`。
+side effect（曝光事件发布、多样性统计、请求缓存写回）在响应之后异步执行，两条流水线共用一个任务追踪器；关停时监听排空后，`drain_timeout` 剩下多少就等它们多久，然后调用每个 side effect 的 `shutdown` 钩子（`SideEffect` trait 的默认空实现；曝光事件 side effect 在这里 flush librdkafka 队列）。单个 side effect 有 `SIDE_EFFECT_TIMEOUT_MS`（10 s）上限，超时按失败记录，所以排空阶段不会被一个卡住的 sink 拖满。日志：`side effects drained: N pending at shutdown, X ms` 或 `side effects did not drain within ...`。
 
 ## 3. 环境变量
 
