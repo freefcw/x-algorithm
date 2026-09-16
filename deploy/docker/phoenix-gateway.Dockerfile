@@ -28,26 +28,29 @@ FROM python:3.12-slim-bookworm AS runtime
 # （当前 lock 由 uv 0.12 生成）；升级本地 uv 后同步这里。
 COPY --from=ghcr.io/astral-sh/uv:0.12 /uv /uvx /usr/local/bin/
 
+# 先建用户、以该用户安装：依赖层（含数 GB 的 JAX/CUDA）直接属于 phoenix，
+# 不需要事后 chown -R —— 那会把整个 .venv 再复制进一个新层，镜像体积翻倍。
+RUN useradd --system --uid 10001 --user-group --create-home phoenix \
+ && mkdir -p /app && chown phoenix:phoenix /app
+USER phoenix
+WORKDIR /app
+
 ENV UV_COMPILE_BYTECODE=1 \
     UV_LINK_MODE=copy \
     UV_PROJECT_ENVIRONMENT=/app/.venv \
+    UV_CACHE_DIR=/home/phoenix/.cache/uv \
     UV_NO_PROGRESS=1
-
-WORKDIR /app
 
 # 依赖层：只拷 lock 与本地 path 依赖（xai-proto / xai-configlib / xai-gimmick 在
 # python/ 下），源码变动不触发重装。--frozen 严格按 uv.lock，不重新解析。
-COPY pyproject.toml uv.lock ./
-COPY python ./python
-RUN --mount=type=cache,target=/root/.cache/uv \
+COPY --chown=phoenix:phoenix pyproject.toml uv.lock ./
+COPY --chown=phoenix:phoenix python ./python
+RUN --mount=type=cache,target=/home/phoenix/.cache/uv,uid=10001,gid=10001 \
     uv sync --frozen --no-dev --group service --no-install-project
 
-# 源码层：演示链路模型代码、services/、scripts/、proto 定义。
-COPY . .
-
-RUN useradd --system --uid 10001 --user-group --create-home phoenix \
- && chown -R phoenix:phoenix /app
-USER phoenix
+# 源码层：演示链路模型代码、services/、scripts/、proto 定义（.dockerignore 排除了
+# .venv，不会覆盖上一层装好的环境）。
+COPY --chown=phoenix:phoenix . .
 
 # 容器内必须监听 0.0.0.0；脚本默认 127.0.0.1 只适合本机。
 ENV PHOENIX_GRPC_HOST=0.0.0.0 \
