@@ -170,7 +170,13 @@ impl PhoenixPredictionClient for ProdPhoenixPredictionClient {
 /// The model may answer successfully while using the wrong bundle. Treat a
 /// missing, changed, or random bundle as an adapter error so the pipeline can
 /// use its whole-batch rule fallback.
-pub const REQUIRED_SUPPORTED_ACTIONS: &[u32] = &[1, 2, 5, 6, 8, 9, 10, 11, 14, 15, 16, 17, 18];
+///
+/// Every `ActionName` whose weight in `params::param` is non-zero must be
+/// advertised by the gateway's `supported-actions`, otherwise the batch falls
+/// back to rules. v1 head set (docs/implementation/phoenix-training-data-decisions.md
+/// §1): favorite (1), reply (2), report (18). A unit test pins this list to the
+/// weights; add a head back only through the procedure in that document (§1.4).
+pub const REQUIRED_SUPPORTED_ACTIONS: &[u32] = &[1, 2, 18];
 
 pub fn validate_serving_metadata(
     metadata: &MetadataMap,
@@ -456,6 +462,77 @@ mod tests {
         assert!(validate_serving_metadata(&metadata, false).is_ok());
         metadata.remove("supported-actions");
         assert!(validate_serving_metadata(&metadata, false).is_err());
+    }
+
+    /// `REQUIRED_SUPPORTED_ACTIONS` and the ranking weights are two copies of
+    /// the same decision (decisions doc §1.3). If one changes without the
+    /// other, either the gateway is rejected for heads that carry no weight
+    /// or a weighted head is scored from a model that never trained it.
+    #[test]
+    fn required_supported_actions_are_exactly_the_non_zero_weight_heads() {
+        use crate::params as p;
+        use x_algorithm_proto::recsys::ActionName;
+
+        let head_weights: &[(ActionName, f64)] = &[
+            (ActionName::ServerTweetFav, p::FAVORITE_WEIGHT),
+            (ActionName::ServerTweetReply, p::REPLY_WEIGHT),
+            (ActionName::ServerTweetRetweet, p::RETWEET_WEIGHT),
+            (ActionName::ServerTweetQuote, p::QUOTE_WEIGHT),
+            (ActionName::ClientTweetPhotoExpand, p::PHOTO_EXPAND_WEIGHT),
+            (ActionName::ClientTweetClick, p::CLICK_WEIGHT),
+            (ActionName::ClientTweetClickProfile, p::PROFILE_CLICK_WEIGHT),
+            (ActionName::ClientTweetVideoQualityView, p::VQV_WEIGHT),
+            (ActionName::ClientTweetShare, p::SHARE_WEIGHT),
+            (
+                ActionName::ClientTweetClickSendViaDirectMessage,
+                p::SHARE_VIA_DM_WEIGHT,
+            ),
+            (
+                ActionName::ClientTweetShareViaCopyLink,
+                p::SHARE_VIA_COPY_LINK_WEIGHT,
+            ),
+            (ActionName::ClientTweetRecapDwelled, p::DWELL_WEIGHT),
+            (ActionName::ClientQuotedTweetClick, p::QUOTED_CLICK_WEIGHT),
+            (ActionName::ClientTweetFollowAuthor, p::FOLLOW_AUTHOR_WEIGHT),
+            (
+                ActionName::ClientTweetNotInterestedIn,
+                p::NOT_INTERESTED_WEIGHT,
+            ),
+            (ActionName::ClientTweetBlockAuthor, p::BLOCK_AUTHOR_WEIGHT),
+            (ActionName::ClientTweetMuteAuthor, p::MUTE_AUTHOR_WEIGHT),
+            (ActionName::ClientTweetReport, p::REPORT_WEIGHT),
+        ];
+        assert_eq!(
+            head_weights.len(),
+            18,
+            "one entry per released ActionName 1..=18"
+        );
+
+        let mut weighted: Vec<u32> = head_weights
+            .iter()
+            .filter(|(_, weight)| *weight != 0.0)
+            .map(|(action, _)| *action as u32)
+            .collect();
+        weighted.sort_unstable();
+        assert_eq!(weighted, REQUIRED_SUPPORTED_ACTIONS);
+    }
+
+    #[test]
+    fn v1_gateway_head_set_is_accepted_and_missing_report_is_rejected() {
+        let mut metadata = MetadataMap::new();
+        metadata.insert(
+            "feature-schema",
+            "phoenix-string-id-actions-v2".parse().unwrap(),
+        );
+        metadata.insert("model-version", "step-000200@0123456789ab".parse().unwrap());
+        metadata.insert("random-weights", "false".parse().unwrap());
+        // What a bundle trained with `--observed-actions favorite,reply,report` advertises.
+        metadata.insert("supported-actions", "1,2,18".parse().unwrap());
+        assert!(validate_serving_metadata(&metadata, false).is_ok());
+
+        metadata.insert("supported-actions", "1,2".parse().unwrap());
+        let error = validate_serving_metadata(&metadata, false).unwrap_err();
+        assert!(error.to_string().contains("omit a non-zero ranking head"));
     }
 
     #[test]

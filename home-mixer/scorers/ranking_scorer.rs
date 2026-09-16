@@ -827,10 +827,13 @@ mod tests {
     }
 
     #[test]
-    fn applied_weights_map_reports_upstream_defaults() {
+    fn applied_weights_map_reports_configured_weights() {
         let map = weights().applied_weights_map();
         assert_eq!(map["reply"], 5.0);
-        assert_eq!(map["share_via_copy_link"], 20.0);
         assert_eq!(map["report"], -234.0);
+        // v1 head set: heads the platform cannot collect yet carry no weight
+        // (docs/implementation/phoenix-training-data-decisions.md §1).
+        assert_eq!(map["share_via_copy_link"], 0.0);
+        assert_eq!(map["click"], 0.0);
     }
 }

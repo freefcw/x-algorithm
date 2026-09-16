@@ -34,6 +34,12 @@ pub const PHOENIX_MOE_MAX_RESULTS: u32 = 200;
 // 的比值不能解释成“一次举报抵消多少次点赞”；两项分别作用于 P(report) 和
 // P(favorite)，而且预测本身是个性化的。负向行为的基准概率远低于点赞，因此
 // 需要更大的绝对权重，才能在最终分数中产生可见影响。
+//
+// v1 head 集合（docs/implementation/phoenix-training-data-decisions.md §1）：
+// 埋点当前只能采到点赞 (1)、评论 (2)、举报 (18)，其余 head 没有标签、训不出
+// 有意义的概率，权重一律置 0，标注为“v1 置 0（原值 X）”。这些常量与
+// `clients::phoenix_prediction_client::REQUIRED_SUPPORTED_ACTIONS` 必须一致
+// （有单测锁定）；加回一个 head 的流程见决策记录 §1.4，改动只在同一个 PR 里做。
 
 /// rust_home_mixer_favorite_weight = 0.5
 pub const FAVORITE_WEIGHT: f64 = 0.5;
@@ -43,23 +49,29 @@ pub const REPLY_WEIGHT: f64 = 5.0;
 /// P2/U5: 产品无转推，权重置 0。
 pub const RETWEET_WEIGHT: f64 = 0.0;
 /// rust_home_mixer_photo_expand_weight = 0.05
-pub const PHOTO_EXPAND_WEIGHT: f64 = 0.05;
+/// v1 置 0（原值 0.05）：点开大图需客户端埋点，尚未采集。
+pub const PHOTO_EXPAND_WEIGHT: f64 = 0.0;
 /// rust_home_mixer_video_open_weight = 0.05
 pub const VIDEO_OPEN_WEIGHT: f64 = 0.05;
 /// rust_home_mixer_click_weight = 0.4
-pub const CLICK_WEIGHT: f64 = 0.4;
+/// v1 置 0（原值 0.4）：点击详情需客户端埋点，尚未采集。
+pub const CLICK_WEIGHT: f64 = 0.0;
 /// rust_home_mixer_open_link_weight = 0.2
 pub const OPEN_LINK_WEIGHT: f64 = 0.2;
 /// rust_home_mixer_profile_click_weight = 0.0
 pub const PROFILE_CLICK_WEIGHT: f64 = 0.0;
 /// rust_home_mixer_vqv_weight = 0.05
-pub const VQV_WEIGHT: f64 = 0.05;
+/// v1 置 0（原值 0.05）：视频有效观看需客户端埋点，尚未采集。
+pub const VQV_WEIGHT: f64 = 0.0;
 /// rust_home_mixer_share_weight = 2.0
-pub const SHARE_WEIGHT: f64 = 2.0;
+/// v1 置 0（原值 2.0）：分享需客户端埋点，尚未采集。
+pub const SHARE_WEIGHT: f64 = 0.0;
 /// rust_home_mixer_share_via_dm_weight = 5.0
-pub const SHARE_VIA_DM_WEIGHT: f64 = 5.0;
+/// v1 置 0（原值 5.0）：私信分享需客户端埋点，尚未采集。
+pub const SHARE_VIA_DM_WEIGHT: f64 = 0.0;
 /// rust_home_mixer_share_via_copy_link_weight = 20.0
-pub const SHARE_VIA_COPY_LINK_WEIGHT: f64 = 20.0;
+/// v1 置 0（原值 20.0）：复制链接需客户端埋点，尚未采集。
+pub const SHARE_VIA_COPY_LINK_WEIGHT: f64 = 0.0;
 /// rust_home_mixer_dwell_weight = 0.0
 pub const DWELL_WEIGHT: f64 = 0.0;
 /// rust_home_mixer_quote_weight = 5.0
@@ -70,7 +82,8 @@ pub const QUOTED_CLICK_WEIGHT: f64 = 0.0;
 /// rust_home_mixer_quoted_vqv_weight = 0.0
 pub const QUOTED_VQV_WEIGHT: f64 = 0.0;
 /// rust_home_mixer_follow_author_weight = 4.0
-pub const FOLLOW_AUTHOR_WEIGHT: f64 = 4.0;
+/// v1 置 0（原值 4.0）：关注作者需客户端带 tweet_id 上报，尚未采集。
+pub const FOLLOW_AUTHOR_WEIGHT: f64 = 0.0;
 
 // =============================================================================
 // 打分权重（上游真值；连续动作与探索项）
@@ -96,12 +109,17 @@ pub const POST_UNEXPLORED_WEIGHT_IN_NETWORK_ONLY: bool = true;
 // =============================================================================
 
 /// rust_home_mixer_not_interested_weight = -43.2
-pub const NOT_INTERESTED_WEIGHT: f64 = -43.2;
+/// v1 置 0（原值 -43.2）：产品没有“不感兴趣”入口，无法采集。
+pub const NOT_INTERESTED_WEIGHT: f64 = 0.0;
 /// rust_home_mixer_block_author_weight = -31.2
-pub const BLOCK_AUTHOR_WEIGHT: f64 = -31.2;
+/// v1 置 0（原值 -31.2）：后端无法确认拉黑来自哪条帖子，需客户端带 tweet_id 上报。
+pub const BLOCK_AUTHOR_WEIGHT: f64 = 0.0;
 /// rust_home_mixer_mute_author_weight = -58.8
-pub const MUTE_AUTHOR_WEIGHT: f64 = -58.8;
+/// v1 置 0（原值 -58.8）：静音作者需客户端埋点，尚未采集。
+pub const MUTE_AUTHOR_WEIGHT: f64 = 0.0;
 /// rust_home_mixer_report_weight = -234.0
+/// v1 保留：举报可由后端采集。它是稀疏事件且量级是点赞的近 500 倍，上线前要看
+/// 该 head 的校准（决策记录 §1.2）。
 pub const REPORT_WEIGHT: f64 = -234.0;
 /// rust_home_mixer_not_dwelled_weight = -0.02
 pub const NOT_DWELLED_WEIGHT: f64 = -0.02;

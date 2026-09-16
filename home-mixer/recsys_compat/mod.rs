@@ -81,7 +81,13 @@ pub fn is_supported_product_surface(product_surface: i32) -> bool {
 
 fn validated_action(
     action: &UserAction,
-) -> Option<(crate::models::PostId, crate::models::UserId, i64, usize, i32)> {
+) -> Option<(
+    crate::models::PostId,
+    crate::models::UserId,
+    i64,
+    usize,
+    i32,
+)> {
     let tweet_id = action.tweet_id.filter(|id| !id.is_nil())?;
     let author_id = action.author_id.filter(|id| !id.is_nil())?;
     let action_time_ms = action.action_time_ms.filter(|time| *time >= 0)?;
