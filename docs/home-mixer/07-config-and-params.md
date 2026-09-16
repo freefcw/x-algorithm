@@ -119,7 +119,7 @@ UAS 是进程内 `UserActionSequenceOps` 端口，不额外启动在线微服务
 
 Home Mixer 读取侧对无法解码的成员（损坏数据、未知 `version`）逐条跳过并按次告警，不会因为一个坏成员让该用户整条序列失效；`StoredUserAction::VERSION` 升级时读取端必须继续解码旧版本直到旧成员过期。
 
-事件 JSON 的最小合同是：
+事件 JSON 的最小合同如下；面向生产端（mrpyq）的完整约定——字段语义、`action_type` 映射与分批、投递语义、联调验收——见 [implementation/uas-event-contract.md](../implementation/uas-event-contract.md)：
 
 ```json
 {"user_id":"000000000000000000000007","tweet_id":"000000000000000000000009","author_id":"00000000000000000000000b","action_time_ms":1789516800000,"action_type":3}
