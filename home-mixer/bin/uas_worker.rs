@@ -11,15 +11,120 @@
 //! Redis write is idempotent, and only when the retry budget is exhausted does
 //! the job exit with that offset left uncommitted for replay after a restart.
 
+use home_mixer::admin_server::{self, AdminState, Readiness};
 use home_mixer::clients::uas_fetcher::{
     RecordOutcome, RedisUserActionSequenceStore, SkipReason, UserActionEvent, UserActionEventSink,
     ValidatedUserAction,
 };
+use home_mixer::metrics::Metrics;
 use home_mixer::params;
 use home_mixer::runtime_config::UasConfig;
+use prometheus::{IntCounter, IntCounterVec, IntGauge, IntGaugeVec, Opts};
 use std::env;
+use std::net::SocketAddr;
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tokio::io::{AsyncBufReadExt, BufReader};
+use tokio::sync::watch;
+
+/// Admin HTTP port (`/healthz`, `/readyz`, `/metrics`). `0` disables it, for
+/// the stdin development path.
+const METRICS_PORT_ENV: &str = "UAS_WORKER_METRICS_PORT";
+const DEFAULT_METRICS_PORT: u16 = 9091;
+
+/// Prometheus families of the projection job. Counters mirror
+/// [`ProjectionStats`] so the 60-second log line and the scrape agree; the
+/// gauges come from librdkafka's statistics callback.
+struct WorkerMetrics {
+    events: IntCounterVec,
+    storage_retries: IntCounter,
+    /// Unix seconds of the newest action written; its distance from now is
+    /// how stale the projection is.
+    last_projected_action: IntGauge,
+    /// Messages behind the partition high watermark, per assigned partition.
+    consumer_lag: IntGaugeVec,
+}
+
+impl WorkerMetrics {
+    fn new() -> Self {
+        Self {
+            events: IntCounterVec::new(
+                Opts::new(
+                    "uas_worker_events_total",
+                    "Behavior events by projection outcome",
+                ),
+                &["outcome"],
+            )
+            .expect("valid events opts"),
+            storage_retries: IntCounter::new(
+                "uas_worker_storage_retries_total",
+                "Redis writes retried after a transient failure",
+            )
+            .expect("valid retries opts"),
+            last_projected_action: IntGauge::new(
+                "uas_worker_last_projected_action_timestamp_seconds",
+                "action_time of the newest event written to Redis (unix seconds)",
+            )
+            .expect("valid last action opts"),
+            consumer_lag: IntGaugeVec::new(
+                Opts::new(
+                    "uas_worker_consumer_lag",
+                    "Kafka consumer lag in messages, per assigned partition",
+                ),
+                &["topic", "partition"],
+            )
+            .expect("valid lag opts"),
+        }
+    }
+
+    fn register(&self, metrics: &Metrics) -> anyhow::Result<()> {
+        for collector in [
+            Box::new(self.events.clone()) as Box<dyn prometheus::core::Collector>,
+            Box::new(self.storage_retries.clone()),
+            Box::new(self.last_projected_action.clone()),
+            Box::new(self.consumer_lag.clone()),
+        ] {
+            metrics
+                .register_collector(collector)
+                .map_err(|error| anyhow::anyhow!("register uas-worker metrics: {error}"))?;
+        }
+        Ok(())
+    }
+
+    fn observe(&self, result: &ProjectionResult, action: Option<&ValidatedUserAction>) {
+        let outcome = match result {
+            ProjectionResult::Projected => "projected",
+            ProjectionResult::Skipped(SkipReason::OutsideWindow) => "skipped_outside_window",
+            ProjectionResult::Skipped(SkipReason::FutureTimestamp) => "skipped_future",
+            ProjectionResult::Invalid(_) => "invalid",
+            ProjectionResult::StorageUnavailable(_) => "storage_failure",
+        };
+        self.events.with_label_values(&[outcome]).inc();
+        if let (ProjectionResult::Projected, Some(action)) = (result, action) {
+            let seconds = action.action_time_ms() / 1_000;
+            if seconds > self.last_projected_action.get() {
+                self.last_projected_action.set(seconds);
+            }
+        }
+    }
+
+    /// Replace the lag gauges with the partitions currently reported.
+    /// Resetting first drops partitions that moved away in a rebalance, and
+    /// librdkafka reports `-1` for partitions whose lag it does not know.
+    /// Only the Kafka consumer has lag to report; the stdin path never calls it.
+    #[cfg_attr(not(feature = "kafka"), allow(dead_code))]
+    fn set_consumer_lag<'a>(&self, lags: impl IntoIterator<Item = (&'a str, i32, i64)>) {
+        self.consumer_lag.reset();
+        for (topic, partition, lag) in lags {
+            if partition < 0 || lag < 0 {
+                continue;
+            }
+            self.consumer_lag
+                .with_label_values(&[topic, &partition.to_string()])
+                .set(lag);
+        }
+    }
+}
 
 fn parse_event(line: &str) -> Result<ValidatedUserAction, String> {
     let event: UserActionEvent =
@@ -105,14 +210,20 @@ struct Projector<'a> {
     sink: &'a dyn UserActionEventSink,
     retry: RetryPolicy,
     stats: ProjectionStats,
+    metrics: Arc<WorkerMetrics>,
 }
 
 impl<'a> Projector<'a> {
-    fn new(sink: &'a dyn UserActionEventSink, retry: RetryPolicy) -> Self {
+    fn new(
+        sink: &'a dyn UserActionEventSink,
+        retry: RetryPolicy,
+        metrics: Arc<WorkerMetrics>,
+    ) -> Self {
         Self {
             sink,
             retry,
             stats: ProjectionStats::default(),
+            metrics,
         }
     }
 
@@ -127,6 +238,7 @@ impl<'a> Projector<'a> {
             Err(error) => ProjectionResult::StorageUnavailable(error),
         };
         self.stats.observe(&result);
+        self.metrics.observe(&result, Some(&action));
         result
     }
 
@@ -135,6 +247,7 @@ impl<'a> Projector<'a> {
     fn reject(&mut self, error: String) -> ProjectionResult {
         let result = ProjectionResult::Invalid(error);
         self.stats.observe(&result);
+        self.metrics.observe(&result, None);
         result
     }
 
@@ -152,6 +265,7 @@ impl<'a> Projector<'a> {
                         return Err(error);
                     }
                     self.stats.storage_retries += 1;
+                    self.metrics.storage_retries.inc();
                     log::warn!(
                         "UAS Redis write for user {} failed ({error}); retrying in {backoff:?}",
                         action.user_id()
@@ -179,8 +293,11 @@ fn log_result(result: &ProjectionResult, source: &str) {
     }
 }
 
-async fn run_stdin(store: &RedisUserActionSequenceStore) -> anyhow::Result<()> {
-    let mut projector = Projector::new(store, RetryPolicy::default());
+async fn run_stdin(
+    store: &RedisUserActionSequenceStore,
+    metrics: Arc<WorkerMetrics>,
+) -> anyhow::Result<()> {
+    let mut projector = Projector::new(store, RetryPolicy::default(), metrics);
     let stdin = BufReader::new(tokio::io::stdin());
     let mut lines = stdin.lines();
     let mut line_number = 0u64;
@@ -206,13 +323,46 @@ async fn run_stdin(store: &RedisUserActionSequenceStore) -> anyhow::Result<()> {
 mod kafka {
     use super::*;
     use futures::StreamExt;
-    use rdkafka::consumer::{CommitMode, Consumer, StreamConsumer};
+    use rdkafka::client::ClientContext;
+    use rdkafka::consumer::{CommitMode, Consumer, ConsumerContext, StreamConsumer};
     use rdkafka::error::KafkaError;
     use rdkafka::message::Message;
+    use rdkafka::statistics::Statistics;
     use rdkafka::types::RDKafkaErrorCode;
     use rdkafka::ClientConfig;
 
     const STATS_REPORT_INTERVAL: Duration = Duration::from_secs(60);
+    /// How often librdkafka delivers its statistics (consumer lag) callback.
+    const KAFKA_STATISTICS_INTERVAL_MS: &str = "15000";
+
+    /// Receives librdkafka statistics and turns per-partition consumer lag
+    /// into gauges. Everything else keeps the default context behavior.
+    struct LagReportingContext {
+        metrics: Arc<WorkerMetrics>,
+    }
+
+    impl ClientContext for LagReportingContext {
+        fn stats(&self, statistics: Statistics) {
+            self.metrics.set_consumer_lag(consumer_lags(&statistics));
+        }
+    }
+
+    impl ConsumerContext for LagReportingContext {}
+
+    /// `(topic, partition, lag)` for every partition in the statistics.
+    fn consumer_lags(statistics: &Statistics) -> Vec<(&str, i32, i64)> {
+        statistics
+            .topics
+            .iter()
+            .flat_map(|(topic, stats)| {
+                stats.partitions.values().map(move |partition| {
+                    (topic.as_str(), partition.partition, partition.consumer_lag)
+                })
+            })
+            .collect()
+    }
+
+    type LagReportingConsumer = StreamConsumer<LagReportingContext>;
 
     fn required_env(name: &str) -> anyhow::Result<String> {
         let value = env::var(name).unwrap_or_default();
@@ -251,6 +401,7 @@ mod kafka {
             .set("enable.auto.commit", "true")
             .set("enable.auto.offset.store", "false")
             .set("auto.offset.reset", offset_reset)
+            .set("statistics.interval.ms", KAFKA_STATISTICS_INTERVAL_MS)
             .set("security.protocol", &security_protocol);
         if requires_sasl(&security_protocol) {
             config
@@ -264,13 +415,20 @@ mod kafka {
         Ok((config, topic))
     }
 
-    pub(super) async fn run(store: &RedisUserActionSequenceStore) -> anyhow::Result<()> {
+    pub(super) async fn run(
+        store: &RedisUserActionSequenceStore,
+        metrics: Arc<WorkerMetrics>,
+        readiness: Readiness,
+    ) -> anyhow::Result<()> {
         let (config, topic) = consumer_config()?;
-        let consumer: StreamConsumer = config.create()?;
+        let consumer: LagReportingConsumer = config.create_with_context(LagReportingContext {
+            metrics: Arc::clone(&metrics),
+        })?;
         consumer.subscribe(&[&topic])?;
         log::info!("UAS projection job consuming Kafka topic {topic}");
+        readiness.set_ready();
 
-        let mut projector = Projector::new(store, RetryPolicy::default());
+        let mut projector = Projector::new(store, RetryPolicy::default(), metrics);
         let mut stream = consumer.stream();
         let mut shutdown = std::pin::pin!(home_mixer::shutdown::signal());
         let mut last_report = Instant::now();
@@ -278,6 +436,7 @@ mod kafka {
             let message = tokio::select! {
                 _ = &mut shutdown => {
                     log::info!("shutdown signal received; committing settled offsets");
+                    readiness.set_draining();
                     break Ok(());
                 }
                 message = stream.next() => match message {
@@ -325,7 +484,7 @@ mod kafka {
 
     /// Flush the stored offsets before exiting so a clean shutdown does not
     /// replay up to `auto.commit.interval.ms` worth of settled records.
-    fn commit_stored_offsets(consumer: &StreamConsumer) {
+    fn commit_stored_offsets(consumer: &LagReportingConsumer) {
         match consumer.commit_consumer_state(CommitMode::Sync) {
             Ok(()) | Err(KafkaError::ConsumerCommit(RDKafkaErrorCode::NoOffset)) => {}
             Err(error) => log::warn!("final Kafka offset commit failed: {error}"),
@@ -333,10 +492,76 @@ mod kafka {
     }
 }
 
+/// `None` disables the admin port; unset or blank selects the default.
+fn parse_metrics_port(value: Option<String>) -> anyhow::Result<Option<u16>> {
+    match value.map(|value| value.trim().to_string()) {
+        None => Ok(Some(DEFAULT_METRICS_PORT)),
+        Some(value) if value.is_empty() => Ok(Some(DEFAULT_METRICS_PORT)),
+        Some(value) => match value.parse::<u16>() {
+            Ok(0) => Ok(None),
+            Ok(port) => Ok(Some(port)),
+            Err(_) => anyhow::bail!("{METRICS_PORT_ENV} must be a port number (0 disables)"),
+        },
+    }
+}
+
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     home_mixer::logging::init_from_env()?;
+    // Configuration problems fail before any socket opens.
     let config = UasConfig::redis_from_env()?;
+    let metrics_port = parse_metrics_port(env::var(METRICS_PORT_ENV).ok())?;
+
+    // The registry and admin port come up before the Redis handshake so
+    // probes answer during a slow start; /readyz reports `starting` until the
+    // consumer is subscribed.
+    let readiness = Readiness::new();
+    let process_metrics = Arc::new(Metrics::process_only());
+    let worker_metrics = Arc::new(WorkerMetrics::new());
+    worker_metrics.register(&process_metrics)?;
+    let (stop_tx, stop_rx) = watch::channel(false);
+    let admin = match metrics_port {
+        Some(port) => {
+            let addr: SocketAddr = ([0, 0, 0, 0], port).into();
+            let listener = tokio::net::TcpListener::bind(addr).await.map_err(|error| {
+                anyhow::anyhow!("failed to bind admin HTTP port {addr}: {error}")
+            })?;
+            log::info!("HTTP server listening on {addr} (/healthz, /readyz, /metrics)");
+            let mut stop = stop_rx.clone();
+            Some(tokio::spawn(admin_server::serve(
+                listener,
+                AdminState::new(readiness.clone(), Arc::clone(&process_metrics)),
+                async move {
+                    let _ = stop.wait_for(|stop| *stop).await;
+                },
+            )))
+        }
+        None => {
+            log::info!("{METRICS_PORT_ENV}=0; admin HTTP port disabled");
+            None
+        }
+    };
+
+    let outcome = run(config, &readiness, worker_metrics).await;
+
+    readiness.set_draining();
+    let _ = stop_tx.send(true);
+    if let Some(admin) = admin {
+        match tokio::time::timeout(Duration::from_secs(2), admin).await {
+            Ok(Ok(Ok(()))) => {}
+            Ok(Ok(Err(error))) => log::warn!("admin HTTP server failed: {error}"),
+            Ok(Err(error)) => log::warn!("admin HTTP server task failed: {error}"),
+            Err(_) => log::warn!("admin HTTP server did not stop within 2 s"),
+        }
+    }
+    outcome
+}
+
+async fn run(
+    config: home_mixer::clients::uas_fetcher::RedisUserActionSequenceConfig,
+    readiness: &Readiness,
+    metrics: Arc<WorkerMetrics>,
+) -> anyhow::Result<()> {
     let store = RedisUserActionSequenceStore::new(config)
         .await
         .map_err(anyhow::Error::msg)?;
@@ -354,7 +579,7 @@ async fn main() -> anyhow::Result<()> {
     if kafka_configured {
         #[cfg(feature = "kafka")]
         {
-            return kafka::run(&store).await;
+            return kafka::run(&store, metrics, readiness.clone()).await;
         }
         #[cfg(not(feature = "kafka"))]
         anyhow::bail!(
@@ -362,7 +587,8 @@ async fn main() -> anyhow::Result<()> {
         );
     }
     log::info!("UAS_KAFKA_BROKERS is missing; reading newline-delimited JSON from stdin");
-    run_stdin(&store).await
+    readiness.set_ready();
+    run_stdin(&store, metrics).await
 }
 
 #[cfg(test)]
@@ -463,7 +689,7 @@ mod tests {
     #[tokio::test]
     async fn settled_results_advance_and_invalid_messages_never_reach_storage() {
         let healthy = StubSink::healthy();
-        let mut projector = Projector::new(&healthy, fast_retry());
+        let mut projector = Projector::new(&healthy, fast_retry(), Arc::new(WorkerMetrics::new()));
         assert_eq!(
             projector.project_line(VALID_EVENT).await,
             ProjectionResult::Projected
@@ -481,7 +707,7 @@ mod tests {
         assert_eq!(projector.stats.invalid, 1);
 
         let skipping = StubSink::skipping(SkipReason::FutureTimestamp);
-        let mut projector = Projector::new(&skipping, fast_retry());
+        let mut projector = Projector::new(&skipping, fast_retry(), Arc::new(WorkerMetrics::new()));
         let result = projector.project_line(VALID_EVENT).await;
         assert_eq!(
             result,
@@ -497,7 +723,7 @@ mod tests {
     #[tokio::test]
     async fn transient_storage_failures_are_retried_within_the_budget() {
         let flaky = StubSink::failing(2);
-        let mut projector = Projector::new(&flaky, fast_retry());
+        let mut projector = Projector::new(&flaky, fast_retry(), Arc::new(WorkerMetrics::new()));
         assert_eq!(
             projector.project_line(VALID_EVENT).await,
             ProjectionResult::Projected
@@ -510,7 +736,7 @@ mod tests {
     #[tokio::test]
     async fn exhausted_retry_budget_surfaces_as_unsettled_storage_failure() {
         let down = StubSink::failing(usize::MAX);
-        let mut projector = Projector::new(&down, fast_retry());
+        let mut projector = Projector::new(&down, fast_retry(), Arc::new(WorkerMetrics::new()));
         let result = projector.project_line(VALID_EVENT).await;
         assert!(matches!(result, ProjectionResult::StorageUnavailable(_)));
         assert!(!result.is_settled(), "the offset must stay uncommitted");
@@ -528,5 +754,89 @@ mod tests {
         assert!(kafka::requires_sasl("sasl_plaintext"));
         assert!(!kafka::requires_sasl("SSL"));
         assert!(!kafka::requires_sasl("PLAINTEXT"));
+    }
+
+    #[test]
+    fn metrics_port_defaults_disables_on_zero_and_rejects_garbage() {
+        assert_eq!(
+            parse_metrics_port(None).unwrap(),
+            Some(DEFAULT_METRICS_PORT)
+        );
+        assert_eq!(
+            parse_metrics_port(Some("  ".to_string())).unwrap(),
+            Some(DEFAULT_METRICS_PORT)
+        );
+        assert_eq!(parse_metrics_port(Some("0".to_string())).unwrap(), None);
+        assert_eq!(
+            parse_metrics_port(Some(" 9200 ".to_string())).unwrap(),
+            Some(9200)
+        );
+        assert!(parse_metrics_port(Some("nine".to_string())).is_err());
+        assert!(parse_metrics_port(Some("70000".to_string())).is_err());
+    }
+
+    fn exposition(metrics: &WorkerMetrics) -> String {
+        let registry = Metrics::process_only();
+        metrics.register(&registry).unwrap();
+        registry.encode().unwrap()
+    }
+
+    #[tokio::test]
+    async fn projection_outcomes_and_retries_are_exposed_as_counters() {
+        let metrics = Arc::new(WorkerMetrics::new());
+        let flaky = StubSink::failing(1);
+        let mut projector = Projector::new(&flaky, fast_retry(), Arc::clone(&metrics));
+        projector.project_line(VALID_EVENT).await;
+        projector.project_line("not-json").await;
+
+        let skipping = StubSink::skipping(SkipReason::OutsideWindow);
+        let mut projector = Projector::new(&skipping, fast_retry(), Arc::clone(&metrics));
+        projector.project_line(VALID_EVENT).await;
+
+        let text = exposition(&metrics);
+        for expected in [
+            "uas_worker_events_total{outcome=\"projected\"} 1",
+            "uas_worker_events_total{outcome=\"invalid\"} 1",
+            "uas_worker_events_total{outcome=\"skipped_outside_window\"} 1",
+            "uas_worker_storage_retries_total 1",
+            // 1_700_000_000_000 ms → seconds of the projected event.
+            "uas_worker_last_projected_action_timestamp_seconds 1700000000",
+        ] {
+            assert!(text.contains(expected), "missing {expected}\n{text}");
+        }
+    }
+
+    #[test]
+    fn consumer_lag_gauges_follow_the_latest_assignment_and_skip_unknown_lag() {
+        let metrics = WorkerMetrics::new();
+        metrics.set_consumer_lag(vec![
+            ("uas", 0, 12),
+            ("uas", 1, 0),
+            ("uas", -1, 5),
+            ("uas", 2, -1),
+        ]);
+        let text = exposition(&metrics);
+        assert!(
+            text.contains("uas_worker_consumer_lag{partition=\"0\",topic=\"uas\"} 12"),
+            "{text}"
+        );
+        assert!(
+            text.contains("uas_worker_consumer_lag{partition=\"1\",topic=\"uas\"} 0"),
+            "{text}"
+        );
+        assert!(!text.contains("partition=\"-1\""), "{text}");
+        assert!(
+            !text.contains("partition=\"2\""),
+            "unknown lag is not a zero\n{text}"
+        );
+
+        // After a rebalance only the partitions still assigned are reported.
+        metrics.set_consumer_lag(vec![("uas", 1, 3)]);
+        let text = exposition(&metrics);
+        assert!(!text.contains("partition=\"0\""), "{text}");
+        assert!(
+            text.contains("uas_worker_consumer_lag{partition=\"1\",topic=\"uas\"} 3"),
+            "{text}"
+        );
     }
 }

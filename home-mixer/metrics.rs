@@ -53,10 +53,21 @@ impl Default for Metrics {
 }
 
 impl Metrics {
-    /// Build a registry with every metric this process emits. Registration
-    /// can only fail on a duplicate name, which is a programming error in this
-    /// module, so it panics instead of returning a `Result`.
+    /// Build a registry with every metric the recommendation server emits.
+    /// Registration can only fail on a duplicate name, which is a programming
+    /// error in this module, so it panics instead of returning a `Result`.
     pub fn new() -> Self {
+        Self::build(true)
+    }
+
+    /// Registry for a process that shares the admin port but serves no RPCs
+    /// (the `uas-worker` job): only `build_info` and `ready` are registered,
+    /// and the process adds its own families with [`Self::register_collector`].
+    pub fn process_only() -> Self {
+        Self::build(false)
+    }
+
+    fn build(register_server_families: bool) -> Self {
         let registry = Registry::new();
         let build_info = IntGaugeVec::new(
             Opts::new(
@@ -84,9 +95,11 @@ impl Metrics {
         registry
             .register(Box::new(ready.clone()))
             .expect("register ready");
-        rpc.register(&registry);
-        pipeline.register(&registry);
-        served_events.register(&registry);
+        if register_server_families {
+            rpc.register(&registry);
+            pipeline.register(&registry);
+            served_events.register(&registry);
+        }
 
         Self {
             registry,
@@ -95,6 +108,15 @@ impl Metrics {
             pipeline,
             served_events,
         }
+    }
+
+    /// Add a process-specific collector to the exposed registry. Fails on a
+    /// duplicate metric name.
+    pub fn register_collector(
+        &self,
+        collector: Box<dyn prometheus::core::Collector>,
+    ) -> Result<(), prometheus::Error> {
+        self.registry.register(collector)
     }
 
     pub fn rpc(&self) -> &RpcMetrics {
@@ -713,6 +735,32 @@ mod tests {
         assert!(
             text.contains("home_mixer_served_event_publish_duration_seconds_count 2"),
             "{text}"
+        );
+    }
+
+    #[test]
+    fn process_only_registry_exposes_build_info_readiness_and_added_collectors() {
+        let metrics = Metrics::process_only();
+        let counter = prometheus::IntCounter::new("uas_worker_test_total", "test").unwrap();
+        metrics
+            .register_collector(Box::new(counter.clone()))
+            .expect("first registration");
+        assert!(
+            metrics
+                .register_collector(Box::new(counter.clone()))
+                .is_err(),
+            "duplicate names are rejected"
+        );
+        counter.inc();
+        metrics.set_ready(true);
+
+        let text = metrics.encode().unwrap();
+        assert!(text.contains("home_mixer_build_info"));
+        assert!(text.contains("home_mixer_ready 1"));
+        assert!(text.contains("uas_worker_test_total 1"));
+        assert!(
+            !text.contains("home_mixer_rpc_requests_total"),
+            "server families stay out of a process-only registry\n{text}"
         );
     }
 
