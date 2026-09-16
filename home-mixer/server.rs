@@ -3,8 +3,10 @@ use crate::clients::redis_feed_state_store::RedisFeedStateStore;
 use crate::feature_policy::HomeMixerFeatures;
 use crate::feed_state::{FeedStateStore, InMemoryFeedStateStore};
 use crate::for_you_server::ForYouFeedServer;
+use crate::metrics::Metrics;
 #[cfg(test)]
 use crate::models::query::ScoredPostsQuery;
+use crate::rpc_policy::{within_budget, RpcPolicy};
 use crate::runtime_config::FeedStateConfig;
 use crate::scored_posts_server::ScoredPostsServer;
 use log::info;
@@ -20,6 +22,12 @@ pub use crate::debug_access::DebugAccessPolicy;
 pub use crate::query_builder::{QueryBuilder, RequestContext};
 pub use crate::runtime_config::{HomeMixerConfig, HomeMixerMode};
 
+/// gRPC method names as they appear in the `rpc` metric label.
+const RPC_GET_SCORED_POSTS: &str = "GetScoredPosts";
+const RPC_DEBUG_SCORED_POSTS: &str = "DebugScoredPosts";
+const RPC_GET_FOR_YOU_FEED: &str = "GetForYouFeed";
+const RPC_GET_FOR_YOU_FEED_V2: &str = "GetForYouFeedV2";
+
 pub struct HomeMixerServer {
     scored_posts_server: Arc<ScoredPostsServer>,
     for_you_feed_server: Arc<ForYouFeedServer>,
@@ -27,6 +35,15 @@ pub struct HomeMixerServer {
 
 impl HomeMixerServer {
     pub async fn build(config: HomeMixerConfig) -> anyhow::Result<Self> {
+        Self::build_with_metrics(config, Arc::new(Metrics::new())).await
+    }
+
+    /// Build against a registry the caller already exposes, so the admin HTTP
+    /// server can start answering probes before the pipeline is assembled.
+    pub async fn build_with_metrics(
+        config: HomeMixerConfig,
+        metrics: Arc<Metrics>,
+    ) -> anyhow::Result<Self> {
         config.validate()?;
         if config.mode == HomeMixerMode::Degraded {
             log::warn!(
@@ -51,7 +68,8 @@ impl HomeMixerServer {
         };
         let scored_posts_server = Arc::new(
             ScoredPostsServer::with_state(query_builder, pipeline, state_store)
-                .with_debug_access(debug_access),
+                .with_debug_access(debug_access)
+                .with_rpc_policy(RpcPolicy::new(config.request_timeout, metrics)),
         );
         Ok(Self::with_scored_posts_server(scored_posts_server))
     }
@@ -70,6 +88,10 @@ impl HomeMixerServer {
             scored_posts_server,
             for_you_feed_server,
         }
+    }
+
+    pub fn metrics(&self) -> Arc<Metrics> {
+        Arc::clone(self.scored_posts_server.rpc_policy().metrics())
     }
 
     pub fn register(self: Arc<Self>, routes: &mut RoutesBuilder) {
@@ -104,16 +126,29 @@ impl pb::for_you_feed_service_server::ForYouFeedService for ForYouFeedServer {
         &self,
         request: Request<pb::ScoredPostsQuery>,
     ) -> Result<Response<pb::ForYouFeedResponse>, Status> {
-        run_for_you_rpc(self, request.into_inner()).await
+        let (metadata, _, proto_query) = request.into_parts();
+        let budget = self.rpc_policy().budget(&metadata);
+        self.rpc_policy()
+            .observe(
+                RPC_GET_FOR_YOU_FEED,
+                run_for_you_rpc(self, proto_query, budget),
+            )
+            .await
     }
 
     async fn get_for_you_feed_v2(
         &self,
         request: Request<pb::ForYouFeedQuery>,
     ) -> Result<Response<pb::ForYouFeedResponse>, Status> {
-        let query = for_you_query_from_wrapper(request.into_inner())
-            .ok_or_else(|| Status::invalid_argument("ForYouFeedQuery.query is required"))?;
-        run_for_you_rpc(self, query).await
+        let (metadata, _, wrapper) = request.into_parts();
+        let budget = self.rpc_policy().budget(&metadata);
+        self.rpc_policy()
+            .observe(RPC_GET_FOR_YOU_FEED_V2, async {
+                let query = for_you_query_from_wrapper(wrapper)
+                    .ok_or_else(|| Status::invalid_argument("ForYouFeedQuery.query is required"))?;
+                run_for_you_rpc(self, query, budget).await
+            })
+            .await
     }
 }
 
@@ -121,19 +156,27 @@ fn for_you_query_from_wrapper(wrapper: pb::ForYouFeedQuery) -> Option<pb::Scored
     wrapper.query
 }
 
+fn persist_unavailable(error: String) -> Status {
+    Status::unavailable(format!("served persist failed: {error}"))
+}
+
 async fn run_for_you_rpc(
     server: &ForYouFeedServer,
     proto_query: pb::ScoredPostsQuery,
+    budget: std::time::Duration,
 ) -> Result<Response<pb::ForYouFeedResponse>, Status> {
     let context = server.query_builder().build(proto_query).await?;
     let query = context.query;
-    info!("For You request - request_id {}", query.request_id);
-    let output = server.get_for_you_feed(query).await;
-    if let Some(error) = output.persist_error {
-        return Err(Status::unavailable(format!(
-            "served persist failed: {error}"
-        )));
-    }
+    let request_id = query.request_id.clone();
+    info!("For You request - request_id {request_id}");
+    let output = within_budget(budget, &request_id, async {
+        let output = server.get_for_you_feed(query).await;
+        match output.persist_error {
+            Some(error) => Err(persist_unavailable(error)),
+            None => Ok(output),
+        }
+    })
+    .await?;
     Ok(Response::new(pb::ForYouFeedResponse {
         items: output
             .items
@@ -150,54 +193,63 @@ impl pb::scored_posts_service_server::ScoredPostsService for ScoredPostsServer {
         &self,
         request: Request<pb::ScoredPostsQuery>,
     ) -> Result<Response<ScoredPostsResponse>, Status> {
-        let context = self.query_builder().build(request.into_inner()).await?;
-        let query = context.query;
-        info!("Scored Posts request - request_id {}", query.request_id);
-        let user_id = query.user_id;
-        let request_time_ms = query.request_time_ms;
-        let output = self.score(query).await;
-        if let Err(error) = self
-            .persist_selected(user_id, &output.selected_ids, request_time_ms)
+        let (metadata, _, proto_query) = request.into_parts();
+        let budget = self.rpc_policy().budget(&metadata);
+        self.rpc_policy()
+            .observe(RPC_GET_SCORED_POSTS, async {
+                let context = self.query_builder().build(proto_query).await?;
+                let query = context.query;
+                let request_id = query.request_id.clone();
+                info!("Scored Posts request - request_id {request_id}");
+                let user_id = query.user_id;
+                let request_time_ms = query.request_time_ms;
+                let output = within_budget(budget, &request_id, async {
+                    let output = self.score(query).await;
+                    self.persist_selected(user_id, &output.selected_ids, request_time_ms)
+                        .await
+                        .map_err(persist_unavailable)?;
+                    Ok(output)
+                })
+                .await?;
+                Ok(Response::new(ScoredPostsResponse {
+                    scored_posts: output.posts,
+                }))
+            })
             .await
-        {
-            return Err(Status::unavailable(format!(
-                "served persist failed: {error}"
-            )));
-        }
-        Ok(Response::new(ScoredPostsResponse {
-            scored_posts: output.posts,
-        }))
     }
 
     async fn debug_scored_posts(
         &self,
         request: Request<pb::ScoredPostsQuery>,
     ) -> Result<Response<pb::DebugScoredPostsResponse>, Status> {
-        self.authorize_debug(request.metadata())
-            .map_err(DebugAccessError::into_status)?;
-        let context = self.query_builder().build(request.into_inner()).await?;
-        let query = context.query;
-        info!(
-            "Debug Scored Posts request - request_id {}",
-            query.request_id
-        );
-        let user_id = query.user_id;
-        let request_time_ms = query.request_time_ms;
-        let (output, debug) = self.score_with_debug(query).await;
-        if let Err(error) = self
-            .persist_selected(user_id, &output.selected_ids, request_time_ms)
+        let (metadata, _, proto_query) = request.into_parts();
+        let budget = self.rpc_policy().budget(&metadata);
+        self.rpc_policy()
+            .observe(RPC_DEBUG_SCORED_POSTS, async {
+                self.authorize_debug(&metadata)
+                    .map_err(DebugAccessError::into_status)?;
+                let context = self.query_builder().build(proto_query).await?;
+                let query = context.query;
+                let request_id = query.request_id.clone();
+                info!("Debug Scored Posts request - request_id {request_id}");
+                let user_id = query.user_id;
+                let request_time_ms = query.request_time_ms;
+                let (output, debug) = within_budget(budget, &request_id, async {
+                    let (output, debug) = self.score_with_debug(query).await;
+                    self.persist_selected(user_id, &output.selected_ids, request_time_ms)
+                        .await
+                        .map_err(persist_unavailable)?;
+                    Ok((output, debug))
+                })
+                .await?;
+                Ok(Response::new(pb::DebugScoredPostsResponse {
+                    response: Some(ScoredPostsResponse {
+                        scored_posts: output.posts,
+                    }),
+                    debug: Some(debug),
+                }))
+            })
             .await
-        {
-            return Err(Status::unavailable(format!(
-                "served persist failed: {error}"
-            )));
-        }
-        Ok(Response::new(pb::DebugScoredPostsResponse {
-            response: Some(ScoredPostsResponse {
-                scored_posts: output.posts,
-            }),
-            debug: Some(debug),
-        }))
     }
 }
 
@@ -272,6 +324,7 @@ mod tests {
                 ),
             ),
             uas: crate::runtime_config::UasConfig::Disabled,
+            ..Default::default()
         })
         .await;
         let error = match result {

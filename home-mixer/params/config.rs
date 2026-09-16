@@ -87,6 +87,19 @@ pub const UAS_MAX_FUTURE_SKEW_MS: u64 = 5 * 60 * 1000;
 /// 消费者会在重试期间被踢出消费组，退化成重启 + rebalance。
 pub const UAS_PROJECTION_RETRY_BUDGET_MS: u64 = 60_000;
 
+/// 单次 RPC 的服务端总预算（可用 `HOME_MIXER_REQUEST_TIMEOUT_MS` 覆盖），覆盖查询
+/// 构建之后的流水线执行与 served 落库。各组件预算串起来的最坏路径约 10 s：
+/// query hydrator 0.5 s → 召回（Phoenix 3 s 与 mrpyq 1.5 s 并行）→ TES 0.5 s →
+/// Phoenix 精排 5 s → post-selection 0.5 s → Redis 落库 0.5 s。这里只做兜底，
+/// 防止某个没有自身超时的环节把连接无限挂住；客户端 `grpc-timeout` 更短时以客户
+/// 端为准。超时的请求返回 `DeadlineExceeded`，不返回部分结果。
+pub const REQUEST_TIMEOUT_MS: u64 = 10_000;
+
+/// 收到 SIGTERM / Ctrl-C 后等待在途请求完成的最长时间（`--drain-timeout-secs`
+/// 可覆盖）。必须小于部署平台的终止宽限期（Kubernetes 默认 30 s），否则排空会被
+/// SIGKILL 打断；也应大于 `REQUEST_TIMEOUT_MS`，否则最慢的在途请求排不完。
+pub const SHUTDOWN_DRAIN_TIMEOUT_SECS: u64 = 20;
+
 // =============================================================================
 // 本地状态适配器常量（U2：无上游对应；生产持久化策略在集成阶段确定）
 // =============================================================================

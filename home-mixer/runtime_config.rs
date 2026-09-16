@@ -241,13 +241,45 @@ impl HomeMixerMode {
 }
 
 /// Local replacement for the upstream service-builder configuration.
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug)]
 pub struct HomeMixerConfig {
     pub mode: HomeMixerMode,
     pub features: HomeMixerFeatures,
     pub debug_token: Option<String>,
     pub feed_state: FeedStateConfig,
     pub uas: UasConfig,
+    /// Server-side budget for one RPC after query construction; see
+    /// `params::REQUEST_TIMEOUT_MS`. A shorter client `grpc-timeout` wins.
+    pub request_timeout: Duration,
+}
+
+impl Default for HomeMixerConfig {
+    fn default() -> Self {
+        Self {
+            mode: HomeMixerMode::default(),
+            features: HomeMixerFeatures::default(),
+            debug_token: None,
+            feed_state: FeedStateConfig::default(),
+            uas: UasConfig::default(),
+            request_timeout: Duration::from_millis(crate::params::REQUEST_TIMEOUT_MS),
+        }
+    }
+}
+
+const REQUEST_TIMEOUT_ENV: &str = "HOME_MIXER_REQUEST_TIMEOUT_MS";
+
+fn request_timeout_from_lookup(
+    lookup: impl Fn(&str) -> Option<String>,
+) -> anyhow::Result<Duration> {
+    match non_empty(lookup(REQUEST_TIMEOUT_ENV)) {
+        None => Ok(Duration::from_millis(crate::params::REQUEST_TIMEOUT_MS)),
+        Some(value) => value
+            .parse::<u64>()
+            .ok()
+            .filter(|millis| *millis > 0)
+            .map(Duration::from_millis)
+            .ok_or_else(|| anyhow::anyhow!("{REQUEST_TIMEOUT_ENV} must be a positive integer")),
+    }
 }
 
 impl HomeMixerConfig {
@@ -263,6 +295,7 @@ impl HomeMixerConfig {
             // which is also the UAS fallback, so its error stays primary.
             feed_state: FeedStateConfig::from_env(mode)?,
             uas: UasConfig::from_env(mode)?,
+            request_timeout: request_timeout_from_lookup(|name| std::env::var(name).ok())?,
         };
         config.validate()?;
         Ok(config)
@@ -276,6 +309,9 @@ impl HomeMixerConfig {
         }
         self.feed_state.validate(self.mode)?;
         self.uas.validate(self.mode)?;
+        if self.request_timeout.is_zero() {
+            anyhow::bail!("the request timeout must be positive");
+        }
         if self.features.unsigned_cached_posts && self.mode != HomeMixerMode::Demo {
             anyhow::bail!("HOME_MIXER_ENABLE_UNSIGNED_CACHED_POSTS is allowed only in demo mode");
         }
@@ -535,6 +571,41 @@ mod tests {
     }
 
     #[test]
+    fn request_timeout_defaults_and_rejects_non_positive_overrides() {
+        assert_eq!(
+            request_timeout_from_lookup(|_| None).unwrap(),
+            Duration::from_millis(crate::params::REQUEST_TIMEOUT_MS)
+        );
+        assert_eq!(
+            request_timeout_from_lookup(|name| lookup_in(&[(REQUEST_TIMEOUT_ENV, " 2500 ")], name))
+                .unwrap(),
+            Duration::from_millis(2_500)
+        );
+        for value in ["0", "-1", "fast", ""] {
+            let result = request_timeout_from_lookup(|name| {
+                lookup_in(&[(REQUEST_TIMEOUT_ENV, value)], name)
+            });
+            if value.is_empty() {
+                assert!(result.is_ok(), "blank falls back to the default");
+            } else {
+                assert!(result.is_err(), "{value:?}");
+            }
+        }
+
+        let mut config = HomeMixerConfig {
+            mode: HomeMixerMode::Demo,
+            ..Default::default()
+        };
+        assert!(config.validate().is_ok());
+        config.request_timeout = Duration::ZERO;
+        assert!(config
+            .validate()
+            .unwrap_err()
+            .to_string()
+            .contains("request timeout"));
+    }
+
+    #[test]
     fn sensitive_or_unready_modes_are_rejected() {
         let mut config = HomeMixerConfig {
             mode: HomeMixerMode::Degraded,
@@ -545,6 +616,7 @@ mod tests {
             debug_token: None,
             feed_state: FeedStateConfig::Redis(RedisFeedStateConfig::new("redis://localhost/")),
             uas: UasConfig::Disabled,
+            ..Default::default()
         };
         assert!(config
             .validate()

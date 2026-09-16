@@ -6,6 +6,7 @@
 //   3. 对候选帖子进行过滤、打分聚合
 //   4. 返回最终排序后的 Feed 流
 
+pub mod admin_server;
 pub mod ads;
 pub mod candidate_diversity_stats;
 pub mod candidate_hydrators;
@@ -18,15 +19,19 @@ pub mod feed_state;
 pub mod feed_stats;
 mod filters;
 pub mod for_you_server;
+pub mod logging;
+pub mod metrics;
 pub mod models;
 pub mod params;
 pub mod query_builder;
 pub mod query_hydrators;
+pub mod rpc_policy;
 pub mod runtime_config;
 pub mod scored_posts_server;
 pub mod scorers;
 pub mod selectors;
 pub mod server;
+pub mod shutdown;
 pub mod side_effects;
 pub mod sources;
 pub mod util;

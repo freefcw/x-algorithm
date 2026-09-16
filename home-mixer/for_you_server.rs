@@ -5,6 +5,7 @@ use crate::feed_stats::{FeedStatsSink, LoggingFeedStats};
 use crate::models::feed_item::FeedItem;
 use crate::models::query::ScoredPostsQuery;
 use crate::query_builder::QueryBuilder;
+use crate::rpc_policy::RpcPolicy;
 use crate::scored_posts_server::ScoredPostsServer;
 use crate::selectors::blender_selector::BlenderConfig;
 use crate::sources::scored_posts_source::ScoredPostsProvider;
@@ -22,6 +23,7 @@ pub struct ForYouFeedOutput {
 
 pub struct ForYouFeedServer {
     query_builder: QueryBuilder,
+    rpc_policy: RpcPolicy,
     pipeline: ForYouCandidatePipeline,
     served_persist: Option<Arc<dyn ServedPersistence>>,
 }
@@ -29,7 +31,7 @@ pub struct ForYouFeedServer {
 impl ForYouFeedServer {
     pub fn new(query_builder: QueryBuilder, scored_posts_server: Arc<ScoredPostsServer>) -> Self {
         let provider: Arc<dyn ScoredPostsProvider> = scored_posts_server.clone();
-        Self::with_local_state_and_query_builder(
+        let mut server = Self::with_local_state_and_query_builder(
             query_builder,
             provider,
             BlenderConfig::default(),
@@ -37,7 +39,11 @@ impl ForYouFeedServer {
             scored_posts_server.feed_state_store(),
             Arc::new(LoggingFeedStats),
             Some(scored_posts_server.served_persist()),
-        )
+        );
+        // One budget and one metrics registry per process: the For You entry
+        // point must not account separately from the inner scorer.
+        server.rpc_policy = scored_posts_server.rpc_policy().clone();
+        server
     }
 
     pub fn with_provider(provider: Arc<dyn ScoredPostsProvider>, config: BlenderConfig) -> Self {
@@ -51,6 +57,7 @@ impl ForYouFeedServer {
     ) -> Self {
         Self {
             query_builder: QueryBuilder::default(),
+            rpc_policy: RpcPolicy::default(),
             pipeline: ForYouCandidatePipeline::with_sources(provider, config, supplemental_sources),
             served_persist: None,
         }
@@ -87,6 +94,7 @@ impl ForYouFeedServer {
             .unwrap_or_else(|| Arc::new(FeedStateServedPersistence::new(Arc::clone(&state_store))));
         Self {
             query_builder,
+            rpc_policy: RpcPolicy::default(),
             pipeline: ForYouCandidatePipeline::with_local_state(
                 provider,
                 config,
@@ -100,6 +108,10 @@ impl ForYouFeedServer {
 
     pub(crate) fn query_builder(&self) -> QueryBuilder {
         self.query_builder.clone()
+    }
+
+    pub(crate) fn rpc_policy(&self) -> &RpcPolicy {
+        &self.rpc_policy
     }
 
     pub async fn get_for_you_feed(&self, query: ScoredPostsQuery) -> ForYouFeedOutput {

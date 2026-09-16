@@ -6,6 +6,7 @@ use crate::models::candidate::CandidateHelpers;
 use crate::models::ids::{wire_id, wire_optional_id};
 use crate::models::query::ScoredPostsQuery;
 use crate::query_builder::QueryBuilder;
+use crate::rpc_policy::RpcPolicy;
 use crate::visibility::models::VisibilityDecision;
 use log::info;
 use std::sync::Arc;
@@ -24,6 +25,7 @@ pub struct ScoredPostsServer {
     pipeline: Arc<PhoenixCandidatePipeline>,
     query_builder: QueryBuilder,
     debug_access: DebugAccessPolicy,
+    rpc_policy: RpcPolicy,
     feed_state: Arc<dyn FeedStateStore>,
     served_persist: Arc<dyn ServedPersistence>,
 }
@@ -55,6 +57,7 @@ impl ScoredPostsServer {
             pipeline,
             query_builder,
             debug_access: DebugAccessPolicy::default(),
+            rpc_policy: RpcPolicy::default(),
             served_persist: Arc::new(FeedStateServedPersistence::new(Arc::clone(&state_store))),
             feed_state: state_store,
         }
@@ -74,6 +77,13 @@ impl ScoredPostsServer {
         self
     }
 
+    /// Request budget and metrics sink for the RPC entry points. The For You
+    /// server built on top of this one inherits the same policy.
+    pub fn with_rpc_policy(mut self, rpc_policy: RpcPolicy) -> Self {
+        self.rpc_policy = rpc_policy;
+        self
+    }
+
     pub(crate) fn authorize_debug(
         &self,
         metadata: &tonic::metadata::MetadataMap,
@@ -83,6 +93,10 @@ impl ScoredPostsServer {
 
     pub(crate) fn query_builder(&self) -> QueryBuilder {
         self.query_builder.clone()
+    }
+
+    pub(crate) fn rpc_policy(&self) -> &RpcPolicy {
+        &self.rpc_policy
     }
 
     pub(crate) fn feed_state_store(&self) -> Arc<dyn FeedStateStore> {

@@ -272,7 +272,7 @@ mod kafka {
 
         let mut projector = Projector::new(store, RetryPolicy::default());
         let mut stream = consumer.stream();
-        let mut shutdown = std::pin::pin!(shutdown_signal());
+        let mut shutdown = std::pin::pin!(home_mixer::shutdown::signal());
         let mut last_report = Instant::now();
         let outcome = loop {
             let message = tokio::select! {
@@ -331,40 +331,11 @@ mod kafka {
             Err(error) => log::warn!("final Kafka offset commit failed: {error}"),
         }
     }
-
-    async fn shutdown_signal() {
-        let ctrl_c = async {
-            if let Err(error) = tokio::signal::ctrl_c().await {
-                log::warn!("failed to listen for Ctrl-C: {error}");
-                std::future::pending::<()>().await;
-            }
-        };
-        #[cfg(unix)]
-        {
-            let terminate = async {
-                match tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate()) {
-                    Ok(mut signal) => {
-                        signal.recv().await;
-                    }
-                    Err(error) => {
-                        log::warn!("failed to listen for SIGTERM: {error}");
-                        std::future::pending::<()>().await;
-                    }
-                }
-            };
-            tokio::select! {
-                _ = ctrl_c => {}
-                _ = terminate => {}
-            }
-        }
-        #[cfg(not(unix))]
-        ctrl_c.await;
-    }
 }
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
-    env_logger::init();
+    home_mixer::logging::init_from_env()?;
     let config = UasConfig::redis_from_env()?;
     let store = RedisUserActionSequenceStore::new(config)
         .await
