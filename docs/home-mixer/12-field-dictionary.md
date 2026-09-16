@@ -68,7 +68,7 @@
 | `cached_posts` / `has_cached_posts` | `Vec<PostCandidate>` / `bool` | proto `cached_posts` | `QueryBuilder`（默认拒绝 unsigned，仅 Demo 放行） | `CachedPostsSource` |
 | `exclude_videos` / `enable_phoenix_moe` | `bool` | proto | `QueryBuilder` | `VideoFilter` / `PhoenixMoeSource` |
 | `impressed_post_ids` / `past_request_timestamps_ms` | `Vec<PostId>` / `Vec<i64>` | proto（后者还由 `PastRequestTimestampsQueryHydrator` 合并本地状态） | `QueryBuilder` / 状态 Query Hydrator | 备份去重 / 请求频次状态 |
-| `is_preview` / `is_shadow_traffic` / `is_polling` | `bool` | proto | `QueryBuilder` | 透传；`is_shadow_traffic` 仅由默认不装配的 `ServedCandidatesKafkaSideEffect` 读取 |
+| `is_preview` / `is_shadow_traffic` / `is_polling` | `bool` | proto | `QueryBuilder` | 透传；`is_shadow_traffic` 写入 `ServedCandidatesKafkaSideEffect` 的曝光事件字段，不再作为该 SideEffect 的启用门槛 |
 | `is_top_request` | `bool` | 内部（无 proto 字段） | `QueryBuilder`（`!is_bottom_request`） | ForYou 流量类型语义 |
 | `ip_address` / `user_agent` | `String` | proto | `QueryBuilder` | `ip_address` 无消费者；`user_agent` 仅未装配的 `TweetMixerSource` 读取 |
 | `request_id` | `String` | 本地生成 | `QueryBuilder` | pipeline 日志追踪 |

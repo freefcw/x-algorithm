@@ -100,6 +100,7 @@ Query hydrator 失败只记 request-scoped error 日志、不中断请求：UAS 
 | --- | --- | --- | --- | --- | --- |
 | `PhoenixRequestCacheSideEffect` | `side_effects/phoenix_request_cache_side_effect.rs` | `HOME_MIXER_ENABLE_REQUEST_CACHE_SIDE_EFFECT=true` 且请求允许 | `user_id` + 最终候选 tweet ids | `StratoClient.store_request_info` | 默认关闭；fire-and-forget，不阻塞响应 |
 | `ResponseDiversityStatsSideEffect` | `side_effects/response_diversity_stats_side_effect.rs` | 默认装配，非空结果按 5% 采样 | selected candidates 的 `author_id`、`served_type`、`in_network`、`score` | 本地候选多样性 sink，默认日志 adapter | 记录内层 final/top10；不读 weighted_score，不改排序，不记录 SID/实验桶/pre_heuristic |
+| `ServedCandidatesKafkaSideEffect`（SE-11） | `side_effects/served_candidates_kafka_side_effect.rs` | 配置了 `SERVED_EVENTS_KAFKA_BROKERS`/`SERVED_EVENTS_KAFKA_TOPIC` 或 `SERVED_EVENTS_JSONL_PATH` 时装配；装配后每个非空响应都发布（含影子流量） | `request_id`、`viewer_id`、`request_time_ms`、最终列表的 `position` / `post_id` / `author_id` / `served_type` / `score` / `degraded_reason` | `ServedCandidatesSink`（`clients/served_candidates_sink.rs`：JSON Lines 文件或 Kafka，Kafka 需 `--features kafka`） | 服务端曝光日志，训练归因的原始事件源；事件合同见 `docs/implementation/served-candidates-event-contract.md`；fire-and-forget，失败只记日志 |
 
 ## 8. 支撑性工具模块
 
@@ -198,4 +199,3 @@ flowchart TD
 | `TweetMixerSource` | `sources/tweet_mixer_source.rs` |
 | `BlockedByHydrator` | `candidate_hydrators/blocked_by_hydrator.rs`（候选作者、转推原作者、引用作者反向屏蔽；真实 Adapter 未接入） |
 | `PublishSeenIdsToKafkaSideEffect` | `side_effects/publish_seen_ids_to_kafka_side_effect.rs` |
-| `ServedCandidatesKafkaSideEffect` | `side_effects/served_candidates_kafka_side_effect.rs` |

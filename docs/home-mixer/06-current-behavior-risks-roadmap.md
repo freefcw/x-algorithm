@@ -52,7 +52,7 @@ Debug RPC 已有独立 token，unsigned cache 已被隔离，但普通 ScoredPos
 
 ### 4.3 本地 Feed 状态不是生产持久层
 
-Demo 的 `InMemoryFeedStateStore` 有 10,000 用户上限，进程重启会丢失历史。业务模式使用 Redis，以原子事务更新有界下发历史和请求时间戳，默认滑动保留七天；同一请求的各个步骤只加载一份快照。Redis 重启或切主后，首次读取会在新连接上重试一次，保证恢复后的第一个请求仍能看到历史；Redis 持久化、备份和恢复由部署策略决定，未开持久化时历史随重启丢失。客户端只连单一端点，原生 Cluster 路由不受支持，部署前需确认复用的 Redis 是单节点或代理端点。该接口没有 position / event_type，不能作为训练归因的原始事件源；历史共享也不等于同一用户并发请求绝不重复下发。
+Demo 的 `InMemoryFeedStateStore` 有 10,000 用户上限，进程重启会丢失历史。业务模式使用 Redis，以原子事务更新有界下发历史和请求时间戳，默认滑动保留七天；同一请求的各个步骤只加载一份快照。Redis 重启或切主后，首次读取会在新连接上重试一次，保证恢复后的第一个请求仍能看到历史；Redis 持久化、备份和恢复由部署策略决定，未开持久化时历史随重启丢失。客户端只连单一端点，原生 Cluster 路由不受支持，部署前需确认复用的 Redis 是单节点或代理端点。该接口没有 position / event_type，不能作为训练归因的原始事件源——训练归因用的是 `ServedCandidatesKafkaSideEffect` 发布的服务端曝光事件（配置 `SERVED_EVENTS_*` 后装配，见 `docs/implementation/served-candidates-event-contract.md`）；历史共享也不等于同一用户并发请求绝不重复下发。
 
 ### 4.4 非 demo 下模型路径依赖 UAS 投影的真实数据
 
@@ -66,7 +66,7 @@ Home Mixer 已在非 demo 下装配 Redis UAS adapter，但序列内容完全取
 
 1. **Viewer relations + VF**：先闭合用户关系和内容安全语义、认证、超时、漏返回及审计；viewer 关系后端（mrpyq `ViewerRelationService`）与推荐侧端口迁移同批上线。
 2. **TES + Gizmoduck**：TES 已由 mrpyq `BatchGetRecommendationContents` 承载，待确认 `creator_member_id` 必填；Gizmoduck 作者昵称 / 粉丝数适配器仍缺。
-3. **UAS 事件流 + 持久化 served / feedback**：Redis UAS adapter 与 `uas-worker` 已就位，待验收真实埋点 topic 的事件 schema、认证、保留与重放合同并接入；把 `ServedPersistence` 升格为带 position / event_type 的持久事件流并补 feedback RPC；写回必须有幂等和保留期。
+3. **UAS 事件流 + 持久化 served / feedback**：Redis UAS adapter 与 `uas-worker` 已就位，待验收真实埋点 topic 的事件 schema、认证、保留与重放合同并接入；服务端曝光事件流已由 `ServedCandidatesKafkaSideEffect` + `ServedCandidatesSink` 承担（带 position / served_type / score，幂等键 `request_id`），待确定 topic、保留期与消费方；客户端真实曝光和 feedback 仍需埋点侧回传，按 `request_id` + `post_id` 关联。
 4. **Phoenix artifact/service**：用真实 LFS artifact 验证 offline/gRPC 一致性、延迟、容量和 fallback。
 5. **普通 RPC 身份边界**：完成调用方身份与 viewer 绑定后，才允许 `production_ready` 启动。
 

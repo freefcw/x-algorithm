@@ -97,6 +97,10 @@ flowchart TD
 | `UAS_KAFKA_BROKERS` / `UAS_KAFKA_TOPIC` | `bin/uas_worker.rs` | 启用 Kafka 消费模式并指定现有行为 topic | 未设置 broker 时从 stdin 读取换行 JSON；Kafka 模式需要用 `--features kafka` 构建 |
 | `UAS_KAFKA_GROUP_ID` / `UAS_KAFKA_AUTO_OFFSET_RESET` | `bin/uas_worker.rs` | 消费组与首次消费位置 | 默认 `home-mixer-uas-projector` / `earliest` |
 | `UAS_KAFKA_SECURITY_PROTOCOL` | `bin/uas_worker.rs` | Kafka 安全协议 | 默认 `PLAINTEXT`；`SASL_PLAINTEXT` / `SASL_SSL` 还需配置 `UAS_KAFKA_SASL_MECHANISM`（默认 `PLAIN`）、`UAS_KAFKA_SASL_USERNAME`、`UAS_KAFKA_SASL_PASSWORD`；纯 `SSL` 不需要凭据 |
+| `SERVED_EVENTS_KAFKA_BROKERS` / `SERVED_EVENTS_KAFKA_TOPIC` | `clients/served_candidates_sink.rs` | 装配 `ServedCandidatesKafkaSideEffect`，把每次请求的服务端曝光事件发到该 topic（分区键 `viewer_id`，`enable.idempotence=true`） | 两者必须同时设置；未设置时不装配曝光日志，非 demo 启动时告警。Kafka sink 需要 `--features kafka` 构建，否则启动失败 |
+| `SERVED_EVENTS_JSONL_PATH` | `clients/served_candidates_sink.rs` | 本地联调 / 离线抓样本：曝光事件追加写入该 JSON Lines 文件 | 与 Kafka 变量互斥；多副本部署不要使用 |
+| `SERVED_EVENTS_KAFKA_SECURITY_PROTOCOL` | `clients/served_candidates_sink.rs` | 曝光 topic 的 Kafka 安全协议 | 默认 `PLAINTEXT`；`SASL_PLAINTEXT` / `SASL_SSL` 还需 `SERVED_EVENTS_KAFKA_SASL_MECHANISM`（默认 `PLAIN`）、`SERVED_EVENTS_KAFKA_SASL_USERNAME`、`SERVED_EVENTS_KAFKA_SASL_PASSWORD` |
+| `SERVED_EVENTS_KAFKA_DELIVERY_TIMEOUT_MS` | `clients/served_candidates_sink.rs` | 单条曝光事件从发送到 broker 确认的上限 | 默认 `5000`，必须为正整数；超时只记 side effect 失败日志，不影响响应 |
 | `HOME_MIXER_ENABLE_PHOENIX_MOE` | `feature_policy.rs` | 显式启用 Phoenix MoE 旁路召回 | 默认关闭；启用但缺少 `PHOENIX_MOE_GRPC_ADDR` 时记录告警并跳过，主链继续 |
 | `HOME_MIXER_ENABLE_REQUEST_CACHE_SIDE_EFFECT` | `feature_policy.rs` | 显式启用请求缓存 SideEffect | 默认关闭；启用前必须人工确认真实 Strato adapter、schema、认证和保留策略 |
 | `HOME_MIXER_ENABLE_DEBUG_RPC` | `feature_policy.rs` / `debug_access.rs` | 启用 `DebugScoredPosts` | 默认关闭；开启时必须同时提供 `HOME_MIXER_DEBUG_TOKEN`，调用方通过 `x-home-mixer-debug-token` metadata 传入 |
