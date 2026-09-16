@@ -104,7 +104,9 @@ uv run scripts/run_grpc_gateway.py --corpus-size 1000
 | `--ranker-checkpoint` | 精排模型参数文件 |
 | `--retrieval-checkpoint` | 召回模型参数文件 |
 | `--emb-tables` | 用户/帖子/作者嵌入表 |
-| `--corpus-size` | Demo 候选池大小，`run_demo.sh` 使用 1000 |
+| `--corpus-size` | Demo 候选池大小，`run_demo.sh` 使用 1000；提供 `--corpus-path` 时忽略 |
+| `--corpus-path` | `scripts/build_retrieval_index.py` 产出的召回索引（`.npz`）。不传则合成演示 ID，召回结果在 mrpyq 水合不到、会被 `CoreDataHydrationFilter` 丢弃 |
+| `--corpus-refresh-seconds` | 索引文件热替换的检查周期；文件被离线任务重建（mtime 变化）后在检索锁内原子切换，加载失败保留旧池 |
 
 使用训练产物：
 
@@ -114,6 +116,26 @@ uv run scripts/run_grpc_gateway.py \
   --retrieval-checkpoint checkpoints_retrieval/retrieval_params_step200.npz \
   --emb-tables checkpoints/embedding_tables.npz
 ```
+
+真实候选池：先离线编码可推荐帖子，再让网关加载并定时刷新。索引与 retrieval checkpoint 一一对应，网关拒绝加载模型版本不一致的索引；`corpus-version` trailing metadata（`model@built_at_ms:size`）标出回答请求的是哪一份索引。
+
+```bash
+# 输入至少两列 post_id / author_id（24 位 hex ObjectId：mrpyq feed_id / creator_member_id），
+# 可选 created_at_ms；默认只保留最近 48 小时（与 home-mixer AgeFilter 一致）
+uv run scripts/build_retrieval_index.py \
+  --posts data/recommendable_posts.parquet \
+  --retrieval-checkpoint checkpoints_retrieval/retrieval_params_step200.npz \
+  --emb-tables checkpoints_retrieval/embedding_tables.npz \
+  --output indexes/retrieval_index.npz
+
+uv run scripts/run_grpc_gateway.py \
+  --retrieval-checkpoint checkpoints_retrieval/retrieval_params_step200.npz \
+  --emb-tables checkpoints_retrieval/embedding_tables.npz \
+  --corpus-path indexes/retrieval_index.npz \
+  --corpus-refresh-seconds 300
+```
+
+帖子清单由 mrpyq 侧提供（当前 `RecommendationDataService` 没有按时间枚举全部可推荐帖子的接口，这是接入前提）。
 
 ## 5. 训练数据需要准备什么
 

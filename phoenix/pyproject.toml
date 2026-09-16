@@ -113,6 +113,7 @@ service = [
     "prometheus-client>=0.21.0",
     "grpcio>=1.68.0",
     "grpcio-tools>=1.68.0",
+    "grpcio-health-checking>=1.68.0",
 ]
 
 [tool.pytest.ini_options]

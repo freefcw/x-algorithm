@@ -12,6 +12,13 @@ Phoenix gRPC 网关启动脚本。
     uv run scripts/run_grpc_gateway.py \
         --ranker-checkpoint checkpoints/step-000200
 
+    # 真实候选池：离线索引 + 每 5 分钟检查一次文件是否被重建
+    uv run scripts/run_grpc_gateway.py \
+        --retrieval-checkpoint checkpoints_retrieval/retrieval_params_step200.npz \
+        --emb-tables checkpoints_retrieval/embedding_tables.npz \
+        --corpus-path indexes/retrieval_index.npz \
+        --corpus-refresh-seconds 300
+
 依赖:
     uv sync --group service   # 包含 grpcio / grpcio-tools
 """
@@ -57,9 +64,27 @@ def main():
         "--corpus-size",
         type=int,
         default=2000,
-        help="演示候选池大小（默认 2000）",
+        help="演示候选池大小（默认 2000）；提供 --corpus-path 时忽略",
+    )
+    parser.add_argument(
+        "--corpus-path",
+        default=os.getenv("RETRIEVAL_CORPUS_PATH"),
+        help=(
+            "scripts/build_retrieval_index.py 产出的召回索引（.npz）。"
+            "不传则合成演示候选池，召回 ID 在业务侧水合不到"
+        ),
+    )
+    parser.add_argument(
+        "--corpus-refresh-seconds",
+        type=float,
+        default=float(os.getenv("RETRIEVAL_CORPUS_REFRESH_SECONDS", "0")),
+        help="索引文件热替换的检查周期（秒）；0 表示只在启动时加载一次",
     )
     args = parser.parse_args()
+    if args.corpus_refresh_seconds < 0:
+        parser.error("--corpus-refresh-seconds 不能为负数")
+    if args.corpus_refresh_seconds > 0 and not args.corpus_path:
+        parser.error("--corpus-refresh-seconds 需要同时提供 --corpus-path")
 
     from services.grpc_gateway import serve
 
@@ -70,6 +95,8 @@ def main():
         retrieval_checkpoint=args.retrieval_checkpoint,
         emb_tables_path=args.emb_tables,
         corpus_size=args.corpus_size,
+        corpus_path=args.corpus_path,
+        corpus_refresh_seconds=args.corpus_refresh_seconds,
     )
 
 

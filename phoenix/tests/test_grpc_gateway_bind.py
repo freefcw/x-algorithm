@@ -45,6 +45,9 @@ def test_serve_defaults_to_loopback_and_allows_explicit_host(monkeypatch):
         lambda *_: SimpleNamespace(model_version="retrieval"),
     )
     monkeypatch.setattr(gateway, "create_servicers", lambda *_: (object(), object()))
+    # 健康检查与信号处理各有自己的测试；这里的假 server 没有 generic handler 注册接口。
+    monkeypatch.setattr(gateway, "register_health_service", lambda _server: None)
+    monkeypatch.setattr(gateway, "install_shutdown_handlers", lambda *_: None)
 
     gateway.serve(port=50123)
     assert servers[-1].address == "127.0.0.1:50123"

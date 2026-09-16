@@ -212,8 +212,8 @@ graph TD
 
 训练程序本身已经落地：`scripts/train_ranker.py`（多目标损失：前 18 个行为 BCE + dwell_time MSE，Parquet 流式/模拟数据加载，`.npz` checkpoint 与嵌入表保存）和 `scripts/train_retrieval.py`（in-batch negatives 对比损失，参数保存）覆盖了 §4-§6 推断的基础训练链路。仍缺的是：
 
-1. 训练评估与指标（AUC、召回率等）以及评估集切分惯例。
-2. 离线物品向量导出任务（把训练好的物品塔向量批量导出给在线召回）。
+1. 训练评估与指标（AUC、召回率等）以及评估集切分惯例（`scripts/eval_ranker.py` 已覆盖精排的基础评估）。
+2. ~~离线物品向量导出任务~~ 已由 `scripts/build_retrieval_index.py` + `services/retrieval_index.py` 落地：用候选塔编码帖子清单写出 `.npz` 索引，gRPC 网关 `--corpus-path` 加载并按 mtime 热替换。仍缺的是产出帖子清单的上游任务（mrpyq 侧按时间枚举可推荐帖子）和定时调度。
 3. 持续训练、checkpoint 版本化与发版的例行化流程。
 
 ## 11. 对当前仓库最合理的训练侧判断
@@ -231,7 +231,7 @@ Phoenix 演示栈已经有可跑的训练脚本；生产引擎另有一套配方
 ## 12. 如果继续补齐训练侧，优先级应该是什么
 
 1. 先补训练评估（AUC 等指标与评估集），因为基础训练程序已落地，最缺的是判断"训得好不好"。
-2. 再补离线物品向量导出与向量索引的离线任务串联。
+2. 再把离线索引构建（`scripts/build_retrieval_index.py`）接上帖子清单来源与调度，形成"帖子清单 → 编码 → 网关热替换"的例行任务。
 3. 最后补持续训练与发版例行化。
 
 基础排序/召回训练已可由 `scripts/train_ranker.py` / `scripts/train_retrieval.py` 完成，上面的优先级针对的是仍未覆盖的环节。
