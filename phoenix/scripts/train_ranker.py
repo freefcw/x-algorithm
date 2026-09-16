@@ -1144,8 +1144,10 @@ if __name__ == "__main__":
     )
     parser.add_argument(
         "--observed-actions", type=str, default=None,
-        help="逗号分隔的已采集行为（如 favorite,reply）；只有这些头参与损失/评估并写入 metadata。"
-             "不指定则全部 19 个头参与",
+        help="逗号分隔的已采集行为；只有这些头参与损失/评估并写入 metadata，网关按它广播 "
+             "supported-actions，home-mixer 要求其覆盖全部非零权重 head。线上 v1 取值是 "
+             "favorite,reply,report（docs/implementation/phoenix-training-data-decisions.md §1）。"
+             "不指定则全部 19 个头参与（仅适合模拟数据）",
     )
     parser.add_argument(
         "--eval-dir", type=str, default=None,

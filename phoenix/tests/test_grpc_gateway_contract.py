@@ -206,6 +206,51 @@ def test_servicer_echoes_business_string_ids():
     assert returned.author_id == "602e867f0de2d061ee418407"
 
 
+def test_default_supported_actions_are_the_v1_head_set():
+    """没有 checkpoint metadata 时广播的 head 集合必须是 model_contract 的唯一定义。
+
+    home-mixer 的 `REQUIRED_SUPPORTED_ACTIONS` 是同一决策的另一份拷贝（决策记录 §1.3：
+    v1 = 点赞 1、评论 2、举报 18）。这里锁住 Python 侧的两处：常量本身和 servicer 默认值。
+    """
+    from services.grpc_gateway import create_servicers
+    from services.inference_types import CandidatePrediction
+    from services.model_contract import NONZERO_WEIGHT_ACTION_ENUMS, supported_actions_header
+
+    assert NONZERO_WEIGHT_ACTION_ENUMS == (1, 2, 18)
+    assert supported_actions_header() == "1,2,18"
+
+    _, recsys_pb2_grpc = load_proto_modules()
+
+    class _Ranker:
+        model_version = "unit"
+
+        def predict(self, user_id, uas, candidates):
+            return [
+                CandidatePrediction(action_probs=np.full(len(ACTIONS), 0.5))
+                for _ in candidates
+            ]
+
+    class _Context:
+        def __init__(self):
+            self.metadata = None
+
+        def set_trailing_metadata(self, metadata):
+            self.metadata = dict(metadata)
+
+    context = _Context()
+    servicer, _ = create_servicers(recsys_pb2, recsys_pb2_grpc, _Ranker(), None)
+    response = servicer.PredictNextActions(
+        recsys_pb2.PredictNextActionsRequest(candidates=[recsys_pb2.TweetInfo(tweet_id="p", author_id="a")]),
+        context,
+    )
+
+    assert context.metadata["supported-actions"] == supported_actions_header()
+    distribution = response.distribution_sets[0].candidate_distributions[0]
+    # 只有 v1 head 携带真实概率，其余位是 MIN_PROB 占位（click=6 是最容易被误开的一个）。
+    assert distribution.top_log_probs[18] == pytest.approx(math.log(0.5))
+    assert distribution.top_log_probs[6] == pytest.approx(math.log(1e-9))
+
+
 def test_servicer_filters_unobserved_actions():
     """训练只观测部分行为时，gRPC 不得把其他 head 当成有效预测。"""
     from services.grpc_gateway import MIN_PROB, create_servicers

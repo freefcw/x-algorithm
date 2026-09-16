@@ -11,7 +11,12 @@ ACTION_IDX_TO_ENUM = (1, 2, 3, 5, 6, 7, 8, 9, 10, 11, 12, 4, 13, 14, 15, 16, 17,
 ALL_ACTION_ENUMS = tuple(range(1, 19))
 # Heads with a non-zero ranking contribution in Home Mixer.  Metadata may
 # advertise additional trained heads, but these must always be present.
-NONZERO_WEIGHT_ACTION_ENUMS = (1, 2, 5, 6, 8, 9, 10, 11, 14, 15, 16, 17, 18)
+# v1 head set (docs/implementation/phoenix-training-data-decisions.md §1):
+# favorite (1), reply (2), report (18) -- the only actions the platform can
+# collect today.  Must match home-mixer `REQUIRED_SUPPORTED_ACTIONS` and the
+# `--observed-actions favorite,reply,report` training recipe; change all three
+# in one PR (decisions doc §1.4).
+NONZERO_WEIGHT_ACTION_ENUMS = (1, 2, 18)
 
 # 63-bit non-negative; 0 is reserved for xrex padding and bumped to 1.
 _OBJECT_ID_HASH_MASK = 0x7FFF_FFFF_FFFF_FFFF

@@ -67,7 +67,12 @@ from services.inference_types import (
     CandidatePrediction,
     HistoryFeatures,
 )
-from services.model_contract import ACTION_IDX_TO_ENUM, FEATURE_SCHEMA, supported_actions_header
+from services.model_contract import (
+    ACTION_IDX_TO_ENUM,
+    FEATURE_SCHEMA,
+    NONZERO_WEIGHT_ACTION_ENUMS,
+    supported_actions_header,
+)
 from services.recsys_proto import load_proto_modules
 from services.retrieval_index import RetrievalIndex, RetrievalIndexError, now_ms
 
@@ -627,8 +632,10 @@ def create_servicers(
     continuous_dwell_supported: bool = True,
 ):
     """构造两个 servicer（在函数内定义类，因为基类来自运行时生成的模块）。"""
+    # 没有 checkpoint metadata（随机权重 / 旧 checkpoint）时按 home-mixer 必需的
+    # head 集合广播，来源是 model_contract 的唯一定义，不在这里另抄一份。
     supported = set(
-        [1, 2, 5, 6, 8, 9, 10, 11, 14, 15, 16, 17, 18]
+        NONZERO_WEIGHT_ACTION_ENUMS
         if supported_action_enums is None
         else supported_action_enums
     )
