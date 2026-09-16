@@ -67,6 +67,7 @@ from services.inference_types import (
     CandidatePrediction,
     HistoryFeatures,
 )
+from services.gateway_metrics import GatewayMetrics
 from services.model_contract import (
     ACTION_IDX_TO_ENUM,
     FEATURE_SCHEMA,
@@ -649,8 +650,12 @@ def create_servicers(
     retrieval: Any,
     supported_action_enums: Sequence[int] | None = None,
     continuous_dwell_supported: bool = True,
+    metrics: GatewayMetrics | None = None,
 ):
-    """构造两个 servicer（在函数内定义类，因为基类来自运行时生成的模块）。"""
+    """构造两个 servicer（在函数内定义类，因为基类来自运行时生成的模块）。
+
+    ``metrics`` 缺省时用一个未暴露的私有注册表，servicer 代码不需要分支。
+    """
     # 没有 checkpoint metadata（随机权重 / 旧 checkpoint）时按 home-mixer 必需的
     # head 集合广播，来源是 model_contract 的唯一定义，不在这里另抄一份。
     supported = set(
@@ -659,6 +664,8 @@ def create_servicers(
         else supported_action_enums
     )
     supported_actions = ",".join(str(value) for value in sorted(supported))
+    if metrics is None:
+        metrics = GatewayMetrics()
 
     def set_contract_metadata(context, engine) -> None:
         metadata = [
@@ -676,12 +683,18 @@ def create_servicers(
 
     class PredictionServicer(recsys_pb2_grpc.PhoenixPredictionServiceServicer):
         def PredictNextActions(self, request, context):
+            with metrics.observe_rpc("PredictNextActions"):
+                return self._predict(request, context)
+
+        def _predict(self, request, context):
             start = time.time()
             set_contract_metadata(context, ranker)
             candidates = [(c.tweet_id, c.author_id) for c in request.candidates]
-            predictions = ranker.predict(
-                request.user_id, request.user_action_sequence, candidates
-            )
+            metrics.rank_candidates.observe(len(candidates))
+            with metrics.observe_engine("ranker"):
+                predictions = ranker.predict(
+                    request.user_id, request.user_action_sequence, candidates
+                )
 
             distributions = []
             for (tweet_id, author_id), prediction in zip(candidates, predictions):
@@ -730,11 +743,20 @@ def create_servicers(
 
     class RetrievalServicer(recsys_pb2_grpc.PhoenixRetrievalServiceServicer):
         def Retrieve(self, request, context):
+            with metrics.observe_rpc("Retrieve"):
+                return self._retrieve(request, context)
+
+        def _retrieve(self, request, context):
             start = time.time()
             set_contract_metadata(context, retrieval)
-            results = retrieval.retrieve(
-                request.user_id, request.user_action_sequence, request.max_results or 100
-            )
+            with metrics.observe_engine("retrieval"):
+                results = retrieval.retrieve(
+                    request.user_id, request.user_action_sequence, request.max_results or 100
+                )
+            metrics.retrieval_returned.observe(len(results))
+            corpus_size = getattr(retrieval, "corpus_size", None)
+            if isinstance(corpus_size, int):
+                metrics.corpus_size.set(corpus_size)
 
             candidates = [
                 recsys_pb2.ScoredCandidate(
@@ -926,10 +948,17 @@ def serve(
     host: str = "127.0.0.1",
     corpus_path: Optional[str] = None,
     corpus_refresh_seconds: float = 0.0,
+    metrics_port: int = 0,
 ) -> None:
+    """启动网关。``metrics_port > 0`` 时在该端口暴露 Prometheus ``/metrics``（监听 0.0.0.0）。"""
     import grpc
 
     recsys_pb2, recsys_pb2_grpc = load_proto_modules()
+    metrics = GatewayMetrics()
+    if metrics_port > 0:
+        # 先于模型加载开端口：抓取方在启动期间拿到的是空注册表而不是连接拒绝。
+        metrics.start_http_server(metrics_port)
+        logger.info("Prometheus metrics on 0.0.0.0:%d/metrics", metrics_port)
 
     ranker_checkpoint, emb_tables_path = resolve_ranker_checkpoint(
         ranker_checkpoint, emb_tables_path
@@ -952,6 +981,9 @@ def serve(
         ranker_checkpoint
     )
 
+    metrics.set_model_versions(ranker.model_version, retrieval.model_version)
+    if isinstance(getattr(retrieval, "corpus_size", None), int):
+        metrics.corpus_size.set(retrieval.corpus_size)
     prediction_servicer, retrieval_servicer = create_servicers(
         recsys_pb2,
         recsys_pb2_grpc,
@@ -959,6 +991,7 @@ def serve(
         retrieval,
         supported_action_enums,
         continuous_dwell_supported,
+        metrics,
     )
 
     server = grpc.server(futures.ThreadPoolExecutor(max_workers=4))

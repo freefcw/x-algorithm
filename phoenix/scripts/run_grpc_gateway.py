@@ -19,6 +19,9 @@ Phoenix gRPC 网关启动脚本。
         --corpus-path indexes/retrieval_index.npz \
         --corpus-refresh-seconds 300
 
+    # 暴露 Prometheus 指标（默认关闭）
+    uv run scripts/run_grpc_gateway.py --metrics-port 9093
+
 依赖:
     uv sync --group service   # 包含 grpcio / grpcio-tools
 """
@@ -80,11 +83,19 @@ def main():
         default=float(os.getenv("RETRIEVAL_CORPUS_REFRESH_SECONDS", "0")),
         help="索引文件热替换的检查周期（秒）；0 表示只在启动时加载一次",
     )
+    parser.add_argument(
+        "--metrics-port",
+        type=int,
+        default=int(os.getenv("PHOENIX_METRICS_PORT", "0")),
+        help="Prometheus /metrics 端口（监听 0.0.0.0；默认 0 不开启，生产建议 9093）",
+    )
     args = parser.parse_args()
     if args.corpus_refresh_seconds < 0:
         parser.error("--corpus-refresh-seconds 不能为负数")
     if args.corpus_refresh_seconds > 0 and not args.corpus_path:
         parser.error("--corpus-refresh-seconds 需要同时提供 --corpus-path")
+    if args.metrics_port < 0 or args.metrics_port > 65535:
+        parser.error("--metrics-port 必须在 0..65535 之间")
 
     from services.grpc_gateway import serve
 
@@ -97,6 +108,7 @@ def main():
         corpus_size=args.corpus_size,
         corpus_path=args.corpus_path,
         corpus_refresh_seconds=args.corpus_refresh_seconds,
+        metrics_port=args.metrics_port,
     )
 
 
