@@ -20,8 +20,11 @@ futures = "0.3"
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 
-# Feed state persistence
+# Feed state / UAS projection persistence
 redis = { version = "0.27.6", features = ["tokio-comp", "connection-manager"] }
+# Only the `uas-worker` Kafka consumer needs librdkafka; keep the C toolchain
+# requirement out of the default server build (see the `kafka` feature).
+rdkafka = { version = "0.36", features = ["libz", "zstd"], optional = true }
 
 # gRPC
 tonic = { version = "0.12", features = ["gzip", "zstd"] }
@@ -53,6 +56,9 @@ x-algorithm-proto = { path = "../proto" }
 # 真实网内召回走 mrpyq。P3 改 string proto 后删除。
 default = ["legacy-int-ids"]
 legacy-int-ids = []
+# Kafka consumption in `uas-worker`. Without it the worker still builds and
+# projects newline-delimited JSON from stdin (development only).
+kafka = ["dep:rdkafka"]
 
 [[bin]]
 name = "home-mixer"
@@ -61,6 +67,10 @@ path = "main.rs"
 [[bin]]
 name = "demo-client"
 path = "bin/demo_client.rs"
+
+[[bin]]
+name = "uas-worker"
+path = "bin/uas_worker.rs"
 
 [lib]
 path = "lib.rs"

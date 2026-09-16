@@ -684,6 +684,7 @@ dependencies = [
  "prost",
  "rand 0.9.5",
  "rand_distr",
+ "rdkafka",
  "redis",
  "serde",
  "serde_json",
