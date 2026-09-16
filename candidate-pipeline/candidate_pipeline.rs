@@ -1,5 +1,6 @@
 use crate::filter::Filter;
 use crate::hydrator::Hydrator;
+use crate::observer::{PipelineObserver, SideEffectReport};
 use crate::pipeline_summary::{self, StageStats};
 use crate::query_hydrator::QueryHydrator;
 use crate::scorer::Scorer;
@@ -107,6 +108,12 @@ where
     fn post_selection_filters(&self) -> &[Box<dyn Filter<Q, C>>];
     fn side_effects(&self) -> Arc<Vec<Box<dyn SideEffect<Q, C>>>>;
     fn result_size(&self) -> usize;
+
+    /// Metrics hook fed with the per-request summary and side-effect outcomes.
+    /// `None` keeps the log line as the only output.
+    fn observer(&self) -> Option<Arc<dyn PipelineObserver>> {
+        None
+    }
 
     fn finalize(&self, _query: &Q, _candidates: &mut Vec<C>) {}
 
@@ -216,11 +223,14 @@ where
         non_selected_candidates.extend(truncated_candidates);
         self.finalize(&hydrated_query, &mut final_candidates);
 
+        let observer = self.observer();
         pipeline_summary::emit(
             self.name(),
             hydrated_query.request_id(),
             start,
             final_candidates.len(),
+            target_result_size,
+            observer.as_deref(),
         );
 
         let arc_hydrated_query = Arc::new(hydrated_query);
@@ -293,6 +303,7 @@ where
                         err,
                         started.elapsed().as_millis()
                     );
+                    pipeline_summary::record_component_failure(stage, hydrator.name());
                 }
             }
         }
@@ -334,6 +345,10 @@ where
                         source.name(),
                         err,
                         started.elapsed().as_millis()
+                    );
+                    pipeline_summary::record_component_failure(
+                        PipelineStage::Source,
+                        source.name(),
                     );
                 }
             }
@@ -390,6 +405,7 @@ where
                     expected_len,
                     started.elapsed().as_millis()
                 );
+                pipeline_summary::record_failed_candidates(stage, hydrator.name(), failed);
             }
             hydrator.update_all(&mut candidates, hydrated);
             log_component(
@@ -465,6 +481,7 @@ where
                         err,
                         started.elapsed().as_millis()
                     );
+                    pipeline_summary::record_component_failure(stage, filter.name());
                     candidates = backup;
                 }
             }
@@ -494,6 +511,11 @@ where
                     failed,
                     expected_len,
                     started.elapsed().as_millis()
+                );
+                pipeline_summary::record_failed_candidates(
+                    PipelineStage::Scorer,
+                    scorer.name(),
+                    failed,
                 );
             }
             scorer.update_all(&mut candidates, scored);
@@ -537,6 +559,8 @@ where
     // Run all side effects in parallel
     fn run_side_effects(&self, input: Arc<SideEffectInput<Q, C>>) {
         let side_effects = self.side_effects();
+        let observer = self.observer();
+        let pipeline = self.name();
         tokio::spawn(async move {
             let request_id = input.query.request_id().to_string();
             let futures = side_effects
@@ -550,13 +574,14 @@ where
                     }
                 });
             for (name, started, result) in join_all(futures).await {
-                match result {
+                let latency = started.elapsed();
+                match &result {
                     Ok(()) => info!(
                         "request_id={} stage={:?} component={} elapsed_ms={}",
                         request_id,
                         PipelineStage::SideEffect,
                         name,
-                        started.elapsed().as_millis()
+                        latency.as_millis()
                     ),
                     Err(error) => error!(
                         "request_id={} stage={:?} component={} failed: {} elapsed_ms={}",
@@ -564,8 +589,17 @@ where
                         PipelineStage::SideEffect,
                         name,
                         error,
-                        started.elapsed().as_millis()
+                        latency.as_millis()
                     ),
+                }
+                if let Some(observer) = &observer {
+                    observer.observe_side_effect(&SideEffectReport {
+                        pipeline,
+                        request_id: &request_id,
+                        component: name,
+                        latency,
+                        succeeded: result.is_ok(),
+                    });
                 }
             }
         });
@@ -714,6 +748,7 @@ mod tests {
         post_filters: Vec<Box<dyn Filter<TestQuery, i32>>>,
         side_effects: Arc<Vec<Box<dyn SideEffect<TestQuery, i32>>>>,
         selector: TestSelector,
+        observer: Option<Arc<dyn PipelineObserver>>,
     }
 
     impl TestPipeline {
@@ -726,6 +761,7 @@ mod tests {
                 post_filters: Vec::new(),
                 side_effects: Arc::new(Vec::new()),
                 selector: TestSelector,
+                observer: None,
             }
         }
     }
@@ -775,6 +811,156 @@ mod tests {
         fn result_size(&self) -> usize {
             2
         }
+
+        fn observer(&self) -> Option<Arc<dyn PipelineObserver>> {
+            self.observer.clone()
+        }
+    }
+
+    struct CapturedRequest {
+        pipeline: String,
+        result_size: usize,
+        target_result_size: usize,
+        stages: Vec<crate::observer::StageReport>,
+    }
+
+    #[derive(Default)]
+    struct RecordingObserver {
+        requests: std::sync::Mutex<Vec<CapturedRequest>>,
+        side_effects: std::sync::Mutex<Vec<(String, String, bool)>>,
+    }
+
+    impl PipelineObserver for RecordingObserver {
+        fn observe_request(&self, report: &crate::observer::PipelineReport<'_>) {
+            self.requests.lock().unwrap().push(CapturedRequest {
+                pipeline: report.pipeline.to_string(),
+                result_size: report.result_size,
+                target_result_size: report.target_result_size,
+                stages: report.stages.to_vec(),
+            });
+        }
+
+        fn observe_side_effect(&self, report: &SideEffectReport<'_>) {
+            self.side_effects.lock().unwrap().push((
+                report.pipeline.to_string(),
+                report.component.to_string(),
+                report.succeeded,
+            ));
+        }
+    }
+
+    struct FailingSideEffect;
+
+    #[async_trait]
+    impl SideEffect<TestQuery, i32> for FailingSideEffect {
+        async fn side_effect(
+            &self,
+            _input: Arc<SideEffectInput<TestQuery, i32>>,
+        ) -> Result<(), String> {
+            Err("sink unavailable".to_string())
+        }
+    }
+
+    struct NoopSideEffect;
+
+    #[async_trait]
+    impl SideEffect<TestQuery, i32> for NoopSideEffect {
+        async fn side_effect(
+            &self,
+            _input: Arc<SideEffectInput<TestQuery, i32>>,
+        ) -> Result<(), String> {
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn observer_receives_the_stage_summary_and_component_failures() {
+        let observer = Arc::new(RecordingObserver::default());
+        let mut pipeline = TestPipeline::new();
+        pipeline.sources = vec![Box::new(FailingSource), Box::new(TestSource)];
+        pipeline.filters = vec![Box::new(RemoveHighestPostFilter), Box::new(FailingFilter)];
+        pipeline.observer = Some(Arc::clone(&observer) as Arc<dyn PipelineObserver>);
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .build()
+            .expect("test runtime");
+
+        let result = runtime.block_on(pipeline.execute(TestQuery::default()));
+        assert_eq!(result.selected_candidates, vec![2, 1]);
+
+        let requests = observer.requests.lock().unwrap();
+        assert_eq!(requests.len(), 1);
+        let captured = &requests[0];
+        assert_eq!(captured.pipeline, "TestPipeline");
+        assert_eq!((captured.result_size, captured.target_result_size), (2, 2));
+        let stages = &captured.stages;
+
+        let stage = |wanted: PipelineStage| {
+            stages
+                .iter()
+                .find(|stage| stage.stage == wanted)
+                .unwrap_or_else(|| panic!("{wanted:?} stage reported"))
+        };
+        let sources = stage(PipelineStage::Source);
+        assert_eq!((sources.total, sources.enabled), (2, 2));
+        assert_eq!(sources.size, Some(3));
+        assert_eq!(
+            sources.fetched_per_source,
+            vec![("TestSource".to_string(), 3)]
+        );
+        assert_eq!(sources.failed_components, vec!["FailingSource".to_string()]);
+        assert!(sources.latency.is_some());
+
+        let filters = stage(PipelineStage::Filter);
+        assert_eq!((filters.kept, filters.removed), (Some(2), Some(1)));
+        assert_eq!(
+            filters.removed_per_filter,
+            vec![("RemoveHighestPostFilter".to_string(), 1)]
+        );
+        assert_eq!(filters.failed_components, vec!["FailingFilter".to_string()]);
+
+        assert!(stages
+            .iter()
+            .all(|stage| stage.stage != PipelineStage::SideEffect));
+    }
+
+    #[test]
+    fn observer_receives_one_report_per_settled_side_effect() {
+        let observer = Arc::new(RecordingObserver::default());
+        let mut pipeline = TestPipeline::new();
+        pipeline.side_effects =
+            Arc::new(vec![Box::new(NoopSideEffect), Box::new(FailingSideEffect)]);
+        pipeline.observer = Some(Arc::clone(&observer) as Arc<dyn PipelineObserver>);
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .build()
+            .expect("test runtime");
+
+        runtime.block_on(pipeline.execute(TestQuery::default()));
+        // Side effects run on a spawned task after the response; drive the
+        // current-thread scheduler until both have settled.
+        for _ in 0..100 {
+            if observer.side_effects.lock().unwrap().len() == 2 {
+                break;
+            }
+            runtime.block_on(tokio::task::yield_now());
+        }
+
+        let mut reports = observer.side_effects.lock().unwrap().clone();
+        reports.sort();
+        assert_eq!(
+            reports,
+            vec![
+                (
+                    "TestPipeline".to_string(),
+                    "FailingSideEffect".to_string(),
+                    false
+                ),
+                (
+                    "TestPipeline".to_string(),
+                    "NoopSideEffect".to_string(),
+                    true
+                ),
+            ]
+        );
     }
 
     #[test]

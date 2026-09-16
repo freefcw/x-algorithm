@@ -13,6 +13,7 @@ use log::info;
 use std::sync::Arc;
 use std::time::Instant;
 use xai_candidate_pipeline::candidate_pipeline::CandidatePipeline;
+use xai_candidate_pipeline::observer::PipelineObserver;
 use xai_candidate_pipeline::source::Source;
 
 pub struct ForYouFeedOutput {
@@ -43,6 +44,9 @@ impl ForYouFeedServer {
         // One budget and one metrics registry per process: the For You entry
         // point must not account separately from the inner scorer.
         server.rpc_policy = scored_posts_server.rpc_policy().clone();
+        server.pipeline.install_observer(
+            Arc::clone(scored_posts_server.rpc_policy().metrics()) as Arc<dyn PipelineObserver>
+        );
         server
     }
 

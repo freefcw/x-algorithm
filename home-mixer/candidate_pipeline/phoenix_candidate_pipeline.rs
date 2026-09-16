@@ -95,6 +95,7 @@ use tonic::async_trait;
 use xai_candidate_pipeline::candidate_pipeline::CandidatePipeline;
 use xai_candidate_pipeline::filter::Filter;
 use xai_candidate_pipeline::hydrator::Hydrator;
+use xai_candidate_pipeline::observer::PipelineObserver;
 use xai_candidate_pipeline::query_hydrator::QueryHydrator;
 use xai_candidate_pipeline::scorer::Scorer;
 use xai_candidate_pipeline::selector::Selector;
@@ -111,6 +112,9 @@ pub struct PhoenixCandidatePipeline {
     post_selection_hydrators: Vec<Box<dyn Hydrator<ScoredPostsQuery, PostCandidate>>>,
     post_selection_filters: Vec<Box<dyn Filter<ScoredPostsQuery, PostCandidate>>>,
     side_effects: Arc<Vec<Box<dyn SideEffect<ScoredPostsQuery, PostCandidate>>>>,
+    /// Metrics sink for the per-request stage summary; installed by the
+    /// server so the pipeline stays free of the Prometheus registry.
+    observer: Option<Arc<dyn PipelineObserver>>,
 }
 
 /// 显式启用补充话题能力所需的原子依赖。
@@ -168,6 +172,17 @@ impl PhoenixCandidatePipeline {
             1,
             Box::new(PastRequestTimestampsQueryHydrator::from_store(store)),
         );
+    }
+
+    /// Report every request's stage summary and side-effect outcomes to
+    /// `observer` (the process metrics registry in the server).
+    pub fn with_observer(mut self, observer: Arc<dyn PipelineObserver>) -> Self {
+        self.install_observer(observer);
+        self
+    }
+
+    pub fn install_observer(&mut self, observer: Arc<dyn PipelineObserver>) {
+        self.observer = Some(observer);
     }
 
     pub async fn build_with_clients(dependencies: PhoenixDependencies) -> PhoenixCandidatePipeline {
@@ -377,6 +392,7 @@ impl PhoenixCandidatePipeline {
             post_selection_hydrators,
             post_selection_filters,
             side_effects,
+            observer: None,
         }
     }
 
@@ -670,6 +686,10 @@ impl CandidatePipeline<ScoredPostsQuery, PostCandidate> for PhoenixCandidatePipe
 
     fn result_size(&self) -> usize {
         params::RESULT_SIZE
+    }
+
+    fn observer(&self) -> Option<Arc<dyn PipelineObserver>> {
+        self.observer.clone()
     }
 }
 

@@ -16,6 +16,7 @@ use tonic::async_trait;
 use xai_candidate_pipeline::candidate_pipeline::CandidatePipeline;
 use xai_candidate_pipeline::filter::Filter;
 use xai_candidate_pipeline::hydrator::Hydrator;
+use xai_candidate_pipeline::observer::PipelineObserver;
 use xai_candidate_pipeline::query_hydrator::QueryHydrator;
 use xai_candidate_pipeline::scorer::Scorer;
 use xai_candidate_pipeline::selector::Selector;
@@ -28,6 +29,7 @@ pub struct ForYouCandidatePipeline {
     selector: BlenderSelector,
     side_effects: Arc<Vec<Box<dyn SideEffect<ScoredPostsQuery, FeedItem>>>>,
     result_size: usize,
+    observer: Option<Arc<dyn PipelineObserver>>,
 }
 
 impl ForYouCandidatePipeline {
@@ -84,7 +86,14 @@ impl ForYouCandidatePipeline {
             selector: BlenderSelector::new(config),
             side_effects: Arc::new(side_effects),
             result_size: config.max_items,
+            observer: None,
         }
+    }
+
+    /// Report the outer pipeline's stage summary to the same observer as the
+    /// inner scorer, so both show up under their own `pipeline` label.
+    pub fn install_observer(&mut self, observer: Arc<dyn PipelineObserver>) {
+        self.observer = Some(observer);
     }
 }
 
@@ -140,5 +149,9 @@ impl CandidatePipeline<ScoredPostsQuery, FeedItem> for ForYouCandidatePipeline {
 
     fn result_size(&self) -> usize {
         self.result_size
+    }
+
+    fn observer(&self) -> Option<Arc<dyn PipelineObserver>> {
+        self.observer.clone()
     }
 }

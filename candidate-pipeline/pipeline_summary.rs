@@ -3,19 +3,23 @@
 //! Upstream records stage statistics into a tokio task-local
 //! `PipelineSummary` and emits one aggregated line per request instead of one
 //! line per stage. The local build keeps the upstream type and function names
-//! but replaces the tracing-span/stats-receiver backend with `log` (U1).
+//! but replaces the tracing-span/stats-receiver backend with `log` (U1), and
+//! hands the same summary to an optional [`PipelineObserver`] so metrics are
+//! derived from one collection point instead of a second set of hooks.
 
 use std::cell::RefCell;
 use std::fmt;
 use std::future::Future;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use log::info;
 
 use crate::candidate_pipeline::PipelineStage;
+use crate::observer::{PipelineObserver, PipelineReport, StageReport};
 
 impl PipelineStage {
-    fn summary_name(&self) -> &'static str {
+    /// Stable lower-case name used in the summary line and as a metric label.
+    pub fn label(&self) -> &'static str {
         match self {
             PipelineStage::QueryHydrator => "query_hydrators",
             PipelineStage::DependentQueryHydrator => "dependent_query_hydrators",
@@ -42,17 +46,36 @@ pub async fn scope<F: Future>(fut: F) -> F::Output {
         .await
 }
 
-/// Emit the aggregated one-line summary for the finished request.
-pub fn emit(pipeline: &str, request_id: &str, start: Instant, result_size: usize) {
+/// Emit the aggregated one-line summary for the finished request and hand the
+/// same data to `observer`.
+pub fn emit(
+    pipeline: &str,
+    request_id: &str,
+    start: Instant,
+    result_size: usize,
+    target_result_size: usize,
+    observer: Option<&dyn PipelineObserver>,
+) {
+    let latency = start.elapsed();
     with_active(|summary| {
         info!(
             "request_id={} pipeline={} latency_ms={} result_size={} Summary:{}",
             request_id,
             pipeline,
-            start.elapsed().as_millis() as u64,
+            latency.as_millis() as u64,
             result_size,
             summary
         );
+        if let Some(observer) = observer {
+            observer.observe_request(&PipelineReport {
+                pipeline,
+                request_id,
+                latency,
+                result_size,
+                target_result_size,
+                stages: &summary.stages,
+            });
+        }
     });
 }
 
@@ -66,6 +89,29 @@ pub(crate) fn record_source_fetched(name: &str, count: usize) {
     if !recorded {
         info!("Fetched {} candidates", count);
     }
+}
+
+/// A component returned an error for the whole request and was isolated.
+pub(crate) fn record_component_failure(stage: PipelineStage, name: &str) {
+    with_active(|summary| {
+        summary
+            .stage_mut(stage)
+            .failed_components
+            .push(name.to_string());
+    });
+}
+
+/// A per-candidate component (hydrator, scorer) failed for `count` candidates.
+pub(crate) fn record_failed_candidates(stage: PipelineStage, name: &str, count: usize) {
+    if count == 0 {
+        return;
+    }
+    with_active(|summary| {
+        summary
+            .stage_mut(stage)
+            .failed_candidates_per_component
+            .push((name.to_string(), count));
+    });
 }
 
 pub struct StageStats {
@@ -90,24 +136,24 @@ impl StageStats {
     }
 
     pub fn finish(self) {
-        let latency_ms = self.latency_ms();
+        let latency = self.start.elapsed();
         let recorded = with_active(|summary| {
-            summary.stage_mut(self.stage).latency_ms = Some(latency_ms);
+            summary.stage_mut(self.stage).latency = Some(latency);
         });
         if !recorded {
-            info!("latency_ms={}", latency_ms);
+            info!("latency_ms={}", latency.as_millis());
         }
     }
 
     pub fn finish_with_size(self, size: usize) {
-        let latency_ms = self.latency_ms();
+        let latency = self.start.elapsed();
         let recorded = with_active(|summary| {
             let stage = summary.stage_mut(self.stage);
-            stage.latency_ms = Some(latency_ms);
+            stage.latency = Some(latency);
             stage.size = Some(size);
         });
         if !recorded {
-            info!("latency_ms={} size={}", latency_ms, size);
+            info!("latency_ms={} size={}", latency.as_millis(), size);
         }
     }
 
@@ -118,9 +164,10 @@ impl StageStats {
         removed_per_filter: Vec<(String, usize)>,
     ) {
         if is_active() {
+            let latency = self.start.elapsed();
             with_active(|summary| {
                 let stage = summary.stage_mut(self.stage);
-                stage.latency_ms = Some(self.latency_ms());
+                stage.latency = Some(latency);
                 stage.kept = Some(kept);
                 stage.removed = Some(removed);
                 stage.removed_per_filter = removed_per_filter;
@@ -134,43 +181,26 @@ impl StageStats {
             );
         }
     }
-
-    fn latency_ms(&self) -> u64 {
-        self.start.elapsed().as_millis() as u64
-    }
 }
 
 #[derive(Default)]
 struct PipelineSummary {
-    stages: Vec<StageSummary>,
-}
-
-#[derive(Default)]
-struct StageSummary {
-    name: &'static str,
-    total: usize,
-    enabled: usize,
-    latency_ms: Option<u64>,
-    size: Option<usize>,
-    kept: Option<usize>,
-    removed: Option<usize>,
-    removed_per_filter: Vec<(String, usize)>,
-    fetched_per_source: Vec<(String, usize)>,
+    stages: Vec<StageReport>,
 }
 
 impl PipelineSummary {
-    fn stage_mut(&mut self, stage: PipelineStage) -> &mut StageSummary {
-        let name = stage.summary_name();
-        if let Some(idx) = self.stages.iter().position(|s| s.name == name) {
+    fn stage_mut(&mut self, stage: PipelineStage) -> &mut StageReport {
+        if let Some(idx) = self.stages.iter().position(|s| s.stage == stage) {
             &mut self.stages[idx]
         } else {
-            self.stages.push(StageSummary {
-                name,
-                ..Default::default()
-            });
+            self.stages.push(StageReport::new(stage));
             self.stages.last_mut().unwrap()
         }
     }
+}
+
+fn millis(duration: Duration) -> u64 {
+    duration.as_millis() as u64
 }
 
 impl fmt::Display for PipelineSummary {
@@ -179,10 +209,12 @@ impl fmt::Display for PipelineSummary {
             write!(
                 f,
                 " {}{{total={} enabled={}",
-                stage.name, stage.total, stage.enabled
+                stage.stage.label(),
+                stage.total,
+                stage.enabled
             )?;
-            if let Some(latency_ms) = stage.latency_ms {
-                write!(f, " latency_ms={}", latency_ms)?;
+            if let Some(latency) = stage.latency {
+                write!(f, " latency_ms={}", millis(latency))?;
             }
             if !stage.fetched_per_source.is_empty() {
                 write!(f, " fetched=[{}]", Counts(&stage.fetched_per_source))?;
@@ -199,6 +231,16 @@ impl fmt::Display for PipelineSummary {
                         Counts(&stage.removed_per_filter)
                     )?;
                 }
+            }
+            if !stage.failed_components.is_empty() {
+                write!(f, " failed=[{}]", stage.failed_components.join(","))?;
+            }
+            if !stage.failed_candidates_per_component.is_empty() {
+                write!(
+                    f,
+                    " failed_candidates=[{}]",
+                    Counts(&stage.failed_candidates_per_component)
+                )?;
             }
             write!(f, "}}")?;
         }
@@ -233,6 +275,7 @@ fn with_active(f: impl FnOnce(&mut PipelineSummary)) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::Mutex;
 
     fn render_active() -> String {
         ACTIVE
@@ -251,11 +294,17 @@ mod tests {
             stats.record_components(3, 2);
             record_source_fetched("ThunderSource", 10);
             record_source_fetched("PhoenixSource", 40);
+            record_component_failure(PipelineStage::Source, "FallbackSource");
             stats.finish_with_size(50);
 
             let filter_stats = StageStats::begin(PipelineStage::Filter);
             filter_stats.record_components(2, 2);
             filter_stats.finish_filters(45, 5, vec![("AgeFilter".to_string(), 5)]);
+
+            let hydrator_stats = StageStats::begin(PipelineStage::Hydrator);
+            record_failed_candidates(PipelineStage::Hydrator, "CoreDataCandidateHydrator", 3);
+            record_failed_candidates(PipelineStage::Hydrator, "HasMediaHydrator", 0);
+            hydrator_stats.finish_with_size(45);
 
             render_active()
         }));
@@ -263,9 +312,14 @@ mod tests {
         assert!(rendered.contains("sources{total=3 enabled=2"));
         assert!(rendered.contains("fetched=[ThunderSource=10,PhoenixSource=40]"));
         assert!(rendered.contains("size=50"));
+        assert!(rendered.contains("failed=[FallbackSource]"));
         assert!(rendered.contains("filters{total=2 enabled=2"));
         assert!(rendered.contains("kept=45 removed=5"));
         assert!(rendered.contains("removed_per_filter=[AgeFilter=5]"));
+        assert!(
+            rendered.contains("failed_candidates=[CoreDataCandidateHydrator=3]"),
+            "{rendered}"
+        );
     }
 
     #[test]
@@ -274,5 +328,86 @@ mod tests {
         stats.record_components(1, 1);
         stats.finish_with_size(7);
         record_source_fetched("orphan", 1);
+        record_component_failure(PipelineStage::Source, "orphan");
+        record_failed_candidates(PipelineStage::Hydrator, "orphan", 1);
+    }
+
+    struct Captured {
+        pipeline: String,
+        request_id: String,
+        result_size: usize,
+        target_result_size: usize,
+        stages: Vec<StageReport>,
+    }
+
+    #[derive(Default)]
+    struct RecordingObserver(Mutex<Vec<Captured>>);
+
+    impl PipelineObserver for RecordingObserver {
+        fn observe_request(&self, report: &PipelineReport<'_>) {
+            self.0.lock().unwrap().push(Captured {
+                pipeline: report.pipeline.to_string(),
+                request_id: report.request_id.to_string(),
+                result_size: report.result_size,
+                target_result_size: report.target_result_size,
+                stages: report.stages.to_vec(),
+            });
+        }
+
+        fn observe_side_effect(&self, _report: &crate::observer::SideEffectReport<'_>) {}
+    }
+
+    #[test]
+    fn emit_hands_the_collected_summary_to_the_observer() {
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .build()
+            .expect("test runtime");
+        let observer = RecordingObserver::default();
+
+        runtime.block_on(scope(async {
+            let stats = StageStats::begin(PipelineStage::Source);
+            stats.record_components(1, 1);
+            record_source_fetched("TestSource", 3);
+            stats.finish_with_size(3);
+            emit(
+                "TestPipeline",
+                "req-1",
+                Instant::now(),
+                2,
+                5,
+                Some(&observer),
+            );
+        }));
+
+        let captured = observer.0.lock().unwrap();
+        assert_eq!(captured.len(), 1);
+        let report = &captured[0];
+        assert_eq!(report.pipeline, "TestPipeline");
+        assert_eq!(report.request_id, "req-1");
+        assert_eq!((report.result_size, report.target_result_size), (2, 5));
+        assert_eq!(report.stages.len(), 1);
+        let source = &report.stages[0];
+        assert_eq!(source.stage, PipelineStage::Source);
+        assert_eq!((source.total, source.enabled), (1, 1));
+        assert_eq!(source.size, Some(3));
+        assert!(source.latency.is_some());
+        assert_eq!(
+            source.fetched_per_source,
+            vec![("TestSource".to_string(), 3)]
+        );
+    }
+
+    #[test]
+    fn emit_outside_scope_neither_logs_a_summary_nor_calls_the_observer() {
+        let observer = RecordingObserver::default();
+        emit(
+            "TestPipeline",
+            "req-1",
+            Instant::now(),
+            0,
+            5,
+            Some(&observer),
+        );
+        assert!(observer.0.lock().unwrap().is_empty());
     }
 }
