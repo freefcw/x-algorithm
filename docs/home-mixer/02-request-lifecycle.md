@@ -6,13 +6,16 @@
 
 启动入口在 `home-mixer/main.rs`。运行模式与启动不变量位于 `runtime_config.rs`，协议映射位于 `query_builder.rs`，gRPC 装配 facade 位于 `server.rs`。流程如下：
 
-1. 初始化日志（`env_logger::init()`）
-2. 解析 CLI 参数，再从环境变量解析 `HomeMixerConfig`
-3. `HomeMixerServer::build(config).await`
-4. 构造共享 `QueryBuilder`、内层 `PhoenixCandidatePipeline`、`ScoredPostsServer`
-5. 构造外层 `ForYouCandidatePipeline` 与 `ForYouFeedServer`
-6. `main.rs` 构造 gRPC reflection 服务；`HomeMixerServer::register` 注册两个 gRPC 服务（`ScoredPostsService`/`ForYouFeedService`，带压缩和消息大小限制），随后 `main.rs` 把 reflection 加入 routes
-7. 启动 gRPC，以及空的 health/metrics HTTP 监听（端口开着，没有 `/health` 或 `/metrics` 路由）
+1. 初始化日志（`logging::init_from_env()`，`RUST_LOG` 过滤 + `HOME_MIXER_LOG_FORMAT` 选 text / json）
+2. 解析 CLI 参数，再从环境变量解析 `HomeMixerConfig`；配置错误在此失败，不开任何端口
+3. 安装 SIGTERM / Ctrl-C 监听；bind 管理 HTTP 端口（`admin_server.rs`），此时 `/healthz` 已是 200、`/readyz` 返回 503 `starting`
+4. `HomeMixerServer::build_with_metrics(config, metrics).await`（装配期间收到终止信号则直接退出）
+5. 构造共享 `QueryBuilder`、内层 `PhoenixCandidatePipeline`、`ScoredPostsServer`（携带 `RpcPolicy`：请求预算 + 指标）
+6. 构造外层 `ForYouCandidatePipeline` 与 `ForYouFeedServer`，复用同一个 `RpcPolicy`
+7. `main.rs` 构造 gRPC reflection 服务；`HomeMixerServer::register` 注册两个 gRPC 服务（`ScoredPostsService`/`ForYouFeedService`，带压缩和消息大小限制），随后 `main.rs` 把 reflection 加入 routes
+8. bind gRPC 端口并开始服务；端口被占用则以非零码退出。随后 `/readyz` 变为 200 `ready`，日志 `Server ready`
+
+关停走反向：信号 → `/readyz` 转 503 `draining` → 等 `--shutdown-delay-secs` → 关闭两个监听 → 在 `--drain-timeout-secs` 内排空在途请求 → `Server stopped`。
 
 ```mermaid
 sequenceDiagram
@@ -21,7 +24,8 @@ sequenceDiagram
     participant Pipeline as PhoenixCandidatePipeline
     participant Clients as 外部客户端
 
-    Main->>Server: HomeMixerServer::build(config)
+    Main->>Main: bind 管理 HTTP（/readyz = starting）
+    Main->>Server: HomeMixerServer::build_with_metrics(config, metrics)
     Server->>Pipeline: PhoenixCandidatePipeline::assemble_with_uas(config.mode, features, config.uas)
     Pipeline->>Clients: 初始化 UAS（非 demo：Redis 投影）/ Phoenix / mrpyq（网内、兜底、TES、一级 VF、Strato；非 demo 必配）/ Gizmoduck 等
     Clients-->>Pipeline: 返回客户端实例
@@ -29,7 +33,7 @@ sequenceDiagram
     Server->>Server: ScoredPosts + ForYou pipeline/server 装配
     Server-->>Main: 服务实例
     Main->>Server: register(routes)
-    Main->>Main: 启动 gRPC 与 HTTP 监听
+    Main->>Main: bind gRPC，/readyz = ready，Server ready
 ```
 
 ## 2. 请求入口：`get_scored_posts`
@@ -40,7 +44,9 @@ sequenceDiagram
 2. 把 `seen_ids` / `served_ids` / `impressed_post_ids` 解析为 `PostId`，非法串丢弃并计数
 3. 合并 viewer/feature policy
 4. 生成 request ID、prediction ID 和 request time
-5. 调用对应内层或外层 pipeline
+5. 在请求预算内调用对应内层或外层 pipeline 并落 served 历史
+
+每个 RPC 入口都包在 `RpcPolicy`（`rpc_policy.rs`）里：先按 `HOME_MIXER_REQUEST_TIMEOUT_MS` 与客户端 `grpc-timeout` 取更短者作为预算，pipeline 执行 + served 落库超过预算即整体取消并返回 `DeadlineExceeded`（不返回半截结果，因为半程流水线没有走完安全过滤）；无论成功、失败还是超时，终态状态码与耗时都记入 `home_mixer_rpc_*` 指标。`QueryBuilder` 本身没有 I/O，不计入预算。
 
 `DebugScoredPosts` 与普通 ScoredPosts 共享一次 pipeline 执行，但默认返回 `Unavailable`；只有显式启用并通过 `x-home-mixer-debug-token` 校验才会执行和返回过滤前/后的 ID。`GetForYouFeedV2` 只增加 `ForYouFeedQuery` wrapper，原 RPC 保持不变。
 

@@ -261,9 +261,9 @@ flowchart TD
 - 最终截断到 35（`RESULT_SIZE`）
 - 不会回补第 51 名之后的候选
 
-### 11.4 观测能力偏弱
+### 11.4 观测只到 RPC 入口一层
 
-当前主要依赖 request_id + stage 日志，没有完整 metrics 体系。
+管理端口有 `/healthz`、`/readyz`、`/metrics`，指标覆盖每个 RPC 的状态码计数、耗时直方图和在途数；流水线内部各阶段仍只有 request_id + stage 日志，没有阶段级指标。
 
 ## 12. 配置和参数怎么影响行为
 

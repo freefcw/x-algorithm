@@ -22,14 +22,15 @@ flowchart TD
 
     B --> B1["grpc_port"]
     B --> B2["metrics_port"]
-    B --> B3["reload_interval_minutes"]
-    B --> B4["chunk_size"]
+    B --> B3["shutdown_delay_secs"]
+    B --> B4["drain_timeout_secs"]
 
     C --> C0["MRPYQ_RECOMMENDATION_DATA_ADDR<br/>非 demo 必填"]
     C --> C1["THUNDER_GRPC_ADDR<br/>仅 demo"]
     C --> C2["Phoenix gRPC 地址"]
     C --> C3["HOME_MIXER_MODE"]
     C --> C4["HOME_MIXER_ENABLE_* / HOME_MIXER_VF_FAILURE_POLICY<br/>可选集成与失败策略"]
+    C --> C5["HOME_MIXER_REQUEST_TIMEOUT_MS / HOME_MIXER_LOG_FORMAT<br/>请求预算与日志格式"]
 
     D --> D1["召回上限"]
     D --> D2["打分权重"]
@@ -45,14 +46,27 @@ flowchart TD
 
 | 参数 | 默认值 | 当前实际用途 | 备注 |
 | --- | --- | --- | --- |
-| `--grpc-port` | `50051` | gRPC 对外监听端口 | 实际生效 |
-| `--metrics-port` | `9090` | HTTP 监听端口 | 当前 router 为空，占位为主 |
-| `--reload-interval-minutes` | `5` | 仅打印到启动日志 | 当前代码未使用 |
-| `--chunk-size` | `100` | 仅打印到启动日志 | 当前代码未使用 |
+| `--grpc-port` | `50051` | gRPC 对外监听端口 | 流水线装配成功后才 bind，端口打开即代表可以接流量 |
+| `--metrics-port` | `9090` | 管理 HTTP 端口：`/healthz`、`/readyz`、`/metrics` | 进程一启动就 bind，装配期间 `/readyz` 返回 503 `starting` |
+| `--shutdown-delay-secs` | `0` | 收到 SIGTERM / Ctrl-C 后，`/readyz` 先转 503 `draining`，再等这么久才关闭监听 | 给负载均衡摘除实例的窗口；平台有等价 preStop hook 时保持 0 |
+| `--drain-timeout-secs` | `20`（`SHUTDOWN_DRAIN_TIMEOUT_SECS`） | 监听关闭后等待在途请求完成的上限 | 必须小于平台终止宽限期（Kubernetes 默认 30 s）；小于请求预算时启动告警 |
 
-一个重要结论：
+上游遗留的 `--reload-interval-minutes` / `--chunk-size` 已删除：它们从未进入业务逻辑。
 
-- `reload_interval_minutes` 和 `chunk_size` 在当前代码中只是参数保留位，不进入任何业务逻辑。
+### 2.1 启动与关停顺序
+
+```mermaid
+flowchart TD
+    A["解析 CLI + HomeMixerConfig<br/>配置错误在此失败，不开任何端口"] --> B["bind 管理 HTTP<br/>/healthz 200，/readyz 503 starting"]
+    B --> C["HomeMixerServer::build<br/>Redis 握手、mrpyq / Phoenix 适配器"]
+    C --> D["bind gRPC 端口<br/>占用则以非零码退出"]
+    D --> E["/readyz 200 ready<br/>日志 Server ready"]
+    E -->|SIGTERM / Ctrl-C| F["/readyz 503 draining<br/>等待 shutdown_delay"]
+    F --> G["关闭两个监听，排空在途请求<br/>上限 drain_timeout"]
+    G --> H["日志 Server stopped，退出码 0"]
+```
+
+任一监听在运行中失败都会让进程以错误退出，不再存在"端口没起来但进程还活着"的状态。
 
 ## 3. 环境变量
 
@@ -67,6 +81,8 @@ flowchart TD
 | `PHOENIX_EXPECTED_MODEL_VERSION` | `clients/phoenix_prediction_client.rs` | 固定期望的网关 `model-version` trailing metadata | 未设置时只校验非空、非 `random`；设置后不一致的响应被拒绝并走规则回退 |
 | `PHOENIX_ENGINE` | `clients/phoenix_prediction_client.rs` | 精排引擎选择：`slim`（当前唯一实现）/ `xrex`（保留） | 默认 `slim`；`xrex` 或未知值在装配时直接拒绝启动 |
 | `HOME_MIXER_MODE` | `runtime_config.rs` | 运行意图：`demo` / `degraded` / `production_ready` | 默认 `degraded`（需 `MRPYQ_RECOMMENDATION_DATA_ADDR`）；调用方身份、TES、UAS 事件合同、Strato、VF、网内 / 兜底、Phoenix 元数据、served 落库合同未验收前，`production_ready` 拒绝启动 |
+| `HOME_MIXER_REQUEST_TIMEOUT_MS` | `runtime_config.rs` / `rpc_policy.rs` | 单次 RPC 在查询构建之后（流水线执行 + served 落库）的服务端总预算 | 默认 `10000`（`REQUEST_TIMEOUT_MS`），必须为正整数。客户端 `grpc-timeout` 更短时取更短者；更长不会放宽。超时返回 `DeadlineExceeded`，不返回部分结果，日志 `request_id=... deadline_exceeded budget_ms=...` |
+| `HOME_MIXER_LOG_FORMAT` | `logging.rs` | 日志输出格式：`text`（`env_logger` 默认排版）或 `json`（每行一个对象：`ts` / `level` / `target` / `msg` / `module` / `file` / `line`） | 默认 `text`；未知值拒绝启动。过滤级别仍由 `RUST_LOG` 控制；`uas-worker` 读同一变量 |
 | `HOME_MIXER_REDIS_URL` | `runtime_config.rs` / `server.rs` | 共享 FeedStateStore 的 Redis 地址 | 非 Demo 必填；Demo 未配置时使用内存，显式配置后也可使用 Redis。连接失败会拒绝启动 |
 | `HOME_MIXER_REDIS_CONNECT_TIMEOUT_MS` | `runtime_config.rs` | Redis 建连时间上限 | 默认 `1000` 毫秒，必须大于零 |
 | `HOME_MIXER_REDIS_REQUEST_TIMEOUT_MS` | `runtime_config.rs` | 单次 Redis 操作时间上限，包括等待重连 | 默认 `500` 毫秒，必须大于零 |
@@ -198,17 +214,31 @@ QueryBuilder 不持有 Gizmoduck client，也不发起 viewer RPC。`in_network_
 ```mermaid
 flowchart LR
     Client1["gRPC 客户端"] --> G["0.0.0.0:grpc_port"]
-    Client2["HTTP/探活方"] --> H["0.0.0.0:metrics_port"]
+    Client2["探活 / Prometheus"] --> H["0.0.0.0:metrics_port"]
 
     G --> S["ScoredPostsService"]
     G --> F["ForYouFeedService"]
-    H --> R["空 axum Router"]
+    G --> RF["gRPC reflection"]
+    H --> H1["GET /healthz → 200 ok"]
+    H --> H2["GET /readyz → 200 ready / 503 starting|draining"]
+    H --> H3["GET /metrics → Prometheus text"]
 ```
 
-当前 HTTP 端口的现实状态是：
+管理端口由 `admin_server.rs` 提供，路由之外一律 404。`/healthz` 只说明进程事件循环在响应；`/readyz` 才代表可以接推荐流量，装配期间和关停期间都返回 503。
 
-- 进程会监听
-- 但没有明确的 health/metrics route
+### 4.3 指标
+
+`metrics.rs` 维护一个进程级 Prometheus registry（显式实例，不用 crate 默认全局表），当前只覆盖 RPC 入口一层：
+
+| 指标 | 类型 | 标签 | 含义 |
+| --- | --- | --- | --- |
+| `home_mixer_rpc_requests_total` | counter | `rpc`、`code` | 完成的 RPC 数，`code` 为 gRPC 规范名（`OK` / `DEADLINE_EXCEEDED` / `UNAVAILABLE` / `INVALID_ARGUMENT` …）。handler 在给出状态前被取消（客户端断开、客户端 `grpc-timeout` 先触发）记为 `CANCELLED` |
+| `home_mixer_rpc_duration_seconds` | histogram | `rpc` | 从进入 handler 到给出终态的耗时；桶 25 ms ~ 10 s |
+| `home_mixer_rpc_in_flight` | gauge | `rpc` | 正在执行的 RPC 数 |
+| `home_mixer_ready` | gauge | — | `/readyz` 为 200 时是 1 |
+| `home_mixer_build_info` | gauge | `version` | 常量 1，带 crate 版本 |
+
+`rpc` 取值是方法名：`GetScoredPosts`、`DebugScoredPosts`、`GetForYouFeed`、`GetForYouFeedV2`。流水线各阶段（source / filter / scorer 规模与耗时）仍只有 request-scoped 日志，没有指标，见 [09 排障与可观测性](./09-debugging-and-observability.md)。
 
 ## 5. 召回参数
 
@@ -379,7 +409,7 @@ Feed state 每用户的容量上限对内存和 Redis 实现均生效；用户�
 - 有明确的参数分层
 - 主要排序和过滤阈值都集中在 `params/`
 - 但很多参数还是编译期常量，不是运行时配置
-- 启动参数里也有两个暂未接入业务逻辑的保留位
+- 进程级的运维参数（请求预算、关停节奏、日志格式、管理端口）已经是运行时配置
 
 如果后续要走向生产，优先建议动态化的是：
 

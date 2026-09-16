@@ -14,29 +14,34 @@
 - `home-mixer/server.rs`：请求入口/出口日志
 - `candidate-pipeline/candidate_pipeline.rs`：阶段级日志
 
-### 1.2 指标
+### 1.2 指标与探活
 
-当前 `home-mixer` 本身没有像 `thunder/metrics.rs` 那样成体系的 metrics 定义。
+管理 HTTP 端口（默认 9090，`admin_server.rs`）提供三条路由：
 
-现实情况是：
+- `GET /healthz`：进程活着就 200
+- `GET /readyz`：只有能接推荐流量时 200 `ready`；装配中 503 `starting`，收到终止信号后 503 `draining`
+- `GET /metrics`：Prometheus 文本，registry 在 `metrics.rs`
 
-- HTTP 端口会启动
-- 但 router 为空
-- 没有明确暴露 Prometheus 指标
-
-所以现阶段排障基本还是依赖日志。
+指标目前只覆盖 RPC 入口一层（`home_mixer_rpc_requests_total{rpc,code}`、`home_mixer_rpc_duration_seconds{rpc}`、`home_mixer_rpc_in_flight{rpc}`、`home_mixer_ready`、`home_mixer_build_info`，字段说明见 [07 配置](./07-config-and-params.md#43-指标)）。它们回答"请求有没有进来、多久、以什么状态结束"，包括超预算的 `DEADLINE_EXCEEDED` 和客户端先断开的 `CANCELLED`。流水线内部（哪个 source 拿了多少、哪个 filter 删了多少）仍然只有日志，所以排障链路里第二步之后还是看日志。
 
 ## 2. 关键日志点
 
-### 2.1 进程启动日志
+### 2.1 进程启动与关停日志
 
 启动时至少会看到：
 
-- 启动参数
-- gRPC 监听地址
-- HTTP 监听地址
+- 启动参数（端口、shutdown delay、drain timeout）
+- `HTTP server listening on ... (/healthz, /readyz, /metrics)`
+- `gRPC server listening on ...`
 - `Server ready`
-- 收到 `ctrl_c` 后的关闭日志
+
+关停时：
+
+- `shutdown signal received; /readyz now reports draining`
+- 排空超过 `--drain-timeout-secs` 时的 `in-flight requests did not finish within ...; exiting anyway`
+- `Server stopped`
+
+`HOME_MIXER_LOG_FORMAT=json` 时每行是一个 JSON 对象，`msg` 字段保持与文本模式相同的内容，下面 grep 清单里的关键词仍可直接用。
 
 ### 2.2 请求入口/出口日志
 
@@ -48,10 +53,14 @@
 
 - `Scored Posts response - request_id ... - N posts (X ms)`
 
-这两条日志回答的是：
+`rpc_policy.rs` 记录超预算：
+
+- `request_id=... deadline_exceeded budget_ms=...`（warn；此时客户端拿到 `DeadlineExceeded`，没有出口日志）
+
+这几条日志回答的是：
 
 - 请求有没有真的进入服务
-- 最终返回了几条
+- 最终返回了几条，还是被预算截断
 - 整体耗时多少
 
 ### 2.3 阶段级日志
@@ -76,11 +85,12 @@ request_id=... stage=Filter component=... input=K kept=N removed=M elapsed_ms=..
 
 ```mermaid
 flowchart TD
-    A["进程日志<br/>main.rs"] --> B["请求日志<br/>server.rs"]
+    A["进程日志<br/>main.rs"] --> B["请求日志<br/>server.rs / rpc_policy.rs"]
     B --> C["阶段日志<br/>candidate-pipeline"]
     C --> D["组件内部错误字符串"]
 
-    E["HTTP 9090"] --> F["当前无有效 metrics/health route"]
+    E["HTTP 9090"] --> F["/readyz 探活"]
+    E --> G["/metrics<br/>RPC 计数 / 耗时 / 在途"]
 ```
 
 ## 4. 先看什么：一个最小排障顺序
@@ -196,7 +206,7 @@ flowchart LR
 | side effect 失败 | 框架记录组件、错误和耗时；任务仍是 fire-and-forget | 进程关闭时未完成任务仍可能丢失 |
 | 每个具体 filter 的移除量 | 只有阶段总量 | 难判断是哪个 filter 最伤 |
 | post-selection 过滤比例 | 无单独指标 | 难判断是 VF 还是会话去重导致缩水 |
-| HTTP health/metrics | router 为空 | 监控入口名义存在但功能弱 |
+| 流水线阶段指标 | 只有 RPC 入口级指标，阶段级仍是日志 | 能看出请求变慢 / 失败，看不出慢在哪个 source 或 scorer |
 
 ## 7. 一份实用 grep 清单
 
@@ -204,6 +214,7 @@ flowchart LR
 
 ```bash
 request_id=
+deadline_exceeded
 stage=Source
 stage=Hydrator
 stage=Filter
@@ -223,7 +234,7 @@ Scored Posts response
 1. 每个 filter 的 `input_count / kept_count / removed_count`
 2. selector 前后的候选规模和分数分布
 3. side effect 成功/失败日志
-4. `PhoenixSource`、`ThunderSource` 的独立耗时
+4. `PhoenixSource`、`ThunderSource` 的独立耗时（作为指标，而不只是日志）
 5. post-selection 删除率
 
 ## 9. 一个务实结论
@@ -231,6 +242,7 @@ Scored Posts response
 当前 `home-mixer` 不是“完全不可观测”，而是：
 
 - 有一条还算不错的 request_id + stage 日志主线
-- 但缺少服务级指标和细粒度统计
+- 有 RPC 入口级的计数、耗时、在途指标和 readiness 探活
+- 但缺少流水线阶段级的指标和细粒度统计
 
-所以排障不是做不到，而是更依赖工程师对 pipeline 结构本身的理解。
+所以排障不是做不到：服务级"慢了 / 挂了 / 被截断了"能从指标看出来，具体慢在哪一段还要靠工程师对 pipeline 结构的理解去读日志。
