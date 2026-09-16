@@ -15,9 +15,10 @@ flowchart TB
     HM --> TES["TES 端口<br/>帖子内容 / 媒体 / 一级 eligibility（非 demo：mrpyq）"]
     HM --> Gizmoduck["Gizmoduck 端口<br/>作者资料（非 demo 仍 Disabled）"]
     HM --> VF["VF 端口<br/>可见性（非 demo：mrpyq 一级 eligibility）"]
-    HM --> UAS["UAS 端口<br/>用户行为序列（非 demo 仍 Disabled）"]
+    HM --> UAS["UAS 端口<br/>用户行为序列（非 demo：Redis 投影）"]
 
     InNet -. demo .-> Kafka["Thunder ← Kafka 事件流"]
+    UAS -. 非 demo .-> UasWorker["uas-worker ← 行为事件流（Kafka / stdin）"]
 ```
 
 可以把它理解成“请求时在线编排层”：

@@ -66,12 +66,21 @@ flowchart TD
 | `PHOENIX_MOE_GRPC_ADDR` | `candidate_pipeline/phoenix_candidate_pipeline.rs` | Phoenix MoE 专家召回地址；只提供地址，不会自动启用 | 未设置时不装配 MoE Source |
 | `PHOENIX_EXPECTED_MODEL_VERSION` | `clients/phoenix_prediction_client.rs` | 固定期望的网关 `model-version` trailing metadata | 未设置时只校验非空、非 `random`；设置后不一致的响应被拒绝并走规则回退 |
 | `PHOENIX_ENGINE` | `clients/phoenix_prediction_client.rs` | 精排引擎选择：`slim`（当前唯一实现）/ `xrex`（保留） | 默认 `slim`；`xrex` 或未知值在装配时直接拒绝启动 |
-| `HOME_MIXER_MODE` | `runtime_config.rs` | 运行意图：`demo` / `degraded` / `production_ready` | 默认 `degraded`（需 `MRPYQ_RECOMMENDATION_DATA_ADDR`）；调用方身份、TES、UAS、Strato、VF、网内 / 兜底、Phoenix 元数据、served 落库合同未验收前，`production_ready` 拒绝启动 |
+| `HOME_MIXER_MODE` | `runtime_config.rs` | 运行意图：`demo` / `degraded` / `production_ready` | 默认 `degraded`（需 `MRPYQ_RECOMMENDATION_DATA_ADDR`）；调用方身份、TES、UAS 事件合同、Strato、VF、网内 / 兜底、Phoenix 元数据、served 落库合同未验收前，`production_ready` 拒绝启动 |
 | `HOME_MIXER_REDIS_URL` | `runtime_config.rs` / `server.rs` | 共享 FeedStateStore 的 Redis 地址 | 非 Demo 必填；Demo 未配置时使用内存，显式配置后也可使用 Redis。连接失败会拒绝启动 |
 | `HOME_MIXER_REDIS_CONNECT_TIMEOUT_MS` | `runtime_config.rs` | Redis 建连时间上限 | 默认 `1000` 毫秒，必须大于零 |
 | `HOME_MIXER_REDIS_REQUEST_TIMEOUT_MS` | `runtime_config.rs` | 单次 Redis 操作时间上限，包括等待重连 | 默认 `500` 毫秒，必须大于零 |
 | `HOME_MIXER_REDIS_KEY_PREFIX` | `runtime_config.rs` | Redis key 前缀 | 默认 `home_mixer:feed_state`；同一部署的所有副本必须一致，用户 ID 使用 hash tag |
 | `HOME_MIXER_FEED_STATE_TTL_SECS` | `runtime_config.rs` | 两个历史 key 的滑动过期时间，每次记录刷新 | 默认 7 天；`0` 禁用过期，并在下次记录时清除该用户旧 key 的过期时间 |
+| `UAS_REDIS_URL` | `runtime_config.rs`（`UasConfig`） | UAS 投影 job 与 Home Mixer 共用的 Redis 地址 | 非 demo 缺省复用 `HOME_MIXER_REDIS_URL`；demo 只在显式设置时切到 Redis，否则保留合成序列。job 必须能从两者之一取到地址。连接失败拒绝启动 |
+| `UAS_REDIS_KEY_PREFIX` | `runtime_config.rs` | 行为序列 ZSET 前缀 | 默认 `home_mixer:uas`，key 形如 `home_mixer:uas:{user_id}:actions`；job 与所有 Home Mixer 副本必须一致 |
+| `UAS_MAX_ACTIONS` | `runtime_config.rs` | 每个用户保留的**原始行为**条数（不是聚合后的帖子数） | 默认 600（`UAS_STORE_MAX_ACTIONS`）；job 写入时删除最旧成员，Home Mixer 读取时也只取最新这么多条，因此两侧配置不一致时以较小值为准且总是保留最新的 |
+| `UAS_REDIS_TTL_SECS` | `runtime_config.rs` | UAS key 的 Redis TTL，每次写入刷新 | 默认 604800 秒；设为 `0` 可关闭 TTL，并在下次写入时清除旧 key 的过期时间 |
+| `UAS_REDIS_CONNECT_TIMEOUT_MS` | `runtime_config.rs` | UAS Redis 建连时间上限 | 默认 1000 毫秒，必须大于零 |
+| `UAS_REDIS_REQUEST_TIMEOUT_MS` | `runtime_config.rs` | UAS Redis 单次读写上限，包括连接被替换后的一次重试 | 默认 500 毫秒，必须大于零；Home Mixer 侧另有 `UAS_FETCH_TIMEOUT_MS`（500 ms）包在外层 |
+| `UAS_KAFKA_BROKERS` / `UAS_KAFKA_TOPIC` | `bin/uas_worker.rs` | 启用 Kafka 消费模式并指定现有行为 topic | 未设置 broker 时从 stdin 读取换行 JSON；Kafka 模式需要用 `--features kafka` 构建 |
+| `UAS_KAFKA_GROUP_ID` / `UAS_KAFKA_AUTO_OFFSET_RESET` | `bin/uas_worker.rs` | 消费组与首次消费位置 | 默认 `home-mixer-uas-projector` / `earliest` |
+| `UAS_KAFKA_SECURITY_PROTOCOL` | `bin/uas_worker.rs` | Kafka 安全协议 | 默认 `PLAINTEXT`；`SASL_PLAINTEXT` / `SASL_SSL` 还需配置 `UAS_KAFKA_SASL_MECHANISM`（默认 `PLAIN`）、`UAS_KAFKA_SASL_USERNAME`、`UAS_KAFKA_SASL_PASSWORD`；纯 `SSL` 不需要凭据 |
 | `HOME_MIXER_ENABLE_PHOENIX_MOE` | `feature_policy.rs` | 显式启用 Phoenix MoE 旁路召回 | 默认关闭；启用但缺少 `PHOENIX_MOE_GRPC_ADDR` 时记录告警并跳过，主链继续 |
 | `HOME_MIXER_ENABLE_REQUEST_CACHE_SIDE_EFFECT` | `feature_policy.rs` | 显式启用请求缓存 SideEffect | 默认关闭；启用前必须人工确认真实 Strato adapter、schema、认证和保留策略 |
 | `HOME_MIXER_ENABLE_DEBUG_RPC` | `feature_policy.rs` / `debug_access.rs` | 启用 `DebugScoredPosts` | 默认关闭；开启时必须同时提供 `HOME_MIXER_DEBUG_TOKEN`，调用方通过 `x-home-mixer-debug-token` metadata 传入 |
@@ -96,10 +105,38 @@ Phoenix 两个主服务地址通常同时指向 `phoenix/scripts/run_grpc_gatewa
 
 一次推荐请求只读取一份历史快照，For You 外层和 Scored Posts 内层复用；下一次请求重新读取。连接被服务端关闭（Redis 重启、主从切换、代理回收空闲连接）后，客户端在后台换用新连接，首次读取会在新连接上重试一次，两次尝试共用同一个 `HOME_MIXER_REDIS_REQUEST_TIMEOUT_MS` 预算，超时不重试；因此不会出现“第一次请求读不到历史、却把结果写进历史”的重复下发。读取最终仍失败时沿用流水线的错误隔离行为继续请求，但同一请求的写入通常也会失败并返回 `Unavailable`。写失败返回 gRPC `Unavailable`；写超时可能已经在 Redis 执行，adapter 不自动重放写请求。该存储用于有界下发历史，不是训练曝光事件日志，也不承诺同一用户并发请求之间严格不重复下发。
 
-状态配置与请求快照的回归测试随 `cargo test -p home-mixer` 执行。真实 Redis 测试默认标记为 ignored，需要本机安装 `redis-server` 后单独执行；测试会启动独立进程和 Unix socket，结束后自动清理：
+`HomeMixerConfig.uas`（`UasConfig`）同样在启动时一次解析：demo 默认 `Demo` 合成序列，显式 `UAS_REDIS_URL` 才切到 `Redis`；非 demo 取 `UAS_REDIS_URL`，缺省复用 `HOME_MIXER_REDIS_URL`，因此通过 `HomeMixerConfig::from_env()` 启动的业务服务总是装配 Redis UAS adapter。只有直接调用 `PhoenixCandidatePipeline::assemble_for_mode` 且两个地址都没有配置时才得到 `Disabled`（空序列、Phoenix 整体跳过），装配层会打 warn。UAS Redis 连接失败同样拒绝启动。
+
+UAS 是进程内 `UserActionSequenceOps` 端口，不额外启动在线微服务。独立投影 job 是 `uas-worker`：Kafka 模式用 `cargo run -p home-mixer --features kafka --bin uas-worker`，配置 `UAS_KAFKA_BROKERS`、`UAS_KAFKA_TOPIC` 后消费 JSON 行为事件；没有 Kafka 时省略 broker（也无需 `kafka` feature），job 从 stdin 读取相同格式的换行 JSON。每条事件写入 `home_mixer:uas:{user_id}:actions` ZSET，score 是行为时间，按行为时间保留最近 7 天、最多 `UAS_MAX_ACTIONS` 条原始行为；Home Mixer 的 Redis adapter 读取窗口内**最新**的 `UAS_MAX_ACTIONS` 条，按时间升序交给现有聚合器（聚合后再按帖子截到 `UAS_MAX_SEQUENCE_LENGTH`）。
+
+投影 job 的投递语义：
+
+- 事件只在 JSON 边界校验一次（ID 为 24 位小写 hex 且非 nil、`action_time_ms > 0`、`action_type` 在模型 action_mask 范围 1..=18 内，范围与 `recsys_compat::ACTION_MASK_LEN` 同源）；不合法的毒丸消息记 warn 后丢弃并推进 offset，未知字段忽略。
+- 早于 7 天窗口的重放事件、以及领先 job 本机时钟超过 `UAS_MAX_FUTURE_SKEW_MS`（5 分钟）的“未来”事件，都作为已处理事件跳过并分别计数（`skipped_outside_window` / `skipped_future`）；偏差在容忍范围内的事件按原时间戳写入，在 Home Mixer 的读窗口追上之前不可见。
+- Redis 写入是幂等的（相同事件序列化为字节相同的成员），所以 job 先在进程内按 100 ms 起步、5 s 上限的指数退避重试，总预算 `UAS_PROJECTION_RETRY_BUDGET_MS`（60 s，小于 Kafka `max.poll.interval.ms`）；预算耗尽才退出，该 offset 不提交，由进程管理器重启后重放。同一分区之后的消息不会被提前处理。
+- offset 由 job 在消息处理完成后手工 store（`enable.auto.offset.store=false`），librdkafka 周期自动提交；收到 SIGTERM / Ctrl-C 时同步提交已处理的 offset 再退出。job 每 60 秒输出一行计数（projected / skipped / invalid / storage_retries / storage_failures）。
+- job 单实例串行处理，吞吐受 Redis 往返时间限制；需要更高吞吐时按 topic 分区横向多实例，ZSET 写入的幂等性保证多实例安全。
+
+Home Mixer 读取侧对无法解码的成员（损坏数据、未知 `version`）逐条跳过并按次告警，不会因为一个坏成员让该用户整条序列失效；`StoredUserAction::VERSION` 升级时读取端必须继续解码旧版本直到旧成员过期。
+
+事件 JSON 的最小合同是：
+
+```json
+{"user_id":"000000000000000000000007","tweet_id":"000000000000000000000009","author_id":"00000000000000000000000b","action_time_ms":1789516800000,"action_type":3}
+```
+
+本地没有 Kafka 时，下面的 stdin 模式只用于开发环境把标准化事件投影到 Redis；它不是持久事件日志。生产环境仍需把事件先写入 Kafka 或已验收的持久化入口，再运行 job。注意示例里的固定时间戳过了 7 天就会落在窗口外被跳过（日志级别 debug），本地试跑请像下面这样用当前时间：
 
 ```bash
-cargo test -p home-mixer --test redis_feed_state -- --ignored --test-threads=1
+now_ms=$(($(date +%s) * 1000))
+printf '{"user_id":"000000000000000000000007","tweet_id":"000000000000000000000009","author_id":"00000000000000000000000b","action_time_ms":%s,"action_type":3}\n' "$now_ms" \
+  | UAS_REDIS_URL=redis://localhost:6379/ RUST_LOG=info cargo run -p home-mixer --bin uas-worker
+```
+
+状态配置与请求快照的回归测试随 `cargo test -p home-mixer` 执行；`uas-worker` 的投递语义单测用 `cargo test -p home-mixer --features kafka --bin uas-worker` 连同 Kafka 分支一起编译。真实 Redis 测试默认标记为 ignored，需要本机安装 `redis-server` 后单独执行；测试会启动独立进程和 Unix socket，结束后自动清理：
+
+```bash
+cargo test -p home-mixer --test redis_feed_state --test redis_uas -- --ignored --test-threads=1
 ```
 
 可选集成遵循以下规则：

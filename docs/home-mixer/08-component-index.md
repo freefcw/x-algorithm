@@ -25,7 +25,7 @@
 | `UserSafetyFeaturesQueryHydrator` | `query_hydrators/user_safety_features_query_hydrator.rs` | 默认启用 (`U2`) | `user_id` | `muted_keywords` `blocked_by_user_ids` | 同一共享 provider | `ViewerMutedKeywordFilter` / `AuthorSocialgraphFilter` |
 | `UserTopicsQueryHydrator` | `query_hydrators/user_topics_query_hydrator.rs` | 显式注入 `topic_clients` 或 Demo 时启用 | `user_id` | `supplemental_topic_ids` | `UserTopicReader` | `PhoenixTopicsSource` |
 
-Query hydrator 失败只记 request-scoped error 日志、不中断请求：UAS 失败让两个 sequence 保持 `None`，Strato 失败让 `user_features` 保持全空默认值。
+Query hydrator 失败只记 request-scoped error 日志、不中断请求：UAS 失败或该用户没有投影数据让两个 sequence 保持 `None`，Strato 失败让 `user_features` 保持全空默认值。
 
 ## 2. Sources
 
@@ -105,7 +105,9 @@ Query hydrator 失败只记 request-scoped error 日志、不中断请求：UAS 
 
 | 模块 | 文件 | 作用 |
 | --- | --- | --- |
-| `runtime_config` | `runtime_config.rs` | 解析 Demo/Degraded/ProductionReady 意图并校验启动不变量 |
+| `runtime_config` | `runtime_config.rs` | 解析 Demo/Degraded/ProductionReady 意图并校验启动不变量；`FeedStateConfig` 与 `UasConfig` 在这里一次解析并注入装配 |
+| `uas_fetcher` | `clients/uas_fetcher.rs` | `UserActionSequenceOps` 端口及其实现：非 demo `RedisUserActionSequenceStore`（ZSET `home_mixer:uas:{user_id}:actions`，读窗口内最新 N 条、坏成员逐条跳过）、demo `DemoUserActionSequenceFetcher`、显式无 Redis 时的 `DisabledUserActionSequenceFetcher`；同时提供投影 job 的写端口 `UserActionEventSink` 与事件边界类型 `UserActionEvent` / `ValidatedUserAction` |
+| `uas-worker` | `bin/uas_worker.rs` | 独立投影 job：消费 Kafka（`--features kafka`）或 stdin 的 JSON 行为事件，校验一次后幂等写入 Redis；写失败按退避重试，预算耗尽才退出并保留 offset |
 | `query_builder` | `query_builder.rs` | 校验公共 proto、原样映射网络范围、生成请求身份并以具名字段构造 domain query |
 | `debug_access` | `debug_access.rs` | 默认关闭的 Debug RPC token 授权策略 |
 | `request_util` | `util/request_util.rs` | 为 `QueryBuilder` 生成请求/预测 ID 和 request time |

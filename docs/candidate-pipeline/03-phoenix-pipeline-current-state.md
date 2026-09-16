@@ -22,7 +22,7 @@ gRPC trait 实现在 `home-mixer/server.rs`，公共 proto 到 domain query 的�
 
 ## 2. 当前装配入口
 
-`HomeMixerServer::build(config)` 把 `HomeMixerMode` 和 typed features 直接传给 `PhoenixCandidatePipeline::assemble_for_mode()`。Demo/Disabled adapter 不再由 pipeline 自己读 `HOME_MIXER_MODE`；装配层读 `MRPYQ_RECOMMENDATION_DATA_ADDR`（非 demo 必填，缺失或不可用则启动失败）、`PHOENIX_*_GRPC_ADDR`，旁路读 `VM_RANKER_GRPC_ADDR` / `PHOENIX_MOE_GRPC_ADDR`。
+`HomeMixerServer::build(config)` 把 `HomeMixerMode`、typed features 和已校验的 `UasConfig` 直接传给 `PhoenixCandidatePipeline::assemble_with_uas()`；`assemble_for_mode()` 是测试与兼容入口，自行从环境解析 `UasConfig`。Demo/Disabled adapter 不再由 pipeline 自己读 `HOME_MIXER_MODE`；装配层读 `MRPYQ_RECOMMENDATION_DATA_ADDR`（非 demo 必填，缺失或不可用则启动失败）、`PHOENIX_*_GRPC_ADDR`，旁路读 `VM_RANKER_GRPC_ADDR` / `PHOENIX_MOE_GRPC_ADDR`。
 
 `prod()`、`prod_with_features()`、`prod_with_topic_clients()` 仅保留为上游兼容 facade；新的 application 代码应使用显式 mode 装配。
 
@@ -110,7 +110,7 @@ TES 相关 hydrator 里 CoreData / VideoDuration / HasMedia / FilteredTopics / L
 
 | 依赖 | Demo | Degraded（需 `MRPYQ_RECOMMENDATION_DATA_ADDR`） | 关键行为 |
 | --- | --- | --- | --- |
-| UAS | `DemoUserActionSequenceFetcher` | `DisabledUserActionSequenceFetcher` | 空序列让 `PhoenixSource` 不可用、`PhoenixScorer` 整批 `phoenix_missing_sequence`，所有请求由 `RuleFallbackScorer` 排序 |
+| UAS | `DemoUserActionSequenceFetcher` | `RedisUserActionSequenceStore`（读 `uas-worker` 投影到 Redis 的行为；`UAS_REDIS_URL` 缺省复用 `HOME_MIXER_REDIS_URL`） | 没有投影数据的用户序列为空，`PhoenixSource` 不可用、`PhoenixScorer` 整批 `phoenix_missing_sequence`，由 `RuleFallbackScorer` 排序；真实埋点事件流仍待接入 |
 | Strato | `DemoStratoClient` | `MrpyqStratoClient`（mrpyq `ViewerRelationService`） | 后端尚未实现，调用失败只记日志，`user_features` 全空；两者都拒绝持久化写入 |
 | TES | `DemoTESClient` | `MrpyqTESClient`（mrpyq `BatchGetRecommendationContents`） | 补作者 / 正文 / `created_at_ms` / 互动数 / 一级 eligibility；`creator_member_id` 为空的帖子被 `CoreDataHydrationFilter` 丢弃 |
 | Gizmoduck（作者资料） | `DemoGizmoduckClient`（演示昵称 / 粉丝数） | `DisabledGizmoduckClient` | 只用于 candidate hydration；非 demo 的 `screen_names` 为空，不参与网络范围决策 |

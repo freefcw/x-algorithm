@@ -215,14 +215,14 @@ flowchart TD
 | StratoClient | 非 demo `MrpyqStratoClient`（mrpyq `ViewerRelationService`，后端尚未实现，当前调用失败、关系为空）；demo `DemoStratoClient`（演示关注列表） |
 | PhoenixRetrievalClient | 设 `PHOENIX_RETRIEVAL_GRPC_ADDR` 后真连 gRPC 网关；缺失时显式 Unavailable 并跳过该召回路；非 demo 拒绝随机权重 |
 | PhoenixPredictionClient | 设 `PHOENIX_PREDICT_GRPC_ADDR` 后真连 gRPC 网关并校验 serving metadata；缺失或校验失败时整批走 `RuleFallbackScorer`；非 demo 拒绝随机权重 |
-| UserActionSequenceOps | 非 demo `DisabledUserActionSequenceFetcher`（空序列）；demo `DemoUserActionSequenceFetcher`（合成行为序列） |
+| UserActionSequenceOps | 非 demo `RedisUserActionSequenceStore`（读取 `uas-worker` 投影到 Redis 的最近 7 天行为，`UAS_REDIS_URL` 缺省复用 `HOME_MIXER_REDIS_URL`；没有投影数据时序列为空）；demo `DemoUserActionSequenceFetcher`（合成行为序列） |
 | GizmoduckClient | 仅补作者资料；非 demo `DisabledGizmoduckClient` 返回空，demo 合成昵称 / 粉丝数 |
 | ServedPersistence | `FeedStateServedPersistence`：业务模式写共享 Redis，Demo 默认进程内存 |
 
 这意味着：
 
 - 框架和装配已经完整
-- 非 demo 已经真实接到 mrpyq 的内容与网内 / 兜底召回，但行为序列、作者资料、viewer 关系后端和持久化曝光仍缺；配好演示组合可端到端跑通（见 [getting-started 第四步](../getting-started/05-第四步-跑通完整推荐链路.md)）
+- 非 demo 已经真实接到 mrpyq 的内容与网内 / 兜底召回，行为序列由 `uas-worker` → Redis → `RedisUserActionSequenceStore` 承载（真实埋点事件流仍待接入验收），作者资料、viewer 关系后端和持久化曝光仍缺；配好演示组合可端到端跑通（见 [getting-started 第四步](../getting-started/05-第四步-跑通完整推荐链路.md)）
 
 ## 10. 当前默认运行行为
 

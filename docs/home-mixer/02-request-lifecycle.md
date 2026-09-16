@@ -22,8 +22,8 @@ sequenceDiagram
     participant Clients as 外部客户端
 
     Main->>Server: HomeMixerServer::build(config)
-    Server->>Pipeline: PhoenixCandidatePipeline::assemble_for_mode(config.mode, features)
-    Pipeline->>Clients: 初始化 UAS / Phoenix / mrpyq（网内、兜底、TES、一级 VF、Strato；非 demo 必配）/ Gizmoduck 等
+    Server->>Pipeline: PhoenixCandidatePipeline::assemble_with_uas(config.mode, features, config.uas)
+    Pipeline->>Clients: 初始化 UAS（非 demo：Redis 投影）/ Phoenix / mrpyq（网内、兜底、TES、一级 VF、Strato；非 demo 必配）/ Gizmoduck 等
     Clients-->>Pipeline: 返回客户端实例
     Pipeline-->>Server: 内层 pipeline
     Server->>Server: ScoredPosts + ForYou pipeline/server 装配

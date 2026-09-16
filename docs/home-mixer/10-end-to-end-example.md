@@ -205,14 +205,14 @@ flowchart LR
 
 ### 5.1 输入请求
 
-假设仍然是同样一份请求，服务以 `HOME_MIXER_MODE=degraded` + `MRPYQ_RECOMMENDATION_DATA_ADDR` + `HOME_MIXER_REDIS_URL` 启动，未配置 Phoenix 地址。
+假设仍然是同样一份请求，服务以 `HOME_MIXER_MODE=degraded` + `MRPYQ_RECOMMENDATION_DATA_ADDR` + `HOME_MIXER_REDIS_URL` 启动，未配置 Phoenix 地址，也没有运行 `uas-worker`。
 
 ### 5.2 当前默认依赖会返回什么
 
 | 依赖 | 默认行为 |
 | --- | --- |
 | QueryBuilder | 不请求 Gizmoduck，原样保留请求的 `in_network_only=false` |
-| `DisabledUserActionSequenceFetcher` | 空行为序列 → 聚合报错 → `scoring_sequence` / `retrieval_sequence` 为 `None` |
+| `RedisUserActionSequenceStore` | 读 `home_mixer:uas:{viewer}:actions`，该用户没有投影数据 → 空行为序列 → 聚合报错 → `scoring_sequence` / `retrieval_sequence` 为 `None` |
 | `MrpyqStratoClient.get_user_features` | mrpyq 尚未实现 `ViewerRelationService` → 调用失败，只记日志 → 空 `UserFeatures` |
 | `PhoenixSource` / `FallbackSource` | 默认全网；`PhoenixSource` 因行为序列为空而失败，`FallbackSource` 正常读取 mrpyq FALLBACK 池 |
 | `MrpyqInNetworkPostsClient` | 以 `viewer_id`（皮 `member_id`）作为 `account_id` 查 NETWORK 收件箱；皮维度对齐前可能取到空或错误的收件箱 |

@@ -244,7 +244,7 @@ rule_score = 1.5 × max(0, 1 − 帖龄天数 / 7)      # 新鲜度
 score      = rule_score × 0.5^同作者已出现次数（下限 0.25）  # 作者多样性
 ```
 
-非 demo 下 UAS 适配器仍是 Disabled，`PhoenixScorer` 拿不到序列，所以当前所有非 demo 请求最终都由这一步排序。
+非 demo 下 UAS 适配器读取 `uas-worker` 投影到 Redis 的行为序列；没有投影数据的用户（事件流未接入、job 未运行）`PhoenixScorer` 拿不到序列，请求最终都由这一步排序。
 
 ## 5. 选择与后处理
 

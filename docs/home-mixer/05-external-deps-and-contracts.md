@@ -173,7 +173,7 @@ sequenceDiagram
 | `StratoClient` | 非 demo `MrpyqStratoClient`；demo `DemoStratoClient` | 非 demo 调 `ViewerRelationService.GetViewerRelations` 填 block / blocked_by / mute / 屏蔽词，关注列表等其余 `UserFeatures` 字段没有 mrpyq 契约、保持为空。mrpyq 尚未实现该 RPC，当前调用失败后 query hydrator 只记日志，`user_features` 全空，拉黑 / 屏蔽词过滤器实际不生效。两者都拒绝持久化写入，因此请求缓存写回开关默认关闭 |
 | `PhoenixRetrievalClient` | 真实 gRPC 客户端（可选） | 设置 `PHOENIX_RETRIEVAL_GRPC_ADDR` 后调用 Phoenix 网关；标准/MoE 召回上限 3 s，未设置时显式 Unavailable，由 Source 跳过该召回路。非 demo 拒绝 `random-weights=true` 的网关 |
 | `PhoenixPredictionClient` | `SlimPhoenixPredictionClient`（可选真连） | 设置 `PHOENIX_PREDICT_GRPC_ADDR` 后调用 Phoenix 网关，校验 serving metadata 与响应形状；精排上限 5 s，未设置、失败或校验不通过时整批进入 `RuleFallbackScorer`。非 demo 拒绝随机权重 |
-| `UserActionSequenceOps` | 非 demo `DisabledUserActionSequenceFetcher`；demo `DemoUserActionSequenceFetcher` | 非 demo 返回空行为序列，序列聚合报错，`scoring_sequence` / `retrieval_sequence` 为 `None`：`PhoenixSource` 不能召回，`PhoenixScorer` 整批标 `phoenix_missing_sequence`，即便配置了 Phoenix 地址也不会调用模型 |
+| `UserActionSequenceOps` | 非 demo `RedisUserActionSequenceStore`；demo `DemoUserActionSequenceFetcher` | 非 demo 读取 `uas-worker` 投影到 Redis ZSET（`UAS_REDIS_URL`，缺省复用 `HOME_MIXER_REDIS_URL`）的最近 7 天、最新 `UAS_MAX_ACTIONS` 条原始行为；无法解码的成员逐条跳过。没有投影数据的用户序列为空，聚合报错后 `scoring_sequence` / `retrieval_sequence` 为 `None`：`PhoenixSource` 不能召回，`PhoenixScorer` 整批标 `phoenix_missing_sequence`。真实埋点 topic 的事件合同仍待验收 |
 | `GizmoduckClient` | 非 demo `DisabledGizmoduckClient`；demo `DemoGizmoduckClient` | 只承担作者资料补全；非 demo 全部为空，`demo` 合成昵称 / 粉丝数 |
 | `ServedPersistence` | `FeedStateServedPersistence` | 委托注入的 FeedStateStore；业务模式使用 Redis，Demo 默认内存；响应前等待写入，失败返回 `Unavailable` |
 | `GrpcVMRankerClient` | 真实 gRPC 客户端（可选，仅 demo） | 同时设置 `HOME_MIXER_ENABLE_VM_RANKER=1` 与 `VM_RANKER_GRPC_ADDR` 后调用本仓库 `vm-ranker` 服务；整数 proto 无法承载真实 ObjectId，非 demo 强制禁用 |
@@ -198,13 +198,13 @@ sequenceDiagram
 
 网络范围只有一个真源：只有请求显式 `in_network_only=true` 才仅网内，否则同时允许网内和网外。QueryBuilder 不请求 Gizmoduck viewer RPC；Gizmoduck 只用于作者资料补全。VF 结果使用 `Allowed / Restricted / Unchecked / Unavailable` 明确区分，它是独立的候选安全策略，也不替代网络范围开关。
 
-演示实现是独立的 `Demo*` 类型，由装配层按 `HOME_MIXER_MODE=demo` 选择注入；`HOME_MIXER_DEMO=1` 仅作为旧脚本兼容别名。默认 `degraded` 必须配置 `MRPYQ_RECOMMENDATION_DATA_ADDR`，否则拒绝启动；调用方身份、TES、UAS、Strato、VF、网内 / 兜底、Phoenix 元数据、served 落库这些合同未全部验收前，`production_ready` 拒绝启动。
+演示实现是独立的 `Demo*` 类型，由装配层按 `HOME_MIXER_MODE=demo` 选择注入；`HOME_MIXER_DEMO=1` 仅作为旧脚本兼容别名。默认 `degraded` 必须配置 `MRPYQ_RECOMMENDATION_DATA_ADDR` 和 `HOME_MIXER_REDIS_URL`，否则拒绝启动；UAS 由独立投影 job `uas-worker` 写入 Redis，Home Mixer 进程内 `RedisUserActionSequenceStore` 读取（`HomeMixerConfig.uas` 显式选择，见 [07 配置](./07-config-and-params.md)）。当前实现约定标准化 JSON 事件，真实埋点 topic 的 schema、认证、保留与重放合同仍需验收。调用方身份、TES、UAS 事件合同、Strato、VF、网内 / 兜底、Phoenix 元数据、served 落库这些合同未全部验收前，`production_ready` 拒绝启动。
 
 ```mermaid
 flowchart TD
     A["home-mixer"] --> M["mrpyq RecommendationData + ViewerRelation<br/>非 demo 必配：网内 / 兜底 / TES / 一级 VF / Strato"]
     A --> P["Phoenix Predict / Retrieval<br/>设环境变量后真连 gRPC 网关"]
-    A --> C["UAS / Gizmoduck<br/>非 demo 仍是 Disabled adapter"]
+    A --> C["UAS / Gizmoduck<br/>UAS Redis adapter / Gizmoduck Disabled"]
     A --> T["Thunder 整数 gRPC<br/>仅 demo"]
     M --> D["网内 / 兜底候选 + 内容 + 一级 eligibility"]
     P --> E["网外候选 + 行为概率"]
@@ -228,6 +228,6 @@ flowchart TD
 
 - 一套相当完整的编排骨架
 - 加上一条非 demo 下真实接到 mrpyq 的主链（网内 / 兜底召回、内容补全、一级 eligibility）
-- 再加上一批为未来真实服务预留好的 trait 和数据结构（UAS、Gizmoduck、viewer 关系后端、ImpressedPosts、持久化 served / feedback）
+- 再加上一批为未来真实服务预留好的 trait 和数据结构（Gizmoduck、viewer 关系后端、ImpressedPosts、持久化 served / feedback）
 
 所以理解它时，要把“接口层完整”和“默认行为可用”区分开看。
