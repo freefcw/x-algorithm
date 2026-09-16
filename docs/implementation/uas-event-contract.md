@@ -4,7 +4,7 @@
 > **日期**：2026-09-16
 > **读者**：mrpyq feed / webapi 后端、客户端埋点、推荐服务开发
 > **事实边界**：本文所有「消费端行为」均引自本仓库当前代码并标注文件；对 mrpyq 的「要求」是推荐侧提出的接口约定，未经 mrpyq 侧确认
-> **配套文档**：身份维度约定见 [mrpyq-member-dimension-requirements.md](./mrpyq-member-dimension-requirements.md)；消费端环境变量与运行细节见 [home-mixer/07-config-and-params.md §3.2](../home-mixer/07-config-and-params.md)
+> **配套文档**：客户端埋点见 [uas-client-event-reporting.md](./uas-client-event-reporting.md)；身份维度约定见 [mrpyq-member-dimension-requirements.md](./mrpyq-member-dimension-requirements.md)；消费端环境变量与运行细节见 [home-mixer/07-config-and-params.md §3.2](../home-mixer/07-config-and-params.md)
 
 ---
 
@@ -39,13 +39,16 @@ mrpyq 业务事件 ──Kafka topic──▶ uas-worker ──Redis ZSET──�
 | `author_id` | string | 是 | 帖子作者的 `creator_member_id`，与 `BatchGetRecommendationContents` 返回的该字段相同 | 同上 |
 | `action_time_ms` | int64 | 是 | 行为**发生**时间，UTC epoch 毫秒。不是发送时间、不是消费时间 | `> 0` |
 | `action_type` | int32 | 是 | `proto/definitions/phoenix_recsys.proto` 的 `ActionName` 枚举值 | `1..=18`；`0`、`19`、`20` 拒绝 |
+| `product_surface` | int32 | 新生产者必填 | 行为发生时的产品入口。`0` 首页推荐、`1` 关注流、`2` 搜索、`3` 话题；`4..=15` 预留 | `0..=15` 的整数。省略时消费端当 `0`。字符串（如 `"timeline"`）整条丢弃 |
 
 三个 ID 必须在同一身份空间（皮），不能混入 `account_id`、`user_id`、`user_no`。否则聚合出的历史序列和候选帖子的作者对不上，模型输入等于噪音。
+
+客户端入口编码与触发时机见 [uas-client-event-reporting.md](./uas-client-event-reporting.md)。同帖多条行为聚合时保留**最早一条**的 `product_surface`。
 
 ### 2.3 示例
 
 ```json
-{"user_id":"66f1a2b3c4d5e6f708192a3b","tweet_id":"66f1a2b3c4d5e6f708192a3c","author_id":"66f1a2b3c4d5e6f708192a3d","action_time_ms":1789516800000,"action_type":1}
+{"user_id":"66f1a2b3c4d5e6f708192a3b","tweet_id":"66f1a2b3c4d5e6f708192a3c","author_id":"66f1a2b3c4d5e6f708192a3d","action_time_ms":1789516800000,"action_type":1,"product_surface":0}
 ```
 
 ### 2.4 校验与失败行为
@@ -59,7 +62,7 @@ mrpyq 业务事件 ──Kafka topic──▶ uas-worker ──Redis ZSET──�
 
 ### 2.5 扩展字段
 
-消费端忽略未知字段（`serde` 默认行为），所以可以在消息里附加字段而不破坏兼容。建议现在就带上、消费端后续再接的两个字段见 §8.1。
+消费端忽略未知字段（`serde` 默认行为），所以可以在消息里附加字段而不破坏兼容。`event_id` 仍可附带、消费端暂不读，见 §8.1。
 
 ---
 
@@ -79,10 +82,9 @@ mrpyq 业务事件 ──Kafka topic──▶ uas-worker ──Redis ZSET──�
 | 9 | `CLIENT_TWEET_SHARE` | 分享（任意渠道） | 客户端分享面板任一渠道完成 | 2.0 |
 | 10 | `CLIENT_TWEET_CLICK_SEND_VIA_DIRECT_MESSAGE` | 通过私信 / 站内消息分享 | 发送完成 | 5.0 |
 | 11 | `CLIENT_TWEET_SHARE_VIA_COPY_LINK` | 复制帖子链接 | 复制完成 | 20.0 |
-| 14 | `CLIENT_TWEET_FOLLOW_AUTHOR` | 从帖子上关注作者 | 关注落库成功后 | 4.0 |
-| 15 | `CLIENT_TWEET_NOT_INTERESTED_IN` | 不感兴趣 | 用户点击后 | -43.2 |
-| 16 | `CLIENT_TWEET_BLOCK_AUTHOR` | 拉黑作者 | 拉黑落库成功后 | -31.2 |
-| 17 | `CLIENT_TWEET_MUTE_AUTHOR` | 静音 / 不看作者 | 落库成功后 | -58.8 |
+| 14 | `CLIENT_TWEET_FOLLOW_AUTHOR` | 从帖子上关注作者 | **客户端**在帖子上完成关注后上报并带 `tweet_id`（后端关注落库无法关联到具体帖子） | 4.0 |
+| 16 | `CLIENT_TWEET_BLOCK_AUTHOR` | 拉黑作者 | **客户端**从帖子入口完成拉黑后上报并带 `tweet_id`（同上） | -31.2 |
+| 17 | `CLIENT_TWEET_MUTE_AUTHOR` | 静音 / 不看作者 | **客户端**从帖子入口完成后上报并带 `tweet_id`（同上） | -58.8 |
 | 18 | `CLIENT_TWEET_REPORT` | 举报帖子 | 举报提交成功后 | -234.0 |
 
 分享同时命中 9 和 10 / 11 时，两条都发（例如复制链接分享发 9 和 11 两条）。
@@ -103,13 +105,14 @@ mrpyq 业务事件 ──Kafka topic──▶ uas-worker ──Redis ZSET──�
 | 类别 | 原因 |
 |---|---|
 | 3 转发、4 引用转发、13 点击引用帖 | 产品没有这些功能，权重已置 0（U5） |
+| 15 不感兴趣 | 产品当前没有可采集的入口；权重置 0、从 home-mixer 必需列表移除（见 [phoenix-training-data-decisions.md §1](./phoenix-training-data-decisions.md)），将来有入口再加回 |
 | 取消点赞、取消关注、解除拉黑等撤销类 | 枚举没有对应值；UAS 是行为历史，表达不了撤销 |
 | **曝光 / 浏览 / 刷到** | 没有枚举位；聚合后 `action_mask` 全 false 的记录会被 `DenseAggregatedActionFilter` 丢掉。曝光属于训练归因的 served 事件流，是另一条待建的流，不要混进来 |
 | 0、19、20 | 消费端直接拒绝 |
 
 ### 3.4 客户端事件依赖埋点通道
 
-第一批里 6、9、10、11 和第二批全部是**客户端**动作，mrpyq 服务端未必天然有。需要确认 mrpyq 是否有客户端埋点上报入口可以转发到同一 topic。如果没有，第一版只有 1、2、14、15、16、17、18 这些服务端可确认的动作，模型只能学到强互动信号；这不阻塞上线，但要在排期里明确。
+第一批里 6、9、10、11、14、16、17 和第二批全部依赖**客户端**上报：6、9、10、11 本身是客户端动作；14、16、17 虽然有后端落库，但后端不知道动作来自哪条帖子，`tweet_id` 只能由客户端补。需要确认 mrpyq 是否有客户端埋点上报入口可以转发到同一 topic。当前结论（2026-09-16）：后端可直接采集的只有 1、2、18，第一版模型 head 集合据此收缩，其余待客户端埋点上线后按 [phoenix-training-data-decisions.md §1.4](./phoenix-training-data-decisions.md) 加回；这不阻塞上线，但要在排期里明确。
 
 ---
 
@@ -133,7 +136,7 @@ mrpyq 业务事件 ──Kafka topic──▶ uas-worker ──Redis ZSET──�
 
 | 项 | 要求 | 消费端依据 |
 |---|---|---|
-| 投递次数 | **at-least-once 即可**，重复投递无害 | 写入幂等：相同五元组序列化为字节相同的 ZSET 成员（`StoredUserAction` 字段顺序固定），重放不产生重复 |
+| 投递次数 | **at-least-once 即可**，重复投递无害 | 写入幂等：相同六元组（含 `product_surface`）序列化为字节相同的 ZSET 成员（`StoredUserAction` 字段顺序固定），重放不产生重复 |
 | 顺序 | **不要求有序** | ZSET 按 `action_time_ms` 排序，乱序到达无影响 |
 | partition key | 建议用 `user_id` | 消费端不依赖；但多实例按分区扩展时同一用户落同一实例，避免热点交叉 |
 | 时间窗 | `action_time_ms` 与真实时间偏差控制在分钟级，生产机 NTP 对时 | 早于 `now − 7 天` 的事件跳过不写（`skipped_outside_window`）；晚于 `now + 5 分钟` 的当异常跳过（`skipped_future`）；两者都推进 offset |
@@ -191,7 +194,7 @@ offset 管理：`enable.auto.commit=true` + `enable.auto.offset.store=false`，�
    redis-cli ZRANGE 'home_mixer:uas:{66f1a2b3c4d5e6f708192a3b}:actions' 0 -1 WITHSCORES
    ```
 
-   成员是 `{"version":1,"tweet_id":...,"author_id":...,"action_time_ms":...,"action_type":...}`，score 是 `action_time_ms`。
+   成员是 `{"version":2,"tweet_id":...,"author_id":...,"action_time_ms":...,"action_type":...,"product_surface":...}`，score 是 `action_time_ms`。窗口内的 v1 成员仍可读，`product_surface` 当 0。
 
 4. **Home Mixer 侧确认**：对该皮发一次推荐请求。之前 QueryHydrator 阶段会有 `failed: ... No user actions found for user <id>` 的错误日志，接通后消失；若同时配置了 `PHOENIX_RETRIEVAL_GRPC_ADDR` / `PHOENIX_PREDICT_GRPC_ADDR`，会出现 `phoenix rpc Retrieve ...` 与 `phoenix rpc PredictNextActions ... scored=N` 日志，说明模型路径已被调用。
 
@@ -205,10 +208,9 @@ offset 管理：`enable.auto.commit=true` + `enable.auto.offset.store=false`，�
 
 | 字段 | 类型 | 用途 | 现状 |
 |---|---|---|---|
-| `product_surface` | int，`0..=15` | 行为发生的场景（首页推荐 / 关注流 / 搜索 / 话题…）。proto `AggregatedUserAction.product_surface` 有此字段，Phoenix 网关会读 | 事件里没有，聚合时恒 0。接入需要改 `UserActionEvent`、`StoredUserAction`（bump `VERSION`）和聚合器，不需要再动 mrpyq |
 | `event_id` | string | 幂等键、排障关联 | 本流不需要；但曝光 / 训练归因流一定需要，现在统一省事 |
 
-场景编码建议沿用 [training/training_data_spec.md §2.1](../training/training_data_spec.md)：`0` 首页推荐、`1` 关注流、`2` 搜索、`3` 话题。
+`product_surface` 已进入事件、Redis `StoredUserAction` v2 和 `DefaultAggregator`。客户端编码见 [uas-client-event-reporting.md](./uas-client-event-reporting.md)。当前请求的候选侧 `candidate_product_surface` 仍为 0，不影响历史序列。
 
 ### 8.2 撤销类动作
 
