@@ -329,7 +329,94 @@ def test_npz_checkpoint_roundtrip(tmp_path):
             np.testing.assert_allclose(np.asarray(loaded[mod][name]), arr)
 
 
-# ==================== 4. ObjectId-shaped string contract ====================
+# ==================== 4. model-version 绑定产物内容 ====================
+
+
+def test_checkpoint_model_version_is_bound_to_artifact_content(tmp_path):
+    """home-mixer 钉的 model-version 必须随参数或嵌入表内容变化，而不是随文件名。
+
+    以前是 basename：两次训练都停在 step 200 就同名，只换嵌入表也看不出来，召回索引
+    的版本校验会误通过。这里锁住：标签取自 bundle 目录 / 文件 stem，摘要来自数组内容——
+    不是文件字节，因为 npz 是带时间戳的 zip、且 bundle 的嵌入文件还多存了 Adagrad 累加器。
+    """
+    import time
+
+    from services.model_contract import RANDOM_MODEL_VERSION, checkpoint_model_version
+
+    rng = np.random.default_rng(0)
+    weights_v1 = {"transformer/linear/w": rng.normal(size=(4, 3)).astype(np.float32)}
+    weights_v2 = {"transformer/linear/w": rng.normal(size=(4, 3)).astype(np.float32)}
+    tables_v1 = {
+        key: rng.normal(size=(5, 2)).astype(np.float32)
+        for key in ("user_emb_table", "post_emb_table", "author_emb_table")
+    }
+    tables_v2 = dict(tables_v1, post_emb_table=rng.normal(size=(5, 2)).astype(np.float32))
+
+    bundle = tmp_path / "step-000200"
+    bundle.mkdir()
+    params = bundle / "model_params.npz"
+    tables = bundle / "embedding_tables.npz"
+    np.savez(params, **weights_v1)
+    # bundle 里的嵌入文件带累加器（train_ranker.save_embedding_state 的布局）。
+    np.savez(tables, **tables_v1, user_emb_acc=np.ones(5, dtype=np.float32))
+
+    version = checkpoint_model_version(params, tables)
+    label, digest = version.split("@")
+    assert label == "step-000200", "bundle 布局用目录名做标签，不再是 model_params.npz"
+    assert len(digest) == 12 and all(c in "0123456789abcdef" for c in digest)
+    assert version != RANDOM_MODEL_VERSION
+    assert checkpoint_model_version(params, tables) == version, "确定性"
+
+    # 同样的数组重新保存（zip 时间戳变了）→ 版本不变。
+    time.sleep(1.1)
+    np.savez(params, **weights_v1)
+    assert checkpoint_model_version(params, tables) == version
+
+    # train_retrieval 写出的"只有三张表"的副本必须与 bundle 的嵌入文件算出同一版本，
+    # 否则按训练日志里的提示建索引会被网关拒绝。
+    tables_only = tmp_path / "embedding_tables.npz"
+    np.savez(tables_only, **tables_v1)
+    assert checkpoint_model_version(params, tables_only) == version
+
+    # 只换嵌入表 → 新版本（旧实现看不见）。
+    np.savez(tables, **tables_v2, user_emb_acc=np.ones(5, dtype=np.float32))
+    assert checkpoint_model_version(params, tables) != version
+
+    # 另一次训练、同样的 step 目录名、不同参数 → 不同版本（旧实现会撞名）。
+    other = tmp_path / "run-b" / "step-000200"
+    other.mkdir(parents=True)
+    np.savez(other / "model_params.npz", **weights_v2)
+    np.savez(other / "embedding_tables.npz", **tables_v1)
+    assert (
+        checkpoint_model_version(other / "model_params.npz", other / "embedding_tables.npz")
+        != version
+    )
+
+    # 平铺格式（召回 checkpoint）用文件 stem 做标签，嵌入表同样参与摘要。
+    flat = tmp_path / "retrieval_params_step200.npz"
+    np.savez(flat, **weights_v2)
+    assert checkpoint_model_version(flat).startswith("retrieval_params_step200@")
+    assert checkpoint_model_version(flat, tables_only) != checkpoint_model_version(flat)
+
+
+def test_engine_model_version_is_random_without_checkpoint_and_metadata_mismatch_is_fatal():
+    from services.grpc_gateway import (
+        EmbeddingTables,
+        check_ranker_model_version,
+        resolve_model_version,
+    )
+
+    assert resolve_model_version(None, EmbeddingTables(None)) == "random"
+
+    # 旧 metadata 没有 model_version：跳过；有且一致：通过；有且不一致：拒绝启动。
+    check_ranker_model_version(None, "step-000200@abc")
+    check_ranker_model_version({"step": 200}, "step-000200@abc")
+    check_ranker_model_version({"model_version": "step-000200@abc"}, "step-000200@abc")
+    with pytest.raises(ValueError, match="model_version"):
+        check_ranker_model_version({"model_version": "step-000200@def"}, "step-000200@abc")
+
+
+# ==================== 5. ObjectId-shaped string contract ====================
 
 
 def test_demo_object_id_is_stable_and_not_time_encoded():

@@ -3,7 +3,11 @@
 from __future__ import annotations
 
 import hashlib
-from collections.abc import Iterable
+import os
+from collections.abc import Iterable, Sequence
+from pathlib import Path
+
+import numpy as np
 
 # Cross-language serving contract. Keep these values independent from any server implementation.
 FEATURE_SCHEMA = "phoenix-string-id-actions-v2"
@@ -38,6 +42,73 @@ def object_id_to_u64_hash(oid_hex: str) -> int:
     digest = hashlib.md5(raw, usedforsecurity=False).digest()
     hashed = int.from_bytes(digest[:8], "big") & _OBJECT_ID_HASH_MASK
     return 1 if hashed == 0 else hashed
+
+
+# The `model-version` value home-mixer sees (and can pin through
+# PHOENIX_EXPECTED_MODEL_VERSION) and the value a retrieval index is bound to.
+# Bound to artifact *content*, not file names: two trainings that both stop at
+# step 200 produce different versions, and swapping only the embedding tables
+# changes the version too.  "random" is reserved for uninitialised engines.
+RANDOM_MODEL_VERSION = "random"
+_MODEL_VERSION_DIGEST_HEX = 12
+_BUNDLE_PARAMS_FILENAME = "model_params.npz"
+# Only the tables themselves take part in serving; the Adagrad accumulators that
+# train_ranker stores next to them do not, so a bundle's embedding file and the
+# tables-only copy train_retrieval writes must hash the same.
+EMBEDDING_TABLE_KEYS: tuple[str, ...] = ("user_emb_table", "post_emb_table", "author_emb_table")
+
+
+def _digest_npz_arrays(
+    digest, path: str | os.PathLike[str], keys: Sequence[str] | None
+) -> None:
+    """Feed name, dtype, shape and bytes of the selected arrays into ``digest``.
+
+    Hashing array contents (not the file bytes) keeps the version stable across
+    re-saves of identical weights -- an ``.npz`` is a zip whose entry timestamps
+    change on every write -- and independent of extra arrays stored alongside.
+    """
+    with np.load(path, allow_pickle=False) as data:
+        names = sorted(data.files) if keys is None else [key for key in keys if key in data.files]
+        if not names:
+            raise ValueError(f"{path} holds none of the arrays expected for a model version")
+        for name in names:
+            array = np.ascontiguousarray(data[name])
+            digest.update(name.encode("utf-8"))
+            digest.update(str(array.dtype).encode("ascii"))
+            digest.update(str(array.shape).encode("ascii"))
+            digest.update(array.tobytes())
+
+
+def artifact_digest(
+    params_path: str | os.PathLike[str],
+    emb_tables_path: str | os.PathLike[str] | None = None,
+) -> str:
+    """sha256 over every array of the parameter file, then the three embedding tables."""
+    digest = hashlib.sha256()
+    _digest_npz_arrays(digest, params_path, keys=None)
+    if emb_tables_path is not None:
+        _digest_npz_arrays(digest, emb_tables_path, keys=EMBEDDING_TABLE_KEYS)
+    return digest.hexdigest()[:_MODEL_VERSION_DIGEST_HEX]
+
+
+def checkpoint_model_version(
+    params_path: str | os.PathLike[str],
+    emb_tables_path: str | os.PathLike[str] | None = None,
+) -> str:
+    """``<label>@<digest>`` for a checkpoint plus the embedding tables it is served with.
+
+    label: the bundle directory name for ``step-*/model_params.npz`` bundles, otherwise
+    the parameter file stem (``retrieval_params_step200``).  digest: content hash of the
+    parameter arrays followed by the embedding tables when they are used.  Training
+    writes the same value into ``metadata.json`` so operators can read it without
+    starting a gateway; the gateway recomputes it from what it actually loaded.
+    """
+    params = Path(params_path)
+    label = params.parent.name if params.name == _BUNDLE_PARAMS_FILENAME else params.stem
+    version = f"{label}@{artifact_digest(params, emb_tables_path)}"
+    if version == RANDOM_MODEL_VERSION or not label:
+        raise ValueError(f"invalid model version label derived from {params}")
+    return version
 
 
 def supported_actions_header(action_enums: Iterable[int] | None = None) -> str:

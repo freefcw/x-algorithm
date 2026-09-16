@@ -25,7 +25,7 @@ import numpy as np
 from grok import TransformerConfig
 from recsys_model import HashConfig, PhoenixModelConfig, RecsysBatch, RecsysEmbeddings
 from runners import ACTIONS, create_example_batch
-from services.model_contract import ACTION_IDX_TO_ENUM, FEATURE_SCHEMA
+from services.model_contract import ACTION_IDX_TO_ENUM, FEATURE_SCHEMA, checkpoint_model_version
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 logger = logging.getLogger("train")
@@ -705,6 +705,9 @@ def save_artifacts(
     metadata = {
         "feature_schema": FEATURE_SCHEMA,
         "step": step,
+        # 网关对外报告 / home-mixer 用 PHOENIX_EXPECTED_MODEL_VERSION 钉住的值；按参数
+        # 文件 + 嵌入表内容取哈希，网关加载时会重新计算，两边算法同源（model_contract）。
+        "model_version": checkpoint_model_version(params_path, emb_path),
         "model_params": Path(params_path).name,
         "embedding_tables": emb_path.name,
         "embedding_state_format": 2,

@@ -71,6 +71,8 @@ from services.model_contract import (
     ACTION_IDX_TO_ENUM,
     FEATURE_SCHEMA,
     NONZERO_WEIGHT_ACTION_ENUMS,
+    RANDOM_MODEL_VERSION,
+    checkpoint_model_version,
     supported_actions_header,
 )
 from services.recsys_proto import load_proto_modules
@@ -134,6 +136,8 @@ class EmbeddingTables:
     """
 
     def __init__(self, path: Optional[str] = None):
+        # 记录来源路径：引擎的 model-version 把嵌入表内容也算进去。
+        self.path: Optional[str] = path or None
         if path:
             tables = np.load(path)
             self.user = tables["user_emb_table"]
@@ -275,6 +279,18 @@ def empty_history() -> HistoryFeatures:
     )
 
 
+def resolve_model_version(checkpoint_path: Optional[str], tables: EmbeddingTables) -> str:
+    """引擎对外报告的 model-version：随机初始化是保留字 "random"，否则按产物内容取版本。
+
+    版本同时覆盖参数文件和实际加载的嵌入表（`checkpoint_model_version`），所以只换其中
+    一个文件也会得到新版本；home-mixer 用 PHOENIX_EXPECTED_MODEL_VERSION 钉的就是这个值，
+    召回索引也用它与编码时的模型绑定。
+    """
+    if checkpoint_path is None:
+        return RANDOM_MODEL_VERSION
+    return checkpoint_model_version(checkpoint_path, tables.path)
+
+
 def rank_bucket(num_rows: int) -> int:
     """候选行数向上取到最近的批次桶；超过最大桶由调用方分批。"""
     for bucket in RANK_BATCH_BUCKETS:
@@ -338,11 +354,12 @@ class RankerEngine:
         )
         runner.initialize(checkpoint_path=checkpoint_path)
 
+        self.model_version = resolve_model_version(checkpoint_path, tables)
         if checkpoint_path is not None:
-            self.model_version = os.path.basename(checkpoint_path)
-            logger.info("精排模型已加载检查点: %s", checkpoint_path)
+            logger.info(
+                "精排模型已加载检查点: %s（model-version=%s）", checkpoint_path, self.model_version
+            )
         else:
-            self.model_version = "random"
             logger.warning("精排模型使用随机初始化（未提供 --ranker-checkpoint）")
 
         self._runner = runner
@@ -422,7 +439,8 @@ class RetrievalEngine:
     - 未提供时合成 ``corpus_size`` 条演示 ID 并现场编码。演示 ID 在业务侧水合不到，
       只用于本地跑通链路。
 
-    索引必须由与本引擎相同 ``model_version`` 的检查点编码，否则拒绝加载。
+    索引必须由与本引擎相同 ``model_version`` 的检查点编码，否则拒绝加载；该版本按参数文件
+    与嵌入表的内容取哈希（`resolve_model_version`），文件名相同但内容不同的产物不会误配。
     检索本身是对全量向量的暴力点积 + Top-K，十万级候选在 CPU 上是毫秒量级。
     """
 
@@ -455,11 +473,12 @@ class RetrievalEngine:
         )
         runner.initialize(checkpoint_path=checkpoint_path)
 
+        self.model_version = resolve_model_version(checkpoint_path, tables)
         if checkpoint_path is not None:
-            self.model_version = os.path.basename(checkpoint_path)
-            logger.info("召回模型已加载检查点: %s", checkpoint_path)
+            logger.info(
+                "召回模型已加载检查点: %s（model-version=%s）", checkpoint_path, self.model_version
+            )
         else:
-            self.model_version = "random"
             logger.warning("召回模型使用随机初始化（未提供 --retrieval-checkpoint）")
 
         self._runner = runner
@@ -645,7 +664,7 @@ def create_servicers(
         metadata = [
             ("feature-schema", FEATURE_SCHEMA),
             ("model-version", engine.model_version),
-            ("random-weights", str(engine.model_version == "random").lower()),
+            ("random-weights", str(engine.model_version == RANDOM_MODEL_VERSION).lower()),
             ("supported-actions", supported_actions),
         ]
         # 召回引擎额外报告当前候选池版本（`model@built_at_ms:size`），便于从
@@ -739,10 +758,10 @@ def create_servicers(
     return PredictionServicer(), RetrievalServicer()
 
 
-def load_ranker_contract(checkpoint_path: str | None) -> tuple[list[int] | None, bool]:
-    """读取 checkpoint bundle 的 metadata；旧 checkpoint 默认兼容全部行为。"""
+def load_ranker_metadata(checkpoint_path: str | None) -> dict | None:
+    """定位并读取 ranker checkpoint 的 metadata.json；没有或读不出返回 None。"""
     if checkpoint_path is None:
-        return None, True
+        return None
     checkpoint = Path(checkpoint_path)
     bundle_dir = checkpoint if checkpoint.is_dir() else checkpoint.parent
     metadata_candidates = [bundle_dir / "metadata.json"]
@@ -754,12 +773,37 @@ def load_ranker_contract(checkpoint_path: str | None) -> tuple[list[int] | None,
             )
     metadata_path = next((path for path in metadata_candidates if path.exists()), None)
     if metadata_path is None:
-        return None, True
+        return None
     try:
         with metadata_path.open(encoding="utf-8") as f:
-            metadata = json.load(f)
+            return json.load(f)
     except (OSError, json.JSONDecodeError) as exc:
-        logger.warning("无法读取 ranker metadata %s，兼容全部行为：%s", metadata_path, exc)
+        logger.warning("无法读取 ranker metadata %s：%s", metadata_path, exc)
+        return None
+
+
+def check_ranker_model_version(metadata: dict | None, model_version: str) -> None:
+    """训练写进 metadata 的 model_version 必须等于按当前文件内容算出的版本。
+
+    不一致只有两种可能：bundle 里的参数 / 嵌入表在训练后被替换过，或 metadata 来自另一份
+    bundle。两种都不该带着"看起来对"的版本号上线，直接拒绝启动。旧 metadata 没有该字段时跳过。
+    """
+    if not metadata:
+        return
+    recorded = metadata.get("model_version")
+    if recorded is None:
+        return
+    if recorded != model_version:
+        raise ValueError(
+            f"ranker metadata 记录的 model_version={recorded!r} 与当前产物内容算出的 "
+            f"{model_version!r} 不一致；bundle 文件被替换或 metadata 不属于这份产物"
+        )
+
+
+def load_ranker_contract(checkpoint_path: str | None) -> tuple[list[int] | None, bool]:
+    """读取 checkpoint bundle 的 metadata；旧 checkpoint 默认兼容全部行为。"""
+    metadata = load_ranker_metadata(checkpoint_path)
+    if metadata is None:
         return None, True
     supported = metadata.get("supported_action_enums")
     if supported is not None:
@@ -893,6 +937,7 @@ def serve(
     tables = EmbeddingTables(emb_tables_path)
     logger.info("正在初始化精排模型...")
     ranker = RankerEngine(tables, ranker_checkpoint)
+    check_ranker_model_version(load_ranker_metadata(ranker_checkpoint), ranker.model_version)
     logger.info("正在初始化召回模型...")
     retrieval = RetrievalEngine(tables, retrieval_checkpoint, corpus_size, corpus_path)
     if corpus_path is None:

@@ -34,6 +34,7 @@ from grok import TransformerConfig
 from recsys_model import HashConfig, RecsysBatch, RecsysEmbeddings
 from recsys_retrieval_model import PhoenixRetrievalModelConfig
 from runners import ACTIONS, create_example_batch
+from services.model_contract import checkpoint_model_version
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 logger = logging.getLogger("train_retrieval")
@@ -328,11 +329,12 @@ def iter_parquet_dir(data_dir: str, batch_size: int):
 
 # ── 检查点保存 ────────────────────────────────────────────────────────────────
 
-def save_checkpoint(ckpt_dir: str, params: Any, step: int):
+def save_checkpoint(ckpt_dir: str, params: Any, step: int) -> str:
     os.makedirs(ckpt_dir, exist_ok=True)
     path = os.path.join(ckpt_dir, f"retrieval_params_step{step}.npz")
     np.savez(path, **flatten_dict(params))
     logger.info(f"模型参数已保存到 {path}")
+    return path
 
 
 def load_checkpoint(path: str) -> dict:
@@ -435,17 +437,24 @@ def train(args):
                 save_checkpoint(args.ckpt_dir, params, step)
 
     # 6. 最终保存
-    save_checkpoint(args.ckpt_dir, params, step)
+    final_params_path = save_checkpoint(args.ckpt_dir, params, step)
     output_emb_path = os.path.join(args.ckpt_dir, "embedding_tables.npz")
     save_embedding_tables(output_emb_path, user_emb, post_emb, author_emb)
+    # 网关和索引按"参数 + 嵌入表"的内容哈希识别这份产物（services.model_contract）。
+    model_version = checkpoint_model_version(final_params_path, output_emb_path)
     logger.info("=== 训练完成 ===")
     logger.info(f"产物目录：{args.ckpt_dir}")
+    logger.info(f"model-version（网关广播 / 索引绑定）：{model_version}")
     logger.info("推理时加载：")
-    logger.info(f"  模型参数：{args.ckpt_dir}/retrieval_params_step{step}.npz")
+    logger.info(f"  模型参数：{final_params_path}")
     logger.info(f"  嵌入表  ：{output_emb_path}")
     logger.info("下一步：")
-    logger.info("  1) 用物品塔离线对全库 post 预计算向量 → 灌入 FAISS/ScaNN")
-    logger.info("  2) 在线请求用用户塔实时编码 user_repr，点积取 top-k 送入精排")
+    logger.info(
+        "  1) uv run scripts/build_retrieval_index.py --posts <可推荐帖子清单> "
+        f"--retrieval-checkpoint {final_params_path} --emb-tables {output_emb_path} "
+        "--output indexes/retrieval_index.npz"
+    )
+    logger.info("  2) 网关 --retrieval-checkpoint/--emb-tables/--corpus-path 加载同一套产物")
 
 
 # ── 入口 ──────────────────────────────────────────────────────────────────────

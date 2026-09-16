@@ -161,6 +161,31 @@ def test_binary_auc_matches_known_values():
     assert tr.binary_auc(np.array([0.5, 0.5]), np.array([1, 1])) is None
 
 
+def test_saved_bundle_records_content_bound_model_version(tmp_path, setup):
+    """metadata.json 的 model_version 必须等于网关按文件内容重新算出的值。
+
+    这是 PHOENIX_EXPECTED_MODEL_VERSION 钉住的字符串，也是召回索引绑定的版本；训练与网关
+    走同一个 `checkpoint_model_version`，metadata 里的值可以直接抄进部署配置。
+    """
+    import optax
+
+    from services.model_contract import checkpoint_model_version
+
+    _, params, emb_state, *_rest, head_mask = setup
+    opt_state = optax.adam(1e-4).init(params)
+    artifacts = tr.save_artifacts(
+        str(tmp_path), params, emb_state, opt_state, step=7, head_mask=np.asarray(head_mask)
+    )
+
+    import json
+
+    metadata = json.loads(Path(artifacts["metadata"]).read_text(encoding="utf-8"))
+    recomputed = checkpoint_model_version(artifacts["params"], artifacts["embedding_tables"])
+    assert metadata["model_version"] == recomputed
+    assert metadata["model_version"].startswith("step-000007@")
+    assert metadata["supported_action_enums"] == [1, 2], "由 head_mask 决定，与 model_version 无关"
+
+
 def test_optimizer_state_round_trip(tmp_path):
     import optax
 
