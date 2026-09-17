@@ -32,7 +32,7 @@ Rust 使用 Edition 2021，遵循 `rustfmt` 默认风格，使用 4 空格缩进
 `phoenix/` 使用 `pytest`，现有测试以 `test_*.py` 命名，覆盖张量形状、attention mask、检索、gRPC 契约和策略装配。`home-mixer`、`candidate-pipeline`、`vm-ranker` 已有成体系 Rust 单测；`thunder` 仍偏少。修改 pipeline、proto 或服务装配时，至少运行 `cargo test --workspace`。如果改动影响排序、过滤或协议字段，补充最接近变更点的单测或回归测试。
 
 ## 提交与 Pull Request 规范
-提交历史已采用稳定的简洁 scope 前缀（`home-mixer: ...`、`phoenix: ...`、`thunder: ...`、`docs: ...`），新提交请沿用，例如 `home-mixer: add author diversity scorer`、`phoenix: fix retrieval normalization`。PR 需说明影响的模块、行为变化、验证命令和结果；若改动涉及接口、排序输出或文档图示，附示例输出或截图，并链接相关 issue / 设计文档。
+提交信息采用 Conventional Commits 风格的 `type(scope): 中文说明`：type 常用 `feat` / `fix` / `docs` / `ci` / `chore` / `refactor` / `test`，scope 为模块名（`home-mixer`、`thunder`、`phoenix`、`proto`、`candidate-pipeline`、`deploy` 等，纯仓库级改动可省略），说明用中文短语概括行为变化。例如 `feat(home-mixer): 新增作者多样性打分器`、`fix(phoenix): 修复召回调用的归一化`、`ci: 新增 clippy 门禁`。PR 需说明影响的模块、行为变化、验证命令和结果；若改动涉及接口、排序输出或文档图示，附示例输出或截图，并链接相关 issue / 设计文档。
 
 ## 配置与安全提示
 协议定义优先修改 `proto/definitions/`，不要手改生成代码。涉及 Kafka、gRPC 或外部依赖的改动，应把配置入口放在显式参数或配置结构中，避免把环境相关值硬编码到源码里。
