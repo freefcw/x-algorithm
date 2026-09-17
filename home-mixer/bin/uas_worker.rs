@@ -542,7 +542,13 @@ async fn main() -> anyhow::Result<()> {
         }
     };
 
-    let outcome = run(config, &readiness, worker_metrics).await;
+    let outcome = run(
+        config,
+        &readiness,
+        worker_metrics,
+        process_metrics.client_calls(),
+    )
+    .await;
 
     readiness.set_draining();
     let _ = stop_tx.send(true);
@@ -561,9 +567,11 @@ async fn run(
     config: home_mixer::clients::uas_fetcher::RedisUserActionSequenceConfig,
     readiness: &Readiness,
     metrics: Arc<WorkerMetrics>,
+    client_calls: home_mixer::metrics::ClientCallRecorder,
 ) -> anyhow::Result<()> {
     let store = RedisUserActionSequenceStore::new(config)
         .await
+        .map(|store| store.with_calls(client_calls))
         .map_err(anyhow::Error::msg)?;
     // A demo Home Mixer only reads this Redis when UAS_REDIS_URL is set on
     // its side too; say which variable chose the target so a local bring-up

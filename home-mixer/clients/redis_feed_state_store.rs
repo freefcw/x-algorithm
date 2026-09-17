@@ -1,11 +1,12 @@
 //! Async Redis adapter for served-history and request-timestamp state.
 
 use std::fmt;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use redis::aio::{ConnectionManager, ConnectionManagerConfig};
 
 use crate::feed_state::{FeedStateSnapshot, FeedStateStore};
+use crate::metrics::ClientCallRecorder;
 use crate::models::{PostId, UserId};
 
 const DEFAULT_KEY_PREFIX: &str = "home_mixer:feed_state";
@@ -88,13 +89,14 @@ impl RedisFeedStateConfig {
 
 /// Redis-backed feed state shared by all Home Mixer instances.
 ///
-/// Clones of `ConnectionManager` multiplex one async connection. When a
-/// command finds that connection dead (server restart, failover, idle close
-/// by a proxy), the manager replaces the connection in the background and
-/// returns the failure to the caller. Reads are idempotent, so `load` runs
-/// once more on the replacement instead of failing open and letting the
-/// request serve posts it cannot see. Writes are never retried or replayed:
-/// a write that timed out may already have been executed.
+/// The connection multiplexes one transport per endpoint (single endpoint or
+/// cluster seed; see [`ManagedRedisConnection`]). When a command finds that
+/// connection dead (server restart, failover, idle close by a proxy), the
+/// manager replaces it in the background and returns the failure to the
+/// caller. Reads are idempotent, so `load` runs once more on the replacement
+/// instead of failing open and letting the request serve posts it cannot see.
+/// Writes are never retried or replayed: a write that timed out may already
+/// have been executed.
 pub struct RedisFeedStateStore {
     connection: ConnectionManager,
     key_prefix: String,
@@ -102,6 +104,7 @@ pub struct RedisFeedStateStore {
     max_request_timestamps: usize,
     ttl_secs: Option<u64>,
     request_timeout: Duration,
+    calls: ClientCallRecorder,
 }
 
 impl RedisFeedStateStore {
@@ -143,7 +146,14 @@ impl RedisFeedStateStore {
             max_request_timestamps: config.max_request_timestamps,
             ttl_secs: config.ttl_secs,
             request_timeout: config.request_timeout,
+            calls: ClientCallRecorder::default(),
         })
+    }
+
+    /// Attach the process call metrics; the default records nothing.
+    pub fn with_calls(mut self, calls: ClientCallRecorder) -> Self {
+        self.calls = calls;
+        self
     }
 
     fn key(&self, user_id: UserId, suffix: &str) -> String {
@@ -169,17 +179,42 @@ impl RedisFeedStateStore {
     }
 }
 
-/// `ConnectionManager` swaps in a new connection after an I/O failure or an
-/// unrecoverable protocol error, so the next command already targets the
-/// replacement. A timeout keeps the current connection and is not retried:
-/// the request budget is spent.
-fn connection_replaced(error: &redis::RedisError) -> bool {
-    !error.is_timeout() && (error.is_io_error() || error.is_unrecoverable_error())
-}
-
 #[tonic::async_trait]
 impl FeedStateStore for RedisFeedStateStore {
     async fn load(&self, user_id: UserId) -> Result<FeedStateSnapshot, String> {
+        let started = Instant::now();
+        let result = self.load_inner(user_id).await;
+        self.calls.record(
+            "redis_feed_state",
+            "load",
+            if result.is_ok() { "ok" } else { "error" },
+            started,
+        );
+        result
+    }
+
+    async fn record(
+        &self,
+        user_id: UserId,
+        served_post_ids: Vec<PostId>,
+        request_timestamp_ms: i64,
+    ) -> Result<(), String> {
+        let started = Instant::now();
+        let result = self
+            .record_inner(user_id, served_post_ids, request_timestamp_ms)
+            .await;
+        self.calls.record(
+            "redis_feed_state",
+            "record",
+            if result.is_ok() { "ok" } else { "error" },
+            started,
+        );
+        result
+    }
+}
+
+impl RedisFeedStateStore {
+    async fn load_inner(&self, user_id: UserId) -> Result<FeedStateSnapshot, String> {
         let served_key = self.key(user_id, "served");
         let timestamps_key = self.key(user_id, "timestamps");
         let mut pipeline = redis::pipe();
@@ -213,7 +248,7 @@ impl FeedStateStore for RedisFeedStateStore {
         })
     }
 
-    async fn record(
+    async fn record_inner(
         &self,
         user_id: UserId,
         served_post_ids: Vec<PostId>,
@@ -281,6 +316,14 @@ fn set_retention(
     if let Some(ttl_secs) = ttl_secs {
         pipeline.arg(ttl_secs);
     }
+}
+
+/// `ConnectionManager` swaps in a new connection after an I/O failure or an
+/// unrecoverable protocol error, so the next command already targets the
+/// replacement. A timeout keeps the current connection and is not retried:
+/// the request budget is spent.
+fn connection_replaced(error: &redis::RedisError) -> bool {
+    !error.is_timeout() && (error.is_io_error() || error.is_unrecoverable_error())
 }
 
 fn redis_error(operation: &str, error: &redis::RedisError) -> String {

@@ -14,15 +14,16 @@
 
 use crate::clients::in_network_posts_client::{InNetworkPost, InNetworkPostsClient};
 use crate::clients::mrpyq_recommendation_data_client::{
-    client_from_config, CandidatePage, CandidateSource, IneligibleReason, MrpyqClientError,
-    MrpyqRecommendationDataClient, MrpyqRecommendationDataConfig, RecommendationContent,
-    MAX_FEED_IDS,
+    client_from_config_with_calls, CandidatePage, CandidateSource, IneligibleReason,
+    MrpyqClientError, MrpyqRecommendationDataClient, MrpyqRecommendationDataConfig,
+    RecommendationContent, MAX_FEED_IDS,
 };
 use crate::clients::mrpyq_viewer_relation_client::{
-    viewer_relation_client_from_config, MrpyqViewerRelationClient,
+    viewer_relation_client_from_config_with_calls, MrpyqViewerRelationClient,
 };
 use crate::clients::strato_client::StratoClient;
 use crate::clients::tweet_entity_service_client::TESClient;
+use crate::metrics::ClientCallRecorder;
 use crate::models::candidate_features::{
     MediaEntities, MediaEntity, MediaInfo, PureCoreData, VideoInfo,
 };
@@ -58,6 +59,13 @@ pub struct MrpyqPipelineAdapters {
 pub fn pipeline_adapters_from_env(
     demo_mode: bool,
 ) -> anyhow::Result<Option<MrpyqPipelineAdapters>> {
+    pipeline_adapters_from_env_with_calls(demo_mode, ClientCallRecorder::default())
+}
+
+pub fn pipeline_adapters_from_env_with_calls(
+    demo_mode: bool,
+    calls: ClientCallRecorder,
+) -> anyhow::Result<Option<MrpyqPipelineAdapters>> {
     if demo_mode {
         return Ok(None);
     }
@@ -66,10 +74,10 @@ pub fn pipeline_adapters_from_env(
     if config.address.is_none() {
         return Ok(None);
     }
-    let relations = viewer_relation_client_from_config(&config)
+    let relations = viewer_relation_client_from_config_with_calls(&config, calls.clone())
         .context("failed to create mrpyq viewer relation client")?;
-    let client =
-        client_from_config(config).context("failed to create mrpyq recommendation data client")?;
+    let client = client_from_config_with_calls(config, calls)
+        .context("failed to create mrpyq recommendation data client")?;
     log::info!(
         "using mrpyq RecommendationDataService for TES / in-network / fallback / first-stage eligibility, and ViewerRelationService for block / mute"
     );

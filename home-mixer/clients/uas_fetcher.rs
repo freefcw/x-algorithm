@@ -22,6 +22,7 @@
 // 写入幂等，读取对无法解码的成员容忍跳过并告警。
 // Disabled 实现保留给显式不配置 UAS Redis 的装配路径与测试。
 
+use crate::metrics::ClientCallRecorder;
 use crate::models::ids::{ObjectId, PostId, UserId};
 use crate::recsys_compat::{
     is_supported_action_type, is_supported_product_surface, MAX_PRODUCT_SURFACE,
@@ -31,7 +32,7 @@ use crate::uas_compat;
 use redis::aio::{ConnectionManager, ConnectionManagerConfig};
 use serde::{Deserialize, Serialize};
 use std::fmt;
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use tonic::async_trait;
 
 const DEFAULT_UAS_KEY_PREFIX: &str = "home_mixer:uas";
@@ -324,6 +325,7 @@ pub struct RedisUserActionSequenceStore {
     max_future_skew: Duration,
     ttl_secs: Option<u64>,
     request_timeout: Duration,
+    calls: ClientCallRecorder,
 }
 
 impl RedisUserActionSequenceStore {
@@ -361,7 +363,14 @@ impl RedisUserActionSequenceStore {
             max_future_skew: config.max_future_skew,
             ttl_secs: config.ttl_secs,
             request_timeout: config.request_timeout,
+            calls: ClientCallRecorder::default(),
         })
+    }
+
+    /// Attach the process call metrics; the default records nothing.
+    pub fn with_calls(mut self, calls: ClientCallRecorder) -> Self {
+        self.calls = calls;
+        self
     }
 
     fn key(&self, user_id: UserId) -> String {
@@ -430,10 +439,19 @@ impl UserActionEventSink for RedisUserActionSequenceStore {
                 pipeline.cmd("PERSIST").arg(&key);
             }
         }
-        tokio::time::timeout(self.request_timeout, self.run_idempotent::<()>(&pipeline))
-            .await
-            .map_err(|_| "UAS Redis write timed out".to_string())?
-            .map_err(|e| redis_error("UAS Redis write", &e))?;
+        let started = Instant::now();
+        let write =
+            tokio::time::timeout(self.request_timeout, self.run_idempotent::<()>(&pipeline))
+                .await
+                .map_err(|_| "UAS Redis write timed out".to_string())?
+                .map_err(|e| redis_error("UAS Redis write", &e));
+        self.calls.record(
+            "redis_uas",
+            "write",
+            if write.is_ok() { "ok" } else { "error" },
+            started,
+        );
+        write?;
         Ok(RecordOutcome::Stored)
     }
 }
@@ -441,6 +459,23 @@ impl UserActionEventSink for RedisUserActionSequenceStore {
 #[async_trait]
 impl UserActionSequenceOps for RedisUserActionSequenceStore {
     async fn get_by_user_id(
+        &self,
+        user_id: UserId,
+    ) -> Result<uas_compat::UserActionSequence, anyhow::Error> {
+        let started = Instant::now();
+        let result = self.get_by_user_id_inner(user_id).await;
+        self.calls.record(
+            "redis_uas",
+            "read",
+            if result.is_ok() { "ok" } else { "error" },
+            started,
+        );
+        result
+    }
+}
+
+impl RedisUserActionSequenceStore {
+    async fn get_by_user_id_inner(
         &self,
         user_id: UserId,
     ) -> Result<uas_compat::UserActionSequence, anyhow::Error> {

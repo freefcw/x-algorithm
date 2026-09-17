@@ -13,7 +13,9 @@ use crate::clients::gizmoduck_client::{
     DemoGizmoduckClient, DisabledGizmoduckClient, GizmoduckClient,
 };
 use crate::clients::in_network_posts_client::{DemoFallbackPostsClient, InNetworkPostsClient};
-use crate::clients::mrpyq_adapters::{pipeline_adapters_from_env, MrpyqPipelineAdapters};
+use crate::clients::mrpyq_adapters::{
+    pipeline_adapters_from_env_with_calls, MrpyqPipelineAdapters,
+};
 use crate::clients::phoenix_prediction_client::{
     PhoenixPredictionClient, SlimPhoenixPredictionClient,
 };
@@ -542,11 +544,17 @@ impl PhoenixCandidatePipeline {
         let demo_mode = mode == HomeMixerMode::Demo;
         let features = features_for_mode(mode, features);
         uas.validate(mode)?;
+        // Upstream-call metrics: one clonable handle per client, all landing
+        // in the registry the admin port exposes (nothing when unmetered).
+        let client_calls = metrics
+            .as_ref()
+            .map(|metrics| metrics.client_calls())
+            .unwrap_or_default();
         if demo_mode {
             log::info!("HOME_MIXER_MODE=demo: injecting demo Strato / TES clients");
         }
 
-        let mrpyq_adapters = pipeline_adapters_from_env(demo_mode)
+        let mrpyq_adapters = pipeline_adapters_from_env_with_calls(demo_mode, client_calls.clone())
             .context("failed to create mrpyq recommendation data adapters")?;
         if !demo_mode && mrpyq_adapters.is_none() {
             anyhow::bail!(
@@ -572,6 +580,7 @@ impl PhoenixCandidatePipeline {
                 // feed state and UAS are operated separately.
                 let store = RedisUserActionSequenceStore::new(config)
                     .await
+                    .map(|store| store.with_calls(client_calls.clone()))
                     .map_err(|error| {
                         // Name both variables: outside demo the UAS target is
                         // usually the shared HOME_MIXER_REDIS_URL, so a Redis
@@ -604,10 +613,16 @@ impl PhoenixCandidatePipeline {
             )
         };
 
-        let phoenix_client: Arc<dyn PhoenixPredictionClient + Send + Sync> =
-            Arc::new(SlimPhoenixPredictionClient::new_with_allow_random(demo_mode).await?);
-        let phoenix_retrieval_client =
-            Arc::new(ProdPhoenixRetrievalClient::new_with_allow_random(demo_mode).await?);
+        let phoenix_client: Arc<dyn PhoenixPredictionClient + Send + Sync> = Arc::new(
+            SlimPhoenixPredictionClient::new_with_allow_random(demo_mode)
+                .await?
+                .with_calls(client_calls.clone()),
+        );
+        let phoenix_retrieval_client = Arc::new(
+            ProdPhoenixRetrievalClient::new_with_allow_random(demo_mode)
+                .await?
+                .with_calls(client_calls.clone()),
+        );
         let in_network_client = assemble_in_network_client(demo_mode, mrpyq_adapters).await;
         let fallback_client: Option<Arc<dyn InNetworkPostsClient>> = if demo_mode {
             Some(Arc::new(DemoFallbackPostsClient) as Arc<dyn InNetworkPostsClient>)
@@ -631,11 +646,11 @@ impl PhoenixCandidatePipeline {
         };
         let moe_retrieval_client = if features.phoenix_moe {
             match std::env::var("PHOENIX_MOE_GRPC_ADDR") {
-                Ok(addr) => Some(
-                    Arc::new(ProdPhoenixRetrievalClient::from_addr_with_allow_random(
-                        addr, demo_mode,
-                    )?) as Arc<dyn PhoenixRetrievalClient + Send + Sync>,
-                ),
+                Ok(addr) => Some(Arc::new(
+                    ProdPhoenixRetrievalClient::from_addr_with_allow_random(addr, demo_mode)?
+                        .with_calls(client_calls.clone()),
+                )
+                    as Arc<dyn PhoenixRetrievalClient + Send + Sync>),
                 Err(_) => {
                     log::warn!(
                         "HOME_MIXER_ENABLE_PHOENIX_MOE is set but PHOENIX_MOE_GRPC_ADDR is missing; disabling Phoenix MoE source"

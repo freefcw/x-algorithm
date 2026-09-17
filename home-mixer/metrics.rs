@@ -44,6 +44,7 @@ pub struct Metrics {
     rpc: RpcMetrics,
     pipeline: PipelineMetrics,
     served_events: ServedEventsMetrics,
+    client_calls: ClientCallMetrics,
 }
 
 impl Default for Metrics {
@@ -61,8 +62,9 @@ impl Metrics {
     }
 
     /// Registry for a process that shares the admin port but serves no RPCs
-    /// (the `uas-worker` job): only `build_info` and `ready` are registered,
-    /// and the process adds its own families with [`Self::register_collector`].
+    /// (the `uas-worker` job): only `build_info`, `ready` and the upstream
+    /// call families are registered, and the process adds its own families
+    /// with [`Self::register_collector`].
     pub fn process_only() -> Self {
         Self::build(false)
     }
@@ -88,6 +90,7 @@ impl Metrics {
         let rpc = RpcMetrics::new();
         let pipeline = PipelineMetrics::new();
         let served_events = ServedEventsMetrics::new();
+        let client_calls = ClientCallMetrics::new();
 
         registry
             .register(Box::new(build_info))
@@ -95,6 +98,10 @@ impl Metrics {
         registry
             .register(Box::new(ready.clone()))
             .expect("register ready");
+        // Upstream calls happen in every process shape (recommendation
+        // server and projection job alike), so their families are registered
+        // unconditionally.
+        client_calls.register(&registry);
         if register_server_families {
             rpc.register(&registry);
             pipeline.register(&registry);
@@ -107,6 +114,7 @@ impl Metrics {
             rpc,
             pipeline,
             served_events,
+            client_calls,
         }
     }
 
@@ -129,6 +137,15 @@ impl Metrics {
 
     pub fn served_events(&self) -> &ServedEventsMetrics {
         &self.served_events
+    }
+
+    /// A clonable handle for the upstream-call families, handed to clients at
+    /// assembly time. Recording through it lands in this registry; the
+    /// default handle (tests, embeds) records nothing.
+    pub fn client_calls(&self) -> ClientCallRecorder {
+        ClientCallRecorder {
+            inner: Some(self.client_calls.clone()),
+        }
     }
 
     pub fn set_ready(&self, ready: bool) {
@@ -261,6 +278,81 @@ impl Drop for RpcObservation<'_> {
             self.metrics.record(self.rpc, Code::Cancelled, self.started);
         }
         self.metrics.in_flight.with_label_values(&[self.rpc]).dec();
+    }
+}
+
+/// Per-upstream-call accounting for the RPCs Home Mixer sends to its backing
+/// services (mrpyq, Phoenix, Redis), labelled by client type and method so a
+/// slow dependency is attributable without correlating stage logs. The
+/// `result` label distinguishes `ok`, `error` (transport/timeout) and
+/// `rejected` (call succeeded but the response failed contract validation).
+#[derive(Clone)]
+pub struct ClientCallMetrics {
+    calls: IntCounterVec,
+    duration: HistogramVec,
+}
+
+impl ClientCallMetrics {
+    fn new() -> Self {
+        Self {
+            calls: IntCounterVec::new(
+                Opts::new(
+                    "home_mixer_client_calls_total",
+                    "Upstream calls by client, method and terminal result",
+                ),
+                &["client", "method", "result"],
+            )
+            .expect("valid client calls opts"),
+            duration: HistogramVec::new(
+                HistogramOpts::new(
+                    "home_mixer_client_call_duration_seconds",
+                    "Wall-clock time of one upstream call",
+                )
+                .buckets(STAGE_DURATION_BUCKETS.to_vec()),
+                &["client", "method"],
+            )
+            .expect("valid client call duration opts"),
+        }
+    }
+
+    fn register(&self, registry: &Registry) {
+        registry
+            .register(Box::new(self.calls.clone()))
+            .expect("register client calls");
+        registry
+            .register(Box::new(self.duration.clone()))
+            .expect("register client call duration");
+    }
+}
+
+/// Handle handed to upstream clients at assembly time. The default handle
+/// records nothing, so tests and library embeds construct clients exactly as
+/// before; [`Metrics::client_calls`] returns the metered one.
+#[derive(Clone, Default)]
+pub struct ClientCallRecorder {
+    inner: Option<ClientCallMetrics>,
+}
+
+impl ClientCallRecorder {
+    /// Record one finished upstream call. `result` is a small fixed label
+    /// (`"ok"`, `"error"`, `"rejected"`); `started` bounds the latency.
+    pub fn record(
+        &self,
+        client: &'static str,
+        method: &'static str,
+        result: &'static str,
+        started: Instant,
+    ) {
+        if let Some(metrics) = &self.inner {
+            metrics
+                .calls
+                .with_label_values(&[client, method, result])
+                .inc();
+            metrics
+                .duration
+                .with_label_values(&[client, method])
+                .observe(started.elapsed().as_secs_f64());
+        }
     }
 }
 
@@ -739,6 +831,46 @@ mod tests {
     }
 
     #[test]
+    fn client_calls_record_outcome_and_latency_per_method() {
+        use std::time::Duration;
+
+        let metrics = Metrics::new();
+        let recorder = metrics.client_calls();
+        let started = Instant::now() - Duration::from_millis(30);
+        recorder.record(
+            "mrpyq_recommendation_data",
+            "ListRecommendationCandidates",
+            "ok",
+            started,
+        );
+        recorder.record(
+            "mrpyq_recommendation_data",
+            "ListRecommendationCandidates",
+            "error",
+            started,
+        );
+        recorder.record(
+            "phoenix_prediction",
+            "PredictNextActions",
+            "rejected",
+            started,
+        );
+
+        let text = metrics.encode().expect("text exposition");
+        for expected in [
+            "home_mixer_client_calls_total{client=\"mrpyq_recommendation_data\",method=\"ListRecommendationCandidates\",result=\"ok\"} 1",
+            "home_mixer_client_calls_total{client=\"mrpyq_recommendation_data\",method=\"ListRecommendationCandidates\",result=\"error\"} 1",
+            "home_mixer_client_calls_total{client=\"phoenix_prediction\",method=\"PredictNextActions\",result=\"rejected\"} 1",
+            "home_mixer_client_call_duration_seconds_count{client=\"phoenix_prediction\",method=\"PredictNextActions\"} 1",
+        ] {
+            assert!(text.contains(expected), "missing {expected}\n{text}");
+        }
+
+        // The default handle records nothing.
+        ClientCallRecorder::default().record("redis_feed_state", "load", "ok", started);
+    }
+
+    #[test]
     fn process_only_registry_exposes_build_info_readiness_and_added_collectors() {
         let metrics = Metrics::process_only();
         let counter = prometheus::IntCounter::new("uas_worker_test_total", "test").unwrap();
@@ -753,6 +885,11 @@ mod tests {
         );
         counter.inc();
         metrics.set_ready(true);
+        // Upstream call families are registered for the projection job too;
+        // recording once creates the child series that appears in the text.
+        metrics
+            .client_calls()
+            .record("redis_uas", "write", "ok", Instant::now());
 
         let text = metrics.encode().unwrap();
         assert!(text.contains("home_mixer_build_info"));
@@ -761,6 +898,10 @@ mod tests {
         assert!(
             !text.contains("home_mixer_rpc_requests_total"),
             "server families stay out of a process-only registry\n{text}"
+        );
+        assert!(
+            text.contains("home_mixer_client_calls_total{client=\"redis_uas\",method=\"write\",result=\"ok\"} 1"),
+            "upstream call families are registered for the projection job too\n{text}"
         );
     }
 

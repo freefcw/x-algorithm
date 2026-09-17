@@ -23,6 +23,7 @@
 //     时，走真实 gRPC 调用 PhoenixPredictionService.PredictNextActions；
 //   - 未设置时返回显式不可用错误，由 Scorer 隔离并保留规则排序。
 
+use crate::metrics::ClientCallRecorder;
 use crate::models::ids::UserId;
 use log::{info, warn};
 use std::time::{Duration, Instant};
@@ -80,6 +81,7 @@ pub struct ProdPhoenixPredictionClient {
     channel: Option<Channel>,
     /// 仅 demo 装配可设为 true；生产环境必须使用训练权重。
     pub allow_random: bool,
+    calls: ClientCallRecorder,
 }
 
 impl ProdPhoenixPredictionClient {
@@ -99,7 +101,14 @@ impl ProdPhoenixPredictionClient {
         Ok(Self {
             channel,
             allow_random: false,
+            calls: ClientCallRecorder::default(),
         })
+    }
+
+    /// Attach the process call metrics; the default records nothing.
+    pub fn with_calls(mut self, calls: ClientCallRecorder) -> Self {
+        self.calls = calls;
+        self
     }
 }
 
@@ -134,6 +143,8 @@ impl PhoenixPredictionClient for ProdPhoenixPredictionClient {
                     status.code(),
                     status.message(),
                 );
+                self.calls
+                    .record("phoenix_prediction", "PredictNextActions", "error", started);
                 return Err(status.into());
             }
         };
@@ -144,12 +155,24 @@ impl PhoenixPredictionClient for ProdPhoenixPredictionClient {
             warn!(
                 "phoenix rpc PredictNextActions candidates={candidate_count} elapsed_ms={elapsed_ms} rejected={error:#}"
             );
+            self.calls.record(
+                "phoenix_prediction",
+                "PredictNextActions",
+                "rejected",
+                started,
+            );
             return Err(error);
         }
         let inner = response.into_inner();
         if let Err(error) = validate_predict_response(&requested, &inner) {
             warn!(
                 "phoenix rpc PredictNextActions candidates={candidate_count} elapsed_ms={elapsed_ms} rejected={error:#}"
+            );
+            self.calls.record(
+                "phoenix_prediction",
+                "PredictNextActions",
+                "rejected",
+                started,
             );
             return Err(error);
         }
@@ -161,6 +184,8 @@ impl PhoenixPredictionClient for ProdPhoenixPredictionClient {
                 .first()
                 .map_or(0, |set| set.candidate_distributions.len()),
         );
+        self.calls
+            .record("phoenix_prediction", "PredictNextActions", "ok", started);
         Ok(inner)
     }
 }
@@ -352,6 +377,12 @@ impl SlimPhoenixPredictionClient {
         inner.allow_random = allow_random;
         Ok(Self { inner })
     }
+
+    /// Attach the process call metrics to the wrapped production client.
+    pub fn with_calls(mut self, calls: ClientCallRecorder) -> Self {
+        self.inner = self.inner.with_calls(calls);
+        self
+    }
 }
 
 #[async_trait]
@@ -418,6 +449,7 @@ mod tests {
         let error = ProdPhoenixPredictionClient {
             channel: None,
             allow_random: false,
+            calls: ClientCallRecorder::default(),
         }
         .predict(crate::models::uid(1), Default::default(), Vec::new())
         .await

@@ -20,6 +20,7 @@
 //   - 未设置时返回显式不可用错误，由 Source 隔离并保留其他召回路。
 
 use crate::clients::phoenix_prediction_client::validate_serving_metadata;
+use crate::metrics::ClientCallRecorder;
 use crate::models::ids::UserId;
 use log::{info, warn};
 use std::time::{Duration, Instant};
@@ -75,6 +76,7 @@ pub async fn retrieve_with_timeout(
 pub struct ProdPhoenixRetrievalClient {
     channel: Option<Channel>,
     pub allow_random: bool,
+    calls: ClientCallRecorder,
 }
 
 impl ProdPhoenixRetrievalClient {
@@ -90,6 +92,7 @@ impl ProdPhoenixRetrievalClient {
         Ok(Self {
             channel: Some(Channel::from_shared(addr)?.connect_lazy()),
             allow_random,
+            calls: ClientCallRecorder::default(),
         })
     }
 
@@ -110,7 +113,14 @@ impl ProdPhoenixRetrievalClient {
         Ok(Self {
             channel,
             allow_random,
+            calls: ClientCallRecorder::default(),
         })
+    }
+
+    /// Attach the process call metrics; the default records nothing.
+    pub fn with_calls(mut self, calls: ClientCallRecorder) -> Self {
+        self.calls = calls;
+        self
     }
 }
 
@@ -143,6 +153,8 @@ impl PhoenixRetrievalClient for ProdPhoenixRetrievalClient {
                     status.code(),
                     status.message(),
                 );
+                self.calls
+                    .record("phoenix_retrieval", "Retrieve", "error", started);
                 return Err(status.into());
             }
         };
@@ -153,6 +165,8 @@ impl PhoenixRetrievalClient for ProdPhoenixRetrievalClient {
             warn!(
                 "phoenix rpc Retrieve max_results={max_results} elapsed_ms={elapsed_ms} rejected={error:#}"
             );
+            self.calls
+                .record("phoenix_retrieval", "Retrieve", "rejected", started);
             return Err(error);
         }
         let inner = response.into_inner();
@@ -160,6 +174,8 @@ impl PhoenixRetrievalClient for ProdPhoenixRetrievalClient {
             warn!(
                 "phoenix rpc Retrieve max_results={max_results} elapsed_ms={elapsed_ms} rejected={error:#}"
             );
+            self.calls
+                .record("phoenix_retrieval", "Retrieve", "rejected", started);
             return Err(error);
         }
 
@@ -171,6 +187,8 @@ impl PhoenixRetrievalClient for ProdPhoenixRetrievalClient {
                 .map(|group| group.candidates.len())
                 .sum::<usize>(),
         );
+        self.calls
+            .record("phoenix_retrieval", "Retrieve", "ok", started);
         Ok(inner)
     }
 }
@@ -235,6 +253,7 @@ mod tests {
         let error = ProdPhoenixRetrievalClient {
             channel: None,
             allow_random: false,
+            calls: ClientCallRecorder::default(),
         }
         .retrieve(crate::models::uid(1), Default::default(), 10)
         .await

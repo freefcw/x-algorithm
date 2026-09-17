@@ -1,3 +1,4 @@
+use crate::metrics::ClientCallRecorder;
 use crate::params::MRPYQ_RECOMMENDATION_DATA_TIMEOUT_MS;
 use std::collections::HashSet;
 use std::fmt;
@@ -185,11 +186,18 @@ pub trait MrpyqRecommendationDataClient: Send + Sync {
 pub fn client_from_config(
     config: MrpyqRecommendationDataConfig,
 ) -> anyhow::Result<Arc<dyn MrpyqRecommendationDataClient>> {
+    client_from_config_with_calls(config, ClientCallRecorder::default())
+}
+
+pub fn client_from_config_with_calls(
+    config: MrpyqRecommendationDataConfig,
+    calls: ClientCallRecorder,
+) -> anyhow::Result<Arc<dyn MrpyqRecommendationDataClient>> {
     match config.address {
-        Some(address) => Ok(Arc::new(GrpcMrpyqRecommendationDataClient::from_addr(
-            address,
-            config.timeout,
-        )?)),
+        Some(address) => Ok(Arc::new(
+            GrpcMrpyqRecommendationDataClient::from_addr(address, config.timeout)?
+                .with_calls(calls),
+        )),
         None => Ok(Arc::new(DisabledMrpyqRecommendationDataClient)),
     }
 }
@@ -221,12 +229,23 @@ impl MrpyqRecommendationDataClient for DisabledMrpyqRecommendationDataClient {
 pub struct GrpcMrpyqRecommendationDataClient {
     channel: Channel,
     timeout: Duration,
+    calls: ClientCallRecorder,
 }
 
 impl GrpcMrpyqRecommendationDataClient {
     pub fn from_addr(address: String, timeout: Duration) -> anyhow::Result<Self> {
         let channel = Channel::from_shared(address)?.connect_lazy();
-        Ok(Self { channel, timeout })
+        Ok(Self {
+            channel,
+            timeout,
+            calls: ClientCallRecorder::default(),
+        })
+    }
+
+    /// Attach the process call metrics; the default records nothing.
+    pub fn with_calls(mut self, calls: ClientCallRecorder) -> Self {
+        self.calls = calls;
+        self
     }
 
     fn map_status(status: tonic::Status) -> MrpyqClientError {
@@ -348,6 +367,12 @@ impl MrpyqRecommendationDataClient for GrpcMrpyqRecommendationDataClient {
         let result = self
             .list_candidates_rpc(account_id, source, page_size, page_token)
             .await;
+        self.calls.record(
+            "mrpyq_recommendation_data",
+            "ListRecommendationCandidates",
+            if result.is_ok() { "ok" } else { "error" },
+            started,
+        );
         match &result {
             Ok(page) => log::info!(
                 "mrpyq rpc ListRecommendationCandidates source={source:?} page_size={page_size} elapsed_ms={} candidates={} ready={}",
@@ -370,6 +395,12 @@ impl MrpyqRecommendationDataClient for GrpcMrpyqRecommendationDataClient {
         let started = Instant::now();
         let feed_count = feed_ids.len();
         let result = self.batch_get_contents_rpc(feed_ids).await;
+        self.calls.record(
+            "mrpyq_recommendation_data",
+            "BatchGetRecommendationContents",
+            if result.is_ok() { "ok" } else { "error" },
+            started,
+        );
         match &result {
             Ok(contents) => log::info!(
                 "mrpyq rpc BatchGetRecommendationContents feed_ids={feed_count} elapsed_ms={} contents={}",

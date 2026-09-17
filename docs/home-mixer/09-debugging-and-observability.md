@@ -22,9 +22,10 @@
 - `GET /readyz`：只有能接推荐流量时 200 `ready`；装配中 503 `starting`，收到终止信号后 503 `draining`
 - `GET /metrics`：Prometheus 文本，registry 在 `metrics.rs`
 
-指标分三层，字段说明见 [07 配置 §4.3](./07-config-and-params.md#43-指标)：
+指标分四层，字段说明见 [07 配置 §4.3](./07-config-and-params.md#43-指标)：
 
-- RPC 入口：`home_mixer_rpc_requests_total{rpc,code}`、`home_mixer_rpc_duration_seconds{rpc}`、`home_mixer_rpc_in_flight{rpc}`，回答"请求有没有进来、多久、以什么状态结束"，包括超预算的 `DEADLINE_EXCEEDED` 和客户端先断开的 `CANCELLED`。
+- RPC 入口：`home_mixer_rpc_requests_total{rpc,code}`、`home_mixer_rpc_duration_seconds{rpc}`、`home_mixer_rpc_in_flight{rpc}`，回答“请求有没有进来、多久、以什么状态结束”，包括超预算的 `DEADLINE_EXCEEDED` 和客户端先断开的 `CANCELLED`。
+- 上游调用：`home_mixer_client_calls_total{client,method,result}`、`home_mixer_client_call_duration_seconds{client,method}`，按依赖拆分：mrpyq（`ListRecommendationCandidates` / `BatchGetRecommendationContents` / `GetViewerRelations`）、Phoenix（`PredictNextActions` / `Retrieve`）、Redis（feed-state `load` / `record`、UAS `read` / `write`）；`result` 区分 `ok` / `error`（传输/超时）与 `rejected`（调用成功但响应未过契约校验），慢依赖归因不用再对阶段耗时与日志。uas-worker 的 registry 也注册了这一层（`redis_uas` 系列）。
 - 流水线阶段：`home_mixer_stage_duration_seconds{pipeline,stage}`、`home_mixer_stage_candidates`、`home_mixer_source_candidates_total{source}`、`home_mixer_filter_removed_total{filter}`、`home_mixer_component_failures_total{stage,component}`、`home_mixer_component_failed_candidates_total`、`home_mixer_pipeline_underfilled_total`、`home_mixer_side_effect_runs_total{component,result}`。数据来源与那一行 `Summary:` 日志相同（`candidate-pipeline` 的 `PipelineObserver`），所以"慢在哪个阶段、哪个 filter 删得最多、哪个依赖在失败"不用翻日志就能看到。
 - 曝光事件：`home_mixer_served_events_total{result}`、`home_mixer_served_event_candidates_total`、`home_mixer_served_event_publish_duration_seconds`，与成功响应数对账即曝光丢失率。
 

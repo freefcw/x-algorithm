@@ -70,6 +70,7 @@ impl HomeMixerServer {
             FeedStateConfig::Redis(redis) => Arc::new(
                 RedisFeedStateStore::new(redis)
                     .await
+                    .map(|store| store.with_calls(metrics.client_calls()))
                     .map_err(anyhow::Error::msg)?,
             ),
         };

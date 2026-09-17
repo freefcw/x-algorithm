@@ -6,6 +6,7 @@
 //! same request timeout rather than introducing a second endpoint to configure.
 
 use crate::clients::mrpyq_recommendation_data_client::MrpyqRecommendationDataConfig;
+use crate::metrics::ClientCallRecorder;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tonic::async_trait;
@@ -29,11 +30,18 @@ pub trait MrpyqViewerRelationClient: Send + Sync {
 pub fn viewer_relation_client_from_config(
     config: &MrpyqRecommendationDataConfig,
 ) -> anyhow::Result<Arc<dyn MrpyqViewerRelationClient>> {
+    viewer_relation_client_from_config_with_calls(config, ClientCallRecorder::default())
+}
+
+pub fn viewer_relation_client_from_config_with_calls(
+    config: &MrpyqRecommendationDataConfig,
+    calls: ClientCallRecorder,
+) -> anyhow::Result<Arc<dyn MrpyqViewerRelationClient>> {
     match config.address.as_ref() {
-        Some(address) => Ok(Arc::new(GrpcMrpyqViewerRelationClient::from_addr(
-            address.clone(),
-            config.timeout,
-        )?)),
+        Some(address) => Ok(Arc::new(
+            GrpcMrpyqViewerRelationClient::from_addr(address.clone(), config.timeout)?
+                .with_calls(calls),
+        )),
         None => Ok(Arc::new(DisabledMrpyqViewerRelationClient)),
     }
 }
@@ -52,12 +60,23 @@ impl MrpyqViewerRelationClient for DisabledMrpyqViewerRelationClient {
 pub struct GrpcMrpyqViewerRelationClient {
     channel: Channel,
     timeout: Duration,
+    calls: ClientCallRecorder,
 }
 
 impl GrpcMrpyqViewerRelationClient {
     pub fn from_addr(address: String, timeout: Duration) -> anyhow::Result<Self> {
         let channel = Channel::from_shared(address)?.connect_lazy();
-        Ok(Self { channel, timeout })
+        Ok(Self {
+            channel,
+            timeout,
+            calls: ClientCallRecorder::default(),
+        })
+    }
+
+    /// Attach the process call metrics; the default records nothing.
+    pub fn with_calls(mut self, calls: ClientCallRecorder) -> Self {
+        self.calls = calls;
+        self
     }
 
     async fn get_viewer_relations_rpc(
@@ -90,6 +109,12 @@ impl MrpyqViewerRelationClient for GrpcMrpyqViewerRelationClient {
     async fn get_viewer_relations(&self, account_id: String) -> anyhow::Result<ViewerRelations> {
         let started = Instant::now();
         let result = self.get_viewer_relations_rpc(account_id).await;
+        self.calls.record(
+            "mrpyq_viewer_relation",
+            "GetViewerRelations",
+            if result.is_ok() { "ok" } else { "error" },
+            started,
+        );
         match &result {
             Ok(relations) => log::info!(
                 "mrpyq rpc GetViewerRelations elapsed_ms={} blocked={} blocked_by={} muted={} keywords={}",
