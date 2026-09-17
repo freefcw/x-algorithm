@@ -1,10 +1,15 @@
 # 推荐链路皮维度对齐：对 mrpyq 的接口要求
 
 > **状态**：`proposed`（待 mrpyq 侧排期，推荐侧改动同步待启动）
-> **日期**：2026-09-14
-> **读者**：mrpyq feed/webapi 后端、推荐服务开发
+> **日期**：2026-09-14（2026-09-17 更新）
+> **读者**：mrpyq feed/webapi 后端、rec-bff 维护者、推荐服务开发
 > **前提**：相关功能尚无历史数据，所有改动不考虑存量迁移与兼容期
-> **事实边界**：本文所有「现状」均引自 mrpyq `dev` 分支源码，已标注文件与行号；「要求」是推荐侧提出的接口约定，未经 mrpyq 侧确认
+> **事实边界**：本文「要求」是推荐侧提出的接口约定，未经 mrpyq 侧确认。
+>
+> **2026-09-17 架构变更说明**：本文初版假设合同由 mrpyq 仓库直接实现（当时引用的 `app/feed/service/internal/service/recommendation_data.go` 并未合入 mrpyq `dev`，现该文件不存在）。当前合同承载方是 **rec-bff**（`recommend/rec-bff`，独立 Go 门面）：它逐字实现 `recommendation_data.proto` + `viewer_relation.proto`，翻译到 mrpyq Feed / Account RPC。因此：
+> - **§2.2（NETWORK 读皮维度收件箱）已由 rec-bff 满足**（直接调 `ListMemberFollowInboxV1`；且不看 7 天 TTL 的 `is_init` 标记，`source_ready` 语义与 proto 注释的偏差记录在 rec-bff README「为什么不看 is_init」）；
+> - §2.1 字段改名、§3 作者字段收敛、§4 viewer 关系换皮、§5 底层改造**仍然待做**，且改动时必须与 rec-bff 同批（它实现对的是当前合同，字段一改两边编译期就对不上，不会静默错位）；
+> - §6.1 的同批上线约束从「推荐侧 ↔ mrpyq」扩展为「推荐侧 ↔ rec-bff ↔ mrpyq」三方，见该节重写。
 
 ---
 
@@ -28,22 +33,16 @@
 
 | 字段 | 现状 | 要求 |
 |---|---|---|
-| `account_id` | viewer 账号，NETWORK 必填 | 删掉，换成 `viewer_member_id`（皮，NETWORK 必填） |
+| `account_id` | 字段名沿用 proto；home-mixer 把 viewer 皮 `member_id` 放进这个字段，rec-bff 按皮维度读收件箱，语义已对、名字未对 | 删掉，换成 `viewer_member_id`（皮，NETWORK 必填）；与 rec-bff 同批改 |
 
 ### 2.2 NETWORK 源改读皮维度关注收件箱
 
-现状 `app/feed/service/internal/service/recommendation_data.go:95` 走的是账号维度的关注收件箱：
+**已由 rec-bff 满足**（2026-09-17）：rec-bff 的 `ListRecommendationCandidates(source=NETWORK)` 直接调皮维度的 `ListMemberFollowInboxV1`（mrpyq service 层 `app/feed/service/internal/service/feed_follow_member_v1.go`，data 层 `app/feed/service/internal/data/feed_member_follow_inbox_v1.go`），不再走账号维度的 `ListAccountFollowInbox`。
 
-```go
-inbox, err := s.followReader.ListAccountFollowInbox(ctx, &v1.ListAccountFollowInboxReq{
-    AccountId: accountID, ...
-```
+两个已记录的语义偏差（见 rec-bff README「为什么不看 is_init」）：
 
-`ListAccountFollowInboxReq` 只有 `account_id`。一个账号下有多个皮、各自关注的人不同，按账号取会把它们混在一起——A 皮会刷到 B 皮关注的人的帖子。
-
-要求改读皮维度的 `ListMemberFollowInboxV1`。**这套 mrpyq 已经实现完毕**，service 层在 `app/feed/service/internal/service/feed_follow_member_v1.go:18`，data 层在 `app/feed/service/internal/data/feed_member_follow_inbox_v1.go:43`，并有配套测试，只是推荐链路没接过去。
-
-`source_ready` 的语义随之变为「**这个皮**的关注收件箱是否已初始化」，对应 `GetMemberFollowInboxStatus`。
+- rec-bff 不检查 7 天 TTL 的 `is_init` 标记（该标记过期后无任何路径刷新，收件箱本体由 HBase 持续维护，看标记会把 7 天未打开关注页的皮判成本初始化）；
+- 因此 `source_ready` 实际语义是「本次读取成功」，与 proto 注释「NETWORK is false when its inbox has not been initialized」有出入。若要恢复门控语义，需在字段改名时一并定版。
 
 ### 2.3 不需要改的
 
@@ -158,28 +157,40 @@ func ProtoToMemberDict(m *v1.MemberInfo) (*MemberDict, error) {
 
 不涉及 mrpyq，但同属本次对齐，列在此处以明确边界：
 
-1. ~~**`home-mixer/clients/mrpyq_adapters.rs:614`** 的 `parse_object_id(&content.creator_account_id)` 改为 `creator_member_id`~~ —— **已完成**。`creator_member_id` 在推荐侧 proto 与客户端结构体中早已就位，mrpyq `recommendation_data.go:211` 也一直在填，只有此处取错了列，属纯本地改动。
-2. **可见性过滤挂到 VF 端口**（`MrpyqFirstStageEligibilityClient`），而非 Strato 端口。
-3. **Strato 端口退回 Disabled**——mrpyq 没有对应的 `UserFeatures` 关注图 / 粉丝数契约，保留装配没有意义。
+1. ~~**`home-mixer/clients/mrpyq_adapters.rs:614`** 的 `parse_object_id(&content.creator_account_id)` 改为 `creator_member_id`~~ —— **已完成**。`creator_member_id` 在推荐侧 proto 与客户端结构体中早已就位，rec-bff 也一直在填，只有此处取错了列，属纯本地改动。
+2. **可见性过滤挂到 VF 端口**（`MrpyqFirstStageEligibilityClient`），而非 Strato 端口——待做。
+3. **Strato 端口退回 Disabled**，或等 §4 接口定型后重接——待做，且必须与 mrpyq §5.1 / rec-bff 同批（见 6.1）。
 
-第 2、3 条依赖 §4 的接口定型，尚未动工。
+### 6.1 上线顺序约束（重要，2026-09-17 重写为三方）
 
-### 6.1 上线顺序约束（重要）
+**mrpyq 的 §5.1 不能先于 rec-bff 查询键改造与推荐侧的第 2、3 条上线。**
 
-**mrpyq 的 §5.1 不能先于推荐侧的第 2、3 条上线。**
+当前链路是：home-mixer `MrpyqStratoClient` 把皮的 `member_id` 填进 `account_id` 字段发给 rec-bff；rec-bff 的 `GetViewerRelations` 实现是「皮 → 账号（`GetMember`）→ 按**账号**翻 `ListNotSee` → 目标换回皮 id（`BatchGetMembersByKeys`）」。代码注释（`home-mixer/clients/mrpyq_adapters.rs`）已明确记录这个风险：成功返回**空列表**会被当成「谁都没屏蔽」放行（fail-open）。
 
-`MrpyqStratoClient` 目前是装配活跃的（`mrpyq_adapters.rs:82` 注入，`phoenix_candidate_pipeline.rs:423` 在非 demo 且有 mrpyq 地址时选用），其 `get_user_features` 的实现是：
+若 mrpyq 先把 not-see 改成按皮存储并部署，而 rec-bff 仍按账号键查，账号键下查不到任何东西 → rec-bff 静默返回空名单 → 该拦的内容全部放行，不报错、不告警。
 
-```rust
-async fn get_user_features(&self, user_id: UserId) -> Result<Vec<u8>, anyhow::Error> {
-    let relations = match self.client.get_viewer_relations(user_id.to_string()).await {
+因此三方必须同批上线，缺一不可：
+
+1. mrpyq：§5.1 not-see 按皮存、按皮查；
+2. rec-bff：`GetViewerRelations` 查询键从账号换成皮、删掉 `BatchGetMembersByKeys` 翻译步；
+3. 推荐侧：Strato 端口迁到 VF 端口（或先退回 Disabled），字段改名 `viewer_member_id` 一并定版。
+
+在 1–3 完成前，任何一方单方面改动都会把过滤静默失效或编译错位。这条要写进对接清单。
+
+### 6.2 发布前的可执行校验（金丝雀）
+
+上述约束只写在文档里靠人遵守是不可靠的，推荐侧已提供一条默认忽略的集成测试把失效变成显性失败：
+
+```sh
+VIEWER_RELATION_CANARY_ADDR=http://<rec-bff>:9000 \
+VIEWER_RELATION_CANARY_VIEWER_ID=<拉黑方皮的 member_id> \
+VIEWER_RELATION_CANARY_BLOCKED_AUTHOR_ID=<被拉黑作者的 member_id> \
+cargo test -p home-mixer --test viewer_relation_canary -- --ignored --nocapture
 ```
 
-`user_id` 是 pipeline 传入的 viewer，语义上是皮；`.to_string()` 之后作为 `account_id` 发给 mrpyq。当前 mrpyq 侧 `ViewerRelationService` 尚未上线，该调用不可达，因此不发作。
+它走生产同款路径（`MrpyqStratoClient` → `GetViewerRelations`），断言一对**预置了拉黑关系**的测试皮中，被拉黑作者仍出现在 `blocked_user_ids` 里。调用成功但已知关系消失 = 恰好就是 §6.1 的静默 fail-open，测试会直接失败并指明原因；调用本身报错则是 fail-closed（空 feed），按服务可达性另行排查。
 
-但若 mrpyq 先按 §5.1 把 not-see 改成皮维度并部署接口，而推荐侧仍是这段代码，行为是 **fail-open**：拿皮的 id 去查一个已经改成按皮键但语义位置仍为 `account_id` 的接口，取不到任何关系 → 屏蔽列表为空 → 该拦的内容全部放行。不报错、不告警，只是静默失效。
-
-两侧必须同批上线，或由推荐侧先将 Strato 端口退回 Disabled 再等 mrpyq 发布。
+使用要求：staging 环境常驻一对测试皮并维护其拉黑关系；**三方中任何一方发布键语义相关改动（§5.1 / §5.2 / rec-bff 翻译层 / 推荐侧端口迁移）前后各跑一次**，灰度期间可定时执行。金丝雀不依赖监控指标——空名单分不清「没人拉黑」和「拉黑了但读不到」，只有已知关系能区分。
 
 ---
 
@@ -187,9 +198,9 @@ async fn get_user_features(&self, user_id: UserId) -> Result<Vec<u8>, anyhow::Er
 
 | 项 | 代价 | 阻塞点 |
 |---|---|---|
-| §2 召回换皮维度收件箱 | 低，皮维度实现已就绪，属接线 | 无 |
+| §2 召回换皮维度收件箱 | **已完成**（rec-bff 直接读 `ListMemberFollowInboxV1`） | 剩余：字段改名与 `source_ready` 语义定版，需与 rec-bff 同批 |
 | §3 内容作者字段收敛 | 低，字段已在传 | 需 mrpyq 保证 `member_id` 必填 |
 | §4 可见性接口换皮 | 中，依赖 §5 | 依赖 §5.1 / §5.2 |
-| §5.1 not_see 按皮存 | 中高，proto → webapi → data → Redis 全链路 | 无历史数据，无迁移成本 |
+| §5.1 not_see 按皮存 | 中高，proto → webapi → data → Redis 全链路 | 无历史数据，无迁移成本；上线受 §6.1 三方同批约束 |
 | §5.2 not_allow_see 皮级判断 | 极低，改判断方式即可 | 无，数据已是皮级 |
 | §5.3 关系表存 member_id | 极低，一个字段 | 无 |
