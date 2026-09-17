@@ -54,7 +54,7 @@ Thunder 的指标定义相对完整，分为三组：
 | 能力 | 当前状态 | 说明 |
 |---|---|---|
 | Prometheus 指标定义 | 有 | `metrics.rs` 已注册多组指标 |
-| HTTP 指标暴露 | 没有 | HTTP Router 为空，没有 `/metrics` |
+| HTTP 指标暴露 | 有 | `/metrics`（默认 registry 文本导出）、`/healthz`、`/readyz`（`finalize_init` 后 200，收到关机信号后 503 `draining`）；抓取时顺带刷新 `thunder_ready` |
 | health / readiness 路由 | 没有 | 没有 `/healthz`、`/readyz` |
 | gRPC reflection | 没有 | Thunder 没有像 Home Mixer 那样注册 reflection service |
 | Kafka lag 监控 | v2 没有 | lag 指标定义了，但 v2 消费器并未更新它 |

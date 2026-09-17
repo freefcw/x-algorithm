@@ -47,6 +47,10 @@ lazy_static = "1.4"
 # 可选依赖（legacy v1 管道）
 thrift = { version = "0.17", optional = true }
 
+[dev-dependencies]
+# `ServiceExt::oneshot` 在测试里直接驱动 admin router，不需要 socket。
+tower = { version = "0.4", features = ["util"] }
+
 [[bin]]
 name = "thunder"
 path = "main.rs"

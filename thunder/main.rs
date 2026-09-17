@@ -1,5 +1,4 @@
 use anyhow::Result;
-use axum::Router;
 use clap::Parser;
 use log::info;
 use std::net::SocketAddr;
@@ -52,7 +51,9 @@ async fn main() -> Result<()> {
     let cancel_token = CancellationToken::new();
 
     // Build combined HTTP + gRPC server
-    let http_router = Router::new();
+    let readiness = thunder::http_server::Readiness::new();
+    let http_router =
+        thunder::http_server::router(thunder::http_server::AdminState::new(readiness.clone()));
     let combined = http_router.into_make_service();
 
     // Start gRPC server
@@ -69,7 +70,10 @@ async fn main() -> Result<()> {
     // Start HTTP server (health check / metrics)
     let http_addr: SocketAddr = ([0, 0, 0, 0], args.http_port).into();
     let _http_handle = tokio::spawn(async move {
-        info!("HTTP server listening on {}", http_addr);
+        info!(
+            "HTTP server listening on {} (/healthz, /readyz, /metrics)",
+            http_addr
+        );
         let listener = tokio::net::TcpListener::bind(http_addr).await.unwrap();
         axum::serve(listener, combined).await.unwrap();
     });
@@ -80,6 +84,7 @@ async fn main() -> Result<()> {
         let count = posts.len();
         post_store.insert_posts(posts);
         post_store.finalize_init().await?;
+        readiness.set_ready();
         info!(
             "Demo mode: seeded {} posts from authors {:?} (Kafka disabled)",
             count,
@@ -102,6 +107,7 @@ async fn main() -> Result<()> {
             info!("Kafka init took {:?}", start.elapsed());
 
             post_store.finalize_init().await?;
+            readiness.set_ready();
 
             // Start stats logger
             Arc::clone(&post_store).start_stats_logger();
@@ -121,6 +127,7 @@ async fn main() -> Result<()> {
     // Wait for termination signal
     tokio::signal::ctrl_c().await?;
     info!("Shutdown signal received");
+    readiness.set_draining();
     cancel_token.cancel();
     info!("Server terminated");
 

@@ -10,7 +10,7 @@
 | P0 | 初始化信号不等于 catch up | 每线程处理完首个满 batch 就发信号 | 可能在 backlog 还很大时就开始对外服务 |
 | P0 | 小流量场景可能卡住初始化 | 只有满 `kafka_batch_size` 才处理 batch | 消息不足一个 batch 时永远不发 init signal |
 | P1 | Strato 仍是 stub | `fetch_following_list()` 永远返回空 | Thunder 内部无法独立补齐关系图 |
-| P1 | HTTP 观测面未接通 | 只有空 Router，没有 metrics/health | 指标抓不到，也没有 readiness |
+| P1 | ~~HTTP 观测面未接通~~ 已接通 | `/metrics`、`/healthz`、`/readyz`（`http_server.rs`），就绪与 `finalize_init` 绑定 | 指标可抓取，readiness 可探测 |
 | P1 | v2 SASL 参数用错 | v2 代码读取的是 producer 侧 SASL 配置 | 消费端认证配置容易失效 |
 | P2 | 多个 CLI 参数未生效 | `skip_to_latest`、`fetch_timeout_ms` 等未使用 | 配置表面看可控，实际上无效 |
 | P2 | shutdown 协调不完整 | `CancellationToken` 创建后未传入任务 | 后台任务退出依赖进程结束，不是优雅停机 |

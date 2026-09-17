@@ -5,11 +5,15 @@
 use lazy_static::lazy_static;
 use prometheus::{
     register_gauge, register_gauge_vec, register_histogram, register_histogram_vec,
-    register_int_counter, Gauge, GaugeVec, Histogram, HistogramVec, IntCounter,
+    register_int_counter, register_int_gauge, Gauge, GaugeVec, Histogram, HistogramVec, IntCounter,
+    IntGauge,
 };
 use std::time::Instant;
 
 lazy_static! {
+    // 进程生命周期指标（由 /metrics 处理器在抓取时刷新）
+    pub static ref THUNDER_READY: IntGauge =
+        register_int_gauge!("thunder_ready", "1 while the process serves queries, 0 while starting or draining").unwrap();
     // ═══════════════════════════════════════════════════════════════
     // gRPC 服务指标
     // ═══════════════════════════════════════════════════════════════
