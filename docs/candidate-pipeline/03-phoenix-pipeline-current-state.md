@@ -111,11 +111,11 @@ TES 相关 hydrator 里 CoreData / VideoDuration / HasMedia / FilteredTopics / L
 | 依赖 | Demo | Degraded（需 `MRPYQ_RECOMMENDATION_DATA_ADDR`） | 关键行为 |
 | --- | --- | --- | --- |
 | UAS | `DemoUserActionSequenceFetcher` | `RedisUserActionSequenceStore`（读 `uas-worker` 投影到 Redis 的行为；`UAS_REDIS_URL` 缺省复用 `HOME_MIXER_REDIS_URL`） | 没有投影数据的用户序列为空，`PhoenixSource` 不可用、`PhoenixScorer` 整批 `phoenix_missing_sequence`，由 `RuleFallbackScorer` 排序；真实埋点事件流仍待接入 |
-| Strato | `DemoStratoClient` | `MrpyqStratoClient`（mrpyq `ViewerRelationService`） | 后端尚未实现，调用失败只记日志，`viewer_relations_hydrated` 保持 false，准入过滤器整批丢弃；两者都拒绝持久化写入 |
+| Strato | `DemoStratoClient` | `MrpyqStratoClient`（`ViewerRelationService`，由 rec-bff 承载） | 返回账号级「不看」翻译成的皮 id，`blocked_by` / 静音恒空；调用失败只记日志，`viewer_relations_hydrated` 保持 false，准入过滤器整批丢弃；两者都拒绝持久化写入 |
 | TES | `DemoTESClient` | `MrpyqTESClient`（mrpyq `BatchGetRecommendationContents`） | 补作者 / 正文 / `created_at_ms` / 互动数 / 一级 eligibility；`creator_member_id` 为空的帖子被 `CoreDataHydrationFilter` 丢弃 |
 | Gizmoduck（作者资料） | `DemoGizmoduckClient`（演示昵称 / 粉丝数） | `DisabledGizmoduckClient` | 只用于 candidate hydration；非 demo 的 `screen_names` 为空，不参与网络范围决策 |
 | VF | `DemoVisibilityFilteringClient`（Allow） | `MrpyqFirstStageEligibilityClient` | 非 demo 只承载一级 `recommendation_eligible`，无 viewer 级判定；`Unchecked / Unavailable`（含成功响应缺帖）按 `HOME_MIXER_VF_FAILURE_POLICY`，默认 `fail_closed` 删除 |
-| 网内 / 兜底召回 | `ThunderClient`（整数 Thunder，`legacy-int-ids`）+ `DemoFallbackPostsClient` | `MrpyqInNetworkPostsClient`（NETWORK / FALLBACK） | mrpyq 单次 RPC 500 ms，一次召回总预算 1500 ms；以皮 `member_id` 作为 `account_id` 查询，皮维度对齐待 mrpyq 落地 |
+| 网内 / 兜底召回 | `ThunderClient`（整数 Thunder，`legacy-int-ids`）+ `DemoFallbackPostsClient` | `MrpyqInNetworkPostsClient`（NETWORK / FALLBACK） | 单次 RPC 500 ms，一次召回总预算 1500 ms；以皮 `member_id` 作为 `account_id` 查询，rec-bff 已直接读皮维度收件箱，字段改名待合同定版 |
 | Phoenix retrieval | 配置地址后真实 gRPC | 同左，且拒绝随机权重 | 标准/MoE 调用上限 3 s |
 | Phoenix prediction | 配置地址后真实 gRPC | 同左，且拒绝随机权重 | 调用上限 5 s，失败或校验不通过走 `RuleFallbackScorer` |
 | served 历史记录 | `FeedStateServedPersistence` | 同左 | 业务模式 Redis，Demo 默认内存；每个请求只加载一份快照 |

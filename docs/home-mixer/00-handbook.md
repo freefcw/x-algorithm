@@ -212,7 +212,7 @@ flowchart TD
 | InNetworkPostsClient（网内 / 兜底） | 非 demo `MrpyqInNetworkPostsClient`（`MRPYQ_RECOMMENDATION_DATA_ADDR` 必填，缺失则启动失败）；demo `ThunderClient`（`THUNDER_GRPC_ADDR`） |
 | TESClient | 非 demo `MrpyqTESClient`（mrpyq `BatchGetRecommendationContents`）；demo `DemoTESClient`（演示文本） |
 | VisibilityFilteringClient | 非 demo `MrpyqFirstStageEligibilityClient`（只有帖子维度的一级 `recommendation_eligible`，无 viewer 级判定）；demo 显式 Allow。未验证候选按 `HOME_MIXER_VF_FAILURE_POLICY`，默认 `fail_closed` 删除 |
-| StratoClient | 非 demo `MrpyqStratoClient`（mrpyq `ViewerRelationService`，后端尚未实现，调用失败后准入过滤器 fail-closed 清空候选）；demo `DemoStratoClient`（演示关注列表） |
+| StratoClient | 非 demo `MrpyqStratoClient`（`ViewerRelationService`，由 rec-bff 承载：返回账号级「不看」翻译成的皮 id，`blocked_by` / 静音恒空；调用失败后准入过滤器 fail-closed 清空候选）；demo `DemoStratoClient`（演示关注列表） |
 | PhoenixRetrievalClient | 设 `PHOENIX_RETRIEVAL_GRPC_ADDR` 后真连 gRPC 网关；缺失时显式 Unavailable 并跳过该召回路；非 demo 拒绝随机权重 |
 | PhoenixPredictionClient | 设 `PHOENIX_PREDICT_GRPC_ADDR` 后真连 gRPC 网关并校验 serving metadata；缺失或校验失败时整批走 `RuleFallbackScorer`；非 demo 拒绝随机权重 |
 | UserActionSequenceOps | 非 demo `RedisUserActionSequenceStore`（读取 `uas-worker` 投影到 Redis 的最近 7 天行为，`UAS_REDIS_URL` 缺省复用 `HOME_MIXER_REDIS_URL`；没有投影数据时序列为空）；demo `DemoUserActionSequenceFetcher`（合成行为序列） |
@@ -251,7 +251,7 @@ flowchart TD
 
 ### 11.1 结果为空、过少或“只有规则排序”
 
-主要由非 demo 仍缺的适配器（UAS、viewer 关系后端、作者资料）和 mrpyq 皮维度契约未落地叠加导致。
+主要由「不看」仍是账号级、行为事件流未接入、作者资料未接（Gizmoduck Disabled）叠加导致；viewer 关系 RPC 本身已由 rec-bff 承载。
 
 ### 11.2 同 stage hydrator 依赖问题
 
@@ -326,4 +326,4 @@ flowchart TD
 
 ## 15. 一句话结论
 
-`home-mixer` 当前已经是一套结构完整的首页编排系统骨架：链路、阶段、策略位点都很清楚，非 demo 也已经真实接到 mrpyq 的内容与网内 / 兜底召回；真正限制它可用性的，不是主流程缺失，而是行为序列、viewer 关系、作者资料、持久化曝光这几个适配器仍是 stub，以及 mrpyq 皮维度契约尚未落地。Gizmoduck 仅负责作者资料，网络范围由请求显式控制。
+`home-mixer` 当前已经是一套结构完整的首页编排系统骨架：链路、阶段、策略位点都很清楚，非 demo 也已经真实接到 rec-bff / mrpyq 的内容、网内 / 兜底召回与账号级 viewer 关系；真正限制它可用性的，不是主流程缺失，而是行为序列事件流未接、作者资料、持久化曝光这几个适配器仍是 stub，以及「不看 / 不让看」的皮维度存储尚未在 mrpyq 落地。Gizmoduck 仅负责作者资料，网络范围由请求显式控制。

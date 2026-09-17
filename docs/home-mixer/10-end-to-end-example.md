@@ -213,7 +213,7 @@ flowchart LR
 | --- | --- |
 | QueryBuilder | 不请求 Gizmoduck，原样保留请求的 `in_network_only=false` |
 | `RedisUserActionSequenceStore` | 读 `home_mixer:uas:{viewer}:actions`，该用户没有投影数据 → 空行为序列 → 聚合报错 → `scoring_sequence` / `retrieval_sequence` 为 `None` |
-| `MrpyqStratoClient.get_user_features` | mrpyq 尚未实现 `ViewerRelationService` → 调用失败，只记日志 → 空 `UserFeatures` |
+| `MrpyqStratoClient.get_user_features` | 调 `ViewerRelationService`（rec-bff 承载）→ 账号级「不看」翻译成皮 id → 填 `blocked_user_ids`，`blocked_by` / 静音 / 屏蔽词为空；调用失败只记日志 → 空 `UserFeatures` |
 | `PhoenixSource` / `FallbackSource` | 默认全网；`PhoenixSource` 因行为序列为空而失败，`FallbackSource` 正常读取 mrpyq FALLBACK 池 |
 | `MrpyqInNetworkPostsClient` | 以 `viewer_id`（皮 `member_id`）作为 `account_id` 查 NETWORK 收件箱；皮维度对齐前可能取到空或错误的收件箱 |
 | `MrpyqTESClient` | 用 `BatchGetRecommendationContents` 补作者 / 正文 / `created_at_ms` / `recommendation_eligible`；`creator_member_id` 为空的帖子无 core data |

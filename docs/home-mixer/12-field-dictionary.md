@@ -94,7 +94,7 @@
 | `subscribed_user_ids` | `Vec<UserId>` | viewer 订阅作者列表 | 无消费者（U5：`IneligibleSubscriptionFilter` 已删除），恒为空 |
 | `follower_count` | `Option<i64>` | viewer 粉丝数 | VQV 权重粉丝门槛；本地适配器暂不提供，`None` 时门槛不触发 |
 
-非 demo 下 `MrpyqStratoClient` 依赖的 `ViewerRelationService` 尚未由 mrpyq 实现，调用失败只记日志，整个结构保持默认空值。
+非 demo 下 `MrpyqStratoClient` 调 `ViewerRelationService`（由 rec-bff 承载）：返回账号级「不看」翻译成的皮 id，`blocked_by` / 静音恒空；调用失败只记日志，整个结构保持默认空值。
 
 ## 4. 候选对象字段：`PostCandidate`
 

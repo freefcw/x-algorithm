@@ -1,5 +1,7 @@
 # 05. 外部依赖与数据契约
 
+> **篇首更新说明（2026-09-17）**：`MRPYQ_RECOMMENDATION_DATA_ADDR` 指向的部署是 rec-bff（`recommend/rec-bff`，独立 Go 门面仓库），不是 mrpyq 仓库里的某个 server。rec-bff 逐字实现本仓库 `recommendation_data.proto` + `viewer_relation.proto` 两份合同，翻译到 mrpyq 的 Feed / Account RPC。本文中「mrpyq 适配器 / mrpyq 合同」指 proto 层的命名（客户端仍叫 `Mrpyq*`），承载进程是 rec-bff；调用细节、缓存与已知限制以 rec-bff README 为准。
+
 `home-mixer` 本质上是一个“协议和依赖拼接器”。要理解它，必须同时看 proto 和客户端抽象。
 
 ## 1. 最关键的几份 proto
@@ -11,14 +13,14 @@
 | `home_mixer.proto` | 对外服务协议 | `ScoredPostsService.GetScoredPosts` / `DebugScoredPosts`；`ForYouFeedService.GetForYouFeed` / `GetForYouFeedV2`。所有身份字段都是 24 位小写 hex ObjectId 字符串，空串表示缺省 |
 | `phoenix_recsys.proto` | Phoenix 协议（包名仍为 `recsys`；文件改名是为避开 xrex Python descriptor 撞名） | `PhoenixRetrievalService.Retrieve`、`PhoenixPredictionService.PredictNextActions` |
 | `recommendation_data.proto` | mrpyq 业务推荐数据合同 | 非 demo 模式的唯一业务数据面：`clients/mrpyq_adapters.rs` 用它承载 TES、网内召回、兜底召回和一级 eligibility（VF 端口） |
-| `viewer_relation.proto` | mrpyq viewer 关系合同 | `clients/mrpyq_viewer_relation_client.rs` 消费，装配到 Strato 端口填 block / mute / 屏蔽词；mrpyq 侧尚未实现该 RPC |
+| `viewer_relation.proto` | viewer 关系合同（由 rec-bff 实现） | `clients/mrpyq_viewer_relation_client.rs` 消费，装配到 Strato 端口填 block / mute / 屏蔽词；返回账号级「不看」翻译成的皮 id，`blocked_by` / 静音恒空 |
 | `in_network.proto` | Thunder 协议（整数 ID） | `InNetworkPostsService.GetInNetworkPosts`；仅 `HOME_MIXER_MODE=demo` 且编译了 `legacy-int-ids` feature 时装配 |
 | `vm_ranker.proto`（可选） | VM Ranker 二次重排（整数 ID） | `VmRankerService.Rank`；默认不装配，非 demo 强制禁用 |
 
 ```mermaid
 flowchart LR
     HMProto["home_mixer.proto<br/>对外 API"] --> HM["home-mixer"]
-    HM --> MProto["recommendation_data.proto + viewer_relation.proto<br/>mrpyq gRPC（非 demo 必配）"]
+    HM --> MProto["recommendation_data.proto + viewer_relation.proto<br/>rec-bff gRPC（非 demo 必配）"]
     HM --> RProto["phoenix_recsys.proto<br/>Phoenix gRPC"]
     HM --> TProto["in_network.proto<br/>Thunder gRPC（仅 demo）"]
 ```
@@ -63,7 +65,7 @@ flowchart LR
 
 | 字段 | 来源 |
 | --- | --- |
-| `account_id` | `query.user_id`（皮的 `member_id`；字段名沿用 mrpyq 现有 proto，皮维度对齐要求见 `docs/implementation/mrpyq-member-dimension-requirements.md`） |
+| `account_id` | `query.user_id`（皮的 `member_id`；字段名沿用现有 proto。rec-bff 已经直接读皮维度收件箱，改名 `viewer_member_id` 的合同变更待与 rec-bff 同批定版，见 `docs/implementation/mrpyq-member-dimension-requirements.md`） |
 | `source` | `NETWORK` 或 `FALLBACK` |
 | `page_size` | 每页最多 200（`MAX_FEED_IDS`） |
 | `page_token` | 上一页返回的游标，原样回传 |
@@ -163,14 +165,14 @@ sequenceDiagram
 
 这是阅读源码时最需要明确的一点。
 
-非 demo（`degraded`）装配要求 `MRPYQ_RECOMMENDATION_DATA_ADDR` 必填，否则启动失败；`clients/mrpyq_adapters.rs` 用同一个地址构造下表中的四个 mrpyq 适配器。`DisabledStratoClient` / `DisabledTESClient` / `DisabledVisibilityFilteringClient` 仍在源码里，但已不被任何装配路径使用。
+非 demo（`degraded`）装配要求 `MRPYQ_RECOMMENDATION_DATA_ADDR` 必填，否则启动失败；`clients/mrpyq_adapters.rs` 用同一个地址（由 rec-bff 承载）构造下表中的五个适配器（TES / 网内 / 兜底 / 一级 VF / Strato）。`DisabledStratoClient` / `DisabledTESClient` / `DisabledVisibilityFilteringClient` 仍在源码里，但已不被任何装配路径使用。
 
 | 依赖 | 当前实现状态 | 说明 |
 | --- | --- | --- |
 | `InNetworkPostsClient` | 非 demo `MrpyqInNetworkPostsClient`；demo `ThunderClient` | 非 demo 调 mrpyq `ListRecommendationCandidates`，NETWORK 供 `ThunderSource`、FALLBACK 供 `FallbackSource`，整次召回 1500 ms 预算，首页失败即报错、后续页失败保留已读页。demo 的 `ThunderClient` 连接 `THUNDER_GRPC_ADDR`（默认 `http://localhost:50052`），500 ms 上限，只能承载零填充演示 ID |
 | `TESClient` | 非 demo `MrpyqTESClient`；demo `DemoTESClient` | 非 demo 用 `BatchGetRecommendationContents` 补作者（`creator_member_id`）、正文、`created_at_ms`、点赞 / 评论数、`recommendation_eligible` 和媒体；与 VF 端口共享一份 2 s TTL 的内容缓存，同一批候选只打一次 RPC。`creator_member_id` 为空的帖子记为无 core data，随后被 `CoreDataHydrationFilter` 丢弃 |
 | `VisibilityFilteringClient` | 非 demo `MrpyqFirstStageEligibilityClient`；demo `DemoVisibilityFilteringClient`（Allow） | 非 demo 只承载 mrpyq 的一级 `recommendation_eligible`：这是帖子属性、与 viewer 无关，且 `FirstStageEligibleFilter` 已在前面消费同一标志，因此这一层不构成 viewer 级准入。`Unchecked / Unavailable`（含成功响应缺帖）按 `HOME_MIXER_VF_FAILURE_POLICY`，默认 `fail_closed` 丢弃 |
-| `StratoClient` | 非 demo `MrpyqStratoClient`；demo `DemoStratoClient` | 非 demo 调 `ViewerRelationService.GetViewerRelations` 填 block / blocked_by / mute / 屏蔽词，关注列表等其余 `UserFeatures` 字段没有 mrpyq 契约、保持为空。mrpyq 尚未实现该 RPC：调用失败后 query hydrator 只记日志，`viewer_relations_hydrated` 保持 false，拉黑 / 屏蔽词过滤器整批丢弃。两者都拒绝持久化写入，因此请求缓存写回开关默认关闭 |
+| `StratoClient` | 非 demo `MrpyqStratoClient`；demo `DemoStratoClient` | 非 demo 调 `ViewerRelationService.GetViewerRelations`（由 rec-bff 承载）填 block / blocked_by / mute / 屏蔽词：返回账号级「不看」名单翻译成的皮 id；`blocked_by` / 静音恒空；关注列表等其余 `UserFeatures` 字段没有契约、保持为空。RPC 失败后 query hydrator 只记日志，`viewer_relations_hydrated` 保持 false，拉黑 / 屏蔽词过滤器整批丢弃。两者都拒绝持久化写入，因此请求缓存写回开关默认关闭 |
 | `PhoenixRetrievalClient` | 真实 gRPC 客户端（可选） | 设置 `PHOENIX_RETRIEVAL_GRPC_ADDR` 后调用 Phoenix 网关；标准/MoE 召回上限 3 s，未设置时显式 Unavailable，由 Source 跳过该召回路。非 demo 拒绝 `random-weights=true` 的网关 |
 | `PhoenixPredictionClient` | `SlimPhoenixPredictionClient`（可选真连） | 设置 `PHOENIX_PREDICT_GRPC_ADDR` 后调用 Phoenix 网关，校验 serving metadata 与响应形状；精排上限 5 s，未设置、失败或校验不通过时整批进入 `RuleFallbackScorer`。非 demo 拒绝随机权重 |
 | `UserActionSequenceOps` | 非 demo `RedisUserActionSequenceStore`；demo `DemoUserActionSequenceFetcher` | 非 demo 读取 `uas-worker` 投影到 Redis ZSET（`UAS_REDIS_URL`，缺省复用 `HOME_MIXER_REDIS_URL`）的最近 7 天、最新 `UAS_MAX_ACTIONS` 条原始行为；无法解码的成员逐条跳过。没有投影数据的用户序列为空，聚合报错后 `scoring_sequence` / `retrieval_sequence` 为 `None`：`PhoenixSource` 不能召回，`PhoenixScorer` 整批标 `phoenix_missing_sequence`。真实埋点 topic 的事件合同仍待验收 |
@@ -202,7 +204,7 @@ sequenceDiagram
 
 ```mermaid
 flowchart TD
-    A["home-mixer"] --> M["mrpyq RecommendationData + ViewerRelation<br/>非 demo 必配：网内 / 兜底 / TES / 一级 VF / Strato"]
+    A["home-mixer"] --> M["rec-bff：RecommendationData + ViewerRelation<br/>非 demo 必配：网内 / 兜底 / TES / 一级 VF / Strato"]
     A --> P["Phoenix Predict / Retrieval<br/>设环境变量后真连 gRPC 网关"]
     A --> C["UAS / Gizmoduck<br/>UAS Redis adapter / Gizmoduck Disabled"]
     A --> T["Thunder 整数 gRPC<br/>仅 demo"]
@@ -227,7 +229,7 @@ flowchart TD
 从依赖视角看，当前 `home-mixer` 代码更像：
 
 - 一套相当完整的编排骨架
-- 加上一条非 demo 下真实接到 mrpyq 的主链（网内 / 兜底召回、内容补全、一级 eligibility）
-- 再加上一批为未来真实服务预留好的 trait 和数据结构（Gizmoduck、viewer 关系后端、ImpressedPosts、持久化 served / feedback）
+- 加上一条非 demo 下真实接到 rec-bff / mrpyq 的主链（网内 / 兜底召回、内容补全、一级 eligibility、账号级 viewer 关系）
+- 再加上一批为未来真实服务预留好的 trait 和数据结构（Gizmoduck、ImpressedPosts、持久化 served / feedback）
 
 所以理解它时，要把“接口层完整”和“默认行为可用”区分开看。

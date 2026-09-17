@@ -2,9 +2,11 @@
 
 > **状态**：`design`
 >
+> **篇首更新说明（2026-09-17）**：本文写作时假设推荐侧直接对接 mrpyq。此后架构已演进为 home-mixer → rec-bff（`recommend/rec-bff`，独立 Go 门面，实现 `recommendation_data.proto` + `viewer_relation.proto` 两份合同）→ mrpyq Feed / Account。文中关于「mrpyq 直接提供推荐 RPC」的方案性结论部分被取代：当前对接现状与缺口以 [`recommendation-production-readiness-assessment.md`](./recommendation-production-readiness-assessment.md) 为准，皮维度接口要求以 [`implementation/mrpyq-member-dimension-requirements.md`](./implementation/mrpyq-member-dimension-requirements.md) 为准。mrpyq 侧的存储 / 现网分析（关注收件箱、不看 / 不让看、审核字段等）仍有效。
+>
 > **依据**：[`recommendation-service-mvp-assessment.md`](./recommendation-service-mvp-assessment.md)
 >
-> **主业务仓库**：`/Users/hejun/work/mp/mrpyq`
+> **主业务仓库**：mrpyq（`/Users/hejun/work/mp/mrpyq` 为本地路径，文档引用以其仓库名为准）
 >
 > **分析目标**：识别当前主业务系统中可直接复用、需要适配、需要补齐的推荐数据与支撑能力，并给出首版集成边界。
 >
