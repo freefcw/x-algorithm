@@ -25,10 +25,10 @@ Phoenix 是一个 **Transformer 精排模型**，输入由两部分组成：
 
 | 字段名 | 类型 | 说明 |
 | :--- | :--- | :--- |
-| `user_id` | INT64 | 被推荐的用户 ID |
+| `user_id` | STRING | 被推荐用户的皮 `member_id`（24 位小写 hex ObjectId；本文件所有 ID 字段同此，不再是整数）|
 | `impression_time` | TIMESTAMP | 曝光发生时间 |
-| `candidate_post_ids` | ARRAY\<INT64\> | 这次曝光展示的帖子 ID 列表（顺序对应排名）|
-| `candidate_author_ids` | ARRAY\<INT64\> | 候选帖子各自的作者 ID（与上面一一对应）|
+| `candidate_post_ids` | ARRAY\<STRING\> | 这次曝光展示的帖子 ID 列表（顺序对应排名）|
+| `candidate_author_ids` | ARRAY\<STRING\> | 候选帖子各自的作者 ID（与上面一一对应）|
 | `product_surface` | INT | 曝光场景：0=首页推荐 1=关注流 2=搜索 3=话题 … 最多16类 |
 
 ### 2.2 互动行为日志表（训练标签来源）
@@ -37,37 +37,41 @@ Phoenix 是一个 **Transformer 精排模型**，输入由两部分组成：
 
 | 字段名 | 类型 | 说明 |
 | :--- | :--- | :--- |
-| `user_id` | INT64 | 用户 ID |
-| `post_id` | INT64 | 帖子 ID |
-| `action_type` | STRING | 行为类型（见下方行为编码表）|
+| `user_id` | STRING | 用户皮 `member_id`（24 位小写 hex ObjectId）|
+| `post_id` | STRING | 帖子 `feed_id` |
+| `action_type` | INT | 行为类型，**proto `ActionName` 枚举值（1..=18）**，见下方编码表 |
 | `action_time` | TIMESTAMP | 行为发生时间 |
-| `dwell_seconds` | FLOAT | 仅 `dwell` 行为填写，单位秒 |
+| `dwell_seconds` | FLOAT | 仅停留（枚举 12）行为填写，单位秒 |
 
-**行为编码表（对应模型中 19 个预测目标的顺序）：**
+**行为编码表（proto `ActionName` 枚举值）：**
 
-| 索引 | `action_type` 枚举值 | 含义 |
+> **编码口径（重要）**：日志层 / 接口层的 `action_type` 只有一套编码——`proto/definitions/phoenix_recsys.proto` 的 `ActionName` 枚举值，与 [uas-event-contract.md](../implementation/uas-event-contract.md) §3 给 mrpyq 的完全相同。不要使用「模型内部列序」（见本表下方说明）作为日志编码。所有 ID 字段是 24 位小写 hex ObjectId 字符串，不是整数。
+
+| 枚举值 | `ActionName` | 含义 |
 | :--- | :--- | :--- |
-| 0 | `favorite` | 点赞 |
-| 1 | `reply` | 回复 |
-| 2 | `repost` | 转发 |
-| 3 | `photo_expand` | 点击展开图片 |
-| 4 | `click` | 点击帖子正文 |
-| 5 | `profile_click` | 点击作者头像/主页 |
-| 6 | `vqv` | 视频完整播放（或高质量播放）|
-| 7 | `share` | 分享（任意方式）|
-| 8 | `share_via_dm` | 私信分享 |
-| 9 | `share_via_copy_link` | 复制链接分享 |
-| 10 | `dwell` | 停留超过阈值（建议 ≥ 2 秒算 1，否则 0）|
-| 11 | `quote` | 引用转发 |
-| 12 | `quoted_click` | 点击引用内容 |
-| 13 | `follow_author` | 关注作者 |
-| 14 | `not_interested` | 点击"不感兴趣" |
-| 15 | `block_author` | 屏蔽作者 |
-| 16 | `mute_author` | 静音作者 |
-| 17 | `report` | 举报 |
-| 18 | `dwell_time` | 归一化停留时长（连续值，见§4说明）|
+| 0 | `ACTION_NAME_UNSPECIFIED` | 非法，消费端直接丢弃 |
+| 1 | `SERVER_TWEET_FAV` | 点赞 |
+| 2 | `SERVER_TWEET_REPLY` | 回复 |
+| 3 | `SERVER_TWEET_RETWEET` | 转发（产品当前无此功能，不会出现）|
+| 4 | `SERVER_TWEET_QUOTE` | 引用转发（同上）|
+| 5 | `CLIENT_TWEET_PHOTO_EXPAND` | 展开图片 |
+| 6 | `CLIENT_TWEET_CLICK` | 点击帖子详情 |
+| 7 | `CLIENT_TWEET_CLICK_PROFILE` | 点击作者头像 |
+| 8 | `CLIENT_TWEET_VIDEO_QUALITY_VIEW` | 视频有效播放 |
+| 9 | `CLIENT_TWEET_SHARE` | 分享 |
+| 10 | `CLIENT_TWEET_CLICK_SEND_VIA_DIRECT_MESSAGE` | 私信分享 |
+| 11 | `CLIENT_TWEET_SHARE_VIA_COPY_LINK` | 复制链接分享 |
+| 12 | `CLIENT_TWEET_RECAP_DWELLED` | 停留（配 `dwell_seconds`）|
+| 13 | `CLIENT_QUOTED_TWEET_CLICK` | 点击引用帖（产品当前无此功能）|
+| 14 | `CLIENT_TWEET_FOLLOW_AUTHOR` | 关注作者 |
+| 15 | `CLIENT_TWEET_NOT_INTERESTED_IN` | 不感兴趣（暂无采集入口）|
+| 16 | `CLIENT_TWEET_BLOCK_AUTHOR` | 拉黑作者 |
+| 17 | `CLIENT_TWEET_MUTE_AUTHOR` | 静音作者 |
+| 18 | `CLIENT_TWEET_REPORT` | 举报 |
 
-> **MVP 简化建议**：如果初期埋点不完整，至少保证采集 `favorite`、`reply`、`repost`、`click`、`dwell` 这 5 类，其余行为对应位置置 0 即可。
+> **关于「19 个预测目标」的两层编码**：模型内部的 19 维张量（`labels`、`history_actions`）用的是**另一套内部列序**（0 起：favorite 在列 0、dwell 在列 10、quote 在列 11、dwell_time 连续值占列 18），与上表枚举值**不同**。两层之间的转换由代码统一承担：训练侧 `phoenix/scripts/build_training_inputs.py` 的 `ENUM_TO_FIELD`、在线侧 `phoenix/services/grpc_gateway.py` 经 `phoenix/services/model_contract.py` 的 `ACTION_IDX_TO_ENUM`，两座桥一致，训练 / 在线不会错位。数据平台只需要按上表的枚举值交日志，**不要自己把枚举值换算成内部列序**。
+
+> **MVP 简化建议**：初期埋点不完整时，至少保证服务端可直接采集的点赞（1）、回复（2）；click（6）与 dwell（12）依赖客户端埋点进度。第一版模型 head 集合的收缩决策见 [phoenix-training-data-decisions.md](../implementation/phoenix-training-data-decisions.md) §1（当前为 1/2/18）。
 
 ### 2.3 用户历史行为序列表（上下文特征）
 
@@ -75,10 +79,10 @@ Phoenix 是一个 **Transformer 精排模型**，输入由两部分组成：
 
 | 字段名 | 类型 | 说明 |
 | :--- | :--- | :--- |
-| `user_id` | INT64 | 用户 ID |
-| `post_id` | INT64 | 历史互动帖子 ID |
-| `author_id` | INT64 | 该帖子的作者 ID |
-| `action_vector` | ARRAY\<FLOAT\>[19] | 该次互动的多热行为向量（0/1）|
+| `user_id` | STRING | 用户皮 `member_id` |
+| `post_id` | STRING | 历史互动帖子 `feed_id` |
+| `author_id` | STRING | 该帖子的作者皮 `creator_member_id` |
+| `action_vector` | ARRAY\<FLOAT\>[19] | 该次互动的多热行为向量（0/1）。**下标是模型内部列序，不是 §2.2 的枚举值**（两层编码说明见 §2.2）；推荐直接交付 `action_type` 事件表，由构建脚本聚合 |
 | `product_surface` | INT | 互动发生的场景编码 |
 | `action_time` | TIMESTAMP | 互动时间（用于按时间倒序截取最近 N 条）|
 
@@ -95,7 +99,7 @@ Phoenix 是一个 **Transformer 精排模型**，输入由两部分组成：
 | `user_hashes` | `[B, 2]` | int32 | 用户 ID 经过 2 个独立哈希函数映射后的整数值 |
 | `history_post_hashes` | `[B, 32, 2]` | int32 | 最近 32 条历史帖子 ID 的 2 路哈希；不足的位置补 0 |
 | `history_author_hashes` | `[B, 32, 2]` | int32 | 历史帖子作者 ID 的 2 路哈希；不足的位置补 0 |
-| `history_actions` | `[B, 32, 19]` | float32 | 每条历史记录对应的行为多热向量（0.0 或 1.0）|
+| `history_actions` | `[B, 32, 19]` | float32 | 每条历史记录对应的行为多热向量（0.0 或 1.0）；19 维是模型内部列序（§2.2 两层编码说明）|
 | `history_product_surface` | `[B, 32]` | int32 | 历史记录发生的场景编码（0~15）|
 | `candidate_post_hashes` | `[B, 8, 2]` | int32 | 候选帖子 ID 的 2 路哈希 |
 | `candidate_author_hashes` | `[B, 8, 2]` | int32 | 候选帖子作者 ID 的 2 路哈希 |
@@ -118,7 +122,7 @@ Phoenix 是一个 **Transformer 精排模型**，输入由两部分组成：
 
 | Tensor 字段 | 形状 | dtype | 说明 |
 | :--- | :--- | :--- | :--- |
-| `labels` | `[B, 8, 19]` | float32 | 候选帖子上实际发生的互动（0/1），对应 19 个目标行为 |
+| `labels` | `[B, 8, 19]` | float32 | 候选帖子上实际发生的互动（0/1；dwell_time 内部列为归一化连续值），19 维为模型内部列序（§2.2 两层编码说明）|
 
 ---
 
@@ -126,15 +130,15 @@ Phoenix 是一个 **Transformer 精排模型**，输入由两部分组成：
 
 ### 4.1 哈希计算方法
 
-将业务 ID（int64）映射为模型输入的 int32 哈希值，使用 2 路独立哈希以减少碰撞：
+将业务 ID 映射为模型输入的 int32 哈希值，使用 2 路独立哈希以减少碰撞。业务 ID 是 24 位小写 hex ObjectId **字符串**（不是整数），哈希前不做任何数值化：
 
 ```python
 import hashlib
 
-def id_to_hashes(id_val: int, num_hashes: int = 2, table_size: int = 100_000) -> list[int]:
+def id_to_hashes(id_str: str, num_hashes: int = 2, table_size: int = 100_000) -> list[int]:
     # 与 data_preprocessor.py 的 _hash_id_cached 保持同一构造：
     # 种子串为 "{id}_hash{i}"，取 MD5 全量整数后取模
-    id_str = str(id_val)
+    id_str = str(id_str)
     hashes = []
     for i in range(num_hashes):
         raw = hashlib.md5((id_str + f"_hash{i}").encode("utf-8")).digest()
@@ -146,9 +150,9 @@ def id_to_hashes(id_val: int, num_hashes: int = 2, table_size: int = 100_000) ->
 > 注意 1：本节示例是 `data_preprocessor.py::_hash_id_cached` 的等价写法，以预处理器的构造为准；两者都是 MD5、2 路、`+1` 偏移、`table_size = 100_000`。
 > 注意 2：推理侧演示脚本 `phoenix/scripts/run_real_data_demo.py` 的 `hash_id` 用的是 `hash((entity_id, seed))` 实现，与本节 MD5 实现产出的哈希值不同。训练数据准备与推理输入构造必须使用同一种实现，否则嵌入表查找会错位。
 
-### 4.2 `dwell_time`（索引 18）的归一化
+### 4.2 `dwell_time`（模型内部列 18）的归一化
 
-`dwell_time` 是一个连续值而非 0/1。训练样本以 `data_preprocessor.py::normalize_dwell` 为准，线性压到 [0, 1]：
+`dwell_time` 是一个连续值而非 0/1，只存在于模型内部 19 维列序的列 18（§2.2 两层编码说明）；在日志 / 接口层，停留是枚举 12 的 0/1 事件，连续秒数放在 `dwell_seconds` 字段。训练样本以 `data_preprocessor.py::normalize_dwell` 为准，线性压到 [0, 1]：
 
 ```python
 def normalize_dwell(seconds: float, max_seconds: float = 300.0) -> float:
@@ -179,7 +183,7 @@ SELECT
     e.impression_id,
     e.user_id,
     e.impression_time,
-    e.candidate_post_ids,   -- ARRAY<BIGINT>, 长度固定 8
+    e.candidate_post_ids,   -- ARRAY<STRING>（ObjectId），长度固定 8
     e.candidate_author_ids,
     e.product_surface,
     -- 逐帖子逐行为聚合成 label 向量
@@ -233,16 +237,16 @@ training_data/
 
 ```python
 {
-    "user_id": 123456,
+    "user_id": "66f1a2b3c4d5e6f708192a3b",
     "user_hashes": [1024, 8831],                        # shape [2]
     "history_post_hashes": [[h1, h2], ...],             # shape [32, 2]，不足补 [0,0]
     "history_author_hashes": [[h1, h2], ...],           # shape [32, 2]
-    "history_actions": [[0,1,0,...], ...],               # shape [32, 19]
+    "history_actions": [[0,1,0,...], ...],               # shape [32, 19]，内部列序（§2.2）
     "history_product_surface": [0, 1, 0, ...],          # shape [32]
     "candidate_post_hashes": [[h1, h2], ...],           # shape [8, 2]
     "candidate_author_hashes": [[h1, h2], ...],         # shape [8, 2]
     "candidate_product_surface": [0, 0, ...],           # shape [8]
-    "labels": [[0,0,1,...], ...],                       # shape [8, 19]，训练标签
+    "labels": [[0,0,1,...], ...],                       # shape [8, 19]，训练标签，内部列序（§2.2）
 }
 ```
 

@@ -217,9 +217,13 @@ offset 管理：`enable.auto.commit=true` + `enable.auto.offset.store=false`，�
 
 取消点赞等不进入历史。如果产品需要「撤销后不再把该行为当正样本」，要在训练归因侧处理，UAS 在线序列不承担。
 
-### 8.3 训练文档的行为编码与在线合同不一致
+### 8.3 训练文档的行为编码与在线合同不一致（已修）
 
-[training/training_data_spec.md](../training/training_data_spec.md)（状态 `design`）的行为编码表是 0 起、顺序与 proto 不同（`0=favorite`、`10=dwell`、`11=quote`、`18=dwell_time`）。在线合同与 Phoenix 网关（`grpc_gateway.py`：「action_mask 位下标对应 ActionName 枚举值」）用的都是 proto 编号 `1..=18`。**给 mrpyq 的一律用 proto 编号**；训练文档后续必须改成同一套，否则离线样本与在线序列错位。
+**2026-09-17 已对齐**：[training/training_data_spec.md](../training/training_data_spec.md) 的日志层编码已改为 proto `ActionName` 枚举值（1..=18），ID 字段同步改为 24 位 hex ObjectId 字符串，与本合同 §2/§3 完全一致。
+
+补充澄清当时没写清的一层：模型内部 19 维张量（`labels` / `history_actions`）用的是另一套内部列序（0 起，`dwell_time` 连续值占列 18），这与在线链路并不矛盾——`grpc_gateway.py` 在解码后经 `model_contract.py` 的 `ACTION_IDX_TO_ENUM` 把枚举位换算成内部列序，训练侧 `build_training_inputs.py` 用 `ENUM_TO_FIELD` 做同一件事，两座桥一致，训练 / 在线不错位。数据平台只接触 proto 编号，不要自己换算内部列序（说明见训练文档 §2.2）。
+
+规则不变：**给 mrpyq 的一律用 proto 编号**。
 
 ### 8.4 吞吐
 
