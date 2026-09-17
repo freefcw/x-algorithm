@@ -118,7 +118,7 @@ x-algorithm 以下两处描述已过时（原文）：
 
 1. 调用方身份：mTLS / service identity、viewer 防冒用、审计、密钥轮换——`production_ready` 解锁的硬条件。
 2. VF 故障策略确认（默认 `fail_closed` 丢整批，产品是否接受）、灰度发布方案。
-3. 客户端配合：自带 `grpc-timeout`、维护 seen_ids / bloom filter、分页协议（[uas-client-event-reporting.md](./implementation/uas-client-event-reporting.md)）。
+3. 客户端配合：自带 `grpc-timeout`、维护 seen_ids / bloom filter、分页协议（[user-action-collect.md](./implementation/user-action-collect.md)）。
 
 ### 3.5 里程碑
 

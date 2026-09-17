@@ -47,7 +47,7 @@
 | [getting-started/](./getting-started/) | `current-code` | 从零跑通主线（推荐入口）。 |
 | [recommendation-service-mvp-assessment.md](./recommendation-service-mvp-assessment.md) | `design` | 面向业务决策的外部依赖评估、MVP 边界和三阶段演进建议。 |
 | [recommendation-production-readiness-assessment.md](./recommendation-production-readiness-assessment.md) | `design` | 三仓库上线就绪度快照评估：阻碍项、推进工作流、性能与 Phoenix 准备清单、里程碑检查单。 |
-| [user-action-collect.md](./user-action-collect.md) | `current-code` | UAS 客户端行为上报定义：面向 iOS / Android / Web 与埋点通道的完整说明（上报什么、何时上报、编码与通道要求）。与 [implementation/uas-client-event-reporting.md](./implementation/uas-client-event-reporting.md) 同主题，后续应择一收敛。 |
+| [implementation/user-action-collect.md](./implementation/user-action-collect.md) | `current-code` | UAS 客户端行为上报定义（取代 `uas-client-event-reporting.md`，旧文已成指向横幅）：上报责任划分、事件格式、动作与入口编码、投递语义、消费端行为与联调验收。 |
 | [implementation/phoenix-pipeline-trunk-plan.md](./implementation/phoenix-pipeline-trunk-plan.md) | `decision` | 以 `PhoenixCandidatePipeline` 为主干的推荐链路收敛方案：分支取舍、U4 / U5 差异类、ObjectId 方案、组件取舍、P0–P3 实施批次与执行记录。 |
 | [implementation/mrpyq-member-dimension-requirements.md](./implementation/mrpyq-member-dimension-requirements.md) | `proposed` | 皮维度接口要求：§2 召回已由 rec-bff 满足；剩余字段改名、`creator_member_id` 必填、viewer 关系换皮、mrpyq 底层改造与三方同批上线约束。 |
 | [implementation/uas-event-contract.md](./implementation/uas-event-contract.md) | `proposed` | 对 mrpyq 的 UAS 行为事件流合同：Kafka 消息格式、`action_type` 映射与分批、身份空间、投递语义、联调验收。 |

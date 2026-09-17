@@ -4,7 +4,7 @@
 > **日期**：2026-09-16
 > **读者**：mrpyq feed / webapi 后端、客户端埋点、推荐服务开发
 > **事实边界**：本文所有「消费端行为」均引自本仓库当前代码并标注文件；对 mrpyq 的「要求」是推荐侧提出的接口约定，未经 mrpyq 侧确认
-> **配套文档**：客户端埋点见 [uas-client-event-reporting.md](./uas-client-event-reporting.md)；身份维度约定见 [mrpyq-member-dimension-requirements.md](./mrpyq-member-dimension-requirements.md)；消费端环境变量与运行细节见 [home-mixer/07-config-and-params.md §3.2](../home-mixer/07-config-and-params.md)
+> **配套文档**：客户端埋点见 [user-action-collect.md](./user-action-collect.md)；身份维度约定见 [mrpyq-member-dimension-requirements.md](./mrpyq-member-dimension-requirements.md)；消费端环境变量与运行细节见 [home-mixer/07-config-and-params.md §3.2](../home-mixer/07-config-and-params.md)
 
 ---
 
@@ -43,7 +43,7 @@ mrpyq 业务事件 ──Kafka topic──▶ uas-worker ──Redis ZSET──�
 
 三个 ID 必须在同一身份空间（皮），不能混入 `account_id`、`user_id`、`user_no`。否则聚合出的历史序列和候选帖子的作者对不上，模型输入等于噪音。
 
-客户端入口编码与触发时机见 [uas-client-event-reporting.md](./uas-client-event-reporting.md)。同帖多条行为聚合时保留**最早一条**的 `product_surface`。
+客户端入口编码与触发时机见 [user-action-collect.md](./user-action-collect.md)。同帖多条行为聚合时保留**最早一条**的 `product_surface`。
 
 ### 2.3 示例
 
@@ -211,7 +211,7 @@ offset 管理：`enable.auto.commit=true` + `enable.auto.offset.store=false`，�
 |---|---|---|---|
 | `event_id` | string | 幂等键、排障关联 | 本流不需要；但曝光 / 训练归因流一定需要，现在统一省事 |
 
-`product_surface` 已进入事件、Redis `StoredUserAction` v2 和 `DefaultAggregator`。客户端编码见 [uas-client-event-reporting.md](./uas-client-event-reporting.md)。当前请求的候选侧 `candidate_product_surface` 仍为 0，不影响历史序列。
+`product_surface` 已进入事件、Redis `StoredUserAction` v2 和 `DefaultAggregator`。客户端编码见 [user-action-collect.md](./user-action-collect.md)。当前请求的候选侧 `candidate_product_surface` 仍为 0，不影响历史序列。
 
 ### 8.2 撤销类动作
 

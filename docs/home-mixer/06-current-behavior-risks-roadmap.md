@@ -58,7 +58,7 @@ Demo 的 `InMemoryFeedStateStore` 有 10,000 用户上限，进程重启会丢�
 
 ### 4.4 非 demo 下模型路径依赖 UAS 投影的真实数据
 
-Home Mixer 已在非 demo 下装配 Redis UAS adapter，但序列内容完全取决于 `uas-worker` 是否在消费真实行为事件：没有投影数据的用户拿不到序列，Phoenix 召回与精排对其不执行，候选由 `RuleFallbackScorer` 排序；默认全网范围下 mrpyq FALLBACK 兜底召回仍然可达。事件 JSON 合同、埋点 topic 的 schema / 认证 / 保留与重放策略尚未验收，`action_type` 编号与 proto `ActionName` 强耦合；`product_surface` 已进入事件（省略或旧 v1 成员当 0），真实多入口要靠客户端按 [uas-client-event-reporting.md](../implementation/uas-client-event-reporting.md) 上报。接通事件流并验收这些合同之前，不能把“配置了 Phoenix 地址”当成“模型已上线”。投影 job 单实例串行，吞吐受 Redis 往返时间限制，正式流量前需要按分区多实例部署并压测。
+Home Mixer 已在非 demo 下装配 Redis UAS adapter，但序列内容完全取决于 `uas-worker` 是否在消费真实行为事件：没有投影数据的用户拿不到序列，Phoenix 召回与精排对其不执行，候选由 `RuleFallbackScorer` 排序；默认全网范围下 mrpyq FALLBACK 兜底召回仍然可达。事件 JSON 合同、埋点 topic 的 schema / 认证 / 保留与重放策略尚未验收，`action_type` 编号与 proto `ActionName` 强耦合；`product_surface` 已进入事件（省略或旧 v1 成员当 0），真实多入口要靠客户端按 [user-action-collect.md](../implementation/user-action-collect.md) 上报。接通事件流并验收这些合同之前，不能把“配置了 Phoenix 地址”当成“模型已上线”。投影 job 单实例串行，吞吐受 Redis 往返时间限制，正式流量前需要按分区多实例部署并压测。
 
 ### 4.5 viewer 维度准入的语义缺口
 

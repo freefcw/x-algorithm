@@ -3,8 +3,9 @@
 > **状态**：当前实现对应的客户端上报说明  
 > **读者**：iOS、Android、Web 客户端，埋点 SDK，mrpyq 行为转发服务  
 > **更新日期**：2026-09-17  
-> **相关实现**：[UAS 事件校验](../home-mixer/clients/uas_fetcher.rs)、[行为类型与场景范围](../home-mixer/recsys_compat/mod.rs)、[ActionName 定义](../proto/definitions/phoenix_recsys.proto)  
-> **配套合同**：[UAS 事件流合同](implementation/uas-event-contract.md)
+> **相关实现**：[UAS 事件校验](../../home-mixer/clients/uas_fetcher.rs)、[行为类型与场景范围](../../home-mixer/recsys_compat/mod.rs)、[ActionName 定义](../../proto/definitions/phoenix_recsys.proto)  
+> **配套合同**：[UAS 事件流合同](./uas-event-contract.md)  
+> **并入说明**：本文件已取代同目录的 `uas-client-event-reporting.md`（2026-09-16 版，现为指向横幅）。并入时修正了旧版与合同不一致的三处动作归属：`15` 不感兴趣当前无入口不应上报、`14` 关注作者由客户端上报、`18` 举报默认由服务端上报。
 
 ## 1. 目的与数据流
 
@@ -37,6 +38,7 @@ UAS（User Action Sequence）记录用户最近对帖子的行为，供 Phoenix 
 
 - 点赞：点赞成功并落库后上报 `action_type=1`。
 - 评论或回复：评论成功并落库后上报 `action_type=2`。
+- 举报：举报提交成功并落库后上报 `action_type=18`（当前产品举报链路服务端可采集，与 [UAS 事件流合同](./uas-event-contract.md) §3.4 一致；客户端仅在服务端确无事件链路时兕底，且同一动作只能有一个生产者）。
 - 如果服务端已经负责关注、拉黑、静音或举报事件，客户端只上报埋点给业务侧，不再把同一动作转发到 UAS。
 
 同一个动作只能有一个 UAS 生产者。客户端在按钮点击时提前上报、服务端在落库成功后再次上报，会造成重复行为或记录未成功的动作。
@@ -60,7 +62,7 @@ Kafka message 的 value 必须是 UTF-8 编码的 JSON 对象，不带外层 env
 | `tweet_id` | string | 是 | 被操作帖子的 `feed_id` | 24 位小写十六进制 ObjectId；不能是全 0 |
 | `author_id` | string | 是 | 被操作帖子的作者 `creator_member_id` | 24 位小写十六进制 ObjectId；不能是全 0 |
 | `action_time_ms` | integer | 是 | 动作实际完成时间，UTC Unix epoch 毫秒 | 必须大于 0；不能使用发送时间、入队时间或消费时间 |
-| `action_type` | integer | 是 | [proto `ActionName`](../proto/definitions/phoenix_recsys.proto) 的数值 | 当前入口接受 `1..18`；不能传字符串 |
+| `action_type` | integer | 是 | [proto `ActionName`](../../proto/definitions/phoenix_recsys.proto) 的数值 | 当前入口接受 `1..18`；不能传字符串 |
 | `product_surface` | integer | 是 | 动作发生时所在的产品入口 | 当前接受 `0..15`；不能传字符串；缺失时消费端兼容为 `0`，新客户端仍必须显式发送 |
 
 三个 ID 必须来自同一“皮”身份空间：不要把登录账号 ID、`account_id`、展示用数字号、`user_no` 或其他用户体系的 ID 填入这些字段。`author_id` 必须取帖子数据本身的作者 ID，不能用当前登录用户 ID 替代。
@@ -110,7 +112,8 @@ Kafka message 的 value 必须是 UTF-8 编码的 JSON 对象，不带外层 env
 | 15 | `CLIENT_TWEET_NOT_INTERESTED_IN` | 对帖子标记“不感兴趣” | 用户操作成功后 | 产品有该入口且没有服务端重复事件时才报 |
 | 16 | `CLIENT_TWEET_BLOCK_AUTHOR` | 拉黑作者 | 拉黑成功后，并且动作来自该帖入口 | 服务端已关联时不要报 |
 | 17 | `CLIENT_TWEET_MUTE_AUTHOR` | 静音作者 | 静音成功后，并且动作来自该帖入口 | 服务端已关联时不要报 |
-| 18 | `CLIENT_TWEET_REPORT` | 举报帖子 | 举报提交成功后 | 应报；服务端若已生成同一事件则不要重复 |
+
+`18`（举报）不在本表：默认由服务端在举报落库后上报，客户端不要重复发送（见 4.2）。
 
 分享场景的组合规则：
 
@@ -125,6 +128,7 @@ Kafka message 的 value 必须是 UTF-8 编码的 JSON 对象，不带外层 env
 |---:|---|---|
 | 1 | `SERVER_TWEET_FAV` | 点赞成功并落库 |
 | 2 | `SERVER_TWEET_REPLY` | 评论/回复成功并落库 |
+| 18 | `CLIENT_TWEET_REPORT` | 举报提交成功并落库（proto 名称带 CLIENT_ 是上游枚举命名遗留，生产者归属以本表为准；客户端仅在服务端确无事件链路时兕底） |
 | 3 | `SERVER_TWEET_RETWEET` | 产品实际支持转发且服务端成功落库 |
 | 4 | `SERVER_TWEET_QUOTE` | 产品实际支持引用转发且服务端成功落库 |
 
@@ -192,7 +196,7 @@ UAS 消费端会：
 - [ ] `action_time_ms` 使用动作完成时间，单位为 UTC epoch 毫秒。
 - [ ] 详情页动作沿用进入详情前的 `product_surface`。
 - [ ] 私信分享发送 `9+10`；复制链接发送 `9+11`。
-- [ ] 点赞和评论不由客户端向 UAS 重复发送。
+- [ ] 点赞、评论、举报不由客户端向 UAS 重复发送（举报默认服务端发）。
 - [ ] 不发送曝光、刷到、划过和撤销动作。
 - [ ] 网络失败时进入可靠队列并重试；不要因为重试可能重复而静默丢弃。
 - [ ] 联调时确认 Kafka 中是一条消息一个 JSON 对象，并检查 `invalid` 为 0。
