@@ -1,0 +1,64 @@
+# phoenix-gateway 模型服务（gRPC 50053 + Prometheus 9093）
+#
+# 镜像含 grpc.health.v1，探针走 grpcProbe；metrics 端口只做抓取。
+# GPU 需要时把 resources 换成 nvidia.com/gpu 并调整副本与节点亲和。
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: phoenix-gateway
+  labels:
+    app.kubernetes.io/name: phoenix-gateway
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: phoenix-gateway
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: phoenix-gateway
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "9093"
+        prometheus.io/path: /metrics
+    spec:
+      containers:
+        - name: phoenix-gateway
+          # TODO(h201): 填实际镜像仓库
+          image: phoenix-gateway:dev
+          ports:
+            - name: grpc
+              containerPort: 50053
+            - name: metrics
+              containerPort: 9093
+          readinessProbe:
+            grpc:
+              port: 50053
+            initialDelaySeconds: 10
+            periodSeconds: 10
+          livenessProbe:
+            grpc:
+              port: 50053
+            initialDelaySeconds: 20
+            periodSeconds: 20
+          resources:
+            requests:
+              cpu: 500m
+              memory: 512Mi
+            limits:
+              cpu: "2"
+              memory: 2Gi
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: phoenix-gateway
+  labels:
+    app.kubernetes.io/name: phoenix-gateway
+spec:
+  selector:
+    app.kubernetes.io/name: phoenix-gateway
+  ports:
+    - name: grpc
+      port: 50053
+      targetPort: grpc

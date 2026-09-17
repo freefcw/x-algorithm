@@ -1,0 +1,93 @@
+# home-mixer 推荐服务
+#
+# 脚手架：镜像地址、mrpyq / Redis 地址按 h201 环境填写后 `kubectl apply -f`。
+# 探针接管理端口 9090（/healthz /readyz）；gRPC 走 50051。
+# terminationGracePeriodSeconds 必须大于 --shutdown-delay-secs + --drain-timeout-secs
+# （默认 0 + 20 s），这里取 30。
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: home-mixer
+  labels:
+    app.kubernetes.io/name: home-mixer
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: home-mixer
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: home-mixer
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "9090"
+        prometheus.io/path: /metrics
+    spec:
+      terminationGracePeriodSeconds: 30
+      containers:
+        - name: home-mixer
+          # TODO(h201): 填实际镜像仓库
+          image: home-mixer:dev
+          args:
+            - --grpc-port=50051
+            - --metrics-port=9090
+          env:
+            - name: RUST_LOG
+              value: info
+            - name: HOME_MIXER_LOG_FORMAT
+              value: json
+            # 业务依赖：mrpyq 是非 demo 模式的硬依赖（缺地址直接启动失败）
+            - name: HOME_MIXER_MODE
+              value: "on"
+            - name: MRPYQ_RECOMMENDATION_DATA_ADDR
+              value: http://mrpyq:9000
+            # Redis：单端点写 URL；原生集群写 CLUSTER_URLS（逗号分隔种子），
+            # 二选一，集群模式下 URL 可不填。
+            - name: HOME_MIXER_REDIS_URL
+              value: redis://redis:6379/
+            # - name: HOME_MIXER_REDIS_CLUSTER_URLS
+            #   value: redis://redis-0:6379/,redis://redis-1:6379/,redis://redis-2:6379/
+            # 曝光事件投递（缺省关闭并告警；生产建议开启）
+            # - name: SERVED_EVENTS_KAFKA_BROKERS
+            #   value: kafka:9092
+            # - name: SERVED_EVENTS_KAFKA_TOPIC
+            #   value: served-candidates
+          ports:
+            - name: grpc
+              containerPort: 50051
+            - name: admin
+              containerPort: 9090
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: admin
+            initialDelaySeconds: 5
+            periodSeconds: 5
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: admin
+            initialDelaySeconds: 10
+            periodSeconds: 10
+          resources:
+            requests:
+              cpu: 500m
+              memory: 256Mi
+            limits:
+              cpu: "2"
+              memory: 1Gi
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: home-mixer
+  labels:
+    app.kubernetes.io/name: home-mixer
+spec:
+  selector:
+    app.kubernetes.io/name: home-mixer
+  ports:
+    - name: grpc
+      port: 50051
+      targetPort: grpc
