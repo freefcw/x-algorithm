@@ -21,11 +21,12 @@
 
 1. [以 PhoenixCandidatePipeline 为主干的推荐链路收敛方案](./implementation/phoenix-pipeline-trunk-plan.md)（`decision`）：已定方向的主干收敛决策——以 `mp` 的 `PhoenixCandidatePipeline` 为唯一编排主干、吸收 `mp-slim` 的契约层成果、ID 方案选 Copy newtype `ObjectId`、新增 U4 / U5 差异类，以及 P0–P3 实施批次与执行记录。要接业务、改 ID 类型或删组件之前先读它。
 2. [推荐服务外部依赖梳理与 MVP 建设建议](./recommendation-service-mvp-assessment.md)：从业务角度判断首版保留、延后和不复制的能力，适合立项与范围决策时先读。
-3. [getting-started/06-从演示到真实系统](./getting-started/06-从演示到真实系统.md)：当前演示链路的真实数据缺口和推进顺序。
-4. 对 mrpyq 的接口约定（`proposed`）：[皮维度对齐要求](./implementation/mrpyq-member-dimension-requirements.md) 与 [UAS 行为事件流合同](./implementation/uas-event-contract.md)。要给 mrpyq 排期时直接交付这两份。
-5. [training/](./training/)：训练数据规格与离线链路的目标设计。
-6. [operations/](./operations/)：数据持续更新、索引切版、发布运维建议。
-7. [research/](./research/)：双塔、冷启动等算法背景调研。
+3. [推荐链路正式上线就绪度评估](./recommendation-production-readiness-assessment.md)：x-algorithm × rec-bff × mrpyq 三仓库快照评估——阻碍执行的问题、数据/基建推进工作流、性能优化建议、Phoenix 准备清单和分里程碑检查单。做上线排期前先读它（注意其快照日期）。
+4. [getting-started/06-从演示到真实系统](./getting-started/06-从演示到真实系统.md)：当前演示链路的真实数据缺口和推进顺序。
+5. 对 mrpyq / rec-bff 的接口约定（`proposed`）：[皮维度对齐要求](./implementation/mrpyq-member-dimension-requirements.md)（§2 召回已由 rec-bff 满足，剩余项及三方同批上线约束见文内）与 [UAS 行为事件流合同](./implementation/uas-event-contract.md)。要给 mrpyq / rec-bff 排期时直接交付这两份。
+6. [training/](./training/)：训练数据规格与离线链路的目标设计。
+7. [operations/](./operations/)：数据持续更新、索引切版、发布运维建议。
+8. [research/](./research/)：双塔、冷启动等算法背景调研。
 
 ## 文档状态标签
 
@@ -45,8 +46,9 @@
 | [bootstrap/](./bootstrap/) | `runbook` / `current-code` | 从环境、编译、模型、Demo 到真实数据和生产验收的完整启动手册。 |
 | [getting-started/](./getting-started/) | `current-code` | 从零跑通主线（推荐入口）。 |
 | [recommendation-service-mvp-assessment.md](./recommendation-service-mvp-assessment.md) | `design` | 面向业务决策的外部依赖评估、MVP 边界和三阶段演进建议。 |
+| [recommendation-production-readiness-assessment.md](./recommendation-production-readiness-assessment.md) | `design` | 三仓库上线就绪度快照评估：阻碍项、推进工作流、性能与 Phoenix 准备清单、里程碑检查单。 |
 | [implementation/phoenix-pipeline-trunk-plan.md](./implementation/phoenix-pipeline-trunk-plan.md) | `decision` | 以 `PhoenixCandidatePipeline` 为主干的推荐链路收敛方案：分支取舍、U4 / U5 差异类、ObjectId 方案、组件取舍、P0–P3 实施批次与执行记录。 |
-| [implementation/mrpyq-member-dimension-requirements.md](./implementation/mrpyq-member-dimension-requirements.md) | `proposed` | 对 mrpyq 的皮维度接口要求：召回入参、`creator_member_id` 必填、viewer 关系服务与上线顺序约束。 |
+| [implementation/mrpyq-member-dimension-requirements.md](./implementation/mrpyq-member-dimension-requirements.md) | `proposed` | 皮维度接口要求：§2 召回已由 rec-bff 满足；剩余字段改名、`creator_member_id` 必填、viewer 关系换皮、mrpyq 底层改造与三方同批上线约束。 |
 | [implementation/uas-event-contract.md](./implementation/uas-event-contract.md) | `proposed` | 对 mrpyq 的 UAS 行为事件流合同：Kafka 消息格式、`action_type` 映射与分批、身份空间、投递语义、联调验收。 |
 | [home-mixer/](./home-mixer/) | `current-code` | 首页 Feed 编排服务、请求生命周期、组件和字段字典。 |
 | [candidate-pipeline/](./candidate-pipeline/) | `current-code` | 通用候选流框架及 `PhoenixCandidatePipeline` 当前装配。 |
