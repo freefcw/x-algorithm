@@ -112,6 +112,7 @@ Query hydrator 失败只记 request-scoped error 日志、不中断请求：UAS 
 | `query_builder` | `query_builder.rs` | 校验公共 proto、原样映射网络范围、生成请求身份并以具名字段构造 domain query |
 | `rpc_policy` | `rpc_policy.rs` | RPC 入口的总预算（`HOME_MIXER_REQUEST_TIMEOUT_MS` 与客户端 `grpc-timeout` 取更短）与终态指标记录；`within_budget` 超时整体取消并返回 `DeadlineExceeded` |
 | `metrics` | `metrics.rs` | 进程级 Prometheus registry：`home_mixer_rpc_requests_total{rpc,code}`、`home_mixer_rpc_duration_seconds{rpc}`、`home_mixer_rpc_in_flight{rpc}`、`home_mixer_client_calls_total{client,method,result}`、`home_mixer_client_call_duration_seconds{client,method}`、`home_mixer_ready`、`home_mixer_build_info`；handler 被取消时记 `CANCELLED`；`ClientCallRecorder` 句柄分发给各上游客户端（默认句柄不记录，测试零改动） |
+| `redis_conn` | `clients/redis_conn.rs` | Redis 连接层：单端点（`ConnectionManager`）或原生集群（`ClusterClient`，`*_REDIS_CLUSTER_URLS` 种子）两种形态，统一 `query_idempotent`（断连重试一次）/ `query_once`（写不重放）语义；两个 Redis store 共用 |
 | `admin_server` | `admin_server.rs` | 管理 HTTP：`/healthz`、`/readyz`（`starting` / `ready` / `draining`）、`/metrics`；`Readiness` 状态只能前进，进入 draining 后不再变回 ready |
 | `shutdown` | `shutdown.rs` | SIGTERM / Ctrl-C 信号 future，server 与 `uas-worker` 共用 |
 | `logging` | `logging.rs` | `RUST_LOG` 过滤 + `HOME_MIXER_LOG_FORMAT`（`text` / `json`）的日志初始化，两个二进制共用 |

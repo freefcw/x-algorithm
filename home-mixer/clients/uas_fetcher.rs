@@ -22,6 +22,9 @@
 // 写入幂等，读取对无法解码的成员容忍跳过并告警。
 // Disabled 实现保留给显式不配置 UAS Redis 的装配路径与测试。
 
+use crate::clients::redis_conn::{
+    parse_cluster_urls, redis_error, validate_redis_url, ManagedRedisConnection,
+};
 use crate::metrics::ClientCallRecorder;
 use crate::models::ids::{ObjectId, PostId, UserId};
 use crate::recsys_compat::{
@@ -29,7 +32,6 @@ use crate::recsys_compat::{
     MAX_SUPPORTED_ACTION_TYPE,
 };
 use crate::uas_compat;
-use redis::aio::{ConnectionManager, ConnectionManagerConfig};
 use serde::{Deserialize, Serialize};
 use std::fmt;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
@@ -237,7 +239,12 @@ fn decode_stored_member(member: &str) -> Result<uas_compat::UserAction, String> 
 
 #[derive(Clone, Eq, PartialEq)]
 pub struct RedisUserActionSequenceConfig {
+    /// Single-endpoint URL; ignored when `cluster_urls` is set.
     pub url: String,
+    /// Native-cluster seed URLs (`UAS_REDIS_CLUSTER_URLS`, falling back to
+    /// `HOME_MIXER_REDIS_CLUSTER_URLS`). Keys are hash-tagged per user, so
+    /// every pipeline stays within one slot.
+    pub cluster_urls: Option<Vec<String>>,
     pub key_prefix: String,
     /// Raw actions kept per user; see `params::UAS_STORE_MAX_ACTIONS`.
     pub max_actions: usize,
@@ -256,6 +263,13 @@ impl fmt::Debug for RedisUserActionSequenceConfig {
         formatter
             .debug_struct("RedisUserActionSequenceConfig")
             .field("url", &"<redacted>")
+            .field(
+                "cluster_urls",
+                &self
+                    .cluster_urls
+                    .as_ref()
+                    .map(|urls| format!("<{} redacted>", urls.len())),
+            )
             .field("key_prefix", &self.key_prefix)
             .field("max_actions", &self.max_actions)
             .field("window", &self.window)
@@ -271,6 +285,7 @@ impl RedisUserActionSequenceConfig {
     pub fn new(url: impl Into<String>) -> Self {
         Self {
             url: url.into(),
+            cluster_urls: None,
             key_prefix: DEFAULT_UAS_KEY_PREFIX.to_string(),
             max_actions: crate::params::UAS_STORE_MAX_ACTIONS,
             window: Duration::from_millis(crate::params::UAS_WINDOW_TIME_MS),
@@ -281,11 +296,27 @@ impl RedisUserActionSequenceConfig {
         }
     }
 
+    /// Set the cluster seed list from a comma-separated value; blank or
+    /// unset values keep the single-endpoint shape.
+    pub fn with_cluster_urls(mut self, value: &str) -> Self {
+        self.cluster_urls = parse_cluster_urls(value);
+        self
+    }
+
     pub fn validate(&self) -> Result<(), String> {
-        if self.url.trim().is_empty() {
-            return Err("UAS Redis URL must not be empty".to_string());
+        if let Some(urls) = &self.cluster_urls {
+            if urls.is_empty() {
+                return Err("UAS Redis cluster URL list must not be empty".to_string());
+            }
+            for url in urls {
+                validate_redis_url(url).map_err(|_| "invalid UAS Redis cluster URL".to_string())?;
+            }
+        } else {
+            if self.url.trim().is_empty() {
+                return Err("UAS Redis URL must not be empty".to_string());
+            }
+            validate_redis_url(&self.url).map_err(|_| "invalid UAS Redis URL".to_string())?;
         }
-        redis::Client::open(self.url.as_str()).map_err(|_| "invalid UAS Redis URL".to_string())?;
         if self.key_prefix.trim().is_empty() || self.key_prefix.contains(['{', '}']) {
             return Err(
                 "UAS Redis key prefix must be non-empty and must not contain braces".to_string(),
@@ -318,7 +349,7 @@ impl RedisUserActionSequenceConfig {
 /// home-mixer. One key is kept per member: `prefix:{user_id}:actions`, scored
 /// by action time; the member is the JSON [`StoredUserAction`].
 pub struct RedisUserActionSequenceStore {
-    connection: ConnectionManager,
+    connection: ManagedRedisConnection,
     key_prefix: String,
     max_actions: usize,
     window: Duration,
@@ -331,30 +362,18 @@ pub struct RedisUserActionSequenceStore {
 impl RedisUserActionSequenceStore {
     pub async fn new(config: RedisUserActionSequenceConfig) -> Result<Self, String> {
         config.validate()?;
-        let client = redis::Client::open(config.url.as_str())
-            .map_err(|_| "invalid UAS Redis URL".to_string())?;
-        let manager_config = ConnectionManagerConfig::new()
-            .set_number_of_retries(0)
-            .set_connection_timeout(config.connect_timeout)
-            .set_response_timeout(config.request_timeout);
-        let connection = tokio::time::timeout(
+        let connection = ManagedRedisConnection::connect(
+            Some(config.url.as_str()),
+            config.cluster_urls.as_deref(),
             config.connect_timeout,
-            ConnectionManager::new_with_config(client, manager_config),
-        )
-        .await
-        .map_err(|_| "UAS Redis connection timed out".to_string())?
-        .map_err(|e| redis_error("UAS Redis connection", &e))?;
-        let mut health = connection.clone();
-        let pong = tokio::time::timeout(
             config.request_timeout,
-            redis::cmd("PING").query_async::<String>(&mut health),
         )
         .await
-        .map_err(|_| "UAS Redis health check timed out".to_string())?
-        .map_err(|e| redis_error("UAS Redis health check", &e))?;
-        if pong != "PONG" {
-            return Err(format!("UAS Redis health check returned {pong}"));
-        }
+        .map_err(|error| {
+            // Name both variables: outside demo the UAS target is usually the
+            // shared HOME_MIXER_REDIS_URL, so an outage surfaces here first.
+            format!("UAS Redis: {error}")
+        })?;
         Ok(Self {
             connection,
             key_prefix: config.key_prefix,
@@ -374,28 +393,9 @@ impl RedisUserActionSequenceStore {
     }
 
     fn key(&self, user_id: UserId) -> String {
-        // The hash tag keeps a user's key addressable by cluster-aware proxies
-        // and matches the feed-state key layout.
+        // The hash tag keeps a user's key within one slot under cluster
+        // routing and matches the feed-state key layout.
         format!("{}:{{{user_id}}}:actions", self.key_prefix)
-    }
-
-    /// Run an idempotent pipeline, retrying once if the first attempt failed
-    /// because the connection manager discarded its connection. Both the read
-    /// and the projection write qualify: `ZADD` of an identical member, the
-    /// range trims and `EXPIRE` all converge to the same state when repeated.
-    /// The caller bounds both attempts with one `request_timeout`; a timeout
-    /// is not retried because the budget is spent.
-    async fn run_idempotent<T: redis::FromRedisValue>(
-        &self,
-        pipeline: &redis::Pipeline,
-    ) -> redis::RedisResult<T> {
-        let mut connection = self.connection.clone();
-        match pipeline.query_async(&mut connection).await {
-            Err(error) if connection_replaced(&error) => {
-                pipeline.query_async(&mut connection).await
-            }
-            result => result,
-        }
     }
 }
 
@@ -440,11 +440,16 @@ impl UserActionEventSink for RedisUserActionSequenceStore {
             }
         }
         let started = Instant::now();
-        let write =
-            tokio::time::timeout(self.request_timeout, self.run_idempotent::<()>(&pipeline))
-                .await
-                .map_err(|_| "UAS Redis write timed out".to_string())?
-                .map_err(|e| redis_error("UAS Redis write", &e));
+        // The projection write is idempotent (`ZADD` of an identical member,
+        // the range trims and `EXPIRE` all converge when repeated), so the
+        // replaced-connection retry in the shared layer is safe here.
+        let write = tokio::time::timeout(
+            self.request_timeout,
+            self.connection.query_idempotent::<()>(&pipeline),
+        )
+        .await
+        .map_err(|_| "UAS Redis write timed out".to_string())?
+        .map_err(|e| redis_error("UAS Redis write", &e));
         self.calls.record(
             "redis_uas",
             "write",
@@ -494,11 +499,13 @@ impl RedisUserActionSequenceStore {
             .arg("LIMIT")
             .arg(0)
             .arg(self.max_actions as i64);
-        let (members,): (Vec<String>,) =
-            tokio::time::timeout(self.request_timeout, self.run_idempotent(&pipeline))
-                .await
-                .map_err(|_| anyhow::anyhow!("UAS Redis read timed out"))?
-                .map_err(|e| anyhow::anyhow!("{}", redis_error("UAS Redis read", &e)))?;
+        let (members,): (Vec<String>,) = tokio::time::timeout(
+            self.request_timeout,
+            self.connection.query_idempotent(&pipeline),
+        )
+        .await
+        .map_err(|_| anyhow::anyhow!("UAS Redis read timed out"))?
+        .map_err(|e| anyhow::anyhow!("{}", redis_error("UAS Redis read", &e)))?;
 
         let mut actions = Vec::with_capacity(members.len());
         let mut undecodable = 0usize;
@@ -548,16 +555,6 @@ fn current_time_ms() -> i64 {
 
 fn duration_ms(duration: Duration) -> i64 {
     i64::try_from(duration.as_millis()).unwrap_or(i64::MAX)
-}
-
-fn connection_replaced(error: &redis::RedisError) -> bool {
-    !error.is_timeout() && (error.is_io_error() || error.is_unrecoverable_error())
-}
-
-fn redis_error(operation: &str, error: &redis::RedisError) -> String {
-    // Redis errors may carry connection details. Reporting only the kind keeps
-    // credentials from a configured URL out of logs and API responses.
-    format!("{operation} failed ({:?})", error.kind())
 }
 
 /// 禁用的 UAS 降级实现。

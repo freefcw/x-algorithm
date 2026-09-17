@@ -3,8 +3,9 @@
 use std::fmt;
 use std::time::{Duration, Instant};
 
-use redis::aio::{ConnectionManager, ConnectionManagerConfig};
-
+use crate::clients::redis_conn::{
+    parse_cluster_urls, redis_error, validate_redis_url, ManagedRedisConnection,
+};
 use crate::feed_state::{FeedStateSnapshot, FeedStateStore};
 use crate::metrics::ClientCallRecorder;
 use crate::models::{PostId, UserId};
@@ -14,7 +15,12 @@ const DEFAULT_TTL_SECS: u64 = 7 * 24 * 60 * 60;
 
 #[derive(Clone, Eq, PartialEq)]
 pub struct RedisFeedStateConfig {
+    /// Single-endpoint URL; ignored when `cluster_urls` is set.
     pub url: String,
+    /// Native-cluster seed URLs (`*_REDIS_CLUSTER_URLS`). `Some` switches the
+    /// store to cluster routing; keys are hash-tagged per user, so every
+    /// pipeline stays within one slot.
+    pub cluster_urls: Option<Vec<String>>,
     pub key_prefix: String,
     pub max_served_ids: usize,
     pub max_request_timestamps: usize,
@@ -28,6 +34,13 @@ impl fmt::Debug for RedisFeedStateConfig {
         formatter
             .debug_struct("RedisFeedStateConfig")
             .field("url", &"<redacted>")
+            .field(
+                "cluster_urls",
+                &self
+                    .cluster_urls
+                    .as_ref()
+                    .map(|urls| format!("<{} redacted>", urls.len())),
+            )
             .field("key_prefix", &self.key_prefix)
             .field("max_served_ids", &self.max_served_ids)
             .field("max_request_timestamps", &self.max_request_timestamps)
@@ -42,6 +55,7 @@ impl RedisFeedStateConfig {
     pub fn new(url: impl Into<String>) -> Self {
         Self {
             url: url.into(),
+            cluster_urls: None,
             key_prefix: DEFAULT_KEY_PREFIX.to_string(),
             max_served_ids: crate::params::LOCAL_SERVED_HISTORY_LIMIT,
             max_request_timestamps: crate::params::LOCAL_REQUEST_TIMESTAMP_LIMIT,
@@ -51,11 +65,27 @@ impl RedisFeedStateConfig {
         }
     }
 
+    /// Set the cluster seed list from a comma-separated value; blank or
+    /// unset values keep the single-endpoint shape.
+    pub fn with_cluster_urls(mut self, value: &str) -> Self {
+        self.cluster_urls = parse_cluster_urls(value);
+        self
+    }
+
     pub fn validate(&self) -> Result<(), String> {
-        if self.url.trim().is_empty() {
-            return Err("Redis URL must not be empty".to_string());
+        if let Some(urls) = &self.cluster_urls {
+            if urls.is_empty() {
+                return Err("Redis cluster URL list must not be empty".to_string());
+            }
+            for url in urls {
+                validate_redis_url(url)?;
+            }
+        } else {
+            if self.url.trim().is_empty() {
+                return Err("Redis URL must not be empty".to_string());
+            }
+            validate_redis_url(&self.url)?;
         }
-        redis::Client::open(self.url.as_str()).map_err(|_| "invalid Redis URL".to_string())?;
         if self.key_prefix.trim().is_empty() {
             return Err("Redis feed-state key prefix must not be empty".to_string());
         }
@@ -98,7 +128,7 @@ impl RedisFeedStateConfig {
 /// Writes are never retried or replayed: a write that timed out may already
 /// have been executed.
 pub struct RedisFeedStateStore {
-    connection: ConnectionManager,
+    connection: ManagedRedisConnection,
     key_prefix: String,
     max_served_ids: usize,
     max_request_timestamps: usize,
@@ -111,33 +141,13 @@ impl RedisFeedStateStore {
     pub async fn new(config: RedisFeedStateConfig) -> Result<Self, String> {
         config.validate()?;
 
-        let client = redis::Client::open(config.url.as_str())
-            .map_err(|_| "invalid Redis URL".to_string())?;
-        let manager_config = ConnectionManagerConfig::new()
-            // One bounded connection attempt per reconnect. Later commands can
-            // trigger a fresh attempt, but failed commands are never replayed.
-            .set_number_of_retries(0)
-            .set_connection_timeout(config.connect_timeout)
-            .set_response_timeout(config.request_timeout);
-        let connection = tokio::time::timeout(
+        let connection = ManagedRedisConnection::connect(
+            Some(config.url.as_str()),
+            config.cluster_urls.as_deref(),
             config.connect_timeout,
-            ConnectionManager::new_with_config(client, manager_config),
-        )
-        .await
-        .map_err(|_| "Redis connection timed out".to_string())?
-        .map_err(|error| redis_error("Redis connection", &error))?;
-
-        let mut health_connection = connection.clone();
-        let pong = tokio::time::timeout(
             config.request_timeout,
-            redis::cmd("PING").query_async::<String>(&mut health_connection),
         )
-        .await
-        .map_err(|_| "Redis health check timed out".to_string())?
-        .map_err(|error| redis_error("Redis health check", &error))?;
-        if pong != "PONG" {
-            return Err("Redis health check returned an unexpected response".to_string());
-        }
+        .await?;
 
         Ok(Self {
             connection,
@@ -157,25 +167,9 @@ impl RedisFeedStateStore {
     }
 
     fn key(&self, user_id: UserId, suffix: &str) -> String {
-        // The hash tag keeps a user's pair collocated when the configured
-        // Redis endpoint or proxy honors hash tags.
+        // The hash tag keeps a user's pair collocated under cluster routing
+        // and cluster-aware proxies alike.
         format!("{}:{{{user_id}}}:{suffix}", self.key_prefix)
-    }
-
-    /// Run an idempotent read, retrying once if the first attempt failed
-    /// because the connection manager discarded its connection. The caller
-    /// bounds both attempts with one `request_timeout`.
-    async fn query_read<T: redis::FromRedisValue>(
-        &self,
-        pipeline: &redis::Pipeline,
-    ) -> redis::RedisResult<T> {
-        let mut connection = self.connection.clone();
-        match pipeline.query_async(&mut connection).await {
-            Err(error) if connection_replaced(&error) => {
-                pipeline.query_async(&mut connection).await
-            }
-            result => result,
-        }
     }
 }
 
@@ -229,11 +223,13 @@ impl RedisFeedStateStore {
             .arg(0)
             .arg(-1);
 
-        let (served, request_timestamps_ms): (Vec<String>, Vec<i64>) =
-            tokio::time::timeout(self.request_timeout, self.query_read(&pipeline))
-                .await
-                .map_err(|_| "Redis feed-state load timed out".to_string())?
-                .map_err(|error| redis_error("Redis feed-state load", &error))?;
+        let (served, request_timestamps_ms): (Vec<String>, Vec<i64>) = tokio::time::timeout(
+            self.request_timeout,
+            self.connection.query_idempotent(&pipeline),
+        )
+        .await
+        .map_err(|_| "Redis feed-state load timed out".to_string())?
+        .map_err(|error| redis_error("Redis feed-state load", &error))?;
 
         let served_post_ids = served
             .into_iter()
@@ -278,10 +274,9 @@ impl RedisFeedStateStore {
         trim_list(&mut pipeline, &timestamps_key, self.max_request_timestamps);
         set_retention(&mut pipeline, &served_key, &timestamps_key, self.ttl_secs);
 
-        let mut connection = self.connection.clone();
         tokio::time::timeout(
             self.request_timeout,
-            pipeline.query_async::<()>(&mut connection),
+            self.connection.query_once::<()>(&pipeline),
         )
         .await
         .map_err(|_| "Redis feed-state record timed out; write outcome is unknown".to_string())?
@@ -316,20 +311,6 @@ fn set_retention(
     if let Some(ttl_secs) = ttl_secs {
         pipeline.arg(ttl_secs);
     }
-}
-
-/// `ConnectionManager` swaps in a new connection after an I/O failure or an
-/// unrecoverable protocol error, so the next command already targets the
-/// replacement. A timeout keeps the current connection and is not retried:
-/// the request budget is spent.
-fn connection_replaced(error: &redis::RedisError) -> bool {
-    !error.is_timeout() && (error.is_io_error() || error.is_unrecoverable_error())
-}
-
-fn redis_error(operation: &str, error: &redis::RedisError) -> String {
-    // Redis errors may carry connection details. Reporting only the kind keeps
-    // credentials from a configured URL out of logs and API responses.
-    format!("{operation} failed ({:?})", error.kind())
 }
 
 #[cfg(test)]

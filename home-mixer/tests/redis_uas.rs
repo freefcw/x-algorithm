@@ -263,12 +263,13 @@ async fn undecodable_members_are_skipped_without_losing_the_rest() {
     let mut control = redis.connection();
     // A corrupt member and a member from a future schema version, both
     // newer than one valid action so the skip happens mid-sequence.
+    // (v3 is the future version: v2 is the current `StoredUserAction`.)
     redis::cmd("ZADD")
         .arg(&key)
         .arg(now - 2_000)
         .arg("not json")
         .arg(now - 1_500)
-        .arg(r#"{"version":2,"tweet_id":"000000000000000000000063","author_id":"0000000000000000000000c7","action_time_ms":1,"action_type":1}"#)
+        .arg(r#"{"version":3,"tweet_id":"000000000000000000000063","author_id":"0000000000000000000000c7","action_time_ms":1,"action_type":1}"#)
         .query::<i64>(&mut control)
         .unwrap();
 
@@ -340,4 +341,36 @@ async fn the_sequence_hydrator_consumes_the_projected_actions() {
     assert_eq!(metadata.first_sequence_time, (now - 3_000) as u64);
     assert_eq!(metadata.last_sequence_time, (now - 1_000) as u64);
     assert_eq!(sequence.user_id, user.to_string());
+}
+
+#[tokio::test]
+#[ignore = "requires redis-server and redis-cli (cluster mode)"]
+async fn cluster_routing_projects_and_reads_user_sequences() {
+    let cluster = common::RedisClusterFixture::start();
+    let store = RedisUserActionSequenceStore::new(cluster.uas_config("test:cluster-uas", 3))
+        .await
+        .expect("create cluster-backed UAS adapter");
+
+    let user = uid(7);
+    let now = now_ms();
+    // 过去的时间戳（每秒一档）：写入与读取可能落在同一毫秒，若用 now+step，
+    // 读侧的 ZREVRANGEBYSCORE 上界（当前时间）会把“未来”分数全部排除。
+    for step in 0..5i64 {
+        let event = action(user, (step + 1) as u64, now - 10_000 + step * 1_000, 1);
+        let outcome = store.record(&event).await.expect("project through cluster");
+        assert!(matches!(outcome, RecordOutcome::Stored));
+    }
+
+    // Retention keeps the newest 3 actions.
+    let post_ids = read_post_ids(&store, user).await;
+    assert_eq!(post_ids.len(), 3);
+    assert_eq!(
+        post_ids,
+        vec![pid(3), pid(4), pid(5)],
+        "the newest actions must survive the cluster-routed trim"
+    );
+
+    // Other users stay independent.
+    let other = uid(99);
+    assert!(read_post_ids(&store, other).await.is_empty());
 }

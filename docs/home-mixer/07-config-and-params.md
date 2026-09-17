@@ -87,11 +87,13 @@ side effect（曝光事件发布、多样性统计、请求缓存写回）在响
 | `HOME_MIXER_REQUEST_TIMEOUT_MS` | `runtime_config.rs` / `rpc_policy.rs` | 单次 RPC 在查询构建之后（流水线执行 + served 落库）的服务端总预算 | 默认 `10000`（`REQUEST_TIMEOUT_MS`），必须为正整数。客户端 `grpc-timeout` 更短时取更短者；更长不会放宽。超时返回 `DeadlineExceeded`，不返回部分结果，日志 `request_id=... deadline_exceeded budget_ms=...` |
 | `HOME_MIXER_LOG_FORMAT` | `logging.rs` | 日志输出格式：`text`（`env_logger` 默认排版）或 `json`（每行一个对象：`ts` / `level` / `target` / `msg` / `module` / `file` / `line`） | 默认 `text`；未知值拒绝启动。过滤级别仍由 `RUST_LOG` 控制；`uas-worker` 读同一变量 |
 | `HOME_MIXER_REDIS_URL` | `runtime_config.rs` / `server.rs` | 共享 FeedStateStore 的 Redis 地址 | 非 Demo 必填；Demo 未配置时使用内存，显式配置后也可使用 Redis。连接失败会拒绝启动 |
+| `HOME_MIXER_REDIS_CLUSTER_URLS` | `runtime_config.rs` / `redis_conn.rs` | 原生 Redis Cluster 种子地址（逗号分隔） | 设置后覆盖 `HOME_MIXER_REDIS_URL`（此时 URL 可不填），按 `CLUSTER SLOTS` 路由；两个 key 均带 `{user_id}` hash tag，pipeline/MULTI 天然单 slot。空值 / 全空白忽略；非法地址拒绝启动 |
 | `HOME_MIXER_REDIS_CONNECT_TIMEOUT_MS` | `runtime_config.rs` | Redis 建连时间上限 | 默认 `1000` 毫秒，必须大于零 |
 | `HOME_MIXER_REDIS_REQUEST_TIMEOUT_MS` | `runtime_config.rs` | 单次 Redis 操作时间上限，包括等待重连 | 默认 `500` 毫秒，必须大于零 |
 | `HOME_MIXER_REDIS_KEY_PREFIX` | `runtime_config.rs` | Redis key 前缀 | 默认 `home_mixer:feed_state`；同一部署的所有副本必须一致，用户 ID 使用 hash tag |
 | `HOME_MIXER_FEED_STATE_TTL_SECS` | `runtime_config.rs` | 两个历史 key 的滑动过期时间，每次记录刷新 | 默认 7 天；`0` 禁用过期，并在下次记录时清除该用户旧 key 的过期时间 |
 | `UAS_REDIS_URL` | `runtime_config.rs`（`UasConfig`） | UAS 投影 job 与 Home Mixer 共用的 Redis 地址 | 非 demo 缺省复用 `HOME_MIXER_REDIS_URL`；demo 只在显式设置时切到 Redis，否则保留合成序列。job 必须能从两者之一取到地址。连接失败拒绝启动 |
+| `UAS_REDIS_CLUSTER_URLS` | `runtime_config.rs` / `redis_conn.rs` | UAS 侧原生 Cluster 种子地址（逗号分隔） | 缺省复用 `HOME_MIXER_REDIS_CLUSTER_URLS`；语义同上，设置后单端点 URL 可不填 |
 | `UAS_REDIS_KEY_PREFIX` | `runtime_config.rs` | 行为序列 ZSET 前缀 | 默认 `home_mixer:uas`，key 形如 `home_mixer:uas:{user_id}:actions`；job 与所有 Home Mixer 副本必须一致 |
 | `UAS_MAX_ACTIONS` | `runtime_config.rs` | 每个用户保留的**原始行为**条数（不是聚合后的帖子数） | 默认 600（`UAS_STORE_MAX_ACTIONS`）；job 写入时删除最旧成员，Home Mixer 读取时也只取最新这么多条，因此两侧配置不一致时以较小值为准且总是保留最新的 |
 | `UAS_REDIS_TTL_SECS` | `runtime_config.rs` | UAS key 的 Redis TTL，每次写入刷新 | 默认 604800 秒；设为 `0` 可关闭 TTL，并在下次写入时清除旧 key 的过期时间 |
@@ -115,7 +117,7 @@ side effect（曝光事件发布、多样性统计、请求缓存写回）在响
 | `HOME_MIXER_VF_FAILURE_POLICY` | `feature_policy.rs` / `filters/vf_filter.rs` | VF 请求失败/超时、`Unchecked`、成功响应缺帖时的候选保留策略：`fail_closed` 全丢弃，`in_network_only` 仅保留 `in_network == Some(true)`，`allow_all` 全保留 | 默认 `fail_closed`；大小写不敏感、trim 后解析，未知值告警并按 `fail_closed`；非 demo 模式下设成 `allow_all` 会在启动时告警 |
 | `VM_RANKER_GRPC_ADDR` | `candidate_pipeline/phoenix_candidate_pipeline.rs` | VM Ranker 服务地址；只提供地址不会自动启用 | 未设置时不装配 `VMRanker` Scorer |
 | `VM_RANKER_VALUE_MODEL_ID` | `candidate_pipeline/phoenix_candidate_pipeline.rs` | 选择 value model；上游从 feature switch 读取，本地由装配显式配置 | 未设置时服务端按 `unknown` 记账并使用默认权重 |
-| `MRPYQ_RECOMMENDATION_DATA_ADDR` | `clients/mrpyq_adapters.rs` / `clients/mrpyq_recommendation_data_client.rs` / `clients/mrpyq_viewer_relation_client.rs` | mrpyq gRPC 地址，同址提供 `RecommendationDataService` 与 `ViewerRelationService` | 非 demo **必填**：装配 TES / 网内 / 兜底 / VF / Strato，网内召回以 24-hex ObjectId 原样下发。未设置或地址不合法则启动失败，不回退到整数 Thunder |
+| `MRPYQ_RECOMMENDATION_DATA_ADDR` | `clients/mrpyq_adapters.rs` / `clients/mrpyq_recommendation_data_client.rs` / `clients/mrpyq_viewer_relation_client.rs` | 业务数据面 gRPC 地址：指向 **rec-bff**（`recommend/rec-bff` 门面），同址提供 `RecommendationDataService` 与 `ViewerRelationService`，由它翻译到 mrpyq Feed / Account | 非 demo **必填**：装配 TES / 网内 / 兜底 / VF / Strato，网内召回以 24-hex ObjectId 原样下发。未设置或地址不合法则启动失败，不回退到整数 Thunder |
 | `MRPYQ_RECOMMENDATION_DATA_TIMEOUT_MS` | `clients/mrpyq_recommendation_data_client.rs` | mrpyq 推荐数据调用超时（毫秒） | 默认 `500`（`params/config.rs`） |
 | `HOME_MIXER_DEMO` | `demo.rs` | `HOME_MIXER_MODE=demo` 的旧兼容别名 | 仅兼容已有脚本；新配置使用 `HOME_MIXER_MODE` |
 

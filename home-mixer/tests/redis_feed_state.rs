@@ -516,3 +516,42 @@ async fn connection_to_an_unresponsive_redis_is_bounded_by_configured_timeouts()
         "connection setup was not bounded by configured timeouts: {elapsed:?}"
     );
 }
+
+#[tokio::test]
+#[ignore = "requires redis-server and redis-cli (cluster mode)"]
+async fn cluster_routing_round_trips_feed_state_across_many_users() {
+    let cluster = common::RedisClusterFixture::start();
+    let store = RedisFeedStateStore::new(cluster.feed_config("test:cluster-feed", 5, 5))
+        .await
+        .expect("create cluster-backed feed-state adapter");
+
+    // Enough users to spread over the 3 masters' slots; each record is one
+    // hash-tagged MULTI, so success itself proves slot collocation.
+    for sequence in 1..=12u32 {
+        let user_hex = format!("{sequence:0>24}");
+        let user = ObjectId::parse(&user_hex).expect("24-hex user id");
+        let post = object_id(&format!("{:0>24}", sequence + 100));
+        store
+            .record(user, vec![post], -(sequence as i64))
+            .await
+            .expect("record through cluster routing");
+        let snapshot = store
+            .load(user)
+            .await
+            .expect("load through cluster routing");
+        assert_eq!(snapshot.served_post_ids, vec![post]);
+        assert_eq!(snapshot.request_timestamps_ms, vec![-(sequence as i64)]);
+    }
+
+    // Users stay independent under cluster routing.
+    let first = object_id("000000000000000000000001");
+    let second = object_id("000000000000000000000002");
+    assert_eq!(
+        store.load(second).await.unwrap().served_post_ids,
+        vec![object_id("000000000000000000000102")]
+    );
+    assert_eq!(
+        store.load(first).await.unwrap().served_post_ids,
+        vec![object_id("000000000000000000000101")]
+    );
+}

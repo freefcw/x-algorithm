@@ -21,7 +21,7 @@ serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 
 # Feed state / UAS projection persistence
-redis = { version = "0.27.6", features = ["tokio-comp", "connection-manager"] }
+redis = { version = "0.27.6", features = ["tokio-comp", "connection-manager", "cluster-async"] }
 # Only the `uas-worker` Kafka consumer needs librdkafka; keep the C toolchain
 # requirement out of the default server build (see the `kafka` feature).
 rdkafka = { version = "0.36", features = ["libz", "zstd"], optional = true }

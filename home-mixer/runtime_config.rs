@@ -31,15 +31,22 @@ impl UasConfig {
         lookup: impl Fn(&str) -> Option<String>,
     ) -> anyhow::Result<Self> {
         let explicit = non_empty(lookup("UAS_REDIS_URL"));
+        let cluster = non_empty(lookup("UAS_REDIS_CLUSTER_URLS"))
+            .or_else(|| non_empty(lookup("HOME_MIXER_REDIS_CLUSTER_URLS")));
         let url = if mode == HomeMixerMode::Demo {
             explicit
         } else {
             explicit.or_else(|| non_empty(lookup("HOME_MIXER_REDIS_URL")))
         };
-        let config = match url {
-            Some(url) => Self::Redis(redis_uas_config_from_lookup(url, &lookup)?),
-            None if mode == HomeMixerMode::Demo => Self::Demo,
-            None => Self::Disabled,
+        let config = match (cluster, url) {
+            (Some(cluster), url) => Self::Redis(redis_uas_config_from_lookup(
+                url.unwrap_or_default(),
+                Some(cluster),
+                &lookup,
+            )?),
+            (None, Some(url)) => Self::Redis(redis_uas_config_from_lookup(url, None, &lookup)?),
+            (None, None) if mode == HomeMixerMode::Demo => Self::Demo,
+            (None, None) => Self::Disabled,
         };
         config.validate(mode)?;
         Ok(config)
@@ -54,12 +61,19 @@ impl UasConfig {
     fn redis_from_lookup(
         lookup: impl Fn(&str) -> Option<String>,
     ) -> anyhow::Result<RedisUserActionSequenceConfig> {
+        let cluster = non_empty(lookup("UAS_REDIS_CLUSTER_URLS"))
+            .or_else(|| non_empty(lookup("HOME_MIXER_REDIS_CLUSTER_URLS")));
         let url = non_empty(lookup("UAS_REDIS_URL"))
-            .or_else(|| non_empty(lookup("HOME_MIXER_REDIS_URL")))
-            .ok_or_else(|| {
-                anyhow::anyhow!("UAS_REDIS_URL or HOME_MIXER_REDIS_URL must be configured")
-            })?;
-        let config = redis_uas_config_from_lookup(url, &lookup)?;
+            .or_else(|| non_empty(lookup("HOME_MIXER_REDIS_URL")));
+        let (url, cluster) = match (url, cluster) {
+            (url, cluster) if url.is_none() && cluster.is_none() => {
+                anyhow::bail!(
+                    "UAS_REDIS_URL / UAS_REDIS_CLUSTER_URLS (or HOME_MIXER_REDIS_URL / HOME_MIXER_REDIS_CLUSTER_URLS) must be configured"
+                )
+            }
+            (url, cluster) => (url, cluster),
+        };
+        let config = redis_uas_config_from_lookup(url.unwrap_or_default(), cluster, &lookup)?;
         config.validate().map_err(anyhow::Error::msg)?;
         Ok(config)
     }
@@ -83,9 +97,13 @@ fn non_empty(value: Option<String>) -> Option<String> {
 
 fn redis_uas_config_from_lookup(
     url: String,
+    cluster: Option<String>,
     lookup: &impl Fn(&str) -> Option<String>,
 ) -> anyhow::Result<RedisUserActionSequenceConfig> {
     let mut config = RedisUserActionSequenceConfig::new(url);
+    if let Some(cluster) = cluster {
+        config = config.with_cluster_urls(&cluster);
+    }
     if let Some(prefix) = lookup("UAS_REDIS_KEY_PREFIX") {
         config.key_prefix = prefix.trim().to_string();
     }
@@ -138,10 +156,11 @@ impl FeedStateConfig {
         mode: HomeMixerMode,
         lookup: impl Fn(&str) -> Option<String>,
     ) -> anyhow::Result<Self> {
+        let cluster = non_empty(lookup("HOME_MIXER_REDIS_CLUSTER_URLS"));
         let url = lookup("HOME_MIXER_REDIS_URL")
             .map(|value| value.trim().to_string())
             .filter(|value| !value.is_empty());
-        let Some(url) = url else {
+        if cluster.is_none() && url.is_none() {
             let config = Self::InMemory;
             if mode == HomeMixerMode::ProductionReady {
                 // Keep the mode-level readiness error as the primary startup
@@ -150,8 +169,12 @@ impl FeedStateConfig {
             }
             config.validate(mode)?;
             return Ok(config);
-        };
-        let mut redis = RedisFeedStateConfig::new(url);
+        }
+        // Cluster seeds take precedence; the single URL becomes optional.
+        let mut redis = RedisFeedStateConfig::new(url.unwrap_or_default());
+        if let Some(cluster) = cluster {
+            redis = redis.with_cluster_urls(&cluster);
+        }
         if let Some(prefix) = lookup("HOME_MIXER_REDIS_KEY_PREFIX") {
             redis.key_prefix = prefix.trim().to_string();
         }
@@ -447,6 +470,80 @@ mod tests {
             .iter()
             .find(|(key, _)| *key == name)
             .map(|(_, value)| (*value).to_string())
+    }
+
+    #[test]
+    fn cluster_seed_list_selects_cluster_routing_without_a_single_url() {
+        let FeedStateConfig::Redis(feed) = feed_state_config(
+            HomeMixerMode::Demo,
+            &[
+                (
+                    "HOME_MIXER_REDIS_CLUSTER_URLS",
+                    "redis://127.0.0.1:7000, redis://127.0.0.1:7001",
+                ),
+                ("HOME_MIXER_REDIS_KEY_PREFIX", "x-algorithm"),
+            ],
+        )
+        .expect("cluster seeds alone must configure Redis feed state") else {
+            panic!("cluster seeds must select the Redis adapter");
+        };
+        assert_eq!(
+            feed.cluster_urls,
+            Some(vec![
+                "redis://127.0.0.1:7000".to_string(),
+                "redis://127.0.0.1:7001".to_string(),
+            ])
+        );
+        assert_eq!(feed.url, "");
+        assert_eq!(feed.key_prefix, "x-algorithm");
+        assert!(feed.validate().is_ok());
+
+        // A blank cluster list keeps the single-endpoint shape.
+        let FeedStateConfig::Redis(single) = feed_state_config(
+            HomeMixerMode::Demo,
+            &[
+                ("HOME_MIXER_REDIS_CLUSTER_URLS", " , "),
+                ("HOME_MIXER_REDIS_URL", "redis://127.0.0.1:6379/"),
+            ],
+        )
+        .expect("blank cluster list must not break single-endpoint config") else {
+            panic!("a single URL must still select the Redis adapter");
+        };
+        assert_eq!(single.cluster_urls, None);
+
+        // Invalid seed URLs fail at config time instead of starting
+        // half-wired.
+        let error = feed_state_config(
+            HomeMixerMode::Demo,
+            &[("HOME_MIXER_REDIS_CLUSTER_URLS", "not-a-redis-url")],
+        )
+        .expect_err("an invalid seed URL must fail configuration");
+        assert!(error.to_string().contains("invalid Redis URL"));
+    }
+
+    #[test]
+    fn uas_cluster_seeds_have_explicit_and_shared_spellings() {
+        let UasConfig::Redis(explicit) = uas_config(
+            HomeMixerMode::Demo,
+            &[("UAS_REDIS_CLUSTER_URLS", "redis://127.0.0.1:7000")],
+        )
+        .expect("UAS cluster seeds alone must configure the adapter") else {
+            panic!("UAS cluster seeds must select the Redis adapter");
+        };
+        assert_eq!(
+            explicit.cluster_urls,
+            Some(vec!["redis://127.0.0.1:7000".to_string()])
+        );
+
+        let UasConfig::Redis(shared) = uas_config(
+            HomeMixerMode::ProductionReady,
+            &[("HOME_MIXER_REDIS_CLUSTER_URLS", "redis://127.0.0.1:7000")],
+        )
+        .expect("the shared cluster spelling covers business mode too") else {
+            panic!("the shared cluster spelling must select the Redis adapter");
+        };
+        assert!(shared.cluster_urls.is_some());
+        assert!(shared.validate().is_ok());
     }
 
     #[test]
