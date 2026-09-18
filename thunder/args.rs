@@ -111,12 +111,6 @@ pub struct Args {
     /// 是否启用性能分析
     #[arg(long, default_value_t = false)]
     pub enable_profiling: bool,
-
-    // ─── 演示模式 ───
-    /// 演示模式：启动时生成 N 条模拟帖子灌入内存，不消费 Kafka。
-    /// 设为 0（默认）关闭演示模式。用于没有 Kafka 环境时快速跑通链路。
-    #[arg(long, default_value_t = 0)]
-    pub demo_seed_posts: usize,
 }
 
 #[cfg(test)]

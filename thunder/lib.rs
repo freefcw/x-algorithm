@@ -1,6 +1,5 @@
 pub mod args;
 pub mod config;
-pub mod demo_seed;
 pub mod deserializer;
 pub mod http_server;
 pub mod kafka;
