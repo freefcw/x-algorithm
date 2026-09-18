@@ -652,10 +652,11 @@ pub async fn download_named_files(
         sizes.push(size);
         futures.push(Box::pin(send_entries(
             channels[channel_idx].clone(),
-            vec![full_name.into_bytes()],
+            vec![full_name.clone().into_bytes()],
             vec![0],
             vec![size],
             b,
+            full_name.clone(),
             #[cfg(target_os = "linux")]
             (Vec::new(), Arc::new(Vec::new()), Arc::new(Vec::new())),
         )));
@@ -774,6 +775,7 @@ fn build_dense_downloads(
             vec![0],
             vec![size],
             b,
+            full_name.to_string(),
             #[cfg(target_os = "linux")]
             (Vec::new(), Arc::new(Vec::new()), Arc::new(Vec::new())),
         ));
@@ -790,6 +792,7 @@ fn build_dense_downloads(
             vec![0],
             vec![index.checksums_size],
             b,
+            index.checksums_name.to_string(),
             #[cfg(target_os = "linux")]
             (Vec::new(), Arc::new(Vec::new()), Arc::new(Vec::new())),
         ));
@@ -1088,6 +1091,7 @@ async fn spawn_sharded_downloads(
             vec![0; n],
             vec![piece; n],
             slice,
+            format!("rank={i}"),
             #[cfg(target_os = "linux")]
             (devicez[i].clone(), contexts.clone(), mrx[i].clone()),
         ));
