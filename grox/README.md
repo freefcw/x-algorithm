@@ -2,20 +2,10 @@
 
 This directory recovers the part of the upstream Grox system that can run without private models, prompts, schemas, storage, or messaging services: an eligibility-gated asynchronous task DAG.
 
-The local demo only normalizes text and measures deterministic metadata. It does not produce spam, safety, policy, ranking, summary, or embedding outputs.
-
 ## Run tests
 
 ```bash
 uv run --project grox --group dev pytest -q grox/tests
-```
-
-## Run the local workflow
-
-```bash
-uv run --project grox python -m grox.demo \
-  --input grox/examples/input.json \
-  --output /tmp/grox-result.json
 ```
 
 ## Stable boundary
