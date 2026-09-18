@@ -17,7 +17,8 @@
 5. [05-problems-implementation-and-risks.md](05-problems-implementation-and-risks.md)：看 Phoenix 在解决什么问题、如何解决，以及当前风险。
 6. [06-training-and-data.md](06-training-and-data.md)：看训练侧闭环、样本构造、标签与产物。
 7. [07-real-data-integration.md](07-real-data-integration.md)：看真实业务数据如何映射到当前模型输入。
-8. [assets/README.md](assets/README.md)：看导出的 Mermaid 图资源索引。
+8. [08-production-handbook.md](08-production-handbook.md)：按生产主线准备数据、训练、评估、部署和上线。
+9. [assets/README.md](assets/README.md)：看导出的 Mermaid 图资源索引。
 
 ## 文档地图
 
@@ -30,7 +31,8 @@ graph TD
     A --> F[05 问题、实现与风险]
     A --> G[06 训练与数据]
     A --> H[07 真实数据接入]
-    A --> I[图资源索引]
+    A --> I[08 正式上线手册]
+    A --> J[图资源索引]
 
     B --> C
     B --> D
@@ -40,6 +42,7 @@ graph TD
     F --> G
     G --> H
     H --> I
+    I --> J
 ```
 
 ## Phoenix 在仓库里的位置
