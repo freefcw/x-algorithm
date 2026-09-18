@@ -7,6 +7,11 @@ pub struct FilterResult<C> {
     pub removed: Vec<C>,
 }
 
+pub struct FilterFailure<C> {
+    pub error: String,
+    pub candidates: Vec<C>,
+}
+
 /// Filters run sequentially and partition candidates into kept and removed sets.
 ///
 /// The `filter` method matches the upstream public contract. `try_run` is a
@@ -31,7 +36,9 @@ where
     }
 
     /// Local failure-isolation extension for filters backed by remote services.
-    fn try_run(&self, query: &Q, candidates: Vec<C>) -> Result<FilterResult<C>, String> {
+    /// A failed filter returns its untouched input so callers do not need to
+    /// clone every candidate before attempting the filter.
+    fn try_run(&self, query: &Q, candidates: Vec<C>) -> Result<FilterResult<C>, FilterFailure<C>> {
         Ok(self.run(query, candidates))
     }
 

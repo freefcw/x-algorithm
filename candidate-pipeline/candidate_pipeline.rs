@@ -478,7 +478,6 @@ where
         for filter in enabled {
             let started = Instant::now();
             let input_count = candidates.len();
-            let backup = candidates.clone();
             match filter.try_run(query, candidates) {
                 Ok(result) => {
                     if !result.removed.is_empty() {
@@ -498,7 +497,10 @@ where
                         ),
                     );
                 }
-                Err(err) => {
+                Err(crate::filter::FilterFailure {
+                    error: err,
+                    candidates: original_candidates,
+                }) => {
                     error!(
                         "request_id={} stage={:?} component={} failed: {} elapsed_ms={}",
                         request_id,
@@ -508,7 +510,7 @@ where
                         started.elapsed().as_millis()
                     );
                     pipeline_summary::record_component_failure(stage, filter.name());
-                    candidates = backup;
+                    candidates = original_candidates;
                 }
             }
         }
@@ -733,9 +735,12 @@ mod tests {
         fn try_run(
             &self,
             _query: &TestQuery,
-            _candidates: Vec<i32>,
-        ) -> Result<crate::filter::FilterResult<i32>, String> {
-            Err("filter unavailable".to_string())
+            candidates: Vec<i32>,
+        ) -> Result<crate::filter::FilterResult<i32>, crate::filter::FilterFailure<i32>> {
+            Err(crate::filter::FilterFailure {
+                error: "filter unavailable".to_string(),
+                candidates,
+            })
         }
     }
 
