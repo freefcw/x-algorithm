@@ -14,34 +14,14 @@ X 开源的是核心算法，不是完整的生产系统。原版依赖的内部
 | 本地运行精排 / 召回模型推理 | 可用（默认随机权重） |
 | 模型以 HTTP 和 gRPC 服务方式对外提供 | 可用 |
 | 训练自己的模型权重（模拟或真实数据） | 可用 |
-| **端到端完整链路**（Thunder + Phoenix + Home Mixer）返回排序 Feed | 演示模式可用：`./scripts/run_demo.sh` |
-| 接入真实数据的生产部署 | 需要集成开发——把 `home-mixer/clients/` 下的桩客户端替换为你平台的服务，缺口清单见[从演示到真实系统](docs/getting-started/06-从演示到真实系统.md) |
+| **端到端完整链路**（Thunder + Phoenix + Home Mixer）返回排序 Feed | 需要完成生产依赖接入 |
+| 接入真实数据的生产部署 | 需要集成开发——把 `home-mixer/clients/` 下的桩客户端替换为你平台的服务，合同说明见[外部依赖与接口合同](docs/home-mixer/05-external-deps-and-contracts.md) |
 
 仓库不包含预训练权重。随机权重下链路能跑通、能排序，但分数要在你自己训练后才有业务意义（演示配置在 CPU 上几分钟即可训完）。
 
 ## 快速开始
 
-前置：[Rust](https://rustup.rs/)、`protoc`（`brew install protobuf`）、[uv](https://docs.astral.sh/uv/)。演示不需要 Kafka、Redis 或 GPU。
-
-```bash
-# 一条命令：编译、启动三个服务、请求一次 Feed、打印结果
-cd phoenix && uv sync --dev --group service && cd ..
-./scripts/run_demo.sh
-```
-
-预期输出——一列混合两路召回的排序 Feed：
-
-```text
-#    帖子 ID                作者       得分         网内         来源
-1    2079102310290007235  212      0.0031     否          Phoenix 网外
-...
-34   2079100111060730041  101      0.0008     是          Thunder 网内
-共 35 条：网内 4 条 + 网外 31 条。链路打通。
-```
-
-演示先保留打分后的 Top 50，再把响应裁到 35 条（`RESULT_SIZE`）。上面的 4 / 31 只是某次随机权重快照，比例会变，两类来源都出现即可。
-
-完整教程（装环境 → 模型演示 → 起服务 → 训练 → 端到端 → 生产缺口）见 **[docs/getting-started/](docs/getting-started/)**，文档总入口是 [docs/README.md](docs/README.md)。
+前置：[Rust](https://rustup.rs/)、`protoc`（`brew install protobuf`）、[uv](https://docs.astral.sh/uv/)、Kafka、Redis，以及生产业务适配器。生产配置和验收要求见 [Phoenix 生产手册](docs/phoenix/08-production-handbook.md)、[运维文档](docs/operations/) 和 [上线就绪度评估](docs/recommendation-production-readiness-assessment.md)。
 
 ## 系统架构
 
@@ -78,7 +58,7 @@ cd phoenix && uv sync --dev --group service && cd ..
 | 选择后过滤 | 最终的可见性和去重检查 |
 | 副作用 (Side Effects) | 缓存请求信息以供未来使用 |
 
-服务器对外暴露 `ScoredPostsService`（排序帖子）和 `ForYouFeedService`（最终 Feed）。上游依赖（用户资料、帖子内容、行为日志、内容安全）通过 `home-mixer/clients/` 下的 trait 抽象——当前是带演示模式（`HOME_MIXER_MODE=demo`；`HOME_MIXER_DEMO=1` 是旧别名）的桩实现，设计上就是留给你替换为自己平台服务的。
+服务器对外暴露 `ScoredPostsService`（排序帖子）和 `ForYouFeedService`（最终 Feed）。上游依赖（用户资料、帖子内容、行为日志、内容安全）通过 `home-mixer/clients/` 下的 trait 抽象，生产部署必须将这些适配器接入对应业务服务。
 
 ### Thunder
 
@@ -86,7 +66,7 @@ cd phoenix && uv sync --dev --group service && cd ..
 
 内存态帖子存储与实时摄入管道，跟踪所有用户的最新帖子：
 
-- 从 Kafka 消费帖子创建/删除事件（也可以用 `--demo-seed-posts N` 生成演示数据启动，无需 Kafka）
+- 从 Kafka 消费帖子创建/删除事件
 - 为每个用户维护原创帖、回复/转发、视频帖三条时间线
 - 为请求用户提供其关注账号的"网内"候选帖子
 - 自动清理超过保留期的旧帖子

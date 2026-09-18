@@ -9,17 +9,14 @@
 ## 构建、测试与开发命令
 - `cargo build --workspace`：编译所有 Rust crate。
 - `cargo test --workspace`：运行 Rust 测试；当前更常用于保证改动至少可编译、可链接。
-- `cargo run -p thunder -- --demo-seed-posts 200 --grpc-port 50052`：以演示模式启动 `thunder`（无 Kafka）；不带参数则进入 Kafka 消费模式。
-- `cargo run -p home-mixer`：启动 `home-mixer` 二进制（演示模式需设 `HOME_MIXER_MODE=demo` 等环境变量，见 `docs/getting-started/05-第四步-跑通完整推荐链路.md`）。
-- `cargo run -p home-mixer --bin demo-client`：请求一次推荐 Feed 并打印结果。
+- `cargo run -p thunder -- --grpc-port 50052`：启动 `thunder`；生产运行需要配置 Kafka。
+- `cargo run -p home-mixer`：启动 `home-mixer` 二进制；生产运行需要按运维文档配置外部依赖。
 - `cargo run -p home-mixer --features kafka --bin uas-worker`：启动 UAS 行为序列投影 job（Kafka 消费需 `kafka` feature；不带 feature 时只支持 stdin 换行 JSON；`kafka-ssl` feature 额外链接 OpenSSL，SSL / SASL_SSL 才可用）。
 - `docker build -f deploy/docker/home-mixer.Dockerfile -t home-mixer:dev .` 与 `docker build -f deploy/docker/phoenix-gateway.Dockerfile -t phoenix-gateway:dev phoenix`：构建两份容器镜像（分别以仓库根和 `phoenix/` 为上下文）。
 - `cargo test -p home-mixer --test redis_feed_state --test redis_uas -- --ignored`：需要本机 `redis-server` 的 Redis 适配器集成测试。
-- `./scripts/run_demo.sh`：一键跑通端到端演示链路。
 - `cargo fmt --all` 和 `cargo clippy --workspace --all-targets`：格式化与静态检查。
-- `cd phoenix && uv sync --dev --group service`：安装演示推理、测试与 gRPC 服务依赖。
-- `cd phoenix && uv run scripts/run_ranker.py`：运行排序模型示例。
-- `cd phoenix && uv run scripts/run_retrieval.py`：运行检索模型示例。
+- `cd phoenix && uv sync --extra engine`：安装 Phoenix 生产引擎依赖。
+- `cd phoenix && uv run pytest tests/engine`：运行 Phoenix 生产引擎测试。
 - `cd phoenix && uv run scripts/train_ranker.py`：训练精排模型。
 - `cd phoenix && uv run scripts/train_retrieval.py`：训练召回模型。
 - `cd phoenix && uv run scripts/run_grpc_gateway.py`：启动供 home-mixer 调用的 gRPC 模型服务。

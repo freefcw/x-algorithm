@@ -14,34 +14,16 @@ X open-sourced the core algorithm, not its production infrastructure. The intern
 | Run ranking / retrieval model inference locally | Works (random weights out of the box) |
 | Serve the models over HTTP and gRPC | Works |
 | Train your own model weights (simulated or real data) | Works |
-| Run the **full end-to-end pipeline** (Thunder + Phoenix + Home Mixer) and get a ranked feed | Works in demo mode: `./scripts/run_demo.sh` |
-| Production deployment with real data | Requires integration work — the client stubs in `home-mixer/clients/` must be pointed at your platform's services. See the [gap checklist](docs/getting-started/06-从演示到真实系统.md) |
+| Run the **full end-to-end pipeline** (Thunder + Phoenix + Home Mixer) and get a ranked feed | Requires production dependency integration |
+| Production deployment with real data | Requires integration work — the client stubs in `home-mixer/clients/` must be pointed at your platform's services. See the [external dependency contracts](docs/home-mixer/05-external-deps-and-contracts.md) |
 
-No pretrained weights are included. With random weights the pipeline runs and ranks, but scores are only meaningful after you train (takes minutes on CPU for the demo config).
+No pretrained weights are included. A production deployment must provide a validated checkpoint and matching retrieval index.
 
 ## Quick Start
 
-Prerequisites: [Rust](https://rustup.rs/), `protoc` (`brew install protobuf`), and [uv](https://docs.astral.sh/uv/). No Kafka, Redis, or GPU needed for the demo.
+Prerequisites: [Rust](https://rustup.rs/), `protoc` (`brew install protobuf`), [uv](https://docs.astral.sh/uv/), Kafka, Redis, and the external business adapters described in the production runbooks.
 
-```bash
-# One command: builds, starts all three services, requests a feed, prints it
-cd phoenix && uv sync --dev --group service && cd ..
-./scripts/run_demo.sh
-```
-
-Expected output — a ranked feed mixing both retrieval sources:
-
-```text
-#    帖子 ID                作者       得分         网内         来源
-1    2079102310290007235  212      0.0031     否          Phoenix 网外
-...
-34   2079100111060730041  101      0.0008     是          Thunder 网内
-共 35 条：网内 4 条 + 网外 31 条。链路打通。
-```
-
-The client prints Chinese headers. The demo keeps the top 50 after scoring, then trims the response to 35 (`RESULT_SIZE`). In-network / out-of-network counts and scores vary with random weights; both sources appearing is enough.
-
-The full walkthrough (environment setup → model demo → serving → training → end-to-end → production gaps) lives in **[docs/getting-started/](docs/getting-started/)** (Chinese, as is most documentation in this repo). The documentation hub is [docs/README.md](docs/README.md).
+The production setup and readiness requirements live in [docs/phoenix/08-production-handbook.md](docs/phoenix/08-production-handbook.md), [docs/operations/](docs/operations/), and [docs/recommendation-production-readiness-assessment.md](docs/recommendation-production-readiness-assessment.md).
 
 ## System Architecture
 
@@ -142,7 +124,7 @@ The orchestration layer that assembles the For You feed. It leverages the `Candi
 | Post-Selection Filters | Final visibility and dedup checks |
 | Side Effects | Cache request info for future use |
 
-The server exposes `ScoredPostsService` (ranked posts) and `ForYouFeedService` (final feed). Upstream dependencies (user profiles, post content, engagement logs, trust & safety) are abstracted behind traits in `home-mixer/clients/` — currently stubs with a demo mode (`HOME_MIXER_MODE=demo`; `HOME_MIXER_DEMO=1` is a legacy alias), designed to be replaced with your platform's services.
+The server exposes `ScoredPostsService` (ranked posts) and `ForYouFeedService` (final feed). Upstream dependencies (user profiles, post content, engagement logs, trust & safety) are abstracted behind traits in `home-mixer/clients/`; production deployment requires wiring those adapters to the corresponding business services.
 
 ### Thunder
 
@@ -150,7 +132,7 @@ The server exposes `ScoredPostsService` (ranked posts) and `ForYouFeedService` (
 
 An in-memory post store and realtime ingestion pipeline that tracks recent posts from all users. It:
 
-- Consumes post create/delete events from Kafka (or seeds itself with demo posts via `--demo-seed-posts N`, no Kafka required)
+- Consumes post create/delete events from Kafka
 - Maintains per-user stores for original posts, replies/reposts, and video posts
 - Serves "in-network" post candidates from accounts the requesting user follows
 - Automatically trims posts older than the retention period

@@ -40,7 +40,7 @@ kubectl apply -f deploy/k8s/phoenix-gateway.yaml
 kubectl rollout status deploy/phoenix-gateway
 kubectl apply -f deploy/k8s/home-mixer.yaml
 kubectl rollout status deploy/home-mixer
-# 冒烟：对 home-mixer Service 调一次 GetScoredPosts（demo-client 改地址）
+# 冒烟：使用你的生产客户端对 home-mixer Service 调一次 GetScoredPosts
 kubectl apply -f deploy/k8s/uas-worker.yaml
 kubectl rollout status deploy/uas-worker
 # 检查三者的 /metrics 都能抓到（home_mixer_* / uas_worker_* / python 进程指标）
