@@ -20,9 +20,7 @@
 // 替换建议：对接你平台的用户微服务 API
 // 当前为 stub 实现。
 
-use crate::models::candidate_features::{
-    GizmoduckUser, GizmoduckUserCounts, GizmoduckUserProfile, GizmoduckUserResult,
-};
+use crate::models::candidate_features::GizmoduckUserResult;
 use crate::models::ids::UserId;
 use std::collections::HashMap;
 use tonic::async_trait;
@@ -46,37 +44,6 @@ pub trait GizmoduckClient: Send + Sync {
         &self,
         user_ids: Vec<UserId>,
     ) -> Result<HashMap<UserId, Option<GizmoduckUserResult>>, anyhow::Error>;
-}
-
-/// Demo viewer and profile adapter.
-pub struct DemoGizmoduckClient;
-
-#[async_trait]
-impl GizmoduckClient for DemoGizmoduckClient {
-    async fn get_users(
-        &self,
-        user_ids: Vec<UserId>,
-    ) -> Result<HashMap<UserId, Option<GizmoduckUserResult>>, anyhow::Error> {
-        Ok(user_ids
-            .into_iter()
-            .map(|id| {
-                let n = id.to_u64_be_padded().unwrap_or(0);
-                let followers_count = u32::try_from(n % 900 + 50).expect("bounded demo count");
-                (
-                    id,
-                    Some(GizmoduckUserResult {
-                        user: Some(GizmoduckUser {
-                            user_id: id,
-                            profile: GizmoduckUserProfile {
-                                screen_name: format!("demo_user_{id}"),
-                            },
-                            counts: GizmoduckUserCounts { followers_count },
-                        }),
-                    }),
-                )
-            })
-            .collect())
-    }
 }
 
 /// Disabled integration placeholder for author profile lookups.

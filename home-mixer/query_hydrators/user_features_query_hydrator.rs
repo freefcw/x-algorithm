@@ -108,7 +108,6 @@ impl QueryHydrator<ScoredPostsQuery> for UserFeaturesQueryHydrator {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::clients::strato_client::DemoStratoClient;
     use std::sync::atomic::{AtomicUsize, Ordering};
 
     struct CountingStratoClient {
@@ -119,10 +118,10 @@ mod tests {
     impl StratoClient for CountingStratoClient {
         async fn get_user_features(
             &self,
-            user_id: crate::models::UserId,
+            _user_id: crate::models::UserId,
         ) -> Result<Vec<u8>, anyhow::Error> {
             self.calls.fetch_add(1, Ordering::Relaxed);
-            DemoStratoClient.get_user_features(user_id).await
+            Ok(Vec::new())
         }
 
         async fn store_request_info(

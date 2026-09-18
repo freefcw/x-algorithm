@@ -44,30 +44,17 @@ impl Source<ScoredPostsQuery, PostCandidate> for FallbackSource {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::clients::in_network_posts_client::DemoFallbackPostsClient;
+    use crate::clients::in_network_posts_client::DisabledInNetworkPostsClient;
 
     #[test]
     fn disabled_for_in_network_only() {
         let source = FallbackSource {
-            client: Arc::new(DemoFallbackPostsClient),
+            client: Arc::new(DisabledInNetworkPostsClient),
         };
         assert!(!source.enable(&ScoredPostsQuery {
             in_network_only: true,
             ..Default::default()
         }));
         assert!(source.enable(&ScoredPostsQuery::default()));
-    }
-
-    #[tokio::test]
-    async fn demo_client_returns_oon_candidates() {
-        let source = FallbackSource {
-            client: Arc::new(DemoFallbackPostsClient),
-        };
-        let candidates = source
-            .source(&ScoredPostsQuery::default())
-            .await
-            .expect("fallback");
-        assert!(!candidates.is_empty());
-        assert!(candidates.iter().all(|c| c.in_network == Some(false)));
     }
 }

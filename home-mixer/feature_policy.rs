@@ -42,7 +42,6 @@ pub struct HomeMixerFeatures {
     pub phoenix_moe: bool,
     pub request_cache_side_effect: bool,
     pub debug_rpc: bool,
-    pub unsigned_cached_posts: bool,
     /// VM Ranker 二次重排（RANK-03）；还需 `VM_RANKER_GRPC_ADDR` 指向
     /// 本仓库 vm-ranker 服务实例，缺地址时旁路自动禁用。
     pub vm_ranker: bool,
@@ -65,7 +64,6 @@ impl HomeMixerFeatures {
                 "HOME_MIXER_ENABLE_REQUEST_CACHE_SIDE_EFFECT",
             )),
             debug_rpc: enabled(lookup("HOME_MIXER_ENABLE_DEBUG_RPC")),
-            unsigned_cached_posts: enabled(lookup("HOME_MIXER_ENABLE_UNSIGNED_CACHED_POSTS")),
             vm_ranker: enabled(lookup("HOME_MIXER_ENABLE_VM_RANKER")),
             author_cold_start: enabled(lookup("HOME_MIXER_ENABLE_AUTHOR_COLD_START")),
             cold_start_thompson_sampling: enabled(lookup(
@@ -119,7 +117,6 @@ mod tests {
         assert!(features.phoenix_moe);
         assert!(!features.request_cache_side_effect);
         assert!(features.debug_rpc);
-        assert!(!features.unsigned_cached_posts);
         assert!(features.author_cold_start);
         assert!(features.cold_start_thompson_sampling);
     }

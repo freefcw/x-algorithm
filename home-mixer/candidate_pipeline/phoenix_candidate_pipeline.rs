@@ -9,10 +9,8 @@ use crate::candidate_diversity_stats::LoggingCandidateDiversityStats;
 use crate::candidate_hydrators::tes_hydration_provider::TesHydrationProvider;
 use crate::candidate_hydrators::vf_candidate_hydrator::VFCandidateHydrator;
 use crate::candidate_hydrators::video_duration_candidate_hydrator::VideoDurationCandidateHydrator;
-use crate::clients::gizmoduck_client::{
-    DemoGizmoduckClient, DisabledGizmoduckClient, GizmoduckClient,
-};
-use crate::clients::in_network_posts_client::{DemoFallbackPostsClient, InNetworkPostsClient};
+use crate::clients::gizmoduck_client::{DisabledGizmoduckClient, GizmoduckClient};
+use crate::clients::in_network_posts_client::InNetworkPostsClient;
 use crate::clients::mrpyq_adapters::{
     pipeline_adapters_from_env_with_calls, MrpyqPipelineAdapters,
 };
@@ -26,16 +24,15 @@ use crate::clients::served_candidates_sink::{
     build_served_candidates_sink, ServedCandidatesSinkConfig,
 };
 
-use crate::clients::strato_client::{DemoStratoClient, StratoClient};
+use crate::clients::strato_client::StratoClient;
 #[cfg(feature = "legacy-int-ids")]
 use crate::clients::thunder_client::ThunderClient;
-use crate::clients::topic_retrieval_client::{DemoTopicRetrievalClient, TopicRetrievalClient};
-use crate::clients::tweet_entity_service_client::{DemoTESClient, TESClient};
+use crate::clients::topic_retrieval_client::TopicRetrievalClient;
+use crate::clients::tweet_entity_service_client::TESClient;
 use crate::clients::uas_fetcher::{
-    DemoUserActionSequenceFetcher, DisabledUserActionSequenceFetcher, RedisUserActionSequenceStore,
-    UserActionSequenceOps,
+    DisabledUserActionSequenceFetcher, RedisUserActionSequenceStore, UserActionSequenceOps,
 };
-use crate::clients::user_topic_reader::{DemoUserTopicReader, UserTopicReader};
+use crate::clients::user_topic_reader::UserTopicReader;
 #[cfg(feature = "legacy-int-ids")]
 use crate::clients::vm_ranker_client::GrpcVMRankerClient;
 use crate::feature_policy::HomeMixerFeatures;
@@ -90,7 +87,7 @@ use crate::sources::phoenix_moe_source::PhoenixMoeSource;
 use crate::sources::phoenix_source::PhoenixSource;
 use crate::sources::phoenix_topics_source::PhoenixTopicsSource;
 use crate::sources::thunder_source::ThunderSource;
-use crate::visibility::vf_client::{DemoVisibilityFilteringClient, VisibilityFilteringClient};
+use crate::visibility::vf_client::VisibilityFilteringClient;
 use anyhow::Context;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -468,14 +465,7 @@ impl PhoenixCandidatePipeline {
         features: HomeMixerFeatures,
         uas: UasConfig,
     ) -> anyhow::Result<PhoenixCandidatePipeline> {
-        Self::assemble_with_optional_topic_clients(
-            mode,
-            Self::demo_topic_clients(mode),
-            features,
-            uas,
-            None,
-        )
-        .await
+        Self::assemble_with_optional_topic_clients(mode, None, features, uas, None).await
     }
 
     /// Like [`Self::assemble_with_uas`], and additionally reports to the
@@ -490,22 +480,13 @@ impl PhoenixCandidatePipeline {
     ) -> anyhow::Result<PhoenixCandidatePipeline> {
         let pipeline = Self::assemble_with_optional_topic_clients(
             mode,
-            Self::demo_topic_clients(mode),
+            None,
             features,
             uas,
             Some(Arc::clone(&metrics)),
         )
         .await?;
         Ok(pipeline.with_observer(metrics as Arc<dyn PipelineObserver>))
-    }
-
-    fn demo_topic_clients(mode: HomeMixerMode) -> Option<TopicPersonalizationClients> {
-        (mode == HomeMixerMode::Demo).then(|| {
-            TopicPersonalizationClients::new(
-                Arc::new(DemoUserTopicReader),
-                Arc::new(DemoTopicRetrievalClient),
-            )
-        })
     }
 
     /// Builds the pipeline with explicitly supplied topic adapters.
@@ -527,11 +508,7 @@ impl PhoenixCandidatePipeline {
     }
 
     fn compatibility_mode() -> HomeMixerMode {
-        if crate::demo::is_demo_mode() {
-            HomeMixerMode::Demo
-        } else {
-            HomeMixerMode::Degraded
-        }
+        HomeMixerMode::Degraded
     }
 
     async fn assemble_with_optional_topic_clients(
@@ -541,7 +518,6 @@ impl PhoenixCandidatePipeline {
         uas: UasConfig,
         metrics: Option<Arc<Metrics>>,
     ) -> anyhow::Result<PhoenixCandidatePipeline> {
-        let demo_mode = mode == HomeMixerMode::Demo;
         let features = features_for_mode(mode, features);
         uas.validate(mode)?;
         // Upstream-call metrics: one clonable handle per client, all landing
@@ -550,13 +526,9 @@ impl PhoenixCandidatePipeline {
             .as_ref()
             .map(|metrics| metrics.client_calls())
             .unwrap_or_default();
-        if demo_mode {
-            log::info!("HOME_MIXER_MODE=demo: injecting demo Strato / TES clients");
-        }
-
-        let mrpyq_adapters = pipeline_adapters_from_env_with_calls(demo_mode, client_calls.clone())
+        let mrpyq_adapters = pipeline_adapters_from_env_with_calls(false, client_calls.clone())
             .context("failed to create mrpyq recommendation data adapters")?;
-        if !demo_mode && mrpyq_adapters.is_none() {
+        if mrpyq_adapters.is_none() {
             anyhow::bail!(
                 "MRPYQ_RECOMMENDATION_DATA_ADDR is required; integer Thunder cannot carry real ObjectIds"
             );
@@ -564,10 +536,6 @@ impl PhoenixCandidatePipeline {
         let mrpyq_adapters = mrpyq_adapters.as_ref();
 
         let uas_fetcher: Arc<dyn UserActionSequenceOps> = match uas {
-            UasConfig::Demo => {
-                log::info!("UAS: demo synthetic sequence");
-                Arc::new(DemoUserActionSequenceFetcher)
-            }
             UasConfig::Disabled => {
                 log::warn!(
                     "UAS: no Redis configured (UAS_REDIS_URL / HOME_MIXER_REDIS_URL); Phoenix retrieval and ranking are skipped and every request is ranked by the rule fallback"
@@ -594,61 +562,28 @@ impl PhoenixCandidatePipeline {
                 Arc::new(store)
             }
         };
-        let strato_client: Arc<dyn StratoClient + Send + Sync> = if demo_mode {
-            Arc::new(DemoStratoClient)
-        } else {
-            Arc::clone(
-                &mrpyq_adapters
-                    .expect("non-demo assembly requires mrpyq adapters")
-                    .strato,
-            )
-        };
-        let tes_client: Arc<dyn TESClient + Send + Sync> = if demo_mode {
-            Arc::new(DemoTESClient)
-        } else {
-            Arc::clone(
-                &mrpyq_adapters
-                    .expect("non-demo assembly requires mrpyq adapters")
-                    .tes,
-            )
-        };
+        let strato_client = Arc::clone(&mrpyq_adapters.as_ref().unwrap().strato);
+        let tes_client = Arc::clone(&mrpyq_adapters.as_ref().unwrap().tes);
 
         let phoenix_client: Arc<dyn PhoenixPredictionClient + Send + Sync> = Arc::new(
-            SlimPhoenixPredictionClient::new_with_allow_random(demo_mode)
+            SlimPhoenixPredictionClient::new()
                 .await?
                 .with_calls(client_calls.clone()),
         );
         let phoenix_retrieval_client = Arc::new(
-            ProdPhoenixRetrievalClient::new_with_allow_random(demo_mode)
+            ProdPhoenixRetrievalClient::new()
                 .await?
                 .with_calls(client_calls.clone()),
         );
-        let in_network_client = assemble_in_network_client(demo_mode, mrpyq_adapters).await;
-        let fallback_client: Option<Arc<dyn InNetworkPostsClient>> = if demo_mode {
-            Some(Arc::new(DemoFallbackPostsClient) as Arc<dyn InNetworkPostsClient>)
-        } else {
-            mrpyq_adapters.map(|adapters| Arc::clone(&adapters.in_network))
-        };
+        let in_network_client = assemble_in_network_client(false, mrpyq_adapters).await;
+        let fallback_client = mrpyq_adapters.map(|adapters| Arc::clone(&adapters.in_network));
         let gizmoduck_client: Arc<dyn GizmoduckClient + Send + Sync> =
-            if demo_mode && features.author_cold_start {
-                Arc::new(DemoGizmoduckClient)
-            } else {
-                Arc::new(DisabledGizmoduckClient::new().await?)
-            };
-        let vf_client: Arc<dyn VisibilityFilteringClient + Send + Sync> = if demo_mode {
-            Arc::new(DemoVisibilityFilteringClient)
-        } else {
-            Arc::clone(
-                &mrpyq_adapters
-                    .expect("non-demo assembly requires mrpyq adapters")
-                    .vf,
-            )
-        };
+            Arc::new(DisabledGizmoduckClient::new().await?);
+        let vf_client = Arc::clone(&mrpyq_adapters.as_ref().unwrap().vf);
         let moe_retrieval_client = if features.phoenix_moe {
             match std::env::var("PHOENIX_MOE_GRPC_ADDR") {
                 Ok(addr) => Some(Arc::new(
-                    ProdPhoenixRetrievalClient::from_addr_with_allow_random(addr, demo_mode)?
-                        .with_calls(client_calls.clone()),
+                    ProdPhoenixRetrievalClient::from_addr(addr)?.with_calls(client_calls.clone()),
                 )
                     as Arc<dyn PhoenixRetrievalClient + Send + Sync>),
                 Err(_) => {
@@ -673,7 +608,7 @@ impl PhoenixCandidatePipeline {
             .context("failed to create the served-candidates sink")?;
         match &served_sink_config {
             // Outside demo this is the missing training-data source, so say so.
-            ServedCandidatesSinkConfig::Disabled if !demo_mode => log::warn!(
+            ServedCandidatesSinkConfig::Disabled => log::warn!(
                 "served-candidates exposure log is disabled (set SERVED_EVENTS_KAFKA_BROKERS/SERVED_EVENTS_KAFKA_TOPIC or SERVED_EVENTS_JSONL_PATH); no training or audit record of what was served is written"
             ),
             config => log::info!("served-candidates exposure log: {}", config.describe()),
@@ -730,15 +665,15 @@ async fn assemble_in_network_client(
     None
 }
 
-fn features_for_mode(mode: HomeMixerMode, mut features: HomeMixerFeatures) -> HomeMixerFeatures {
-    if mode != HomeMixerMode::Demo && features.author_cold_start {
+fn features_for_mode(_mode: HomeMixerMode, mut features: HomeMixerFeatures) -> HomeMixerFeatures {
+    if features.author_cold_start {
         log::warn!(
             "Author Cold Start requires verified TES and Gizmoduck count adapters; disabling it outside demo mode"
         );
         features.author_cold_start = false;
         features.cold_start_thompson_sampling = false;
     }
-    if mode != HomeMixerMode::Demo && features.vm_ranker {
+    if features.vm_ranker {
         log::warn!(
             "VM Ranker still uses integer proto and cannot carry real ObjectIds; disabling it outside demo mode"
         );
@@ -804,43 +739,6 @@ impl CandidatePipeline<ScoredPostsQuery, PostCandidate> for PhoenixCandidatePipe
 #[cfg(test)]
 mod tests {
     use super::*;
-    use xai_candidate_pipeline::candidate_pipeline::PipelineStage;
-
-    #[tokio::test]
-    async fn cold_start_adds_pre_selection_author_hydration_explicitly() {
-        let pipeline = PhoenixCandidatePipeline::assemble_for_mode(
-            HomeMixerMode::Demo,
-            HomeMixerFeatures {
-                author_cold_start: true,
-                ..Default::default()
-            },
-        )
-        .await
-        .expect("demo assembly");
-        let components = pipeline.components();
-        let pre_selection = components
-            .iter()
-            .find(|entry| entry.stage == PipelineStage::Hydrator)
-            .expect("pre-selection hydrators");
-        let scorers = components
-            .iter()
-            .find(|entry| entry.stage == PipelineStage::Scorer)
-            .expect("scorers");
-
-        assert!(pre_selection
-            .components
-            .iter()
-            .any(|name| name == "GizmoduckCandidateHydrator"));
-        assert_eq!(
-            scorers.components,
-            vec![
-                "PhoenixScorer",
-                "RankingScorer",
-                "RuleFallbackScorer",
-                "AuthorColdStartScorer",
-            ]
-        );
-    }
 
     #[test]
     fn cold_start_is_disabled_without_verified_non_demo_adapters() {
@@ -867,38 +765,6 @@ mod tests {
             },
         );
         assert!(!features.vm_ranker);
-    }
-
-    #[tokio::test]
-    async fn profile_hydration_runs_only_after_selection() {
-        let pipeline = PhoenixCandidatePipeline::assemble_for_mode(
-            HomeMixerMode::Demo,
-            HomeMixerFeatures::default(),
-        )
-        .await
-        .expect("demo assembly");
-        let components = pipeline.components();
-        let pre_selection = components
-            .iter()
-            .find(|entry| entry.stage == PipelineStage::Hydrator)
-            .expect("pre-selection hydrators");
-        let post_selection = components
-            .iter()
-            .find(|entry| entry.stage == PipelineStage::PostSelectionHydrator)
-            .expect("post-selection hydrators");
-
-        assert!(!pre_selection
-            .components
-            .iter()
-            .any(|name| name == "GizmoduckCandidateHydrator"));
-        assert!(post_selection
-            .components
-            .iter()
-            .any(|name| name == "GizmoduckCandidateHydrator"));
-        assert!(post_selection
-            .components
-            .iter()
-            .any(|name| name == "VFCandidateHydrator"));
     }
 
     #[tokio::test]

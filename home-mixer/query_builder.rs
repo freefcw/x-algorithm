@@ -40,7 +40,7 @@ impl QueryBuilder {
         if viewer_id.is_nil() {
             return Err(Status::invalid_argument("viewer_id must be specified"));
         }
-        if !proto_query.cached_posts.is_empty() && !self.features.unsigned_cached_posts {
+        if !proto_query.cached_posts.is_empty() {
             return Err(Status::invalid_argument(
                 "unsigned cached_posts are disabled; use a server-owned cache contract",
             ));

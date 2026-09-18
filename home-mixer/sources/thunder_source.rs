@@ -48,18 +48,3 @@ impl Source<ScoredPostsQuery, PostCandidate> for ThunderSource {
             .collect())
     }
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::clients::in_network_posts_client::DemoFallbackPostsClient;
-
-    #[tokio::test]
-    async fn adapter_source_maps_in_network_posts() {
-        let source = ThunderSource {
-            client: Arc::new(DemoFallbackPostsClient),
-        };
-        let candidates = source.source(&ScoredPostsQuery::default()).await.unwrap();
-        assert!(candidates.is_empty());
-    }
-}

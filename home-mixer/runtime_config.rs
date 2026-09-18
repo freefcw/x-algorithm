@@ -11,12 +11,10 @@ use std::time::Duration;
 /// demo does not silently switch the demo off personalization.
 #[derive(Clone, Debug, Default)]
 pub enum UasConfig {
-    /// Synthetic sequence; only valid in demo mode.
-    #[default]
-    Demo,
     /// No behavior source at all: Phoenix retrieval and ranking are skipped
     /// and every request is ranked by the rule fallback. Chosen only when no
     /// Redis URL is configured on an explicit-mode assembly path.
+    #[default]
     Disabled,
     Redis(RedisUserActionSequenceConfig),
 }
@@ -33,11 +31,7 @@ impl UasConfig {
         let explicit = non_empty(lookup("UAS_REDIS_URL"));
         let cluster = non_empty(lookup("UAS_REDIS_CLUSTER_URLS"))
             .or_else(|| non_empty(lookup("HOME_MIXER_REDIS_CLUSTER_URLS")));
-        let url = if mode == HomeMixerMode::Demo {
-            explicit
-        } else {
-            explicit.or_else(|| non_empty(lookup("HOME_MIXER_REDIS_URL")))
-        };
+        let url = explicit.or_else(|| non_empty(lookup("HOME_MIXER_REDIS_URL")));
         let config = match (cluster, url) {
             (Some(cluster), url) => Self::Redis(redis_uas_config_from_lookup(
                 url.unwrap_or_default(),
@@ -45,7 +39,6 @@ impl UasConfig {
                 &lookup,
             )?),
             (None, Some(url)) => Self::Redis(redis_uas_config_from_lookup(url, None, &lookup)?),
-            (None, None) if mode == HomeMixerMode::Demo => Self::Demo,
             (None, None) => Self::Disabled,
         };
         config.validate(mode)?;
@@ -78,12 +71,9 @@ impl UasConfig {
         Ok(config)
     }
 
-    pub fn validate(&self, mode: HomeMixerMode) -> anyhow::Result<()> {
+    pub fn validate(&self, _mode: HomeMixerMode) -> anyhow::Result<()> {
         match self {
-            Self::Demo if mode != HomeMixerMode::Demo => anyhow::bail!(
-                "the demo UAS sequence is allowed only in demo mode; configure UAS_REDIS_URL (or HOME_MIXER_REDIS_URL) for a Redis UAS adapter"
-            ),
-            Self::Demo | Self::Disabled => Ok(()),
+            Self::Disabled => Ok(()),
             Self::Redis(config) => config.validate().map_err(anyhow::Error::msg),
         }
     }
@@ -209,12 +199,11 @@ impl FeedStateConfig {
         Ok(config)
     }
 
-    pub fn validate(&self, mode: HomeMixerMode) -> anyhow::Result<()> {
+    pub fn validate(&self, _mode: HomeMixerMode) -> anyhow::Result<()> {
         match self {
-            Self::InMemory if mode != HomeMixerMode::Demo => anyhow::bail!(
-                "HOME_MIXER_REDIS_URL is required outside demo mode; in-memory feed state cannot be shared across instances"
+            Self::InMemory => anyhow::bail!(
+                "HOME_MIXER_REDIS_URL is required; in-memory feed state cannot be shared across instances"
             ),
-            Self::InMemory => Ok(()),
             Self::Redis(config) => config.validate().map_err(anyhow::Error::msg),
         }
     }
@@ -224,7 +213,6 @@ impl FeedStateConfig {
 /// for a production-ready recommendation service.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub enum HomeMixerMode {
-    Demo,
     #[default]
     Degraded,
     ProductionReady,
@@ -238,26 +226,23 @@ impl HomeMixerMode {
     }
 
     fn from_values(explicit: Option<&str>, legacy_demo: bool) -> anyhow::Result<Self> {
-        let explicit_mode = explicit.map(Self::parse).transpose()?;
-        if legacy_demo && explicit_mode.is_some_and(|mode| mode != Self::Demo) {
+        if legacy_demo || explicit.is_some_and(|value| value.trim().eq_ignore_ascii_case("demo")) {
             anyhow::bail!(
-                "HOME_MIXER_DEMO=1 conflicts with non-demo HOME_MIXER_MODE; remove the legacy variable"
-            );
+                "demo mode has been removed; HOME_MIXER_DEMO/HOME_MIXER_MODE=demo is not supported"
+            )
         }
-        Ok(explicit_mode.unwrap_or(if legacy_demo {
-            Self::Demo
-        } else {
-            Self::Degraded
-        }))
+        Ok(explicit
+            .map(Self::parse)
+            .transpose()?
+            .unwrap_or(Self::Degraded))
     }
 
     fn parse(value: &str) -> anyhow::Result<Self> {
         match value.trim().to_ascii_lowercase().as_str() {
-            "demo" => Ok(Self::Demo),
             "degraded" => Ok(Self::Degraded),
             "production" | "production_ready" | "production-ready" => Ok(Self::ProductionReady),
             value => anyhow::bail!(
-                "invalid HOME_MIXER_MODE={value}; expected demo, degraded, or production_ready"
+                "invalid HOME_MIXER_MODE={value}; expected degraded or production_ready"
             ),
         }
     }
@@ -335,12 +320,7 @@ impl HomeMixerConfig {
         if self.request_timeout.is_zero() {
             anyhow::bail!("the request timeout must be positive");
         }
-        if self.features.unsigned_cached_posts && self.mode != HomeMixerMode::Demo {
-            anyhow::bail!("HOME_MIXER_ENABLE_UNSIGNED_CACHED_POSTS is allowed only in demo mode");
-        }
-        if self.features.vf_failure_policy == VfFailurePolicy::AllowAll
-            && self.mode != HomeMixerMode::Demo
-        {
+        if self.features.vf_failure_policy == VfFailurePolicy::AllowAll {
             log::warn!(
                 "HOME_MIXER_VF_FAILURE_POLICY=allow_all serves candidates whose visibility could not be established; this is an explicit opt-out of the fail-closed default"
             );
@@ -373,22 +353,6 @@ mod tests {
                 .find(|(key, _)| *key == name)
                 .map(|(_, value)| (*value).to_string())
         })
-    }
-
-    #[test]
-    fn only_demo_defaults_to_local_feed_state() {
-        for values in [
-            vec![],
-            vec![("HOME_MIXER_REDIS_URL", "")],
-            vec![("HOME_MIXER_REDIS_URL", "  ")],
-        ] {
-            assert!(matches!(
-                feed_state_config(HomeMixerMode::Demo, &values).unwrap(),
-                FeedStateConfig::InMemory
-            ));
-            let error = feed_state_config(HomeMixerMode::Degraded, &values).unwrap_err();
-            assert!(error.to_string().contains("HOME_MIXER_REDIS_URL"));
-        }
     }
 
     #[test]
@@ -446,13 +410,6 @@ mod tests {
             .contains("HOME_MIXER_REDIS_URL"));
         config.feed_state =
             FeedStateConfig::Redis(RedisFeedStateConfig::new("redis://localhost:6379/"));
-        // The default UAS choice is the demo sequence, which a business
-        // deployment must replace explicitly.
-        assert!(config
-            .validate()
-            .unwrap_err()
-            .to_string()
-            .contains("demo UAS sequence"));
         config.uas = UasConfig::Redis(RedisUserActionSequenceConfig::new(
             "redis://localhost:6379/",
         ));
@@ -475,7 +432,7 @@ mod tests {
     #[test]
     fn cluster_seed_list_selects_cluster_routing_without_a_single_url() {
         let FeedStateConfig::Redis(feed) = feed_state_config(
-            HomeMixerMode::Demo,
+            HomeMixerMode::Degraded,
             &[
                 (
                     "HOME_MIXER_REDIS_CLUSTER_URLS",
@@ -500,7 +457,7 @@ mod tests {
 
         // A blank cluster list keeps the single-endpoint shape.
         let FeedStateConfig::Redis(single) = feed_state_config(
-            HomeMixerMode::Demo,
+            HomeMixerMode::Degraded,
             &[
                 ("HOME_MIXER_REDIS_CLUSTER_URLS", " , "),
                 ("HOME_MIXER_REDIS_URL", "redis://127.0.0.1:6379/"),
@@ -514,7 +471,7 @@ mod tests {
         // Invalid seed URLs fail at config time instead of starting
         // half-wired.
         let error = feed_state_config(
-            HomeMixerMode::Demo,
+            HomeMixerMode::Degraded,
             &[("HOME_MIXER_REDIS_CLUSTER_URLS", "not-a-redis-url")],
         )
         .expect_err("an invalid seed URL must fail configuration");
@@ -524,7 +481,7 @@ mod tests {
     #[test]
     fn uas_cluster_seeds_have_explicit_and_shared_spellings() {
         let UasConfig::Redis(explicit) = uas_config(
-            HomeMixerMode::Demo,
+            HomeMixerMode::Degraded,
             &[("UAS_REDIS_CLUSTER_URLS", "redis://127.0.0.1:7000")],
         )
         .expect("UAS cluster seeds alone must configure the adapter") else {
@@ -544,31 +501,6 @@ mod tests {
         };
         assert!(shared.cluster_urls.is_some());
         assert!(shared.validate().is_ok());
-    }
-
-    #[test]
-    fn demo_keeps_the_synthetic_sequence_unless_a_uas_redis_is_explicit() {
-        assert!(matches!(
-            uas_config(HomeMixerMode::Demo, &[]).unwrap(),
-            UasConfig::Demo
-        ));
-        // Redis feed state in a demo must not switch the demo off its sequence.
-        assert!(matches!(
-            uas_config(
-                HomeMixerMode::Demo,
-                &[("HOME_MIXER_REDIS_URL", "redis://localhost:6379/")]
-            )
-            .unwrap(),
-            UasConfig::Demo
-        ));
-        assert!(matches!(
-            uas_config(
-                HomeMixerMode::Demo,
-                &[("UAS_REDIS_URL", "redis://localhost:6379/1")]
-            )
-            .unwrap(),
-            UasConfig::Redis(_)
-        ));
     }
 
     #[test]
@@ -654,17 +586,16 @@ mod tests {
     }
 
     #[test]
-    fn explicit_mode_cannot_be_overridden_by_legacy_demo_flag() {
-        assert_eq!(
-            HomeMixerMode::from_values(Some("demo"), true).expect("same mode"),
-            HomeMixerMode::Demo
-        );
+    fn removed_demo_configuration_is_rejected() {
+        let explicit = HomeMixerMode::from_values(Some("demo"), false).unwrap_err();
+        assert!(explicit.to_string().contains("demo mode has been removed"));
+
+        let legacy = HomeMixerMode::from_values(None, true).unwrap_err();
+        assert!(legacy.to_string().contains("HOME_MIXER_DEMO"));
+        assert!(legacy.to_string().contains("has been removed"));
+
         assert!(HomeMixerMode::from_values(Some("production_ready"), true).is_err());
         assert!(HomeMixerMode::from_values(Some("degraded"), true).is_err());
-        assert_eq!(
-            HomeMixerMode::from_values(None, true).expect("legacy demo"),
-            HomeMixerMode::Demo
-        );
     }
 
     #[test]
@@ -688,42 +619,5 @@ mod tests {
                 assert!(result.is_err(), "{value:?}");
             }
         }
-
-        let mut config = HomeMixerConfig {
-            mode: HomeMixerMode::Demo,
-            ..Default::default()
-        };
-        assert!(config.validate().is_ok());
-        config.request_timeout = Duration::ZERO;
-        assert!(config
-            .validate()
-            .unwrap_err()
-            .to_string()
-            .contains("request timeout"));
-    }
-
-    #[test]
-    fn sensitive_or_unready_modes_are_rejected() {
-        let mut config = HomeMixerConfig {
-            mode: HomeMixerMode::Degraded,
-            features: HomeMixerFeatures {
-                unsigned_cached_posts: true,
-                ..Default::default()
-            },
-            debug_token: None,
-            feed_state: FeedStateConfig::Redis(RedisFeedStateConfig::new("redis://localhost/")),
-            uas: UasConfig::Disabled,
-            ..Default::default()
-        };
-        assert!(config
-            .validate()
-            .unwrap_err()
-            .to_string()
-            .contains("HOME_MIXER_ENABLE_UNSIGNED_CACHED_POSTS"));
-
-        config.mode = HomeMixerMode::Demo;
-        assert!(config.validate().is_ok());
-        config.mode = HomeMixerMode::ProductionReady;
-        assert!(config.validate().is_err());
     }
 }

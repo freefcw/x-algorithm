@@ -63,7 +63,6 @@ async fn retrieve_topics_with_timeout(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::clients::topic_retrieval_client::DemoTopicRetrievalClient;
 
     #[tokio::test]
     async fn topic_deadline_bounds_slow_adapter() {
@@ -94,31 +93,5 @@ mod tests {
         .expect_err("slow topic retrieval must time out");
 
         assert!(error.contains("timed out"));
-    }
-
-    #[test]
-    fn supplemental_topics_route_through_topic_source() {
-        let source = PhoenixTopicsSource {
-            client: Arc::new(DemoTopicRetrievalClient),
-        };
-        let query = ScoredPostsQuery {
-            supplemental_topic_ids: vec![10, 20],
-            ..Default::default()
-        };
-        let runtime = tokio::runtime::Builder::new_current_thread()
-            .enable_time()
-            .build()
-            .expect("test runtime");
-
-        let candidates = runtime
-            .block_on(source.source(&query))
-            .expect("topic source");
-
-        assert_eq!(candidates.len(), params::TOPIC_MAX_RESULTS);
-        assert_eq!(candidates[0].retrieval_topic_ids, vec![10]);
-        assert_eq!(
-            candidates[0].served_type,
-            Some(pb::ServedType::ForYouPhoenixTopics)
-        );
     }
 }

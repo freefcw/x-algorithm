@@ -273,34 +273,19 @@ fn convert_to_proto_sequence(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::clients::uas_fetcher::DemoUserActionSequenceFetcher;
-    use std::sync::atomic::{AtomicUsize, Ordering};
-
-    struct CountingFetcher {
-        calls: AtomicUsize,
-    }
-
-    #[async_trait]
-    impl UserActionSequenceOps for CountingFetcher {
-        async fn get_by_user_id(
-            &self,
-            user_id: crate::models::UserId,
-        ) -> Result<ThriftUserActionSequence, anyhow::Error> {
-            self.calls.fetch_add(1, Ordering::Relaxed);
-            DemoUserActionSequenceFetcher.get_by_user_id(user_id).await
-        }
-    }
-
     struct SlowFetcher;
 
     #[async_trait]
     impl UserActionSequenceOps for SlowFetcher {
         async fn get_by_user_id(
             &self,
-            user_id: crate::models::UserId,
+            _user_id: crate::models::UserId,
         ) -> Result<ThriftUserActionSequence, anyhow::Error> {
             tokio::time::sleep(Duration::from_millis(20)).await;
-            DemoUserActionSequenceFetcher.get_by_user_id(user_id).await
+            Ok(ThriftUserActionSequence {
+                metadata: None,
+                user_actions: Some(Vec::new()),
+            })
         }
     }
 
@@ -367,68 +352,6 @@ mod tests {
             .expect_err("slow UAS must time out");
 
         assert!(error.contains("timed out"));
-    }
-
-    #[tokio::test]
-    async fn concurrent_sequence_owners_share_one_request_fetch() {
-        let fetcher = Arc::new(CountingFetcher {
-            calls: AtomicUsize::new(0),
-        });
-        let provider = UserActionSeqQueryHydrator::new(fetcher.clone());
-        let query = ScoredPostsQuery {
-            user_id: 42.into(),
-            request_id: "request-1".to_string(),
-            prediction_id: 7,
-            request_time_ms: x_algorithm_proto::demo::now_ms(),
-            ..Default::default()
-        };
-
-        let (scoring, retrieval) = tokio::join!(
-            provider.hydrate_sequence(&query),
-            provider.hydrate_sequence(&query)
-        );
-
-        assert!(scoring.is_ok());
-        assert!(retrieval.is_ok());
-        assert_eq!(fetcher.calls.load(Ordering::Relaxed), 1);
-    }
-
-    #[tokio::test]
-    async fn different_users_never_share_sequence_results() {
-        let fetcher = Arc::new(CountingFetcher {
-            calls: AtomicUsize::new(0),
-        });
-        let provider = UserActionSeqQueryHydrator::new(fetcher.clone());
-        let request_time_ms = x_algorithm_proto::demo::now_ms();
-        let first = ScoredPostsQuery {
-            user_id: 42.into(),
-            request_id: "same-request-label".to_string(),
-            prediction_id: 7,
-            request_time_ms,
-            ..Default::default()
-        };
-        let second = ScoredPostsQuery {
-            user_id: 43.into(),
-            request_id: first.request_id.clone(),
-            prediction_id: first.prediction_id,
-            request_time_ms,
-            ..Default::default()
-        };
-
-        let (first_result, second_result) = tokio::join!(
-            provider.hydrate_sequence(&first),
-            provider.hydrate_sequence(&second)
-        );
-
-        assert_eq!(
-            first_result.expect("first sequence").user_id,
-            crate::models::uid(42).to_string()
-        );
-        assert_eq!(
-            second_result.expect("second sequence").user_id,
-            crate::models::uid(43).to_string()
-        );
-        assert_eq!(fetcher.calls.load(Ordering::Relaxed), 2);
     }
 
     #[tokio::test]

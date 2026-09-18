@@ -143,40 +143,6 @@ impl StratoClient for DisabledStratoClient {
     }
 }
 
-/// 演示环境 Strato 客户端
-///
-/// 返回固定关注列表（`x_algorithm_proto::demo::DEMO_AUTHOR_IDS`），
-/// 与 thunder 演示数据的作者集合一致，让网内召回能命中帖子。
-/// 由装配层在 `HOME_MIXER_MODE=demo` 时注入。
-pub struct DemoStratoClient;
-
-#[async_trait]
-impl StratoClient for DemoStratoClient {
-    async fn get_user_features(&self, _user_id: UserId) -> Result<Vec<u8>, anyhow::Error> {
-        let followed: Vec<String> = x_algorithm_proto::demo::DEMO_AUTHOR_IDS
-            .iter()
-            .copied()
-            .map(x_algorithm_proto::demo::demo_author_object_id_hex)
-            .collect();
-        let features = serde_json::json!({
-            "mutedKeywords": [],
-            "blockedUserIds": [],
-            "mutedUserIds": [],
-            "followedUserIds": followed,
-            "subscribedUserIds": []
-        });
-        Ok(serde_json::to_vec(&features)?)
-    }
-
-    async fn store_request_info(
-        &self,
-        _user_id: UserId,
-        _post_ids: Vec<PostId>,
-    ) -> Result<Vec<u8>, anyhow::Error> {
-        anyhow::bail!("Strato request-info persistence is not configured in demo mode")
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -184,10 +150,6 @@ mod tests {
     #[tokio::test]
     async fn non_persistent_adapters_never_report_write_success() {
         assert!(DisabledStratoClient
-            .store_request_info(crate::models::uid(1), vec![crate::models::pid(10)])
-            .await
-            .is_err());
-        assert!(DemoStratoClient
             .store_request_info(crate::models::uid(1), vec![crate::models::pid(10)])
             .await
             .is_err());

@@ -13,7 +13,6 @@ pub mod candidate_hydrators;
 pub mod candidate_pipeline;
 pub mod clients;
 mod debug_access;
-pub mod demo;
 pub mod feature_policy;
 pub mod feed_state;
 pub mod feed_stats;

@@ -592,52 +592,6 @@ impl UserActionSequenceOps for DisabledUserActionSequenceFetcher {
     }
 }
 
-/// 演示环境 UAS 获取器
-///
-/// 返回一段合成的行为序列：过去 6 小时内浏览/互动过 32 条帖子，
-/// 帖子 ID 用 Snowflake 格式合成，作者在演示账号集合中轮转。
-/// 没有行为序列时 Phoenix 召回/精排会被整体跳过，
-/// 所以这是打通模型链路的必要输入。由装配层在 `HOME_MIXER_MODE=demo` 时注入。
-pub struct DemoUserActionSequenceFetcher;
-
-#[async_trait]
-impl UserActionSequenceOps for DemoUserActionSequenceFetcher {
-    async fn get_by_user_id(
-        &self,
-        _user_id: UserId,
-    ) -> Result<uas_compat::UserActionSequence, anyhow::Error> {
-        let now_ms = x_algorithm_proto::demo::now_ms();
-        let count = 32;
-        let step_ms = 6 * 60 * 60 * 1000 / count;
-
-        let user_actions = (0..count)
-            .map(|i| {
-                let action_time_ms = now_ms - (count - i) * step_ms;
-                let ts_secs = u32::try_from((action_time_ms / 1000).max(0)).unwrap_or(0);
-                let authors = x_algorithm_proto::demo::DEMO_AUTHOR_IDS;
-                let author = authors[(i as usize) % authors.len()];
-                uas_compat::UserAction {
-                    tweet_id: Some(ObjectId::from_parts(ts_secs, 1000 + i as u64)),
-                    author_id: Some(ObjectId::from_u64_be_padded(
-                        u64::try_from(author).unwrap_or(0),
-                    )),
-                    action_time_ms: Some(action_time_ms),
-                    action_type: Some(1),
-                    product_surface: Some(0),
-                }
-            })
-            .collect();
-
-        Ok(uas_compat::UserActionSequence {
-            metadata: Some(uas_compat::UserActionSequenceMeta {
-                last_modified_epoch_ms: Some(now_ms),
-                last_kafka_publish_epoch_ms: Some(now_ms),
-            }),
-            user_actions: Some(user_actions),
-        })
-    }
-}
-
 #[cfg(test)]
 mod redis_tests {
     use super::*;

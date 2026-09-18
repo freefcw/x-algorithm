@@ -292,30 +292,6 @@ mod tests {
         );
     }
 
-    #[tokio::test]
-    async fn demo_assembly_uses_explicit_local_state() {
-        let server = HomeMixerServer::build(HomeMixerConfig {
-            mode: HomeMixerMode::Demo,
-            feed_state: FeedStateConfig::InMemory,
-            ..Default::default()
-        })
-        .await
-        .expect("self-contained demo");
-        let state = server.scored_posts_server.feed_state_store();
-        state
-            .record(crate::models::uid(7), vec![crate::models::pid(9)], 123)
-            .await
-            .unwrap();
-        assert_eq!(
-            state
-                .load(crate::models::uid(7))
-                .await
-                .unwrap()
-                .served_post_ids,
-            vec![crate::models::pid(9)]
-        );
-    }
-
     #[test]
     fn for_you_wrapper_requires_and_preserves_inner_query() {
         assert!(for_you_query_from_wrapper(pb::ForYouFeedQuery { query: None }).is_none());
@@ -403,16 +379,7 @@ mod tests {
                 enable_phoenix_moe: true,
                 impressed_post_ids: vec![crate::models::pid(7).to_string(), "-7".to_string()],
                 past_request_timestamps_ms: vec![1_700_000_000_000],
-                cached_posts: vec![pb::CachedPost {
-                    tweet_id: crate::models::pid(100).to_string(),
-                    author_id: crate::models::uid(200).to_string(),
-                    tweet_text: "cached text".to_string(),
-                    quoted_tweet_id: crate::models::pid(300).to_string(),
-                    filtered_topic_ids: vec![10],
-                    video_duration_ms: 5_000,
-                    language_code: "en".to_string(),
-                    ..Default::default()
-                }],
+                cached_posts: Vec::new(),
                 is_preview: true,
                 is_shadow_traffic: true,
                 is_polling: true,
@@ -421,7 +388,6 @@ mod tests {
             },
             HomeMixerFeatures {
                 phoenix_moe: true,
-                unsigned_cached_posts: true,
                 ..Default::default()
             },
         )
@@ -447,20 +413,6 @@ mod tests {
         assert!(query.exclude_videos);
         assert!(query.enable_phoenix_moe);
         assert_eq!(query.impressed_post_ids, vec![crate::models::pid(7)]);
-        assert!(query.has_cached_posts);
-        assert_eq!(query.cached_posts[0].tweet_id, crate::models::pid(100));
-        assert_eq!(query.cached_posts[0].tweet_text, "cached text");
-        assert_eq!(
-            query.cached_posts[0].quoted_tweet_id,
-            Some(crate::models::pid(300))
-        );
-        assert_eq!(query.cached_posts[0].filtered_topic_ids, vec![10]);
-        assert_eq!(query.cached_posts[0].video_duration_ms, Some(5_000));
-        assert_eq!(query.cached_posts[0].language_code.as_deref(), Some("en"));
-        assert_eq!(
-            query.cached_posts[0].served_type,
-            Some(pb::ServedType::ForYouCachedPost)
-        );
         assert!(query.is_preview && query.is_shadow_traffic && query.is_polling);
         assert_eq!(query.ip_address, "203.0.113.1");
         assert_eq!(query.user_agent, "test-client");

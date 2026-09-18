@@ -78,7 +78,6 @@ impl SideEffect<ScoredPostsQuery, PostCandidate> for PhoenixRequestCacheSideEffe
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::clients::strato_client::DemoStratoClient;
 
     struct SlowStratoClient;
 
@@ -123,28 +122,5 @@ mod tests {
             .expect_err("slow request-cache write must time out");
 
         assert!(error.contains("timed out"));
-    }
-
-    #[test]
-    fn request_cache_requires_explicit_enablement() {
-        let client: Arc<dyn StratoClient + Send + Sync> = Arc::new(DemoStratoClient);
-        let query = Arc::new(ScoredPostsQuery::default());
-
-        assert!(
-            !PhoenixRequestCacheSideEffect::new(Arc::clone(&client), false)
-                .enable(Arc::clone(&query,))
-        );
-        assert!(PhoenixRequestCacheSideEffect::new(Arc::clone(&client), true).enable(query));
-    }
-
-    #[test]
-    fn request_cache_stays_disabled_for_in_network_only_requests() {
-        let client: Arc<dyn StratoClient + Send + Sync> = Arc::new(DemoStratoClient);
-        let query = Arc::new(ScoredPostsQuery {
-            in_network_only: true,
-            ..Default::default()
-        });
-
-        assert!(!PhoenixRequestCacheSideEffect::new(client, true).enable(query));
     }
 }

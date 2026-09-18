@@ -209,45 +209,6 @@ fn round_trip_ids(ids: &[crate::models::ObjectId], field: &str) -> Result<Vec<u6
     Ok(out)
 }
 
-/// Demo fallback pool: recent `from_parts` posts authored by the demo follow set.
-pub struct DemoFallbackPostsClient;
-
-#[async_trait]
-impl InNetworkPostsClient for DemoFallbackPostsClient {
-    async fn get_in_network_posts(
-        &self,
-        _query: &ScoredPostsQuery,
-        _max_results: u32,
-    ) -> Result<Vec<InNetworkPost>, String> {
-        Ok(Vec::new())
-    }
-
-    async fn get_fallback_posts(
-        &self,
-        _query: &ScoredPostsQuery,
-        max_results: u32,
-    ) -> Result<Vec<InNetworkPost>, String> {
-        let now_ms = u64::try_from(x_algorithm_proto::demo::now_ms()).unwrap_or(0);
-        let authors = x_algorithm_proto::demo::DEMO_AUTHOR_IDS;
-        let n = max_results.min(40) as usize;
-        Ok((0..n)
-            .map(|index| {
-                let ts =
-                    u32::try_from(now_ms.saturating_sub(index as u64 * 60_000) / 1000).unwrap_or(0);
-                let author = authors[index % authors.len()];
-                InNetworkPost {
-                    tweet_id: crate::models::ObjectId::from_parts(ts, 9_000_000 + index as u64),
-                    author_id: crate::models::ObjectId::from_u64_be_padded(
-                        u64::try_from(author).unwrap_or(0),
-                    ),
-                    created_at_ms: Some(now_ms.saturating_sub(index as u64 * 60_000)),
-                    ..Default::default()
-                }
-            })
-            .collect())
-    }
-}
-
 #[cfg(test)]
 mod disabled_client_tests {
     use super::*;
@@ -266,7 +227,6 @@ mod disabled_client_tests {
             .await
             .expect_err("disabled adapter must not succeed");
         assert!(error.contains("MRPYQ_RECOMMENDATION_DATA_ADDR"));
-        assert!(error.contains("demo-only"));
     }
 }
 
@@ -361,22 +321,5 @@ mod tests {
         query.seen_ids = vec![real];
         let seen_error = thunder_request(&query).expect_err("must not drop seen ids silently");
         assert!(seen_error.contains("exclude_tweet_ids"));
-    }
-
-    #[tokio::test]
-    async fn demo_fallback_emits_recent_object_ids() {
-        let posts = DemoFallbackPostsClient
-            .get_fallback_posts(
-                &ScoredPostsQuery {
-                    user_id: uid(1),
-                    ..Default::default()
-                },
-                5,
-            )
-            .await
-            .expect("demo fallback");
-        assert_eq!(posts.len(), 5);
-        assert!(posts.iter().all(|post| !post.tweet_id.is_nil()));
-        assert!(posts.iter().all(|post| post.created_at_ms.is_some()));
     }
 }

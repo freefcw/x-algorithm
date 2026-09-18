@@ -81,10 +81,6 @@ name = "home-mixer"
 path = "main.rs"
 
 [[bin]]
-name = "demo-client"
-path = "bin/demo_client.rs"
-
-[[bin]]
 name = "uas-worker"
 path = "bin/uas_worker.rs"
 

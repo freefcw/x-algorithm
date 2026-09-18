@@ -96,23 +96,6 @@ pub trait VisibilityFilteringClient: Send + Sync {
     ) -> Result<HashMap<PostId, Option<FilteredReason>>, anyhow::Error>;
 }
 
-/// Demo visibility adapter. It produces an explicit allow decision for every
-/// requested post so the local mixed-source flow remains testable.
-pub struct DemoVisibilityFilteringClient;
-
-#[async_trait]
-impl VisibilityFilteringClient for DemoVisibilityFilteringClient {
-    async fn get_result(
-        &self,
-        tweet_ids: Vec<PostId>,
-        _safety_level: SafetyLevel,
-        _for_user_id: UserId,
-        _context: Option<TwitterContextViewer>,
-    ) -> Result<HashMap<PostId, Option<FilteredReason>>, anyhow::Error> {
-        Ok(tweet_ids.into_iter().map(|id| (id, None)).collect())
-    }
-}
-
 /// Disabled production integration. Returning an error keeps "not checked"
 /// distinct from an explicit allow; the configured failure policy then decides
 /// whether to retain all candidates or only in-network ones.
