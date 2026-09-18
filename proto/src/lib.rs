@@ -13,9 +13,6 @@
 /// 仅原创帖作者命中时置位；转帖不置位。
 pub const SAFETY_BIT_AUTHOR_NSFW: u64 = 1 << 2;
 
-/// 演示模式共享契约（thunder 与 home-mixer 的演示数据咬合约定）
-pub mod demo;
-
 /// Thunder 服务协议 —— 网络内帖子实时缓存
 pub mod thunder {
     tonic::include_proto!("thunder");
