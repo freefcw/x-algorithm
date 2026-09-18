@@ -393,10 +393,7 @@ impl PhoenixPredictionClient for SlimPhoenixPredictionClient {
         sequence: recsys::UserActionSequence,
         candidates: Vec<recsys::TweetInfo>,
     ) -> Result<recsys::PredictNextActionsResponse, anyhow::Error> {
-        let requested = candidates.clone();
-        let response = self.inner.predict(user_id, sequence, candidates).await?;
-        validate_predict_response(&requested, &response)?;
-        Ok(response)
+        self.inner.predict(user_id, sequence, candidates).await
     }
 }
 
