@@ -9,6 +9,9 @@
 这里不断言"候选位置无关"。
 """
 
+from concurrent.futures import ThreadPoolExecutor
+from threading import Barrier
+
 import numpy as np
 import pytest
 
@@ -145,3 +148,24 @@ def test_requests_larger_than_the_biggest_bucket_are_split(engine, tables):
     reference = legacy_chunked_probs(engine, tables, user, tail)
     for got, expected in zip(predictions[max_per_pass:], reference):
         np.testing.assert_allclose(got.action_probs, expected, atol=BF16_ATOL)
+
+
+def test_ranker_allows_concurrent_requests_on_one_engine(engine, monkeypatch):
+    """两个 gRPC worker 可以同时进入同一个 ranker，而不是被全局锁串行化。"""
+    user = "5506dd82fbe78e7de77976ca"
+    cands = candidates(RANK_CHUNK)
+    barrier = Barrier(2)
+    original_rank_rows = engine._rank_rows
+
+    def synchronized_rank_rows(*args, **kwargs):
+        barrier.wait(timeout=5)
+        return original_rank_rows(*args, **kwargs)
+
+    monkeypatch.setattr(engine, "_rank_rows", synchronized_rank_rows)
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        futures = [executor.submit(engine.predict, user, None, cands) for _ in range(2)]
+        results = [future.result(timeout=10) for future in futures]
+
+    assert len(results[0]) == len(results[1]) == len(cands)
+    for left, right in zip(results[0], results[1]):
+        np.testing.assert_allclose(left.action_probs, right.action_probs, atol=BF16_ATOL)

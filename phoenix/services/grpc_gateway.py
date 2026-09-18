@@ -328,7 +328,7 @@ class RankerEngine:
 
     候选按 `RANK_CHUNK` 折成多行、一次前向（见 `build_batch_rows`），前向函数用
     `jax.jit` 编译并在启动时对小批次桶预热，避免 eager 逐算子派发和首个请求承担
-    编译耗时。推理仍在引擎锁内串行；并发靠多副本。
+    编译耗时。模型参数和 JAX 前向路径在请求期间只读，因此允许共享一个引擎并发推理。
     """
 
     def __init__(
@@ -338,8 +338,6 @@ class RankerEngine:
         warmup_max_bucket: int = RANK_WARMUP_MAX_BUCKET,
     ):
         self._tables = tables
-        self._lock = threading.Lock()
-
         model_config = PhoenixModelConfig(
             emb_size=EMB_SIZE,
             num_actions=NUM_ACTIONS,
@@ -408,21 +406,20 @@ class RankerEngine:
         predictions: List[CandidatePrediction] = []
         max_per_pass = RANK_BATCH_BUCKETS[-1] * RANK_CHUNK
 
-        with self._lock:
-            for start in range(0, len(candidates), max_per_pass):
-                window = candidates[start : start + max_per_pass]
-                rows = [window[i : i + RANK_CHUNK] for i in range(0, len(window), RANK_CHUNK)]
-                probs, continuous = self._rank_rows(user_id, history, rows)
-                for r, row in enumerate(rows):
-                    for i in range(len(row)):
-                        predictions.append(
-                            CandidatePrediction(
-                                action_probs=probs[r, i],
-                                continuous_values=(
-                                    None if continuous is None else continuous[r, i]
-                                ),
-                            )
+        for start in range(0, len(candidates), max_per_pass):
+            window = candidates[start : start + max_per_pass]
+            rows = [window[i : i + RANK_CHUNK] for i in range(0, len(window), RANK_CHUNK)]
+            probs, continuous = self._rank_rows(user_id, history, rows)
+            for r, row in enumerate(rows):
+                for i in range(len(row)):
+                    predictions.append(
+                        CandidatePrediction(
+                            action_probs=probs[r, i],
+                            continuous_values=(
+                                None if continuous is None else continuous[r, i]
+                            ),
                         )
+                    )
 
         return predictions
 
@@ -584,18 +581,27 @@ class RetrievalEngine:
         history = uas_to_history(uas)
 
         with self._lock:
-            top_k = min(max(max_results, 1), len(self._post_ids))
-            if top_k == 0:
-                return []
-            batch = build_batch(user_id, history, [], [], RANK_CHUNK)
-            embeddings = self._tables.lookup(batch)
-            output = self._runner.retrieve(batch, embeddings, top_k=top_k)
-            indices = np.asarray(output.top_k_indices[0])
-            scores = np.asarray(output.top_k_scores[0])
-            results = [
-                (self._post_ids[int(idx)], self._author_ids[int(idx)], float(score))
-                for idx, score in zip(indices, scores)
-            ]
+            post_ids = self._post_ids
+            author_ids = self._author_ids
+            corpus_embeddings = self._runner.corpus_embeddings
+            top_k = min(max(max_results, 1), len(post_ids))
+        if top_k == 0 or corpus_embeddings is None:
+            return []
+
+        batch = build_batch(user_id, history, [], [], RANK_CHUNK)
+        embeddings = self._tables.lookup(batch)
+        output = self._runner.retrieve(
+            batch,
+            embeddings,
+            top_k=top_k,
+            corpus_embeddings=corpus_embeddings,
+        )
+        indices = np.asarray(output.top_k_indices[0])
+        scores = np.asarray(output.top_k_scores[0])
+        results = [
+            (post_ids[int(idx)], author_ids[int(idx)], float(score))
+            for idx, score in zip(indices, scores)
+        ]
         return results
 
 
