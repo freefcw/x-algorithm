@@ -576,19 +576,6 @@ wheels = [
 ]
 
 [[package]]
-name = "grpcio-health-checking"
-version = "1.81.1"
-source = { registry = "https://pypi.org/simple" }
-dependencies = [
-    { name = "grpcio" },
-    { name = "protobuf" },
-]
-sdist = { url = "https://files.pythonhosted.org/packages/65/46/6b6678b5a922765ae7637205bb6d0618a4da8b35f2ce6116f8bcff262370/grpcio_health_checking-1.81.1.tar.gz", hash = "sha256:ecc61480e25058a4a04e11e4ab6900ad7439b32e60a8ce4ece7d9f219221c85d", size = 17107, upload-time = "2026-06-11T12:58:49.632Z" }
-wheels = [
-    { url = "https://files.pythonhosted.org/packages/6e/87/174bbfb5613794862c45b5cdf567fcfb478ad5a3a7b594e11d998656b2f9/grpcio_health_checking-1.81.1-py3-none-any.whl", hash = "sha256:cbc6a4171825ec64389de2f062d296ba129a5c27eefd0dd55fa837909184bdf9", size = 19120, upload-time = "2026-06-11T12:58:38.008Z" },
-]
-
-[[package]]
 name = "grpcio-tools"
 version = "1.81.1"
 source = { registry = "https://pypi.org/simple" }
@@ -1601,7 +1588,6 @@ dependencies = [
     { name = "cloudpickle" },
     { name = "dm-haiku" },
     { name = "filelock" },
-    { name = "grpcio" },
     { name = "jax" },
     { name = "jax", extra = ["cuda12"], marker = "sys_platform == 'linux'" },
     { name = "numba" },
@@ -1613,7 +1599,6 @@ dependencies = [
     { name = "orbax-checkpoint" },
     { name = "pandas" },
     { name = "prometheus-client" },
-    { name = "protobuf" },
     { name = "psutil" },
     { name = "pyarrow" },
     { name = "pyserde" },
@@ -1660,17 +1645,7 @@ telemetry = [
 [package.dev-dependencies]
 dev = [
     { name = "pytest" },
-    { name = "requests" },
     { name = "ty" },
-]
-service = [
-    { name = "fastapi" },
-    { name = "grpcio" },
-    { name = "grpcio-health-checking" },
-    { name = "grpcio-tools" },
-    { name = "prometheus-client" },
-    { name = "pydantic" },
-    { name = "uvicorn" },
 ]
 
 [package.metadata]
@@ -1685,7 +1660,6 @@ requires-dist = [
     { name = "dm-haiku", specifier = "==0.0.16" },
     { name = "fastapi", marker = "extra == 'telemetry'", specifier = ">=0.115.0" },
     { name = "filelock", specifier = ">=3.13.0" },
-    { name = "grpcio", specifier = ">=1.66.0" },
     { name = "httpx", marker = "extra == 'mm-encoder'", specifier = ">=0.27.0" },
     { name = "jax", marker = "sys_platform == 'darwin'", specifier = "==0.8.1" },
     { name = "jax", extras = ["cuda12"], marker = "sys_platform == 'linux'", specifier = "==0.8.1" },
@@ -1700,7 +1674,6 @@ requires-dist = [
     { name = "pandas", specifier = ">=2.2.0" },
     { name = "pillow", marker = "extra == 'mm-encoder'", specifier = ">=10.0.0" },
     { name = "prometheus-client", specifier = ">=0.20.0" },
-    { name = "protobuf", specifier = ">=5.28.0" },
     { name = "psutil", specifier = ">=5.9.0" },
     { name = "py-libnuma", marker = "sys_platform == 'linux' and extra == 'engine'", specifier = "==1.2" },
     { name = "pyarrow", specifier = ">=17.0.0" },
@@ -1727,17 +1700,7 @@ provides-extras = ["engine", "mm-encoder", "telemetry", "sid-train", "fa4"]
 [package.metadata.requires-dev]
 dev = [
     { name = "pytest" },
-    { name = "requests" },
     { name = "ty" },
-]
-service = [
-    { name = "fastapi", specifier = ">=0.115.0" },
-    { name = "grpcio", specifier = ">=1.68.0" },
-    { name = "grpcio-health-checking", specifier = ">=1.68.0" },
-    { name = "grpcio-tools", specifier = ">=1.68.0" },
-    { name = "prometheus-client", specifier = ">=0.21.0" },
-    { name = "pydantic", specifier = ">=2.10.0" },
-    { name = "uvicorn", specifier = ">=0.34.0" },
 ]
 
 [[package]]

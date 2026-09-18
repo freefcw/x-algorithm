@@ -48,9 +48,9 @@ GEN_RECS_GLOBAL_IDS: str = os.environ.get(
     "XREX_GEN_RECS_GLOBAL_IDS", "/path/to/global_negative_pool.parquet"
 )
 
-GEN_RECS_OFFLINE_DATA_PATH: str = os.environ.get("OFFLINE_DATA_PATH", "synth_dump_gen_recs")
+GEN_RECS_OFFLINE_DATA_PATH: str = os.environ.get("OFFLINE_DATA_PATH", "")
 GEN_RECS_OFFLINE_ARTIFACTS_DIR: str = os.environ.get(
-    "OFFLINE_ARTIFACTS_DIR", "synth_index/gen_recs_artifacts"
+    "OFFLINE_ARTIFACTS_DIR", ""
 )
 
 GEN_RECS_EVAL_POST_EMB_PATH: str = os.environ.get(

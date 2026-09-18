@@ -1,9 +1,7 @@
 # SPDX-License-Identifier: Apache-2.0
 # Copyright 2026 X.AI Corp.
 #
-# 本地说明：本文件以上游 47c1bcd phoenix/pyproject.toml 为基础，追加了
-# 本地演示推理链路（根目录模型代码 + scripts/ + services/ + tests/）所需的
-# dev/service 依赖组与 pytest 配置。上游依赖与 extras 保持原样。
+# 本目录只保留生产 xrex/crates 栈与真实事件输入合同。
 [project]
 name = "phoenix-recsys"
 version = "0.1.0"
@@ -20,8 +18,6 @@ dependencies = [
     "chex>=0.1.86",
     "numba>=0.60.0",
 
-    "grpcio>=1.66.0",
-    "protobuf>=5.28.0",
     "xai-proto",
     "pyarrow>=17.0.0",
     "aiokafka>=0.11.0",
@@ -96,29 +92,13 @@ line-length = 100
 # 让 ty 把本目录识别为项目根，从而自动发现 ./.venv（IDE 从仓库根解析时需要）。
 [tool.ty]
 
-# ---------------------------------------------------------------------------
-# 本地追加：演示推理链路的测试与服务依赖（U2）。
-# ---------------------------------------------------------------------------
-
 [dependency-groups]
 dev = [
     "pytest",
-    "requests",
     "ty",
-]
-service = [
-    "fastapi>=0.115.0",
-    "pydantic>=2.10.0",
-    "uvicorn>=0.34.0",
-    "prometheus-client>=0.21.0",
-    "grpcio>=1.68.0",
-    "grpcio-tools>=1.68.0",
-    "grpcio-health-checking>=1.68.0",
 ]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 pythonpath = ["."]
-# tests/engine/ 是生产引擎（xrex）侧测试，会把 xai_proto 的 recsys.proto 拉进进程；
-# 默认全量只跑演示链路，引擎测试需显式 `uv run pytest tests/engine`。
-norecursedirs = [".*", "__pycache__", "engine"]
+norecursedirs = [".*", "__pycache__"]

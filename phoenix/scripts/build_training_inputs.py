@@ -1,12 +1,12 @@
 #!/usr/bin/env python3
 """
-把线上两条事件流（服务端曝光 + 用户行为）整理成 `data_preprocessor.py` 的输入表。
+把线上两条事件流（服务端曝光 + 用户行为）整理成生产训练输入表。
 
 这是训练数据链路的第一步：
 
     served-candidates 事件（home-mixer SE-11）─┐
                                               ├─▶ 本脚本 ─▶ behavior_logs/ impressions/ post_metadata
-    UAS 行为事件（uas-event-contract.md）──────┘         └─▶ data_preprocessor.py --impressions-dir
+    UAS 行为事件（uas-event-contract.md）──────┘
 
 输入（都是 JSON Lines，可以给文件或目录，目录内递归读取 *.jsonl / *.json / *.ndjson）：
     --served-events     served-candidates-event-contract.md 的事件，一行一次请求
@@ -17,9 +17,7 @@
         一行一个行为事件（与 UAS 事件一一对应）：`event_time` 是该行为的秒级时间，
         `action_type` 是 proto 枚举值，19 个行为列里只有这一位为 1。这里**不**按帖子预聚合：
         线上 `DefaultAggregator` 只合并请求时刻之前、7 天窗口内的行为，预聚合会把请求之后的
-        行为（往往正是这次曝光的标签）混进历史 mask。`data_preprocessor.py` 在构造样本时按
-        请求时间聚合（曝光模式），或按 (user, post) 全时段聚合成正样本（旧模式，识别
-        `action_type` 列）。
+        行为（往往正是这次曝光的标签）混进历史 mask。生产训练读取器须按请求时间聚合。
     impressions/dt=YYYY-MM-DD/part-0.parquet
         一行一条下发候选，带归因后的 19 列标签：行为发生在 [request_time, request_time + 窗口]
         内、且该帖在窗口内被多次下发时归到最近的一次下发。没有任何行为的候选就是负样本。
@@ -38,9 +36,6 @@
         --behavior-events data/raw/uas/ \
         --output-dir data/ \
         --attribution-window-minutes 30
-    uv run data_preprocessor.py --behavior-dir data/behavior_logs \
-        --impressions-dir data/impressions --post-meta data/post_metadata.parquet \
-        --output-dir data/training_samples
 """
 
 import _setup_path  # noqa: F401
@@ -57,9 +52,17 @@ import pandas as pd
 import pyarrow as pa
 import pyarrow.parquet as pq
 
-from data_preprocessor import BEHAVIOR_FIELDS
 from services.model_contract import ACTION_IDX_TO_ENUM
-from services.retrieval_index import is_object_id
+
+BEHAVIOR_FIELDS = [
+    "favorite", "reply", "repost", "photo_expand", "click", "profile_click", "vqv",
+    "share", "share_via_dm", "share_via_copy_link", "dwell", "quote", "quoted_click",
+    "follow_author", "not_interested", "block_author", "mute_author", "report", "dwell_time",
+]
+
+
+def is_object_id(value: str) -> bool:
+    return len(value) == 24 and all(character in "0123456789abcdef" for character in value)
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 logger = logging.getLogger("build_training_inputs")
@@ -229,8 +232,7 @@ BEHAVIOR_LOG_COLUMNS = [
 def behavior_log_rows(behaviors: pd.DataFrame) -> pd.DataFrame:
     """把校验过的行为事件整理成 behavior_logs 行：一行一个事件，行为列 one-hot。
 
-    不在这里按帖子合并。合并必须以某个参考时刻为截止（线上是请求时间），否则请求之后
-    的行为会进入历史 mask；`data_preprocessor.py` 负责在知道参考时刻的地方聚合。
+    不在这里按帖子合并。生产读取器必须以请求时间为截止聚合，否则请求之后的行为会进入历史。
     """
     if behaviors.empty:
         return pd.DataFrame(columns=BEHAVIOR_LOG_COLUMNS)
@@ -292,7 +294,7 @@ def attribute_impressions(
 
 
 def impressions_table(attributed: pd.DataFrame) -> pd.DataFrame:
-    """整理成 data_preprocessor.load_impressions 期望的列。"""
+    """整理成生产训练读取器消费的曝光合同。"""
     table = attributed.copy()
     table["event_time"] = (table["request_time_ms"] // 1000).astype(np.int64)
     table["product_surface"] = np.int32(0)
@@ -424,7 +426,7 @@ def build(
 
 def main() -> None:
     parser = argparse.ArgumentParser(
-        description="把曝光 + 行为事件整理成 data_preprocessor 的输入表"
+        description="把曝光 + 行为事件整理成生产训练输入表"
     )
     parser.add_argument(
         "--served-events", nargs="+", required=True, help="served-candidates JSONL 文件或目录"
