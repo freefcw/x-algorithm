@@ -1,23 +1,36 @@
-# 从零跑起来
+# 当前代码验证入口
 
-状态：`historical`
+> **状态：`current-code`**
 
-这组文档记录旧的本地 Demo 上手路径。当前 checkout 已移除旧的单机 JAX Demo、假模型和端到端启动脚本，因此这些章节只用于理解历史路径，不能按顺序执行。当前 Phoenix 入口请看 [`phoenix/README.md`](../../phoenix/README.md)；真实系统建设请看[完整启动与建设手册](../bootstrap/)。
+本目录不再提供本地 Demo、随机权重模型、旧 gRPC gateway 或端到端启动脚本。旧章节已删除，避免把不存在的命令当成当前操作手册。
 
-| 顺序 | 文档 | 结果 |
-| --- | --- | --- |
-| 0 | [这个项目是什么](./00-这个项目是什么.md) | 理解模块分工和 Demo 边界 |
-| 1 | [准备环境](./01-准备环境.md) | 历史环境准备说明 |
-| 2 | [跑通模型演示](./02-第一步-跑通模型演示.md) | 历史演示说明，当前不再适用 |
-| 3 | [把模型变成服务](./03-第二步-把模型变成服务.md) | 历史服务说明，当前不再适用 |
-| 4 | [训练自己的模型](./04-第三步-训练自己的模型.md) | 历史训练说明；当前训练入口以 Phoenix 代码和测试为准 |
+## Phoenix 生产引擎
 
-## 当前可执行入口
+在 `phoenix/` 目录执行：
 
 ```bash
-cd phoenix
 uv sync --extra engine --dev
 uv run pytest
+uv run pytest tests/engine
 ```
 
-这组命令验证生产引擎和现存测试，不会启动一个带随机权重的 Demo 服务。
+生产训练、真实数据、checkpoint、ranking/retrieval 服务和上线边界以以下文档为准：
+
+- [训练与数据](../phoenix/06-training-and-data.md)
+- [真实数据接入](../phoenix/07-real-data-integration.md)
+- [生产上线手册](../phoenix/08-production-handbook.md)
+- [Phoenix 项目 README](../../phoenix/README.md)
+
+这些入口要求真实事件输入、checkpoint 和部署配置；没有配置时应失败，不能启动随机模型。
+
+## 根 Rust workspace
+
+在仓库根目录执行：
+
+```bash
+cargo build --workspace
+cargo test --workspace
+cargo fmt --all -- --check
+```
+
+Home Mixer 的外部依赖、配置合同和部署边界见 [bootstrap](../bootstrap/)、[home-mixer 文档](../home-mixer/) 和 [Kubernetes 说明](../../deploy/k8s/README.md)。当前没有可执行的“完整推荐 Demo”入口。

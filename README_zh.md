@@ -80,7 +80,7 @@ X 开源的是核心算法，不是完整的生产系统。原版依赖的内部
 1. **召回（双塔模型）**：用户塔把用户编码成向量，物品塔把帖子编码成向量，点积相似度取 Top-K，从全网发现相关内容。
 2. **精排（候选隔离 Transformer）**：输入用户行为历史和候选帖子，输出每条帖子上各种行为（点赞、回复、转发、举报等）的概率；特殊的注意力掩码保证候选之间互不影响。
 
-Phoenix 自带训练脚本（`phoenix/scripts/train_*.py`）、HTTP 服务和 gRPC 网关（`phoenix/scripts/run_grpc_gateway.py`，实现 home-mixer 消费的 `proto/definitions/phoenix_recsys.proto` 契约）。详见 [`phoenix/README.md`](phoenix/README.md)。
+Phoenix 当前提供 xrex 生产训练与推理引擎。精排和召回是两个独立的 gRPC 服务，使用 `phoenix/xrex/inference/launch_inference.py` 启动；xrex 契约尚未适配 Home Mixer 旧演示网关的契约。详见 [`phoenix/README.md`](phoenix/README.md)。
 
 ### Candidate Pipeline
 

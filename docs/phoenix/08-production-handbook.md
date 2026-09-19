@@ -1,16 +1,15 @@
 # Phoenix 正式上线手册
 
 > 本手册面向“准备真实数据、训练 Phoenix、接入服务并正式上线”的完整流程。
-> 内容以当前仓库代码为准，重点覆盖 `phoenix/xrex/` 生产引擎；本地演示链路只用于接线和流程验收。
+> 内容以当前仓库代码为准，重点覆盖 `phoenix/xrex/` 生产引擎；仓库不再提供本地 Demo 或旧 gateway。
 
-## 0. 先读结论：仓库有两套 Phoenix，不能混用
+## 0. 先读结论：当前只维护 xrex 生产主线
 
-`phoenix/` 同时包含两套实现：
+`phoenix/` 当前保留生产引擎和相关测试：
 
 | 路径 | 用途 | 上线定位 |
 | --- | --- | --- |
 | `phoenix/xrex/` + `phoenix/crates/` | 生产模型、训练器、Rust 推理引擎 | Linux + NVIDIA CUDA 的生产主线 |
-| `recsys_model.py`、`services/`、`scripts/` | 本地演示模型和 Home Mixer 兼容网关 | 本地调试、接线验收，不代表生产质量 |
 
 本手册的正式主线是：
 
@@ -85,15 +84,14 @@ export PYTHONPATH=$PWD
 uv sync --extra engine --extra fa4
 ```
 
-验证 GPU、引擎和随机权重服务：
+验证 GPU 和引擎环境：
 
 ```bash
 uv run python -c 'import jax; print(jax.devices())'
-uv run python xrex/inference/oss_bench/bench.py \
-  --smoke --service_type ranking
+uv run pytest tests/engine
 ```
 
-随机权重只证明环境、模型初始化和 gRPC 可以运行，不能证明推荐质量。
+这只能证明当前引擎测试和运行环境可用，不能替代真实 checkpoint、索引和 contract test 验收。
 
 ## 3. 选择模型配置
 
@@ -118,8 +116,6 @@ uv run python xrex/inference/oss_bench/bench.py \
 ## 4. 生产训练数据契约
 
 ### 4.1 不要把旧版 32/8 数据规格当成 xrex 生产规格
-
-仓库里的 `docs/training/training_data_spec.md` 和 `phoenix/docs/训练指引.md` 主要描述本地演示链路，使用 32 条历史、8 个候选和旧版 19 维行为目标。
 
 当前 `xrex` 生产训练器读取的事实来源是：
 
@@ -520,9 +516,12 @@ uv run python reference/sid_index_server.py \
 
 ## 12. Home Mixer 接入边界
 
-当前仓库的 `phoenix/services/grpc_gateway.py`、`scripts/run_grpc_gateway.py` 和 `deploy/k8s/phoenix-gateway.yaml` 属于本地演示/兼容网关路径，使用 `.npz` 参数和本地 retrieval index。
+仓库已删除旧的本地演示/兼容网关及其 Docker/Kubernetes 部署文件。当前生产入口是
+`xrex/inference/launch_inference.py`，分别启动 ranking 和 retrieval 服务；它们使用
+xrex native engine 与生产 checkpoint，不使用旧网关的 `.npz` 参数和本地 retrieval index。
 
-`xrex/inference/launch_inference.py` 是另一套生产引擎服务。不能直接假定 Home Mixer 当前 Phoenix gRPC 请求可以无修改调用 xrex。
+不能直接假定 Home Mixer 当前 Phoenix gRPC 请求可以无修改调用 xrex。当前没有
+`phoenix-gateway` 镜像或 Kubernetes 清单，避免把未适配的 xrex 服务部署成旧网关。
 
 正式接入前必须做 contract test，确认：
 
@@ -538,9 +537,9 @@ Home Mixer request
 
 因此，当前可靠判断是：
 
-- Home Mixer 可以直接验证现有演示 Gateway；
+- Home Mixer 的旧演示 Gateway 已不再由本仓库提供；
 - xrex 生产引擎需要协议适配或独立 production caller；
-- `deploy/k8s/phoenix-gateway.yaml` 是脚手架，不是已验证的 xrex 生产部署清单；
+- xrex ranking/retrieval 需要分别编排，不能共用一个 `phoenix-gateway` Deployment；
 - 真实 GPU、模型挂载、资源、滚动更新和压测还需要在目标环境验证。
 
 ## 13. 正式上线验收清单
@@ -609,9 +608,8 @@ Home Mixer request
 
 ## 15. 相关文档
 
-- [Phoenix README](../../phoenix/README.md)：生产引擎总览和环境要求
-- [Phoenix QUICKSTART](../../phoenix/QUICKSTART.md)：合成数据、nano 训练和 gRPC 验证
-- [Phoenix TRAINING](../../phoenix/TRAINING.md)：训练器、optimizer 和 checkpoint 说明
+- [Phoenix README](../../phoenix/README.md)：生产引擎总览、环境、测试和保留工具
+- [Phoenix 训练与数据](./06-training-and-data.md)：训练输入、产物和数据边界
 - [Phoenix 训练与数据分析](06-training-and-data.md)：训练契约和现有缺口
-- [Phoenix 真实数据接入](07-real-data-integration.md)：演示链路的数据接入说明
+- [Phoenix 真实数据接入](07-real-data-integration.md)：曝光、UAS 和 xrex 训练输入的数据合同
 - [生产验收和故障排查](../bootstrap/07-生产化验收和故障排查.md)：整个推荐系统的上线验收

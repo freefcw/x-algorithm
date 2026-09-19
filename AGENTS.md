@@ -4,7 +4,7 @@
 本文件描述仓库通用约定。若任务涉及本机工具链、权限、缓存目录、Homebrew 路径或沙箱行为，请按需同时查看 `AGENTS_local.md`；它只记录当前本地环境事实，不应当作跨机器通用规范。遇到命令异常时，先区分是代码问题还是本地环境问题，再决定是否修改源码。
 
 ## 项目结构与模块组织
-根目录是一个 Rust workspace，成员包括：`home-mixer/`（Feed 编排主服务）、`thunder/`（实时帖子缓存与 Kafka 消费）、`candidate-pipeline/`（候选流水线抽象）、`proto/`（`proto/definitions/*.proto` 与 Rust 桩代码生成）、`vm-ranker/`（可选二次重排，默认关闭）。`phoenix/` 是独立子项目（演示用 Python/JAX 链路 + 生产用 `xrex/`/`crates/` 引擎，不并入根 workspace），入口脚本在 `phoenix/scripts/`，测试在 `phoenix/tests/`，中文操作文档在 `phoenix/docs/`。`grox/` 是独立 Python 包，不进主推荐链。仓库级文档在 `docs/`（跑通教程在 `docs/getting-started/`，历史记录在 `docs/archive/`）。`target/`、`*/target/` 都是构建产物，不要直接编辑。
+根目录是一个 Rust workspace，成员包括：`home-mixer/`（Feed 编排主服务）、`thunder/`（实时帖子缓存与 Kafka 消费）、`candidate-pipeline/`（候选流水线抽象）、`proto/`（`proto/definitions/*.proto` 与 Rust 桩代码生成）、`vm-ranker/`（可选二次重排，默认关闭）。`phoenix/` 是独立子项目（生产用 `xrex/`/`crates/` 引擎，不并入根 workspace），入口脚本在 `phoenix/xrex/`，测试在 `phoenix/tests/`，中文操作文档在 `docs/phoenix/`。`grox/` 是独立 Python 包，不进主推荐链。仓库级文档在 `docs/`（跑通教程在 `docs/getting-started/`，历史记录在 `docs/archive/`）。`target/`、`*/target/` 都是构建产物，不要直接编辑。
 
 ## 构建、测试与开发命令
 - `cargo build --workspace`：编译所有 Rust crate。
@@ -12,14 +12,13 @@
 - `cargo run -p thunder -- --grpc-port 50052`：启动 `thunder`；生产运行需要配置 Kafka。
 - `cargo run -p home-mixer`：启动 `home-mixer` 二进制；生产运行需要按运维文档配置外部依赖。
 - `cargo run -p home-mixer --features kafka --bin uas-worker`：启动 UAS 行为序列投影 job（Kafka 消费需 `kafka` feature；不带 feature 时只支持 stdin 换行 JSON；`kafka-ssl` feature 额外链接 OpenSSL，SSL / SASL_SSL 才可用）。
-- `docker build -f deploy/docker/home-mixer.Dockerfile -t home-mixer:dev .` 与 `docker build -f deploy/docker/phoenix-gateway.Dockerfile -t phoenix-gateway:dev phoenix`：构建两份容器镜像（分别以仓库根和 `phoenix/` 为上下文）。
+- `docker build -f deploy/docker/home-mixer.Dockerfile -t home-mixer:dev .`：构建 Home Mixer 容器镜像；Phoenix xrex 服务按 `docs/phoenix/08-production-handbook.md` 单独编排。
 - `cargo test -p home-mixer --test redis_feed_state --test redis_uas -- --ignored`：需要本机 `redis-server` 的 Redis 适配器集成测试。
 - `cargo fmt --all` 和 `cargo clippy --workspace --all-targets`：格式化与静态检查。
 - `cd phoenix && uv sync --extra engine`：安装 Phoenix 生产引擎依赖。
 - `cd phoenix && uv run pytest tests/engine`：运行 Phoenix 生产引擎测试。
-- `cd phoenix && uv run scripts/train_ranker.py`：训练精排模型。
-- `cd phoenix && uv run scripts/train_retrieval.py`：训练召回模型。
-- `cd phoenix && uv run scripts/run_grpc_gateway.py`：启动供 home-mixer 调用的 gRPC 模型服务。
+- `cd phoenix && uv run scripts/build_training_inputs.py ...`：将真实 served-candidates/UAS 事件构造成 xrex 训练输入；训练、评估和产物发布以 `docs/phoenix/06-training-and-data.md` 为准。
+- `cd phoenix && uv run python xrex/inference/launch_inference.py --service_type ranking ...`：启动 xrex 精排服务；召回使用 `--service_type retrieval`。两者尚未适配 Home Mixer 的旧 Phoenix 网关合同。
 - `cd phoenix && uv run pytest`：运行 Python 测试（测试位于 `phoenix/tests/`）。
 
 ## 编码风格与命名约定

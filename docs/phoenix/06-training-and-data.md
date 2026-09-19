@@ -1,237 +1,42 @@
-# Phoenix 训练侧分析
+# Phoenix 训练与数据
 
-## 1. 这篇文档的边界
+> **状态：`current-code`**
 
-> 更新说明：训练脚本现已落地——`phoenix/scripts/train_ranker.py`（精排）和 `phoenix/scripts/train_retrieval.py`（召回）实现了训练循环、损失函数、Parquet 数据加载和 checkpoint 保存。**怎么跑训练**请看 [phoenix/docs/训练指引.md](../../phoenix/docs/训练指引.md) 和 [getting-started 第三步](../getting-started/04-第三步-训练自己的模型.md)。本文保留的价值是从模型接口出发解释训练契约的"为什么"。
+本文只描述当前 xrex 生产训练链路。旧的单机 JAX、`.npz`、mock corpus、随机权重和本地 gateway 训练路径已删除，不作为训练或发布方案。
 
-这篇文档分成两层事实：
-
-- 代码已明确表达的训练输入契约：来自 `RecsysBatch`、`RecsysEmbeddings`、模型输出形状。
-- 结合现有规格文档描述的训练闭环：主要参考仓库中的 [../training/training_data_spec.md](../training/training_data_spec.md)。
-
-凡是属于第二类内容，本文都会明确标注为“推断”。
-
-## 2. 训练侧总图
-
-```mermaid
-graph TD
-    A[业务日志<br/>曝光 / 互动 / 历史行为] --> B[样本构造]
-    B --> C[RecsysBatch]
-    B --> D[RecsysEmbeddings]
-    B --> E[Labels]
-    C --> F[Phoenix 排序模型]
-    D --> F
-    E --> G[排序损失]
-    C --> H[Phoenix 召回模型]
-    D --> H
-    H --> I[召回损失]
-    G --> J[训练产物<br/>ranker checkpoint]
-    I --> K[训练产物<br/>retrieval checkpoint]
-    K --> L[离线物品向量编码]
-    L --> M[向量索引]
-    J --> N[精排服务]
-    M --> O[召回服务]
-```
-
-## 3. 训练输入契约来自哪里
-
-Phoenix 的训练输入契约由模型结构固定，`scripts/train_ranker.py` / `scripts/train_retrieval.py` 已经按这套契约构造并消费样本。
-
-### 3.1 排序模型输入契约
-
-`recsys_model.py` 给出了排序模型最核心的三个契约：
-
-- 原始离散特征通过 `RecsysBatch` 进入模型。
-- 连续 embedding 通过 `RecsysEmbeddings` 进入模型。
-- 输出是 `RecsysModelOutput`，其 `logits` 字段为 `[B, C, num_actions]` 的多目标 logits（另有可选 `continuous_preds` 连续头）。
-
-### 3.2 召回模型输入契约
-
-`recsys_retrieval_model.py` 固定了：
-
-- 用户塔输入仍是 `RecsysBatch + RecsysEmbeddings`。
-- 用户塔输出是 `[B, D]` 的归一化用户向量。
-- 物品塔输出是 `[B, C, D]` 的归一化候选向量。
-
-因此训练数据格式先被模型接口约束，再由现有训练脚本消费。
-
-## 4. 排序模型应该如何构造训练样本
-
-这一部分与 [../training/training_data_spec.md](../training/training_data_spec.md) 一致，也和当前模型接口完全兼容。
-
-### 4.1 一条排序样本是什么
-
-一条排序样本可以理解为一次曝光事件：
-
-- 某个用户
-- 在某个时刻
-- 看到一组候选内容
-- 之后对这些候选产生或未产生若干互动
-
-```mermaid
-sequenceDiagram
-    participant Log as 曝光日志
-    participant Hist as 用户历史
-    participant Feat as Embedding / 特征查表
-    participant Label as 标签构造
-    participant Train as Ranker 训练样本
-
-    Log->>Train: user_id + candidate_ids + surface
-    Hist->>Train: 最近历史 post / author / actions
-    Feat->>Train: user / post / author embeddings
-    Label->>Train: 每个候选的 19 维目标
-```
-
-### 4.2 排序标签的自然形状
-
-对照当前 `PhoenixModel` 的输出，排序训练标签最自然的形状是：
+## 1. 当前数据流
 
 ```text
-labels: [B, C, num_actions]
+served-candidates + UAS 事件
+  → build_training_inputs.py
+  → Parquet/Kafka training input
+  → xrex trainer
+  → checkpoint / metadata / retrieval index
+  → xrex ranking 或 retrieval serving
 ```
 
-这和 [../training/training_data_spec.md](../training/training_data_spec.md) 中的 `labels [B, 8, 19]` 是一致的。
+事实来源是 `phoenix/xrex/data/`、`phoenix/xrex/train/`、`phoenix/xrex/eval/` 和 `phoenix/scripts/build_training_inputs.py`。字段、时间窗口和版本 metadata 不应从旧文档或旧张量示例复制。
 
-### 4.3 当前代码暗示的目标语义
+## 2. 训练前置条件
 
-从 `ACTIONS` 常量可见，排序模型同时预测 19 类目标，其中包含：
+- 服务端曝光事件必须包含 request、候选顺序、候选 ID、时间和 serving metadata；
+- UAS 行为事件必须包含用户、帖子、动作、时间和 product surface；
+- 训练、验证和测试按用户或时间隔离，避免未来信息泄漏；
+- 删除、权限和隐私保留策略必须先于样本生成确定；
+- 训练输入中的 ID、feature schema、action 映射必须与 serving 使用同一版本。
 
-- 二分类行为：如 `favorite_score`、`reply_score`、`repost_score`
-- 连续值行为：如 `dwell_time`
+## 3. 训练与评估
 
-这意味着训练时大概率不是单一损失，而是多目标组合损失。
+生产训练使用 Linux + NVIDIA CUDA 环境，命令和参数以 `phoenix/xrex/` 的 driver、config 和测试为准。训练完成后至少验证：
 
-## 5. 召回模型应该如何构造训练样本
+1. checkpoint 可加载且 metadata 完整；
+2. ranking 输入输出 shape、action 映射和 mask 与合同一致；
+3. retrieval index 与模型版本绑定；
+4. 离线指标优于规则基线，并按用户/内容切片检查；
+5. 固定回放集的结果、延迟和资源使用符合上线门槛。
 
-这里需要区分代码事实和训练推断。
+## 4. 产物发布
 
-### 5.1 代码事实
+发布单元至少包括代码版本、数据版本、feature schema、checkpoint、retrieval index、训练配置和评估结果。任何一个版本不匹配都应拒绝加载，而不是回退到随机参数。
 
-召回模型当前支持的两个中间产物是：
-
-- 用户表示 `user_representation`
-- 物品表示 `candidate_representation`
-
-两者都做了 L2 归一化，因此训练目标一定会围绕“拉近正样本、推远负样本”的相似度学习展开。
-
-### 5.2 召回训练（已落地的演示脚本）
-
-`scripts/train_retrieval.py` 已经按双塔常见范式实现：
-
-- 正样本：batch 内该用户对应的候选。
-- 负样本：同一 batch 里其他样本（in-batch negatives）。
-- 损失：温度缩放点积上的对比学习，见 `scripts/train_retrieval.py`。
-
-```mermaid
-graph LR
-    U[用户历史] --> UT[用户塔]
-    P[正样本内容] --> IT1[物品塔]
-    N[负样本内容] --> IT2[物品塔]
-    UT --> S1[dot positive]
-    IT1 --> S1
-    UT --> S2[dot negative]
-    IT2 --> S2
-    S1 --> L[召回损失]
-    S2 --> L
-```
-
-## 6. 排序训练与召回训练的区别
-
-| 维度 | 排序训练 | 召回训练 |
-| --- | --- | --- |
-| 目标 | 精确预测多种互动概率 | 快速学到可检索的匹配向量 |
-| 输入 | 用户 + 历史 + 候选组 | 用户 + 正负候选 |
-| 模型交互 | 候选共享上下文但互相隔离 | 用户塔与物品塔独立编码 |
-| 典型损失 | 多任务 BCE / regression 组合 | 对比损失 / sampled softmax |
-| 输出产物 | ranker checkpoint | retrieval checkpoint + item embeddings |
-
-## 7. 训练与推理如何保持一致
-
-这是 Phoenix 训练侧最关键的设计问题之一。
-
-### 7.1 排序一致性
-
-排序训练如果要和推理一致，必须遵守下面几条：
-
-- 样本中的候选顺序和 `candidate_start_offset` 逻辑一致。
-- padding 规则和推理一致，0 必须保留为 padding hash。
-- 动作 embedding、product surface embedding 的编码方式保持一致。
-- attention mask 必须用当前代码中的候选隔离逻辑，而不是文档误读出的“双向注意力”版本。
-
-### 7.2 召回一致性
-
-召回训练和推理的一致性主要体现在：
-
-- 用户塔结构和在线编码结构一致。
-- 物品塔结构和离线编码结构一致。
-- 训练期相似度定义与线上 Top-K 检索一致。
-
-```mermaid
-flowchart TD
-    A[训练时用户塔] --> B[用户向量]
-    C[线上用户塔] --> B2[用户向量]
-    D[训练时物品塔] --> E[物品向量]
-    F[离线物品编码] --> E2[物品向量]
-    B --> G[训练目标]
-    E --> G
-    B2 --> H[线上检索]
-    E2 --> H
-```
-
-## 8. 现有训练数据规格能支持到什么程度
-
-仓库内的 [training_data_spec.md](../training/training_data_spec.md) 已经提供了较完整的数据规格，包括：
-
-- 曝光事件表
-- 行为日志表
-- 用户历史序列表
-- 哈希计算方法
-- `dwell_time` 归一化方法
-- 推荐的 Parquet 结构
-
-它解决的是“训练样本怎么抽、字段怎么落”的问题。演示栈已经有损失和优化器：`train_ranker.py` 是前 18 维 BCE + dwell MSE、`optax.adam`；`train_retrieval.py` 是 in-batch negatives。生产训练配方（AdamW / Muon）见 `phoenix/TRAINING.md`，不要和演示脚本混成一套。仍缺的是多目标权重调参、评估集和发版例行化。
-
-## 9. 可以推断出的训练产物链路
-
-```mermaid
-graph TD
-    A[训练数据] --> B[训练 ranker]
-    A --> C[训练 retrieval]
-    B --> D[ranker checkpoint]
-    C --> E[retrieval checkpoint]
-    E --> F[全量物品离线编码]
-    F --> G[向量索引]
-    D --> H[ranker_service]
-    E --> I[retrieval_service]
-    G --> I
-```
-
-这条链路和当前 `services/model_registry.py`、`services/retrieval_service.py` 的接口设计是匹配的，说明服务层已经为“未来接入真实训练产物”预留了位置。
-
-## 10. 当前训练侧缺口
-
-训练程序本身已经落地：`scripts/train_ranker.py`（多目标损失：前 18 个行为 BCE + dwell_time MSE，Parquet 流式/模拟数据加载，`.npz` checkpoint 与嵌入表保存）和 `scripts/train_retrieval.py`（in-batch negatives 对比损失，参数保存）覆盖了 §4-§6 推断的基础训练链路。仍缺的是：
-
-1. 训练评估与指标（AUC、召回率等）以及评估集切分惯例（`scripts/eval_ranker.py` 已覆盖精排的基础评估）。
-2. ~~离线物品向量导出任务~~ 已由 `scripts/build_retrieval_index.py` + `services/retrieval_index.py` 落地：用候选塔编码帖子清单写出 `.npz` 索引，gRPC 网关 `--corpus-path` 加载并按 mtime 热替换。仍缺的是产出帖子清单的上游任务（mrpyq 侧按时间枚举可推荐帖子）和定时调度。
-3. 持续训练、checkpoint 版本化与发版的例行化流程。
-
-## 11. 对当前仓库最合理的训练侧判断
-
-Phoenix 演示栈已经有可跑的训练脚本；生产引擎另有一套配方。这篇文档讲的是训练契约的“为什么”，不是“没有训练代码”。  
-它已经把训练时最难改的几件事固定住了：
-
-- 输入张量契约
-- 模型结构契约
-- 排序与召回的职责边界
-- 服务侧产物消费方式
-
-并且提供了可运行的基础训练程序（`scripts/train_ranker.py` / `scripts/train_retrieval.py`），能产出服务侧可直接加载的 `.npz` checkpoint 与嵌入表。尚未覆盖的是评估、离线向量导出和持续训练例行化。
-
-## 12. 如果继续补齐训练侧，优先级应该是什么
-
-1. 先补训练评估（AUC 等指标与评估集），因为基础训练程序已落地，最缺的是判断"训得好不好"。
-2. 再把离线索引构建（`scripts/build_retrieval_index.py`）接上帖子清单来源与调度，形成"帖子清单 → 编码 → 网关热替换"的例行任务。
-3. 最后补持续训练与发版例行化。
-
-基础排序/召回训练已可由 `scripts/train_ranker.py` / `scripts/train_retrieval.py` 完成，上面的优先级针对的是仍未覆盖的环节。
+详细的真实数据字段映射见 [07-real-data-integration.md](./07-real-data-integration.md)，部署和验收见 [08-production-handbook.md](./08-production-handbook.md)。

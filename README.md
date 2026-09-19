@@ -157,7 +157,7 @@ Predicts engagement probabilities for each candidate:
 - Uses special attention masking so candidates cannot attend to each other
 - Outputs probabilities for each action type (like, reply, repost, click, etc.)
 
-Phoenix ships with training scripts (`phoenix/scripts/train_*.py`), HTTP services, and a gRPC gateway (`phoenix/scripts/run_grpc_gateway.py`) that implements the `proto/definitions/phoenix_recsys.proto` contract consumed by Home Mixer. See [`phoenix/README.md`](phoenix/README.md).
+Phoenix ships the xrex production training and inference engine. Ranking and retrieval are separate gRPC services launched with `phoenix/xrex/inference/launch_inference.py`; the xrex contract is not yet an adapter for Home Mixer's former demo gateway contract. See [`phoenix/README.md`](phoenix/README.md).
 
 ### Candidate Pipeline
 
