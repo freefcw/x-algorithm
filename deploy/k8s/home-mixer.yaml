@@ -39,7 +39,7 @@ spec:
               value: json
             # 业务依赖：mrpyq 是非 demo 模式的硬依赖（缺地址直接启动失败）
             - name: HOME_MIXER_MODE
-              value: "on"
+              value: "degraded"
             - name: MRPYQ_RECOMMENDATION_DATA_ADDR
               value: http://mrpyq:9000
             # Redis：单端点写 URL；原生集群写 CLUSTER_URLS（逗号分隔种子），
