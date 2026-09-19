@@ -48,12 +48,3 @@ jobs:
           tags: home-mixer:ci
           cache-from: type=gha,scope=home-mixer
           cache-to: type=gha,scope=home-mixer,mode=max
-      - name: Build phoenix-gateway image
-        uses: docker/build-push-action@v6
-        with:
-          context: phoenix
-          file: deploy/docker/phoenix-gateway.Dockerfile
-          push: false
-          tags: phoenix-gateway:ci
-          cache-from: type=gha,scope=phoenix-gateway
-          cache-to: type=gha,scope=phoenix-gateway,mode=max
