@@ -147,7 +147,7 @@ mrpyq 业务事件 ──Kafka topic──▶ uas-worker ──Redis ZSET──�
 | retention | 建议 ≥ 7 天 | 与在线窗口一致，消费端故障恢复后能补齐窗口内数据 |
 | 发送时机 | 服务端动作在**落库成功后**发；客户端动作在动作完成时发 | 发了却没落库的点赞会污染历史 |
 
-数据在模型侧的实际可见范围：Home Mixer 读最新 600 条原始行为 → 按帖子聚合、按 7 天窗口截到 300 个帖子 → Phoenix 网关只取最近 32 个聚合记录（`phoenix/services/grpc_gateway.py` 的 `HISTORY_LEN`）。所以模型真正看到的是「最近 32 个有过互动的帖子及其行为集合」，事件量再大也不会撑爆存储。
+数据在模型侧的实际可见范围由 `uas-worker`、Redis 投影和 xrex serving 合同共同决定；不要引用已删除 gateway 的历史 32 条规格。当前窗口、序列长度和特征宽度以 [Phoenix 训练与数据](../phoenix/06-training-and-data.md)及实际 serving 配置为准。
 
 ---
 
@@ -219,9 +219,9 @@ offset 管理：`enable.auto.commit=true` + `enable.auto.offset.store=false`，�
 
 ### 8.3 训练文档的行为编码与在线合同不一致（已修）
 
-**2026-09-17 已对齐**：[training/training_data_spec.md](../training/training_data_spec.md) 的日志层编码已改为 proto `ActionName` 枚举值（1..=18），ID 字段同步改为 24 位 hex ObjectId 字符串，与本合同 §2/§3 完全一致。
+**2026-09-17 已对齐**：训练输入字段和编码以 [Phoenix 训练与数据](../phoenix/06-training-and-data.md) 为准；日志层使用 proto `ActionName` 枚举值，ID 字段使用 24 位 hex ObjectId 字符串。
 
-补充澄清当时没写清的一层：模型内部 19 维张量（`labels` / `history_actions`）用的是另一套内部列序（0 起，`dwell_time` 连续值占列 18），这与在线链路并不矛盾——`grpc_gateway.py` 在解码后经 `model_contract.py` 的 `ACTION_IDX_TO_ENUM` 把枚举位换算成内部列序，训练侧 `build_training_inputs.py` 用 `ENUM_TO_FIELD` 做同一件事，两座桥一致，训练 / 在线不错位。数据平台只接触 proto 编号，不要自己换算内部列序（说明见训练文档 §2.2）。
+补充澄清：日志层枚举与模型内部张量列序由 xrex 数据加载器统一转换。数据平台只接触 proto 编号，不要自行改写列序；具体字段以 [Phoenix 训练与数据](../phoenix/06-training-and-data.md)为准。
 
 规则不变：**给 mrpyq 的一律用 proto 编号**。
 

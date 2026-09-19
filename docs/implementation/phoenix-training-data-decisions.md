@@ -2,8 +2,8 @@
 
 > **状态**：`implemented`（决策已定；§7 派生的代码改动已全部落地，见各条标注）
 > **读者**：推荐服务开发、埋点侧、数据 / 训练侧
-> **配套文档**：行为事件流 [uas-event-contract.md](./uas-event-contract.md)；曝光事件流 [served-candidates-event-contract.md](./served-candidates-event-contract.md)；训练样本格式 [training/training_data_spec.md](../training/training_data_spec.md)
-> **为什么单独一份**：这五项决策横跨埋点、home-mixer 权重合同、Phoenix 训练配方和数据侧 join 任务，任何一方单独改都会造成 train/serve 或 gateway/home-mixer 不一致。这里是唯一真源，改动先改这里再改代码。
+> **配套文档**：行为事件流 [uas-event-contract.md](./uas-event-contract.md)；曝光事件流 [served-candidates-event-contract.md](./served-candidates-event-contract.md)；xrex 训练输入 [Phoenix 训练与数据](../phoenix/06-training-and-data.md)
+> **为什么单独一份**：这五项决策横跨埋点、home-mixer 权重合同、Phoenix 训练配方和数据侧 join 任务。当前 xrex 训练和服务合同以 `docs/phoenix/` 文档与代码为准；本文保留决策背景，不再作为旧 gateway 的操作手册。
 
 ---
 
@@ -33,9 +33,9 @@ score = 0.5·P(点赞) + 5.0·P(评论) − 234.0·P(举报)
 
 ### 1.3 三处必须一致的配置（派生值）
 
-- 训练：`scripts/train_ranker.py --observed-actions favorite,reply,report`。metadata 会写出 `supported_action_enums = [1, 2, 18]`，网关原样广播。
+- 训练：动作枚举和 metadata 由当前 xrex 数据加载器及训练配置定义；不要使用已删除的 `train_ranker.py`。
 - home-mixer：`clients/phoenix_prediction_client.rs::REQUIRED_SUPPORTED_ACTIONS` 改为 `[1, 2, 18]`；`params/param.rs` 中 `CLICK_WEIGHT`、`SHARE_WEIGHT`、`SHARE_VIA_DM_WEIGHT`、`SHARE_VIA_COPY_LINK_WEIGHT`、`PHOTO_EXPAND_WEIGHT`、`VQV_WEIGHT`、`FOLLOW_AUTHOR_WEIGHT`、`BLOCK_AUTHOR_WEIGHT`、`MUTE_AUTHOR_WEIGHT`、`NOT_INTERESTED_WEIGHT` 置 `0.0`，注释保留原值以便恢复。
-- Phoenix 网关：`services/model_contract.py::NONZERO_WEIGHT_ACTION_ENUMS` 改为 `(1, 2, 18)`；`grpc_gateway.create_servicers` 无 metadata 时的默认支持集合改为引用该常量。
+- Phoenix serving：必须使用 xrex serving 合同，并通过 Home Mixer contract test 验证；旧 `grpc_gateway` 路径已删除。
 
 ### 1.4 加回一个 head 的流程
 
@@ -129,6 +129,6 @@ score = 0.5·P(点赞) + 5.0·P(评论) − 234.0·P(举报)
 
 1. ✅ `home-mixer/clients/phoenix_prediction_client.rs`：`REQUIRED_SUPPORTED_ACTIONS = [1, 2, 18]`；新增单测 `required_supported_actions_are_exactly_the_non_zero_weight_heads` 把该列表钉到 `params/param.rs` 的非零权重上，两处任一单独改动都会失败。
 2. ✅ `home-mixer/params/param.rs`：§1.3 列出的十个权重置 0，每项注释保留原值与“为什么采不到”；恢复流程见 §1.4。
-3. ✅ `phoenix/services/model_contract.py`：`NONZERO_WEIGHT_ACTION_ENUMS = (1, 2, 18)`；`grpc_gateway.create_servicers` 无 metadata 时的默认集合改为引用该常量；`tests/test_grpc_gateway_contract.py::test_default_supported_actions_are_the_v1_head_set` 锁定。
-4. ✅ `phoenix/scripts/train_ranker.py --observed-actions` 帮助文本与 `phoenix/docs/训练指引.md` §1.2 写明 v1 取值 `favorite,reply,report`。
+3. ✅ 当前 xrex serving 合同和训练配置由 `phoenix/xrex/`、`phoenix/crates/` 及其测试锁定。
+4. ✅ 旧训练脚本、旧 gateway 和旧文档不再作为当前验收依据。
 5. ✅ 数据侧归因 join：`phoenix/scripts/build_training_inputs.py` 的 `--attribution-window-minutes`（默认 30）与 `is_shadow_traffic` 默认排除（`--include-shadow` 可开）。数仓侧若用 SQL 复刻，按同一规则。

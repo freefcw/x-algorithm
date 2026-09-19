@@ -4,7 +4,7 @@
 > **日期**：2026-09-16
 > **读者**：数据 / 训练侧、mrpyq webapi 与客户端埋点、推荐服务开发
 > **事实边界**：本文「生产端行为」引自本仓库当前代码并标注文件；对埋点侧和数据侧的「要求」是推荐侧提出的约定，未经确认
-> **配套文档**：行为（反馈）事件流见 [uas-event-contract.md](./uas-event-contract.md)；环境变量见 [home-mixer/07-config-and-params.md §3](../home-mixer/07-config-and-params.md)；训练样本格式见 [training/training_data_spec.md](../training/training_data_spec.md)
+> **配套文档**：行为（反馈）事件流见 [uas-event-contract.md](./uas-event-contract.md)；环境变量见 [home-mixer/07-config-and-params.md §3](../home-mixer/07-config-and-params.md)；xrex 训练输入见 [Phoenix 训练与数据](../phoenix/06-training-and-data.md)
 
 ---
 
@@ -96,8 +96,8 @@ Home Mixer ScoredPosts 请求 ──最终下发列表──▶ ServedCandidates
 本地验证：
 
 ```bash
-SERVED_EVENTS_JSONL_PATH=/tmp/served.jsonl HOME_MIXER_MODE=demo cargo run -p home-mixer
-cargo run -p home-mixer --bin demo-client
+SERVED_EVENTS_JSONL_PATH=/tmp/served.jsonl cargo run -p home-mixer
+# 使用真实的 ScoredPosts/ForYou RPC 客户端发送测试请求
 tail -1 /tmp/served.jsonl | python3 -m json.tool
 ```
 

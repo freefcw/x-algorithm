@@ -8,4 +8,4 @@
 
 | 文档 | 说明 |
 | --- | --- |
-| [data_operations_runbook.md](./data_operations_runbook.md) | 网内 Thunder、网外 Phoenix 召回、精排模型的持续更新和切版手册。 |
+| [Phoenix 生产上线手册](../phoenix/08-production-handbook.md) | xrex 训练、服务和验收入口；旧的持续更新 runbook 已删除。 |
