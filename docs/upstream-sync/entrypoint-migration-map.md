@@ -1,4 +1,6 @@
-# Entrypoint migration map
+# Entrypoint migration map（历史记录）
+
+> 本文只记录旧迁移时期的入口形态，不能用于启动当前服务。旧 Demo、旧 gateway 和旧训练脚本已从当前 checkout 删除；当前入口见同目录 [README](./README.md)。
 
 > Status: Home Mixer `HM-E1..E6` and Phoenix `PHX-E1/E2` portable contracts completed; later portable deltas are absorbed through `24c60942`; remaining work requires explicit production integration contracts
 > Upstream anchor: `c65aa179db7bdd61e2c2821eac87f208a105c053` (2026-08-14 semantic anchor，本文审计范围的时代锚点；**当前活锚点已前移**，最新值见 [`upstream-first-maintenance.md`](./upstream-first-maintenance.md) 头部)
@@ -177,7 +179,7 @@ Fixture evidence: offline JSON and online proto UAS produce identical published 
 
 ### PHX-E2: Make online serving an adapter over the same core
 
-Status: **completed for code and fixture parity**. The local `scripts/run_grpc_gateway.py` remains a necessary `U1` process adapter for Home Mixer.
+Status: **historical**. The former `scripts/run_grpc_gateway.py` was a migration-era adapter and is no longer present or required by current Home Mixer.
 
 1. Published offline and gRPC modes both construct `PublishedPipeline`, which owns the same `PublishedRankerEngine` and `PublishedRetrievalEngine`.
 2. Both engines consume preloaded params/config/embeddings from `PublishedArtifact`; runner `initialize(params=...)` avoids a second checkpoint loader.

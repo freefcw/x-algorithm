@@ -44,7 +44,7 @@ Fixed U5 skip paths (physically deleted; later upstream edits are inventory "ski
 
 A difference without one of these classifications is drift and should be removed or documented before more code is built on it.
 
-`U4` and `U5` were introduced by the trunk convergence decision in [`../implementation/phoenix-pipeline-trunk-plan.md`](../implementation/phoenix-pipeline-trunk-plan.md) (§4); that document also fixes the `ObjectId` design and the migration batches (P0–P3). P1 has landed: pipeline identities are `PostId` / `UserId` (`home-mixer/models/ids.rs`); proto and Phoenix boundaries use 24-char lowercase hex. Thunder / VM Ranker integer protos remain behind zero-pad round-trip (`legacy-int-ids`) and are not deployed.
+`U4` and `U5` belong to the historical trunk-convergence work; the plan document has been removed because it described deleted Demo and gateway paths. Current identity and protocol facts are defined by `home-mixer/models/ids.rs` and `proto/definitions/`; Thunder / VM Ranker integer protos remain behind zero-pad round-trip (`legacy-int-ids`) and are not deployed.
 
 ### Measured upstream-sync friction for `U4`
 

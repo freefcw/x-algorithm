@@ -6,7 +6,7 @@
 
 当前事实请看：
 
-- 想把系统跑起来：[../getting-started/](../getting-started/)
+- 想验证当前代码：[../getting-started/](../getting-started/)
 - 想理解当前代码：[../README.md](../README.md) 中列出的各模块文档
 
 ## 目录
@@ -16,3 +16,5 @@
 | [migration/](./migration/) | 从 X 私有依赖迁移到开源骨架的路线与阶段记录 | 阶段一/二已完成，阶段三/四的"待执行"描述已过时 |
 | [missing/](./missing/) | 早期对缺失模块（Params 等）的盘点 | 相关模块已在 `home-mixer/params/` 等处重建 |
 | [dependency-analysis/](./dependency-analysis/) | 迁移初期对 `xai_*` 私有依赖的分析快照 | 依赖替换已完成，文中"缺失文件"描述与现状不符 |
+
+归档内容可能出现 `run_demo.sh`、旧 gateway、`HOME_MIXER_MODE=demo` 等历史名称。它们不是当前入口，也不应根据归档内容恢复已经删除的服务。
