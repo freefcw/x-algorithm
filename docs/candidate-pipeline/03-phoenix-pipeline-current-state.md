@@ -22,7 +22,7 @@ gRPC trait 实现在 `home-mixer/server.rs`，公共 proto 到 domain query 的�
 
 ## 2. 当前装配入口
 
-`HomeMixerServer::build(config)` 把 `HomeMixerMode`、typed features 和已校验的 `UasConfig` 直接传给 `PhoenixCandidatePipeline::assemble_with_uas()`；`assemble_for_mode()` 是测试与兼容入口，自行从环境解析 `UasConfig`。Demo/Disabled adapter 不再由 pipeline 自己读 `HOME_MIXER_MODE`；装配层读 `MRPYQ_RECOMMENDATION_DATA_ADDR`（非 demo 必填，缺失或不可用则启动失败）、`PHOENIX_*_GRPC_ADDR`，旁路读 `VM_RANKER_GRPC_ADDR` / `PHOENIX_MOE_GRPC_ADDR`。
+`HomeMixerServer::build(config)` 把 `HomeMixerMode`、typed features 和已校验的 `UasConfig` 直接传给 `PhoenixCandidatePipeline::assemble_with_uas()`；`assemble_for_mode()` 是测试与兼容入口，自行从环境解析 `UasConfig`。装配层读 `MRPYQ_RECOMMENDATION_DATA_ADDR`（真实业务必填，缺失或不可用则启动失败）、`PHOENIX_*_GRPC_ADDR`，旁路读 `VM_RANKER_GRPC_ADDR` / `PHOENIX_MOE_GRPC_ADDR`。
 
 `prod()`、`prod_with_features()`、`prod_with_topic_clients()` 仅保留为上游兼容 facade；新的 application 代码应使用显式 mode 装配。
 
@@ -40,20 +40,20 @@ gRPC trait 实现在 `home-mixer/server.rs`，公共 proto 到 domain query 的�
 6. `MutedUserIdsQueryHydrator`
 7. `FollowedUserIdsQueryHydrator`
 8. `UserSafetyFeaturesQueryHydrator`
-9. `UserTopicsQueryHydrator`（显式 Topic clients 或 Demo）
+9. `UserTopicsQueryHydrator`（显式 Topic clients）
 
 UAS 与 Strato 各使用一个 request-scoped provider；多个字段 owner 共享同一次读取，但不同用户/请求绝不复用结果。Query hydrator 失败只记日志、不中断请求。
 
 ### 3.2 Sources
 
-1. `ThunderSource`（依赖 `InNetworkPostsClient`：非 demo 为 mrpyq NETWORK 收件箱，demo 为整数 Thunder；两者都不可用时不装配）
+1. `ThunderSource`（依赖 `InNetworkPostsClient`；当前真实装配使用 mrpyq NETWORK 收件箱，两者不可用时不装配）
 2. `PhoenixSource`
-3. `FallbackSource`（非 demo 为 mrpyq FALLBACK 池，demo 为 `DemoFallbackPostsClient`）
+3. `FallbackSource`（当前为 mrpyq FALLBACK 池）
 4. `PhoenixTopicsSource`（可选）
 5. `PhoenixMoeSource`（可选）
 6. `CachedPostsSource`
 
-`PhoenixSource` 与 `FallbackSource` 都要求 `!in_network_only`；默认全网时可启用，只有请求显式仅网内才关闭。Gizmoduck 只承担候选作者资料补全，不参与这个判断。`CachedPostsSource` 只接受 QueryBuilder 已批准的显式 Demo unsigned fixture。普通请求默认拒绝携带完整缓存候选。
+`PhoenixSource` 与 `FallbackSource` 都要求 `!in_network_only`；默认全网时可启用，只有请求显式仅网内才关闭。Gizmoduck 只承担候选作者资料补全，不参与这个判断。`CachedPostsSource` 只接受已签名或服务端批准的测试 fixture，普通请求默认拒绝携带完整缓存候选。
 
 ### 3.3 Pre-selection Hydrators
 
@@ -63,9 +63,9 @@ UAS 与 Strato 各使用一个 request-scoped provider；多个字段 owner 共�
 4. `HasMediaHydrator`
 5. `FilteredTopicsHydrator`
 6. `LanguageCodeHydrator`
-7. 仅 demo 且 `HOME_MIXER_ENABLE_AUTHOR_COLD_START` 时再加 `GizmoduckCandidateHydrator`
+7. 只有在作者冷启动能力完成真实 adapter 验收并显式启用时，才额外加 `GizmoduckCandidateHydrator`
 
-TES 相关 hydrator 里 CoreData / VideoDuration / HasMedia / FilteredTopics / LanguageCode 共享一个 request-scoped `TesHydrationProvider`；非 demo 的 `MrpyqTESClient` 又与 VF 端口共享一份内容缓存，同一批候选只打一次 mrpyq RPC。`QuoteHydrator` / `SubscriptionHydrator` 已按 U5 删除。
+TES 相关 hydrator 里 CoreData / VideoDuration / HasMedia / FilteredTopics / LanguageCode 共享一个 request-scoped `TesHydrationProvider`；`MrpyqTESClient` 又与 VF 端口共享一份内容缓存，同一批候选只打一次 mrpyq RPC。`QuoteHydrator` / `SubscriptionHydrator` 已按 U5 删除。
 
 ### 3.4 Pre-selection Filters
 
@@ -90,7 +90,7 @@ TES 相关 hydrator 里 CoreData / VideoDuration / HasMedia / FilteredTopics / L
 1. `PhoenixScorer`：读取 Phoenix 行为概率；5 s timeout。无行为序列、超时、失败或适配器内契约校验不通过时保留候选并整批写 `degraded_reason`。
 2. `RankingScorer`：在上游命名边界内执行 Weighted、Author Diversity 和 OON 行为。
 3. `RuleFallbackScorer`：批内任一候选缺可用 Phoenix 头时，用“新鲜度 + 网内 + 互动数 × 作者多样性”的规则分覆盖整批。
-4. 可选 `VMRanker`、`AuthorColdStartScorer`（仅 demo，且要显式开开关）。
+4. 可选 `VMRanker`、`AuthorColdStartScorer`（需真实 adapter 验收并显式开关）。
 5. `TopKScoreSelector`：保留 post-selection 前 Top 50。
 
 ### 3.6 Post-selection
@@ -98,7 +98,7 @@ TES 相关 hydrator 里 CoreData / VideoDuration / HasMedia / FilteredTopics / L
 - Hydrators：`GizmoduckCandidateHydrator`、`VFCandidateHydrator`，两者并行且互不依赖。
 - Filters：`VFFilter`（`Unchecked / Unavailable` 按 `HOME_MIXER_VF_FAILURE_POLICY`，默认 `fail_closed` 删除）、`DedupConversationFilter`。`AncillaryVFFilter` 已按 U5 删除。
 - 结果：最多返回 35 条（上游 `RESULT_SIZE`）；当前不会在 post-selection 删除后从未选候选回补。
-- 服务层：响应前等待异步 `ServedPersistence::persist`，失败返回 `Unavailable`；业务模式使用 Redis，Demo 默认内存。
+- 服务层：响应前等待异步 `ServedPersistence::persist`，失败返回 `Unavailable`；生产模式使用共享 Redis，未完成持久化合同验收前不能宣称曝光闭环可用。
 
 ### 3.7 Side Effect
 
@@ -108,18 +108,17 @@ TES 相关 hydrator 里 CoreData / VideoDuration / HasMedia / FilteredTopics / L
 
 ## 4. 运行模式和依赖成熟度
 
-| 依赖 | Demo | Degraded（需 `MRPYQ_RECOMMENDATION_DATA_ADDR`） | 关键行为 |
-| --- | --- | --- | --- |
-| UAS | `DemoUserActionSequenceFetcher` | `RedisUserActionSequenceStore`（读 `uas-worker` 投影到 Redis 的行为；`UAS_REDIS_URL` 缺省复用 `HOME_MIXER_REDIS_URL`） | 没有投影数据的用户序列为空，`PhoenixSource` 不可用、`PhoenixScorer` 整批 `phoenix_missing_sequence`，由 `RuleFallbackScorer` 排序；真实埋点事件流仍待接入 |
-| Strato | `DemoStratoClient` | `MrpyqStratoClient`（`ViewerRelationService`，由 rec-bff 承载） | 返回账号级「不看」翻译成的皮 id，`blocked_by` / 静音恒空；调用失败只记日志，`viewer_relations_hydrated` 保持 false，准入过滤器整批丢弃；两者都拒绝持久化写入 |
-| TES | `DemoTESClient` | `MrpyqTESClient`（mrpyq `BatchGetRecommendationContents`） | 补作者 / 正文 / `created_at_ms` / 互动数 / 一级 eligibility；`creator_member_id` 为空的帖子被 `CoreDataHydrationFilter` 丢弃 |
-| Gizmoduck（作者资料） | `DemoGizmoduckClient`（演示昵称 / 粉丝数） | `DisabledGizmoduckClient` | 只用于 candidate hydration；非 demo 的 `screen_names` 为空，不参与网络范围决策 |
-| VF | `DemoVisibilityFilteringClient`（Allow） | `MrpyqFirstStageEligibilityClient` | 非 demo 只承载一级 `recommendation_eligible`，无 viewer 级判定；`Unchecked / Unavailable`（含成功响应缺帖）按 `HOME_MIXER_VF_FAILURE_POLICY`，默认 `fail_closed` 删除 |
-| 网内 / 兜底召回 | `ThunderClient`（整数 Thunder，`legacy-int-ids`）+ `DemoFallbackPostsClient` | `MrpyqInNetworkPostsClient`（NETWORK / FALLBACK） | 单次 RPC 500 ms，一次召回总预算 1500 ms；以皮 `member_id` 作为 `account_id` 查询，rec-bff 已直接读皮维度收件箱，字段改名待合同定版 |
-| Phoenix retrieval | 配置地址后真实 gRPC | 同左，且拒绝随机权重 | 标准/MoE 调用上限 3 s |
-| Phoenix prediction | 配置地址后真实 gRPC | 同左，且拒绝随机权重 | 调用上限 5 s，失败或校验不通过走 `RuleFallbackScorer` |
-| served 历史记录 | `FeedStateServedPersistence` | 同左 | 业务模式 Redis，Demo 默认内存；每个请求只加载一份快照 |
-| Topic | Demo adapter | 需显式注入 | Topic retrieval 上限 500 ms |
+| 依赖 | 当前 Degraded 状态（需 `MRPYQ_RECOMMENDATION_DATA_ADDR`） | 关键行为 |
+| --- | --- | --- |
+| UAS | `RedisUserActionSequenceStore`（读取 `uas-worker` 投影到 Redis 的行为） | 没有投影数据时序列为空，Phoenix 召回不可用、精排走规则回退；真实埋点事件流仍待接入 |
+| Strato | `MrpyqStratoClient`（`ViewerRelationService`，由 rec-bff 承载） | 调用失败时准入过滤器按 fail-closed 处理 |
+| TES | `MrpyqTESClient`（mrpyq `BatchGetRecommendationContents`） | 补作者、正文、时间、互动数和一级 eligibility |
+| Gizmoduck（作者资料） | 按部署注入真实 adapter；未接入时 Disabled | 只用于 candidate hydration，不参与网络范围决策 |
+| VF | `MrpyqFirstStageEligibilityClient` | 未验证候选按 `HOME_MIXER_VF_FAILURE_POLICY` 处理，默认 `fail_closed` 删除 |
+| 网内 / 兜底召回 | `MrpyqInNetworkPostsClient`（NETWORK / FALLBACK） | 单次 RPC 500 ms，一次召回总预算 1500 ms |
+| Phoenix retrieval / prediction | xrex serving contract 尚未与 Home Mixer client contract 适配 | 不可直接把 xrex 地址配置到 Home Mixer；不可用时走规则回退 |
+| served 历史记录 | 生产环境使用共享持久化存储 | 持久化合同未验收前不能宣称曝光闭环可用 |
+| Topic | 需显式注入真实 adapter | Topic retrieval 上限 500 ms |
 
 `production_ready` 当前拒绝启动，直到调用方身份、TES、UAS、Strato、VF、网内 / 兜底、Phoenix 元数据、served 落库等生产合同验收闭合。
 
@@ -131,4 +130,4 @@ Source 并行、Filter 串行、Scorer 串行、SideEffect 异步。每个阶段
 
 ## 6. 当前定位
 
-当前 Pipeline 是一条可运行、可测试、边界接近上游的 portable 编排实现：Demo 可完整演示，Degraded 明确保守退化，但不是生产完成声明。生产接入必须以真实合同、认证、deadline、失败策略和真实 artifact 验收为依据，不能通过改名或打开 feature switch 宣布完成。
+当前 Pipeline 是一条可运行、可测试、边界接近上游的 portable 编排实现：Degraded 明确保守退化，但不是生产完成声明。生产接入必须以真实合同、认证、deadline、失败策略和真实 artifact 验收为依据，不能通过改名或打开 feature switch 宣布完成。

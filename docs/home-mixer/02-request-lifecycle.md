@@ -27,7 +27,7 @@ sequenceDiagram
     Main->>Main: bind 管理 HTTP（/readyz = starting）
     Main->>Server: HomeMixerServer::build_with_metrics(config, metrics)
     Server->>Pipeline: PhoenixCandidatePipeline::assemble_with_uas(config.mode, features, config.uas)
-    Pipeline->>Clients: 初始化 UAS（非 demo：Redis 投影）/ Phoenix / mrpyq（网内、兜底、TES、一级 VF、Strato；非 demo 必配）/ Gizmoduck 等
+    Pipeline->>Clients: 初始化 UAS（Redis 投影）/ Phoenix / mrpyq（网内、兜底、TES、一级 VF、Strato；真实业务必配）/ Gizmoduck 等
     Clients-->>Pipeline: 返回客户端实例
     Pipeline-->>Server: 内层 pipeline
     Server->>Server: ScoredPosts + ForYou pipeline/server 装配

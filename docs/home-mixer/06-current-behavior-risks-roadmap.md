@@ -1,86 +1,43 @@
-# 06. 当前行为、风险与补齐路线
+# 当前行为、风险与路线
 
-> **篇首更新说明（2026-09-17）**：`MRPYQ_RECOMMENDATION_DATA_ADDR` 的承载方已确定为 rec-bff（`recommend/rec-bff`，独立 Go 门面）：它实现 `recommendation_data.proto` + `viewer_relation.proto` 两份合同，翻译到 mrpyq Feed / Account RPC。§2、§4.5 中关于「mrpyq 尚未实现 ViewerRelationService」「皮维度收件箱未落地」的旧结论已修正：两者在 rec-bff 部署后即可用；仍未闭合的是 mrpyq 底层皮维度存储（not-see 按皮存、blocked_by 反向列表）与合同字段改名，以及 §6.1 的三方同批上线约束。
+> **状态：`current-code` + `design`**
 
-本篇只记录当前请求链真实可达的退化行为、剩余风险和生产验收条件。框架执行语义见 [candidate-pipeline 风险文档](../candidate-pipeline/06-risks-tests-and-roadmap.md)，外部合同见 [05-external-deps-and-contracts](./05-external-deps-and-contracts.md)。
+## 1. 当前可以确认的行为
 
-## 1. 三种运行模式
+- Home Mixer 是 Rust Feed 编排层，执行查询补全、候选召回、内容补全、过滤、打分、选择和副作用；
+- 业务数据通过 Recommendation Data 和 viewer-relation 合同接入；
+- Redis adapter 承载 UAS 投影与有界 served/request 状态；
+- Phoenix 客户端会校验 serving metadata、响应 shape、NaN、重复和缺失候选，失败时回退到 `RuleFallbackScorer`；
+- `production_ready` 在生产合同未闭合时拒绝启动；
+- xrex 是 Phoenix 生产主线，但尚未与 Home Mixer 当前 Phoenix 请求合同完成适配。
 
-| 模式 | 当前行为 | 启动条件 |
-| --- | --- | --- |
-| `demo` | 注入 Demo UAS、Strato、TES、Gizmoduck、Topic 和 VF adapter，可跑通网内/网外完整演示链路 | `HOME_MIXER_MODE=demo`；`HOME_MIXER_DEMO=1` 仅作兼容别名 |
-| `degraded` | 必须配置 `MRPYQ_RECOMMENDATION_DATA_ADDR`（指向 rec-bff，五个 `Mrpyq*` 适配器走同一地址）和 `HOME_MIXER_REDIS_URL`：TES / 网内召回 / 兜底召回 / 一级 VF / Strato 就绪；UAS 走 Redis adapter，读取 `uas-worker` 投影到 `UAS_REDIS_URL`（缺省复用 `HOME_MIXER_REDIS_URL`）的行为序列；可以启动但不声称生产可用 | 默认模式；缺业务数据面地址、缺 Redis 地址或任一地址不可用时启动失败，不回退到整数 Thunder |
-| `production_ready` | 当前拒绝启动 | 调用方身份、TES、UAS 事件 schema/保留策略、Strato、VF、网内 / 兜底、Phoenix 元数据、served 落库合同尚未验收（`runtime_config.rs`） |
+## 2. 风险排序
 
-`HomeMixerConfig` 是 mode 的唯一入口。`HomeMixerServer::build` 把已校验的 mode、`HomeMixerFeatures` 和 `UasConfig` 传给 `PhoenixCandidatePipeline::assemble_with_uas`，Demo/Disabled adapter 不再由 pipeline 自己读 `HOME_MIXER_MODE`。装配层仍读的环境变量：`MRPYQ_RECOMMENDATION_DATA_ADDR`（非 demo 必填）、`PHOENIX_PREDICT_GRPC_ADDR` / `PHOENIX_RETRIEVAL_GRPC_ADDR`（可选），以及旁路地址 `VM_RANKER_GRPC_ADDR`、`PHOENIX_MOE_GRPC_ADDR`；`assemble_for_mode` 这条测试 / 兼容入口自行从环境解析 `UasConfig`，两个 Redis 地址都缺时得到 `Disabled` 并告警。
+| 优先级 | 风险 | 影响 | 关闭条件 |
+| --- | --- | --- | --- |
+| P1 | xrex 与 Home Mixer 协议未适配 | 模型服务不能直接接入 | ranking/retrieval contract test、版本和错误语义验收 |
+| P1 | 真实行为事件与 UAS 投影合同未验收 | 个性化和训练归因不可信 | schema、认证、保留、重放、吞吐验收 |
+| P1 | served persistence/exposure 端到端未验收 | 训练样本缺曝光事实 | 可靠写入、幂等、对账和告警 |
+| P1 | 内容权限和可见性外部合同依赖 | 可能空 Feed 或安全错误 | 真实服务集成与 fail-closed 演练 |
+| P2 | 多副本、容量和模型发布流程未验证 | 延迟、恢复和回滚风险 | 压测、灰度、版本和 rollback runbook |
 
-## 2. Degraded 模式的真实行为
+## 3. 不应再出现的假设
 
-只设置 `MRPYQ_RECOMMENDATION_DATA_ADDR` 和 `HOME_MIXER_REDIS_URL`、不设置其他环境变量时，一次真实请求会这样走：
+- 本地端到端 Demo 能代表生产链路；
+- 配置 Phoenix 地址就代表模型已经上线；
+- 随机权重或 mock corpus 能证明推荐质量；
+- 旧 gateway、整数 Thunder 或本地 fixture 可以替代 xrex/真实业务合同；
+- FeedState 记录可以替代服务端曝光事件。
 
-- 请求默认 `in_network_only=false`，因此 `FallbackSource` 可以读取 mrpyq FALLBACK 池；QueryBuilder 不依赖 Gizmoduck viewer RPC。作者资料为空，响应 `screen_names` 为空。
-- `RedisUserActionSequenceStore` 从 `home_mixer:uas:{user_id}:actions` 读取 `uas-worker` 投影的最近 7 天行为。该用户没有投影数据（job 未运行、事件未接入）时序列为空，聚合报错后 `scoring_sequence` / `retrieval_sequence` 为 `None`：`PhoenixSource` 不可用，`PhoenixScorer` 整批标 `phoenix_missing_sequence`，`RuleFallbackScorer` 用“新鲜度 + 网内 + 互动数 + 作者多样性”的规则分覆盖整批。只有投影 job 持续消费真实行为事件、且 `PHOENIX_*_GRPC_ADDR` 配置了可用网关时，模型才会真正参与。
-- `MrpyqInNetworkPostsClient` 以 `query.user_id`（皮的 `member_id`）作为 `account_id` 调 NETWORK 收件箱；rec-bff 直接读皮维度的 `ListMemberFollowInboxV1`，字段改名（`viewer_member_id`）与 mrpyq 底层皮维度改造仍未落地（见 `docs/implementation/mrpyq-member-dimension-requirements.md`）。
-- `MrpyqTESClient` 补作者（`creator_member_id`）、正文、`created_at_ms`、互动计数与一级 `recommendation_eligible`；`creator_member_id` 为空的帖子被 `CoreDataHydrationFilter` 丢弃。
-- `MrpyqStratoClient` 调 `ViewerRelationService`（同一地址，由 rec-bff 实现）：返回账号级「不看」名单翻译成的皮 id，`blocked_by` / 静音恒空。rec-bff 未部署或名单读不完整时，框架只记日志、不中断请求，但 `viewer_relations_hydrated` 保持 false，`AuthorSocialgraphFilter` / `ViewerMutedKeywordFilter` 整批丢弃（fail-closed），不会把“读不到名单”当成“没人拉黑”。
-- `MrpyqFirstStageEligibilityClient` 只承载一级 `recommendation_eligible`，对经过 `FirstStageEligibleFilter` 存活的候选恒为 Allow，viewer 级可见性没有数据源。`VFFilter` 对 `Unchecked / Unavailable`（含成功响应缺帖）按 `HOME_MIXER_VF_FAILURE_POLICY` 处理：默认 `fail_closed` 全丢弃，`in_network_only` 仅保留网内，`allow_all` 需显式配置且非 demo 下会在启动时告警。
-- served 历史通过 `FeedStateServedPersistence` 在响应前等待异步写入；Demo 默认内存，业务模式要求 Redis 地址，多副本共享同一份历史，写失败返回 `Unavailable`。
+## 4. 推荐路线
 
-因此 degraded 在没有 `uas-worker` 投影数据时实际等价于“mrpyq NETWORK + FALLBACK 候选 → 规则排序”的全网 Feed 骨架；接上行为事件流后个性化模型路径才可达。需要本地完整链路时使用 Demo；需要生产流量时必须先让 `production_ready` 的合同校验通过。
+```text
+Rust/Phoenix 测试
+  → 真实业务数据、权限、可见性和 Redis
+  → 规则 Feed 与曝光事件
+  → UAS 投影
+  → xrex 合同适配与 checkpoint/index
+  → 灰度、容量、监控和回滚
+```
 
-## 3. 已经收口的高风险语义
-
-- 网络范围只由请求字段决定：显式 `in_network_only=true` 才限制为仅网内，否则同时允许网内和网外；QueryBuilder 不持有 Gizmoduck client。
-- VF 使用 `Allowed / Restricted / Unchecked / Unavailable`，缺失结果记为 `Unavailable` 而非审核通过；故障分支保留范围由 `HOME_MIXER_VF_FAILURE_POLICY` 决定；调用上限 500 ms。
-- Phoenix 标准/MoE 召回上限 3 s，预测上限 5 s；Thunder、VF、Topic profile/recall、UAS、Strato read/write、TES 单批和 Gizmoduck profile 均为 500 ms；mrpyq 单次 RPC 500 ms（`MRPYQ_RECOMMENDATION_DATA_TIMEOUT_MS`），一次召回跨页总预算 1500 ms（`MRPYQ_RECALL_BUDGET_MS`）。超时由对应 Source/Hydrator/Scorer/SideEffect 隔离并记录。
-- `DebugScoredPosts` 默认关闭，启用时要求 metadata token；未签名 `cached_posts` 默认拒绝且只允许显式 Demo fixture。
-- Pipeline 对 Query Hydrator、Source、Hydrator、Scorer、Selector 和 SideEffect 都输出 request-scoped 成功、失败和耗时日志。
-- 对外协议与 mrpyq 边界上的身份都是 24 位小写 hex ObjectId 字符串，流水线内是 `PostId` / `UserId`（`models/ids.rs`）；非法串在边界丢弃并计数，`"0"` 不再是合法哨兵。
-- Phoenix 响应在适配器内做 serving metadata（`feature-schema` / `model-version` / `random-weights` / `supported-actions`）与形状校验，非 demo 拒绝随机权重；校验失败整批走 `RuleFallbackScorer`。
-- UAS、Strato、TES request-scoped provider 已有跨用户/跨请求隔离测试。
-- Weighted 负分归一化已与注释和排序测试一致。
-
-## 4. 仍然可达的风险
-
-### 4.1 Post-selection 过滤后不回补
-
-Selector 先保留 50 条，VF、Gizmoduck profile 和会话去重随后执行，最终再截到 35 条。如果 post-selection 删除超过 15 条，响应会少于目标数量；Pipeline 当前不会从 `non_selected_candidates` 回补，但会输出 `result_underfilled` 告警。
-
-修复前先定义回补候选是否必须重新执行 VF、附属内容检查和会话去重，以及额外调用和延迟预算，避免为了补量绕过安全阶段。
-
-### 4.2 普通业务 RPC 的调用方身份合同未闭合
-
-Debug RPC 已有独立 token，unsigned cache 已被隔离，但普通 ScoredPosts/ForYou 请求仍依赖部署层提供可信调用方身份和 viewer 绑定。`production_ready` 当前拒绝启动，所以该缺口不会被误标为生产完成；接入时需明确 mTLS/service identity、viewer 防冒用、审计和密钥轮换责任。
-
-### 4.3 本地 Feed 状态不是生产持久层
-
-Demo 的 `InMemoryFeedStateStore` 有 10,000 用户上限，进程重启会丢失历史。业务模式使用 Redis，以原子事务更新有界下发历史和请求时间戳，默认滑动保留七天；同一请求的各个步骤只加载一份快照。Redis 重启或切主后，首次读取会在新连接上重试一次，保证恢复后的第一个请求仍能看到历史；Redis 持久化、备份和恢复由部署策略决定，未开持久化时历史随重启丢失。Redis 连接支持单端点（`HOME_MIXER_REDIS_URL`）与原生 Cluster（`HOME_MIXER_REDIS_CLUSTER_URLS`，按 `CLUSTER SLOTS` 路由；两个 key 均带 `{user_id}` hash tag，pipeline / MULTI 天然单 slot）。该接口没有 position / event_type，不能作为训练归因的原始事件源——训练归因用的是 `ServedCandidatesKafkaSideEffect` 发布的服务端曝光事件（配置 `SERVED_EVENTS_*` 后装配，见 `docs/implementation/served-candidates-event-contract.md`）；历史共享也不等于同一用户并发请求绝不重复下发。
-
-### 4.4 非 demo 下模型路径依赖 UAS 投影的真实数据
-
-Home Mixer 已在非 demo 下装配 Redis UAS adapter，但序列内容完全取决于 `uas-worker` 是否在消费真实行为事件：没有投影数据的用户拿不到序列，Phoenix 召回与精排对其不执行，候选由 `RuleFallbackScorer` 排序；默认全网范围下 mrpyq FALLBACK 兜底召回仍然可达。事件 JSON 合同、埋点 topic 的 schema / 认证 / 保留与重放策略尚未验收，`action_type` 编号与 proto `ActionName` 强耦合；`product_surface` 已进入事件（省略或旧 v1 成员当 0），真实多入口要靠客户端按 [user-action-collect.md](../implementation/user-action-collect.md) 上报。接通事件流并验收这些合同之前，不能把“配置了 Phoenix 地址”当成“模型已上线”。投影 job 单实例串行，吞吐受 Redis 往返时间限制，正式流量前需要按分区多实例部署并压测。
-
-### 4.5 viewer 维度准入的语义缺口
-
-`MrpyqStratoClient` 依赖的 `ViewerRelationService` 已由 rec-bff 承载，但语义仍是**账号级**：同一账号下所有皮共用一份「不看」名单，`blocked_by`（不让看）恒空（mrpyq 无反向列表），静音 / 屏蔽词无数据源。RPC 失败时 query hydrator 只记日志，准入过滤器看 `viewer_relations_hydrated`，未水合则整批丢弃。`MrpyqFirstStageEligibilityClient` 只承载帖子维度的一级标志。还有一个已知的 fail-open 缺口：关系服务以账号键成功返回**空列表**时仍会标为已水合并放行（“blocks nobody”）——mrpyq 把 not-see 改成按皮存储（§5.1）时，账号键查询会静默回空、该拦的全放行。因此 **mrpyq §5.1、rec-bff 查询键改皮、推荐侧把 Strato 端口迁到 VF 端口三方必须同批上线**（见 `docs/implementation/mrpyq-member-dimension-requirements.md` §6.1）。
-
-## 5. 外部合同补齐顺序
-
-1. **Viewer relations + VF**：先闭合用户关系和内容安全语义、认证、超时、漏返回及审计；rpc 已由 rec-bff 承载，待推进的是 mrpyq §5.1/§5.2 皮维度存储与推荐侧 Strato 端口迁移（三方同批，见上文 4.5）。
-2. **TES + Gizmoduck**：TES 已由 mrpyq `BatchGetRecommendationContents` 承载，待确认 `creator_member_id` 必填；Gizmoduck 作者昵称 / 粉丝数适配器仍缺。
-3. **UAS 事件流 + 持久化 served / feedback**：Redis UAS adapter 与 `uas-worker` 已就位，待验收真实埋点 topic 的事件 schema、认证、保留与重放合同并接入；服务端曝光事件流已由 `ServedCandidatesKafkaSideEffect` + `ServedCandidatesSink` 承担（带 position / served_type / score，幂等键 `request_id`），待确定 topic、保留期与消费方；客户端真实曝光和 feedback 仍需埋点侧回传，按 `request_id` + `post_id` 关联。
-4. **Phoenix artifact/service**：用真实 LFS artifact 验证 offline/gRPC 一致性、延迟、容量和 fallback。
-5. **普通 RPC 身份边界**：完成调用方身份与 viewer 绑定后，才允许 `production_ready` 启动。
-
-Ads、Prompt、WhoToFollow、PushToHome、Kafka 和 Grox 等旁路能力继续默认关闭；开关存在不等于合同完成。Feed state 的 Redis 为业务模式必需配置。
-
-## 6. 生产验收条件
-
-只有同时满足以下条件，才应解除 `production_ready` 启动拒绝：
-
-1. Viewer、TES、Gizmoduck、VF 使用非 `Disabled*` adapter，并有 owner、schema、认证和 deadline 证据。
-2. VF 错误、超时、漏返回、Restricted 和附属内容路径均有回归测试。
-3. 普通 RPC 调用方身份不能伪造 viewer，Debug 和缓存数据有独立信任边界。
-4. Phoenix 慢服务、不可用和长度不匹配时仍在总请求预算内返回定义好的 fallback。
-5. 多用户并发隔离、服务端去重状态和隐私删除通过集成验收。
-6. 真实 artifact 的 offline/gRPC 输出与延迟验收完成，而不是只使用 LFS pointer 或 Demo fixture。
+每个阶段只在有可复现的测试、指标和真实输入后推进；历史更新记录不作为当前状态依据。
