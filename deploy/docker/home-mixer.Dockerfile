@@ -44,8 +44,10 @@ RUN --mount=type=cache,target=/usr/local/cargo/registry \
     --mount=type=cache,target=/src/target \
     cargo build --release --locked -p home-mixer --features kafka-ssl \
       --bin home-mixer --bin uas-worker \
+      -p id-service --bin id-service \
  && mkdir -p /out \
- && cp target/release/home-mixer target/release/uas-worker /out/
+ && cp target/release/home-mixer target/release/uas-worker \
+    target/release/id-service /out/
 
 # ── 运行阶段 ──────────────────────────────────────────────────────────────────
 FROM debian:bookworm-slim AS runtime
@@ -56,7 +58,7 @@ RUN apt-get update \
  && rm -rf /var/lib/apt/lists/* \
  && useradd --system --uid 10001 --user-group --create-home --home-dir /home/home-mixer home-mixer
 
-COPY --from=builder /out/home-mixer /out/uas-worker /usr/local/bin/
+COPY --from=builder /out/home-mixer /out/uas-worker /out/id-service /usr/local/bin/
 
 USER home-mixer
 WORKDIR /home/home-mixer

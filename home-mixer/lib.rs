@@ -18,6 +18,7 @@ pub mod feed_state;
 pub mod feed_stats;
 mod filters;
 pub mod for_you_server;
+pub mod id;
 pub mod logging;
 pub mod metrics;
 pub mod models;

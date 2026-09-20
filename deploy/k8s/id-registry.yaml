@@ -1,0 +1,62 @@
+# ID Registry：ObjectId ↔ Snowflake 全局身份映射服务（单写者）。
+# 生产 cutover 先走 trusted import；不传 --allow-allocation，未知 ID fail closed。
+apiVersion: v1
+kind: Service
+metadata:
+  name: id-registry
+spec:
+  selector:
+    app.kubernetes.io/name: id-registry
+  ports:
+    - name: http
+      port: 50070
+      targetPort: http
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: id-registry
+spec:
+  serviceName: id-registry
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: id-registry
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: id-registry
+    spec:
+      securityContext:
+        fsGroup: 10001
+        fsGroupChangePolicy: OnRootMismatch
+      containers:
+        - name: id-registry
+          image: home-mixer:dev
+          command: ["/usr/local/bin/id-service"]
+          args:
+            - "--listen=0.0.0.0:50070"
+            - "--registry=/var/lib/id-registry/id-registry.jsonl"
+            - "--worker-id=0"
+          ports:
+            - name: http
+              containerPort: 50070
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+          readinessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+          volumeMounts:
+            - name: data
+              mountPath: /var/lib/id-registry
+  volumeClaimTemplates:
+    - metadata:
+        name: data
+      spec:
+        accessModes: ["ReadWriteOnce"]
+        resources:
+          requests:
+            storage: 5Gi

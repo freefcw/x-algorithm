@@ -35,6 +35,8 @@ spec:
             # 与 home-mixer 共用同一 Redis（或 UAS_REDIS_URL 指向独立实例）
             - name: HOME_MIXER_REDIS_URL
               value: redis://redis:6379/
+            - name: HOME_MIXER_ID_REGISTRY_URL
+              value: http://id-registry:50070
             - name: UAS_KAFKA_BROKERS
               value: kafka:9092
             - name: UAS_KAFKA_TOPIC
