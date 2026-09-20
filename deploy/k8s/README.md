@@ -9,6 +9,7 @@
 |---|---|---|
 | `home-mixer.yaml` | 推荐服务 Deployment + gRPC Service | 50051 (gRPC)、9090 (admin) |
 | `uas-worker.yaml` | 行为序列投影 job Deployment | 9091 (admin) |
+| `id-registry.yaml` | ObjectId ↔ Snowflake 身份映射 Deployment + HTTP Service；依赖 Redis（`ID_REGISTRY_REDIS_URL` / `ID_REGISTRY_REDIS_CLUSTER_URLS`），默认不开 `--allow-allocation`（未知 ID 404）和 `--allow-trusted-import`（带 trusted 的请求 403）；`/metrics` 与业务接口同端口 | 50070 (HTTP) |
 
 `thunder` 按主干计划不部署（整数 proto 无法承载真实 ObjectId），清单未提供。
 
@@ -30,7 +31,12 @@ xrex 服务伪装成旧的 `phoenix-gateway`。
      key 已按用户 hash-tag（`{user_id}`），pipeline/MULTI 天然单 slot；
    - Kafka：`UAS_KAFKA_BROKERS` / `UAS_KAFKA_TOPIC`（uas-worker 必填，否则停留在
      stdin 模式且永不就绪）；SASL/SSL 变量见 `docs/home-mixer/07-config-and-params.md`。
-3. **探针**：home-mixer / uas-worker 走 HTTP（`/healthz` `/readyz`，管理端口）。
+   - id-registry：`ID_REGISTRY_REDIS_URL`（占位 `redis://redis:6379/`）或
+     `ID_REGISTRY_REDIS_CLUSTER_URLS`；Redis 不可达或 mapping version 不匹配时
+     `/readyz` 返回 503，副本不会就绪。`HOME_MIXER_ID_REGISTRY_URL` 指向
+     `http://id-registry:50070`。
+3. **探针**：home-mixer / uas-worker / id-registry 走 HTTP（`/healthz` `/readyz`，
+   home-mixer 与 uas-worker 在管理端口，id-registry 在业务端口 50070）。
    Phoenix xrex 服务的 readiness 端口需在其单独的 Deployment 中显式配置。
 4. **优雅停机**：home-mixer `terminationGracePeriodSeconds`（30）必须大于
    `--shutdown-delay-secs + --drain-timeout-secs`（默认 0 + 20 s）；

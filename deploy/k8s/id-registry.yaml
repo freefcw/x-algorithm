@@ -1,5 +1,8 @@
-# ID Registry：ObjectId ↔ Snowflake 全局身份映射服务（单写者）。
-# 生产 cutover 先走 trusted import；不传 --allow-allocation，未知 ID fail closed。
+# ID Registry：ObjectId ↔ Snowflake 全局身份映射服务。
+# 映射持久化在 Redis（ID_REGISTRY_REDIS_URL 或 ID_REGISTRY_REDIS_CLUSTER_URLS），
+# 进程本身无状态，因此用 Deployment 而不是 StatefulSet/PVC。
+# 生产 cutover 先走 trusted import：不传 --allow-allocation，未知 ID fail closed；
+# trusted 导入只在迁移任务/迁移副本上开启，在线副本不要打开。
 apiVersion: v1
 kind: Service
 metadata:
@@ -13,11 +16,10 @@ spec:
       targetPort: http
 ---
 apiVersion: apps/v1
-kind: StatefulSet
+kind: Deployment
 metadata:
   name: id-registry
 spec:
-  serviceName: id-registry
   replicas: 1
   selector:
     matchLabels:
@@ -27,17 +29,45 @@ spec:
       labels:
         app.kubernetes.io/name: id-registry
     spec:
-      securityContext:
-        fsGroup: 10001
-        fsGroupChangePolicy: OnRootMismatch
+      # 进程收到 SIGTERM 后优雅停机：停止接受新连接并排空在途请求。
+      # 一次批量写最多串行经过约 5～8 个 Redis pipeline（每个默认 500 ms 超时），
+      # 排空时间需大于这一预算。
+      terminationGracePeriodSeconds: 30
       containers:
         - name: id-registry
           image: home-mixer:dev
           command: ["/usr/local/bin/id-service"]
+          # 所有 flag 都有同名环境变量（ID_REGISTRY_LISTEN、ID_REGISTRY_WORKER_ID、
+          # ID_REGISTRY_ALLOW_ALLOCATION、ID_REGISTRY_ALLOW_TRUSTED_IMPORT、
+          # ID_REGISTRY_MAX_BATCH_SIZE），这里保留 args 形式便于阅读。
           args:
             - "--listen=0.0.0.0:50070"
-            - "--registry=/var/lib/id-registry/id-registry.jsonl"
+            # 序列计数器在 Redis，多副本共享 worker id 也安全；不同 worker id
+            # 只是让分配结果可追溯到副本。
             - "--worker-id=0"
+            # 在线副本不传 --allow-allocation（未知 ID 返回 404）和
+            # --allow-trusted-import（带 trusted_snowflake_id 返回 403）。
+            # 迁移导入副本另起 Deployment，只对迁移任务开放。
+          env:
+            # 单 Redis / 代理 / Sentinel 入口。原生 Redis Cluster 改用
+            # ID_REGISTRY_REDIS_CLUSTER_URLS（逗号分隔 seed URL），两者互斥。
+            # URL 里的用户名/密码不会出现在启动日志中。
+            - name: ID_REGISTRY_REDIS_URL
+              value: "redis://redis:6379/"
+            - name: ID_REGISTRY_REDIS_KEY_PREFIX
+              value: "id-registry:v2"
+            # 单个 Redis pipeline 超时，默认 500 ms；客户端整次请求超时也是 500 ms，
+            # 在线副本可按需调低。
+            # - name: ID_REGISTRY_REDIS_REQUEST_TIMEOUT_MS
+            #   value: "500"
+            # 单次批量 id 数上限，超限返回 413；默认 10000。
+            # - name: ID_REGISTRY_MAX_BATCH_SIZE
+            #   value: "10000"
+            - name: RUST_LOG
+              value: "info"
+            # 日志格式：text（默认）或 json，与 Home Mixer 的 HOME_MIXER_LOG_FORMAT 同构。
+            - name: ID_REGISTRY_LOG_FORMAT
+              value: "json"
           ports:
             - name: http
               containerPort: 50070
@@ -46,17 +76,8 @@ spec:
               path: /healthz
               port: http
           readinessProbe:
+            # /readyz 只读校验 Redis 可达、mapping version 与 storage schema 元数据，
+            # 不写 Redis；失败时摘除副本。/metrics 与业务接口同端口，供 Prometheus 抓取。
             httpGet:
-              path: /healthz
+              path: /readyz
               port: http
-          volumeMounts:
-            - name: data
-              mountPath: /var/lib/id-registry
-  volumeClaimTemplates:
-    - metadata:
-        name: data
-      spec:
-        accessModes: ["ReadWriteOnce"]
-        resources:
-          requests:
-            storage: 5Gi
