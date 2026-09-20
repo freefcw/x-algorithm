@@ -225,6 +225,27 @@ pub fn validate_serving_metadata(
         identity_map_version == id_service::MAPPING_VERSION.to_string(),
         "Phoenix metadata identity-map-version mismatch: got {identity_map_version}"
     );
+    let identity_map_sha256 = metadata
+        .get("identity-map-sha256")
+        .ok_or_else(|| anyhow::anyhow!("Phoenix response missing metadata identity-map-sha256"))?
+        .to_str()
+        .map_err(|_| anyhow::anyhow!("Phoenix metadata identity-map-sha256 is not valid ASCII"))?;
+    anyhow::ensure!(
+        identity_map_sha256.len() == 64
+            && identity_map_sha256
+                .bytes()
+                .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte)),
+        "Phoenix metadata identity-map-sha256 is invalid"
+    );
+    if let Ok(expected) = std::env::var("PHOENIX_EXPECTED_IDENTITY_MAP_SHA256") {
+        if !expected.trim().is_empty() && identity_map_sha256 != expected {
+            anyhow::bail!(
+                "Phoenix metadata identity-map-sha256 mismatch: expected {}, got {}",
+                expected,
+                identity_map_sha256
+            );
+        }
+    }
 
     let model_version = metadata
         .get("model-version")
@@ -491,6 +512,12 @@ mod tests {
         metadata.insert("random-weights", "false".parse().unwrap());
         metadata.insert("identity-map-version", "1".parse().unwrap());
         metadata.insert(
+            "identity-map-sha256",
+            "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+                .parse()
+                .unwrap(),
+        );
+        metadata.insert(
             "supported-actions",
             (1..=18)
                 .map(|value| value.to_string())
@@ -567,6 +594,12 @@ mod tests {
         metadata.insert("model-version", "step-000200@0123456789ab".parse().unwrap());
         metadata.insert("random-weights", "false".parse().unwrap());
         metadata.insert("identity-map-version", "1".parse().unwrap());
+        metadata.insert(
+            "identity-map-sha256",
+            "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+                .parse()
+                .unwrap(),
+        );
         // What a bundle trained with `--observed-actions favorite,reply,report` advertises.
         metadata.insert("supported-actions", "1,2,18".parse().unwrap());
         assert!(validate_serving_metadata(&metadata, false).is_ok());
@@ -586,6 +619,12 @@ mod tests {
         metadata.insert("model-version", "random".parse().unwrap());
         metadata.insert("random-weights", "true".parse().unwrap());
         metadata.insert("identity-map-version", "1".parse().unwrap());
+        metadata.insert(
+            "identity-map-sha256",
+            "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+                .parse()
+                .unwrap(),
+        );
         metadata.insert(
             "supported-actions",
             REQUIRED_SUPPORTED_ACTIONS

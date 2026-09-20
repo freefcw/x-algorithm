@@ -22,8 +22,9 @@
         一行一条下发候选，带归因后的 19 列标签：行为发生在 [request_time, request_time + 窗口]
         内、且该帖在窗口内被多次下发时归到最近的一次下发。没有任何行为的候选就是负样本。
     post_metadata.parquet
-        从两类事件里抽出的 post_id / author_id / create_time / is_active=1。这只是兜底：有
-        mrpyq 的帖子导出时用导出的（含删除状态）覆盖它。
+        从两类事件里抽出的 numeric post_id / author_id / create_time / is_active=1。这只是
+        兜底：有 mrpyq 的帖子导出时用导出的（含删除状态）覆盖它。所有 ID 在写出前通过
+        canonical ID Registry resolve 为 Snowflake。
 
 未做的事（有意留给上游合同）：
     - dwell_time 连续值：UAS 事件没有停留秒数，列固定为 0，只有 dwell（是否停留）二值列。
@@ -41,18 +42,27 @@
 import _setup_path  # noqa: F401
 
 import argparse
+import hashlib
 import json
 import logging
+import os
 import sys
-from collections.abc import Iterable, Iterator
+import urllib.error
+import urllib.request
+from collections.abc import Iterable, Iterator, Mapping
 from pathlib import Path
+from typing import Protocol, cast
 
 import numpy as np
 import pandas as pd
 import pyarrow as pa
 import pyarrow.parquet as pq
 
-from services.model_contract import ACTION_IDX_TO_ENUM
+from services.model_contract import (
+    ACTION_IDX_TO_ENUM,
+    FEATURE_SCHEMA,
+    IDENTITY_MAPPING_VERSION,
+)
 
 BEHAVIOR_FIELDS = [
     "favorite", "reply", "repost", "photo_expand", "click", "profile_click", "vqv",
@@ -63,6 +73,63 @@ BEHAVIOR_FIELDS = [
 
 def is_object_id(value: str) -> bool:
     return len(value) == 24 and all(character in "0123456789abcdef" for character in value)
+
+
+class IdentityResolver(Protocol):
+    def resolve_batch(self, ids: list[tuple[str, str]]) -> Mapping[tuple[str, str], int]:
+        ...
+
+
+class RegistryIdentityResolver:
+    """Resolve external IDs through the canonical process-independent registry."""
+
+    def __init__(self, endpoint: str, timeout_seconds: float = 0.5) -> None:
+        self.endpoint = endpoint.rstrip("/")
+        self.timeout_seconds = timeout_seconds
+
+    def resolve_batch(self, ids: list[tuple[str, str]]) -> dict[tuple[str, str], int]:
+        unique = list(dict.fromkeys(ids))
+        if not unique:
+            return {}
+        payload = {
+            "ids": [
+                {"object_id": object_id, "entity_kind": entity_kind}
+                for object_id, entity_kind in unique
+            ]
+        }
+        request = urllib.request.Request(
+            f"{self.endpoint}/v1/resolve:batch",
+            data=json.dumps(payload).encode(),
+            headers={"content-type": "application/json"},
+            method="POST",
+        )
+        try:
+            with urllib.request.urlopen(request, timeout=self.timeout_seconds) as response:
+                rows = json.loads(response.read())
+        except (OSError, urllib.error.URLError, json.JSONDecodeError) as exc:
+            raise RuntimeError(f"ID Registry is unavailable: {exc}") from exc
+        if not isinstance(rows, list) or len(rows) != len(unique):
+            raise RuntimeError("ID Registry returned a mismatched batch size")
+
+        result: dict[tuple[str, str], int] = {}
+        for row, (object_id, entity_kind) in zip(rows, unique, strict=True):
+            if not isinstance(row, dict):
+                raise RuntimeError("ID Registry returned a malformed row")
+            row = cast(dict[str, object], row)
+            if row.get("object_id") != object_id or row.get("entity_kind") != entity_kind:
+                raise RuntimeError("ID Registry returned a mismatched identity")
+            if row.get("mapping_version") != IDENTITY_MAPPING_VERSION:
+                raise RuntimeError("ID Registry returned an unsupported mapping_version")
+            value = row.get("snowflake_id")
+            if (
+                not isinstance(value, int)
+                or isinstance(value, bool)
+                or not 0 < value <= 0x7FFF_FFFF_FFFF_FFFF
+            ):
+                raise RuntimeError("ID Registry returned an invalid SnowflakeId")
+            result[(entity_kind, object_id)] = value
+        return result
+
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 logger = logging.getLogger("build_training_inputs")
@@ -313,6 +380,43 @@ def impressions_table(attributed: pd.DataFrame) -> pd.DataFrame:
     return ordered.reset_index(drop=True)
 
 
+def numeric_identity_inputs(
+    exposures: pd.DataFrame,
+    behaviors: pd.DataFrame,
+    resolver: IdentityResolver,
+) -> tuple[pd.DataFrame, pd.DataFrame, Mapping[tuple[str, str], int]]:
+    """Resolve every event identity before writing any xrex-readable artifact."""
+    requests: list[tuple[str, str]] = []
+    for frame in (exposures, behaviors):
+        for column, entity_kind in (
+            ("user_id", "User"),
+            ("post_id", "Post"),
+            ("author_id", "User"),
+        ):
+            if column in frame:
+                requests.extend((value, entity_kind) for value in frame[column].dropna().astype(str))
+    mapping = resolver.resolve_batch(requests)
+
+    def replace(frame: pd.DataFrame) -> pd.DataFrame:
+        result = frame.copy()
+        for column, entity_kind in (
+            ("user_id", "User"),
+            ("post_id", "Post"),
+            ("author_id", "User"),
+        ):
+            if column not in result:
+                continue
+            keys = [(entity_kind, value) for value in result[column].astype(str)]
+            missing = [key for key in keys if key not in mapping]
+            if missing:
+                raise RuntimeError(f"ID Registry returned no mapping for {missing[0][1]}")
+            result[column] = [mapping[key] for key in keys]
+            result[column] = result[column].astype("uint64")
+        return result
+
+    return replace(exposures), replace(behaviors), mapping
+
+
 def post_metadata(exposures: pd.DataFrame, behaviors: pd.DataFrame) -> pd.DataFrame:
     """兜底的帖子元数据：作者取最先出现的，发布时间优先用曝光事件里的 created_at_ms。"""
     frames = []
@@ -379,15 +483,57 @@ def write_partitioned(df: pd.DataFrame, root: Path, time_column: str) -> int:
     return count
 
 
+def write_identity_contract(
+    mapping: Mapping[tuple[str, str], int], output_dir: Path
+) -> None:
+    entries = [
+        {
+            "entity_kind": entity_kind,
+            "object_id": object_id,
+            "snowflake_id": snowflake_id,
+        }
+        for (entity_kind, object_id), snowflake_id in sorted(mapping.items())
+    ]
+    identity_mapping = {
+        "mapping_version": IDENTITY_MAPPING_VERSION,
+        "entries": entries,
+    }
+    encoded = json.dumps(
+        identity_mapping, ensure_ascii=False, sort_keys=True, separators=(",", ":")
+    ).encode()
+    (output_dir / "identity_mapping.json").write_bytes(encoded + b"\n")
+    metadata = {
+        "feature_schema": FEATURE_SCHEMA,
+        "identity_mapping_version": IDENTITY_MAPPING_VERSION,
+        "identity_mapping_sha256": hashlib.sha256(encoded).hexdigest(),
+        "identity_count": len(entries),
+    }
+    (output_dir / "training_input_metadata.json").write_text(
+        json.dumps(metadata, ensure_ascii=False, indent=2, sort_keys=True) + "\n",
+        encoding="utf-8",
+    )
+
+
 def build(
     served_paths: list[str],
     behavior_paths: list[str],
     output_dir: str,
     window_minutes: float,
     include_shadow: bool,
+    *,
+    id_registry_url: str | None = None,
+    identity_resolver: IdentityResolver | None = None,
 ) -> dict[str, int]:
     exposures = load_served_events(served_paths, include_shadow)
     behaviors = load_behavior_events(behavior_paths)
+    identity_mapping: Mapping[tuple[str, str], int] = {}
+    if not exposures.empty or not behaviors.empty:
+        resolver = identity_resolver or RegistryIdentityResolver(
+            id_registry_url or os.getenv("ID_REGISTRY_URL", "http://127.0.0.1:50070")
+        )
+        exposures, behaviors, identity_mapping = numeric_identity_inputs(
+            exposures, behaviors, resolver
+        )
     window_ms = int(window_minutes * 60 * 1000)
 
     logs = behavior_log_rows(behaviors)
@@ -397,6 +543,7 @@ def build(
 
     out = Path(output_dir)
     out.mkdir(parents=True, exist_ok=True)
+    write_identity_contract(identity_mapping, out)
     write_partitioned(logs, out / "behavior_logs", "event_time")
     write_partitioned(impressions, out / "impressions", "event_time")
     meta_path = out / "post_metadata.parquet"
@@ -446,6 +593,11 @@ def main() -> None:
         action="store_true",
         help="把 is_shadow_traffic=true 的曝光也纳入（默认排除）",
     )
+    parser.add_argument(
+        "--id-registry-url",
+        default=os.getenv("ID_REGISTRY_URL", "http://127.0.0.1:50070"),
+        help="canonical ObjectID ↔ Snowflake Registry 地址",
+    )
     args = parser.parse_args()
     if args.attribution_window_minutes <= 0:
         parser.error("--attribution-window-minutes 必须为正数")
@@ -456,6 +608,7 @@ def main() -> None:
         args.output_dir,
         args.attribution_window_minutes,
         args.include_shadow,
+        id_registry_url=args.id_registry_url,
     )
     if stats["impressions"] == 0 and stats["behavior_log_rows"] == 0:
         logger.error("两类事件都为空，没有产出")
