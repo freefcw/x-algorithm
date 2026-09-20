@@ -107,7 +107,7 @@ Phoenix 模型预测多种互动行为的概率，**RankingScorer** 把它们合
 | `DropDuplicatesFilter` | 移除重复的帖子 ID |
 | `CoreDataHydrationFilter` | 移除未能补全核心元数据的帖子 |
 | `FirstStageEligibleFilter` | 移除业务一级判定为不可推荐的帖子（已删除 / 未公开 / 审核未过） |
-| `AgeFilter` | 移除超过时限的旧帖子（读 `created_at_ms`，缺失时回退 ObjectId 时间戳） |
+| `AgeFilter` | 移除超过时限的旧帖子（读 `created_at_ms`，缺失时回退 Snowflake 时间戳） |
 | `SelfTweetFilter` | 移除用户自己的帖子 |
 | `PreviouslySeenPostsFilter` | 移除已经看过的帖子 |
 | `PreviouslySeenPostsBackupFilter` | 请求只有曝光 ID、没有 seen_ids 时的备份去重 |

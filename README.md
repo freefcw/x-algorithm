@@ -251,7 +251,7 @@ Filters run at two stages:
 | `DropDuplicatesFilter` | Remove duplicate post IDs |
 | `CoreDataHydrationFilter` | Remove posts that failed to hydrate core metadata |
 | `FirstStageEligibleFilter` | Remove posts the business first-stage check marked ineligible (deleted / not public / failed audit) |
-| `AgeFilter` | Remove posts older than threshold (`created_at_ms`, falling back to the ObjectId timestamp) |
+| `AgeFilter` | Remove posts older than threshold (`created_at_ms`, falling back to the Snowflake timestamp) |
 | `SelfTweetFilter` | Remove user's own posts |
 | `PreviouslySeenPostsFilter` | Remove posts user has already seen |
 | `PreviouslySeenPostsBackupFilter` | Backup seen-id filter when the request only has impression IDs |
