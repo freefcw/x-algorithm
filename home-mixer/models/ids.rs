@@ -1,27 +1,39 @@
 //! Pipeline identity types (U4).
 //!
-//! Business identities are 96-bit ObjectIds. The pipeline uses a `Copy`
-//! newtype; proto and every external boundary use 24-char lowercase hex.
-//! Timestamps, counters, thresholds, and request-local IDs stay `u64`.
+//! Internal business identities are registry-allocated Snowflake `u64` values
+//! (production guarantees `1..=i64::MAX`). External proto and Redis boundaries
+//! still carry 24-char lowercase hex ObjectIds; adapters map between the two
+//! through `crate::id::IdentityResolver`. Timestamps, counters, thresholds,
+//! and request-local IDs stay `u64`.
 
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use std::fmt;
 use std::str::FromStr;
 
-/// 12-byte identity. Field is private so callers cannot forge a layout.
+/// 12-byte external identity. Field is private so callers cannot forge a
+/// layout. Only external boundaries, the Redis-compatible key space, and the
+/// padded test resolver handle `ObjectId`; the domain model uses `u64`.
 #[derive(Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Default)]
 pub struct ObjectId([u8; 12]);
 
-pub type PostId = ObjectId;
+pub type PostId = u64;
 
 /// A member ("皮"), and the only identity this pipeline knows. Accounts do not
 /// exist here: one account owns several members, and recall, relations and
 /// authorship are all member-to-member.
 ///
+/// Internally this is the member's Snowflake ID allocated by the ID Registry.
 /// This is mrpyq's `member_id` / `MemberRef.id`. Do not confuse it with mrpyq's
 /// own `user_id`, which is not an identity but one half of `member_key`
 /// (`{user_id}_{user_no}`) — an alternate encoding of the same member.
-pub type UserId = ObjectId;
+pub type UserId = u64;
+
+/// Timestamp embedded in a registry-allocated Snowflake ID. `None` for the
+/// nil ID; used by AgeFilter as the fallback when hydration did not supply
+/// `created_at_ms`.
+pub fn snowflake_timestamp_ms(id: u64) -> Option<u64> {
+    (id != 0).then(|| (id >> 22) + id_service::SNOWFLAKE_EPOCH_MS)
+}
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum IdError {
@@ -89,22 +101,6 @@ impl ObjectId {
         u32::from_be_bytes([self.0[0], self.0[1], self.0[2], self.0[3]])
     }
 
-    /// Shared ObjectId → int64 derivation for xrex and wrapping_mul buckets.
-    ///
-    /// `md5(raw 12 bytes)[0..8]` as big-endian u64, high bit cleared (xrex
-    /// int64 / uint64 compatibility), 0 bumped to 1 (xrex padding).
-    pub fn to_u64_hash(self) -> u64 {
-        let digest = md5::compute(self.0);
-        let mut buf = [0u8; 8];
-        buf.copy_from_slice(&digest.0[..8]);
-        let hashed = u64::from_be_bytes(buf) & 0x7FFF_FFFF_FFFF_FFFF;
-        if hashed == 0 {
-            1
-        } else {
-            hashed
-        }
-    }
-
     /// Demo data generator. Layout: 4-byte timestamp || 8-byte sequence, both BE.
     /// Lexicographic order of the 12 bytes matches timestamp order.
     pub fn from_parts(ts_secs: u32, seq: u64) -> Self {
@@ -114,9 +110,9 @@ impl ObjectId {
         Self(bytes)
     }
 
-    /// Zero-pad a u64 into the last 8 bytes. Used by tests, demo adapters, and
-    /// the integer-proto Thunder / VM Ranker adapters until those protos
-    /// become strings in P3. Production business IDs must use [`parse`].
+    /// Zero-pad a u64 into the last 8 bytes. Used by tests and the padded
+    /// compatibility resolver (`crate::id::PaddedIdentityResolver`).
+    /// Production business IDs must use [`parse`].
     pub fn from_u64_be_padded(n: u64) -> Self {
         let mut bytes = [0u8; 12];
         bytes[4..].copy_from_slice(&n.to_be_bytes());
@@ -179,11 +175,11 @@ impl From<u64> for ObjectId {
 }
 
 pub fn pid(n: u64) -> PostId {
-    PostId::from_u64_be_padded(n)
+    n
 }
 
 pub fn uid(n: u64) -> UserId {
-    UserId::from_u64_be_padded(n)
+    n
 }
 
 /// Parse a proto identity string at an external boundary.
@@ -243,7 +239,7 @@ mod tests {
 
     #[test]
     fn padded_u64_roundtrip_and_rejects_real_object_ids() {
-        let id = pid(42);
+        let id = ObjectId::from_u64_be_padded(42);
         assert_eq!(id.to_string(), "00000000000000000000002a");
         assert_eq!(id.to_u64_be_padded(), Some(42));
         assert_eq!(id.timestamp_secs(), 0);
@@ -253,7 +249,7 @@ mod tests {
 
     #[test]
     fn serde_is_lowercase_hex_string() {
-        let id = pid(1);
+        let id = ObjectId::from_u64_be_padded(1);
         let json = serde_json::to_string(&id).unwrap();
         assert_eq!(json, "\"000000000000000000000001\"");
         let parsed: ObjectId = serde_json::from_str(&json).unwrap();
@@ -261,16 +257,11 @@ mod tests {
     }
 
     #[test]
-    fn golden_to_u64_hash_matches_shared_file() {
-        let raw = include_str!("../../testdata/object_id_u64_hash.json");
-        let rows: Vec<serde_json::Value> = serde_json::from_str(raw).unwrap();
-        assert!(!rows.is_empty());
-        for row in rows {
-            let hex = row["object_id"].as_str().unwrap();
-            let expected = row["to_u64_hash"].as_u64().unwrap();
-            let id = ObjectId::parse(hex).unwrap();
-            assert_eq!(id.to_u64_hash(), expected, "hash mismatch for {hex}");
-        }
+    fn snowflake_timestamp_ms_decodes_and_rejects_nil() {
+        let now_ms = 1_700_000_000_000_u64;
+        let id = (now_ms - id_service::SNOWFLAKE_EPOCH_MS) << 22;
+        assert_eq!(snowflake_timestamp_ms(id), Some(now_ms));
+        assert_eq!(snowflake_timestamp_ms(0), None);
     }
 
     #[test]
@@ -281,7 +272,7 @@ mod tests {
         assert_eq!(parse_wire_id("not-an-id", &mut invalid), None);
         assert_eq!(
             parse_wire_id("000000000000000000000001", &mut invalid),
-            Some(pid(1))
+            Some(ObjectId::from_u64_be_padded(1))
         );
         assert_eq!(invalid, 2);
     }

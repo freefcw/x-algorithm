@@ -33,16 +33,16 @@ mod tests {
     #[test]
     fn uses_impressions_when_primary_seen_ids_are_unavailable() {
         let query = ScoredPostsQuery {
-            impressed_post_ids: vec![2.into()],
+            impressed_post_ids: vec![2],
             ..Default::default()
         };
         let candidates = vec![
             PostCandidate {
-                tweet_id: 1.into(),
+                tweet_id: 1,
                 ..Default::default()
             },
             PostCandidate {
-                tweet_id: 2.into(),
+                tweet_id: 2,
                 ..Default::default()
             },
         ];
@@ -55,22 +55,22 @@ mod tests {
     #[test]
     fn impressed_original_also_removes_its_retweet_and_reply() {
         let query = ScoredPostsQuery {
-            impressed_post_ids: vec![100.into()],
+            impressed_post_ids: vec![100],
             ..Default::default()
         };
         let candidates = vec![
             PostCandidate {
-                tweet_id: 1.into(),
-                retweeted_tweet_id: Some(100.into()),
+                tweet_id: 1,
+                retweeted_tweet_id: Some(100),
                 ..Default::default()
             },
             PostCandidate {
-                tweet_id: 2.into(),
-                in_reply_to_tweet_id: Some(100.into()),
+                tweet_id: 2,
+                in_reply_to_tweet_id: Some(100),
                 ..Default::default()
             },
             PostCandidate {
-                tweet_id: 3.into(),
+                tweet_id: 3,
                 ..Default::default()
             },
         ];

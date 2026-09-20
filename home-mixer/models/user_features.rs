@@ -22,7 +22,7 @@ mod tests {
     #[test]
     fn additive_fields_default_when_reading_legacy_payloads() {
         let features: UserFeatures = serde_json::from_str(
-            r#"{"followedUserIds":["000000000000000000000065"],"blockedUserIds":[],"mutedUserIds":[],"mutedKeywords":[],"subscribedUserIds":[]}"#,
+            r#"{"followedUserIds":[101],"blockedUserIds":[],"mutedUserIds":[],"mutedKeywords":[],"subscribedUserIds":[]}"#,
         )
         .expect("legacy user features");
 

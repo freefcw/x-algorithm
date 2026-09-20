@@ -62,7 +62,7 @@ mod tests {
             }),
         };
         let mut query = ScoredPostsQuery {
-            user_id: 42.into(),
+            user_id: 42,
             ..Default::default()
         };
 

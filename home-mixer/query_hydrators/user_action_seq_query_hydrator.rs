@@ -259,7 +259,7 @@ fn convert_to_proto_sequence(
 
     // Build the final UserActionSequence
     Ok(UserActionSequence {
-        user_id: user_id.to_string(),
+        user_id,
         metadata: Some(proto_metadata),
         user_actions_data: Some(UserActionSequenceDataContainer {
             data: Some(ProtoDataContainer::OrderedAggregatedUserActionsList(
@@ -340,7 +340,7 @@ mod tests {
         let provider = UserActionSeqQueryHydrator::new(Arc::new(SlowFetcher))
             .with_fetch_timeout(Duration::from_millis(1));
         let query = ScoredPostsQuery {
-            user_id: 42.into(),
+            user_id: 42,
             request_id: "slow-uas".to_string(),
             prediction_id: 7,
             ..Default::default()
@@ -379,11 +379,11 @@ mod tests {
         let actions = proto_aggregated_actions(&sequence);
 
         assert_eq!(actions.len(), 2);
-        assert_eq!(actions[0].tweet_id, crate::models::pid(2).to_string());
+        assert_eq!(actions[0].tweet_id, 2);
         assert_eq!(actions[0].impressed_time_ms, cutoff as u64);
         assert!(actions[0].action_mask[1]);
         assert!(actions[0].action_mask[3]);
-        assert_eq!(actions[1].tweet_id, crate::models::pid(3).to_string());
+        assert_eq!(actions[1].tweet_id, 3);
         assert_eq!(actions[1].impressed_time_ms, reference_time_ms as u64);
 
         let metadata = sequence.metadata.expect("metadata");

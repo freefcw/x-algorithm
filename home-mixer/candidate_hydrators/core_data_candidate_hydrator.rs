@@ -35,7 +35,7 @@ impl Hydrator<ScoredPostsQuery, PostCandidate> for CoreDataCandidateHydrator {
 
     fn update(&self, candidate: &mut PostCandidate, hydrated: PostCandidate) {
         // 部分召回路只带回帖子 ID，作者留空；TES 是唯一能补回作者的来源。
-        if candidate.author_id.is_nil() && !hydrated.author_id.is_nil() {
+        if candidate.author_id == 0 && hydrated.author_id != 0 {
             candidate.author_id = hydrated.author_id;
         }
         candidate.retweeted_user_id = hydrated.retweeted_user_id;
@@ -80,10 +80,10 @@ mod tests {
                 .map(|id| {
                     let core = if id == crate::models::pid(100) {
                         PureCoreData {
-                            author_id: 200.into(),
+                            author_id: 200,
                             text: "main text".to_string(),
-                            quoted_tweet_id: Some(300.into()),
-                            quoted_user_id: Some(400.into()),
+                            quoted_tweet_id: Some(300),
+                            quoted_user_id: Some(400),
                             language_code: Some("en".to_string()),
                             favorite_count: Some(12),
                             view_count: Some(120),
@@ -92,7 +92,7 @@ mod tests {
                         }
                     } else {
                         PureCoreData {
-                            author_id: 400.into(),
+                            author_id: 400,
                             text: "quoted text".to_string(),
                             ..Default::default()
                         }
@@ -127,7 +127,7 @@ mod tests {
             ..Default::default()
         };
         let candidates = [PostCandidate {
-            tweet_id: 100.into(),
+            tweet_id: 100,
             ..Default::default()
         }];
 

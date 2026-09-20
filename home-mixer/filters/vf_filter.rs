@@ -65,7 +65,7 @@ mod tests {
         visibility_decision: VisibilityDecision,
     ) -> PostCandidate {
         PostCandidate {
-            tweet_id: tweet_id.into(),
+            tweet_id,
             in_network,
             visibility_decision,
             ..Default::default()

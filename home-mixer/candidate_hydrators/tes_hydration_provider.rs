@@ -321,7 +321,7 @@ mod tests {
             ..Default::default()
         };
         let candidates = [PostCandidate {
-            tweet_id: 100.into(),
+            tweet_id: 100,
             ..Default::default()
         }];
 
@@ -351,7 +351,7 @@ mod tests {
             ..Default::default()
         };
         let candidates = [PostCandidate {
-            tweet_id: 100.into(),
+            tweet_id: 100,
             ..Default::default()
         }];
 
@@ -380,19 +380,19 @@ mod tests {
         });
         let provider = TesHydrationProvider::new(client.clone());
         let first = ScoredPostsQuery {
-            user_id: 42.into(),
+            user_id: 42,
             request_id: "request-1".to_string(),
             prediction_id: 7,
             ..Default::default()
         };
         let second = ScoredPostsQuery {
-            user_id: 42.into(),
+            user_id: 42,
             request_id: "request-2".to_string(),
             prediction_id: 8,
             ..Default::default()
         };
         let candidates = [PostCandidate {
-            tweet_id: 100.into(),
+            tweet_id: 100,
             ..Default::default()
         }];
 

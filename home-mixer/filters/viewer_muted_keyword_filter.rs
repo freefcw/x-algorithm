@@ -75,14 +75,11 @@ mod tests {
     use super::*;
     use crate::models::user_features::UserFeatures;
 
-    fn create_test_candidate(
-        tweet_id: impl Into<crate::models::PostId>,
-        tweet_text: &str,
-    ) -> PostCandidate {
+    fn create_test_candidate(tweet_id: u64, tweet_text: &str) -> PostCandidate {
         PostCandidate {
-            tweet_id: tweet_id.into(),
+            tweet_id,
             tweet_text: tweet_text.to_string(),
-            author_id: 12345.into(),
+            author_id: 12345,
             ..Default::default()
         }
     }
@@ -111,13 +108,13 @@ mod tests {
         query.user_features.muted_keywords = vec!["spoiler".to_string()];
         let candidates = vec![
             PostCandidate {
-                tweet_id: 1.into(),
+                tweet_id: 1,
                 tweet_text: "safe main text".to_string(),
                 quoted_tweet_text: "contains spoiler details".to_string(),
                 ..Default::default()
             },
             PostCandidate {
-                tweet_id: 2.into(),
+                tweet_id: 2,
                 tweet_text: "safe".to_string(),
                 quoted_tweet_text: "also safe".to_string(),
                 ..Default::default()

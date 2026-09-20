@@ -88,8 +88,8 @@ fn validated_action(
     usize,
     i32,
 )> {
-    let tweet_id = action.tweet_id.filter(|id| !id.is_nil())?;
-    let author_id = action.author_id.filter(|id| !id.is_nil())?;
+    let tweet_id = action.tweet_id.filter(|id| *id != 0)?;
+    let author_id = action.author_id.filter(|id| *id != 0)?;
     let action_time_ms = action.action_time_ms.filter(|time| *time >= 0)?;
     let action_type = action
         .action_type
@@ -295,8 +295,8 @@ mod tests {
             action(Some(pid(5)), Some(uid(50)), Some(980), Some(0)),
             action(None, Some(uid(60)), Some(980), Some(1)),
             action(Some(pid(6)), None, Some(980), Some(1)),
-            action(Some(PostId::NIL), Some(uid(70)), Some(980), Some(1)),
-            action(Some(pid(7)), Some(UserId::NIL), Some(980), Some(1)),
+            action(Some(0), Some(uid(70)), Some(980), Some(1)),
+            action(Some(pid(7)), Some(0), Some(980), Some(1)),
             action(Some(pid(8)), Some(uid(80)), Some(980), None),
             action(
                 Some(pid(9)),

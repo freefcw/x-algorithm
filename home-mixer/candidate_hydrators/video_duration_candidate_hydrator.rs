@@ -122,9 +122,9 @@ mod tests {
             ..Default::default()
         };
         let candidate = PostCandidate {
-            tweet_id: 100.into(),
-            retweeted_tweet_id: Some(200.into()),
-            quoted_tweet_id: Some(300.into()),
+            tweet_id: 100,
+            retweeted_tweet_id: Some(200),
+            quoted_tweet_id: Some(300),
             ..Default::default()
         };
 

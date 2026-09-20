@@ -29,7 +29,7 @@ impl Filter<ScoredPostsQuery, PostCandidate> for AuthorSocialgraphFilter {
 
         let viewer_blocks = |user_id: Option<crate::models::UserId>| {
             user_id
-                .filter(|id| !id.is_nil())
+                .filter(|id| *id != 0)
                 .is_some_and(|id| viewer_blocked_user_ids.contains(&id))
         };
 
@@ -46,7 +46,7 @@ impl Filter<ScoredPostsQuery, PostCandidate> for AuthorSocialgraphFilter {
 
             // 签名关系存储无法表示的作者 ID 保持中立。
             let author_id = candidate.author_id;
-            let (muted, blocked) = if author_id.is_nil() {
+            let (muted, blocked) = if author_id == 0 {
                 (false, false)
             } else {
                 (
@@ -84,9 +84,9 @@ mod tests {
         let query = ScoredPostsQuery {
             viewer_relations_hydrated: true,
             user_features: UserFeatures {
-                blocked_user_ids: vec![200.into()],
-                blocked_by_user_ids: vec![400.into()],
-                muted_user_ids: vec![300.into()],
+                blocked_user_ids: vec![200],
+                blocked_by_user_ids: vec![400],
+                muted_user_ids: vec![300],
                 ..Default::default()
             },
             ..Default::default()
@@ -94,19 +94,19 @@ mod tests {
 
         let candidates = vec![
             PostCandidate {
-                author_id: 100.into(),
+                author_id: 100,
                 ..Default::default()
             }, // clear
             PostCandidate {
-                author_id: 200.into(),
+                author_id: 200,
                 ..Default::default()
             }, // blocked
             PostCandidate {
-                author_id: 300.into(),
+                author_id: 300,
                 ..Default::default()
             }, // muted
             PostCandidate {
-                author_id: 400.into(),
+                author_id: 400,
                 ..Default::default()
             }, // author blocked viewer
             PostCandidate {
@@ -128,7 +128,7 @@ mod tests {
         let query = ScoredPostsQuery {
             viewer_relations_hydrated: true,
             user_features: UserFeatures {
-                blocked_user_ids: vec![900.into()],
+                blocked_user_ids: vec![900],
                 ..Default::default()
             },
             ..Default::default()
@@ -136,38 +136,38 @@ mod tests {
 
         let candidates = vec![
             PostCandidate {
-                tweet_id: 1.into(),
-                author_id: 100.into(),
+                tweet_id: 1,
+                author_id: 100,
                 author_blocks_viewer: Some(true),
                 ..Default::default()
             }, // author blocks viewer (hydrated signal)
             PostCandidate {
-                tweet_id: 2.into(),
-                author_id: 101.into(),
+                tweet_id: 2,
+                author_id: 101,
                 quoted_author_blocks_viewer: Some(true),
                 ..Default::default()
             }, // quoted author blocks viewer
             PostCandidate {
-                tweet_id: 3.into(),
-                author_id: 102.into(),
-                quoted_user_id: Some(900.into()),
+                tweet_id: 3,
+                author_id: 102,
+                quoted_user_id: Some(900),
                 ..Default::default()
             }, // viewer blocks quoted author
             PostCandidate {
-                tweet_id: 4.into(),
-                author_id: 103.into(),
-                retweeted_user_id: Some(900.into()),
+                tweet_id: 4,
+                author_id: 103,
+                retweeted_user_id: Some(900),
                 ..Default::default()
             }, // viewer blocks retweeted user
             PostCandidate {
-                tweet_id: 5.into(),
-                author_id: 104.into(),
+                tweet_id: 5,
+                author_id: 104,
                 author_blocks_viewer: Some(false),
                 ..Default::default()
             }, // explicit negative stays
             PostCandidate {
-                tweet_id: 6.into(),
-                author_id: 105.into(),
+                tweet_id: 6,
+                author_id: 105,
                 ..Default::default()
             }, // unhydrated stays neutral
         ];
@@ -183,11 +183,11 @@ mod tests {
         let query = ScoredPostsQuery::default();
         let candidates = vec![
             PostCandidate {
-                author_id: 100.into(),
+                author_id: 100,
                 ..Default::default()
             },
             PostCandidate {
-                author_id: 200.into(),
+                author_id: 200,
                 ..Default::default()
             },
         ];

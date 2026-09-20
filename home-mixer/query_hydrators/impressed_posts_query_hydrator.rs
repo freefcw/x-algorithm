@@ -56,8 +56,8 @@ mod tests {
             }),
         };
         let mut query = ScoredPostsQuery {
-            user_id: 42.into(),
-            impressed_post_ids: vec![1.into()],
+            user_id: 42,
+            impressed_post_ids: vec![1],
             ..Default::default()
         };
 

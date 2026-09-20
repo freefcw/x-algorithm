@@ -42,25 +42,25 @@ mod tests {
         };
         let candidates = vec![
             PostCandidate {
-                tweet_id: 1.into(),
+                tweet_id: 1,
                 in_network: Some(true),
                 filtered_topic_ids: vec![30],
                 ..Default::default()
             },
             PostCandidate {
-                tweet_id: 2.into(),
+                tweet_id: 2,
                 in_network: Some(false),
                 filtered_topic_ids: vec![10],
                 ..Default::default()
             },
             PostCandidate {
-                tweet_id: 3.into(),
+                tweet_id: 3,
                 in_network: Some(false),
                 filtered_topic_ids: vec![30],
                 ..Default::default()
             },
             PostCandidate {
-                tweet_id: 4.into(),
+                tweet_id: 4,
                 in_network: Some(false),
                 retrieval_topic_ids: vec![10],
                 ..Default::default()

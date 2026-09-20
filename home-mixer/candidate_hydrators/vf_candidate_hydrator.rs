@@ -231,8 +231,8 @@ mod tests {
         let hydrated = runtime.block_on(hydrator.hydrate(
             &ScoredPostsQuery::default(),
             &[PostCandidate {
-                tweet_id: 1.into(),
-                quoted_tweet_id: Some(2.into()),
+                tweet_id: 1,
+                quoted_tweet_id: Some(2),
                 ..Default::default()
             }],
         ));
@@ -284,9 +284,9 @@ mod tests {
             .hydrate(
                 &ScoredPostsQuery::default(),
                 &[PostCandidate {
-                    tweet_id: 1.into(),
+                    tweet_id: 1,
                     in_network: Some(false),
-                    quoted_tweet_id: Some(2.into()),
+                    quoted_tweet_id: Some(2),
                     ..Default::default()
                 }],
             )

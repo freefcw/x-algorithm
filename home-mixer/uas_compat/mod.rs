@@ -108,21 +108,18 @@ pub mod convert {
             .and_then(|value| u64::try_from(value).ok())
             .unwrap_or(0);
         Ok(recsys::AggregatedUserAction {
-            tweet_id: tweet_id.to_string(),
-            author_id: author_id.to_string(),
+            tweet_id,
+            author_id,
             impressed_time_ms,
             action_mask: thrift_action.action_mask,
             product_surface: thrift_action.product_surface.unwrap_or(0),
         })
     }
 
-    fn required_id(
-        value: Option<crate::models::ObjectId>,
-        field: &str,
-    ) -> Result<crate::models::ObjectId, String> {
+    fn required_id(value: Option<u64>, field: &str) -> Result<u64, String> {
         value
-            .filter(|value| !value.is_nil())
-            .ok_or_else(|| format!("AggregatedUserAction.{field} must be a non-nil ObjectId"))
+            .filter(|value| *value != 0)
+            .ok_or_else(|| format!("AggregatedUserAction.{field} must be a non-zero Snowflake ID"))
     }
 
     #[cfg(test)]
@@ -143,7 +140,7 @@ pub mod convert {
                     ..Default::default()
                 },
                 AggregatedUserAction {
-                    tweet_id: Some(crate::models::PostId::NIL),
+                    tweet_id: Some(0),
                     author_id: Some(crate::models::uid(1)),
                     ..Default::default()
                 },

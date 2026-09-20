@@ -136,13 +136,13 @@ mod tests {
     fn candidates() -> Vec<PostCandidate> {
         vec![
             PostCandidate {
-                tweet_id: 1.into(),
-                author_id: 100.into(),
+                tweet_id: 1,
+                author_id: 100,
                 ..Default::default()
             },
             PostCandidate {
-                tweet_id: 2.into(),
-                author_id: 200.into(),
+                tweet_id: 2,
+                author_id: 200,
                 ..Default::default()
             },
         ]
@@ -156,7 +156,7 @@ mod tests {
             socialgraph_client: Arc::new(fake_social_graph),
         };
         let query = ScoredPostsQuery {
-            user_id: 42.into(),
+            user_id: 42,
             ..Default::default()
         };
 
@@ -210,19 +210,19 @@ mod tests {
             socialgraph_client: Arc::new(fake_social_graph),
         };
         let query = ScoredPostsQuery {
-            user_id: 42.into(),
+            user_id: 42,
             ..Default::default()
         };
         let candidates = vec![
             PostCandidate {
-                author_id: 100.into(),
-                retweeted_user_id: Some(300.into()),
-                quoted_user_id: Some(400.into()),
+                author_id: 100,
+                retweeted_user_id: Some(300),
+                quoted_user_id: Some(400),
                 ..Default::default()
             },
             PostCandidate {
-                author_id: 100.into(),
-                quoted_user_id: Some(400.into()),
+                author_id: 100,
+                quoted_user_id: Some(400),
                 ..Default::default()
             },
         ];

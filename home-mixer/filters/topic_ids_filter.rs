@@ -176,17 +176,17 @@ mod tests {
         };
         let candidates = vec![
             PostCandidate {
-                tweet_id: 1.into(),
+                tweet_id: 1,
                 filtered_topic_ids: vec![10],
                 ..Default::default()
             },
             PostCandidate {
-                tweet_id: 2.into(),
+                tweet_id: 2,
                 filtered_topic_ids: vec![30],
                 ..Default::default()
             },
             PostCandidate {
-                tweet_id: 3.into(),
+                tweet_id: 3,
                 filtered_topic_ids: vec![20, 99],
                 ..Default::default()
             },
@@ -213,17 +213,17 @@ mod tests {
         };
         let candidates = vec![
             PostCandidate {
-                tweet_id: 1.into(),
+                tweet_id: 1,
                 filtered_topic_ids: vec![10],
                 ..Default::default()
             },
             PostCandidate {
-                tweet_id: 2.into(),
+                tweet_id: 2,
                 filtered_topic_ids: vec![30],
                 ..Default::default()
             },
             PostCandidate {
-                tweet_id: 3.into(),
+                tweet_id: 3,
                 filtered_topic_ids: vec![99],
                 ..Default::default()
             },

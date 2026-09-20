@@ -212,7 +212,7 @@ mod tests {
             .await
             .with_request_timeout(Duration::from_millis(1));
         let candidates = [PostCandidate {
-            author_id: 1.into(),
+            author_id: 1,
             ..Default::default()
         }];
 
@@ -232,17 +232,17 @@ mod tests {
         let hydrator = GizmoduckCandidateHydrator::new(client.clone()).await;
         let mut candidates = vec![
             PostCandidate {
-                author_id: 1.into(),
-                retweeted_user_id: Some(2.into()),
+                author_id: 1,
+                retweeted_user_id: Some(2),
                 ..Default::default()
             },
             PostCandidate {
-                author_id: 2.into(),
-                retweeted_user_id: Some(3.into()),
+                author_id: 2,
+                retweeted_user_id: Some(3),
                 ..Default::default()
             },
             PostCandidate {
-                author_id: 1.into(),
+                author_id: 1,
                 ..Default::default()
             },
         ];
@@ -274,11 +274,11 @@ mod tests {
         let hydrator = GizmoduckCandidateHydrator::new(client.clone()).await;
         let mut candidates = vec![
             PostCandidate {
-                author_id: 1.into(),
+                author_id: 1,
                 ..Default::default()
             },
             PostCandidate {
-                author_id: 2.into(),
+                author_id: 2,
                 ..Default::default()
             },
         ];
@@ -305,7 +305,7 @@ mod tests {
         let client = Arc::new(RecordingGizmoduckClient::default());
         let hydrator = GizmoduckCandidateHydrator::new(client.clone()).await;
         let mut candidates = [PostCandidate {
-            author_id: 1.into(),
+            author_id: 1,
             ..Default::default()
         }];
 
@@ -323,7 +323,7 @@ mod tests {
         let client = Arc::new(RecordingGizmoduckClient::default());
         let hydrator = GizmoduckCandidateHydrator::new(client.clone()).await;
         let mut candidates = [PostCandidate {
-            author_id: 1.into(),
+            author_id: 1,
             ..Default::default()
         }];
 
@@ -346,7 +346,7 @@ mod tests {
         let client = Arc::new(RecordingGizmoduckClient::default());
         let hydrator = GizmoduckCandidateHydrator::new(client.clone()).await;
         let mut candidates = [PostCandidate {
-            author_id: 1.into(),
+            author_id: 1,
             ..Default::default()
         }];
 
@@ -369,7 +369,7 @@ mod tests {
         let client = Arc::new(FailOnceGizmoduckClient::default());
         let hydrator = GizmoduckCandidateHydrator::new(client.clone()).await;
         let mut candidates = [PostCandidate {
-            author_id: 1.into(),
+            author_id: 1,
             ..Default::default()
         }];
 
@@ -391,11 +391,11 @@ mod tests {
         let client = Arc::new(RecordingGizmoduckClient::default());
         let hydrator = GizmoduckCandidateHydrator::new(client.clone()).await;
         let mut first_request = [PostCandidate {
-            author_id: 1.into(),
+            author_id: 1,
             ..Default::default()
         }];
         let mut second_request = [PostCandidate {
-            author_id: 1.into(),
+            author_id: 1,
             ..Default::default()
         }];
 

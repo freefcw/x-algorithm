@@ -26,11 +26,11 @@ mod tests {
             has_cached_posts: true,
             cached_posts: vec![
                 PostCandidate {
-                    tweet_id: 11.into(),
+                    tweet_id: 11,
                     ..Default::default()
                 },
                 PostCandidate {
-                    tweet_id: 22.into(),
+                    tweet_id: 22,
                     ..Default::default()
                 },
             ],

@@ -96,7 +96,7 @@ mod tests {
             filter: vec![],
             hash_count: 3,
         };
-        assert!(!filter.may_contain(pid(12345).as_bytes()));
+        assert!(!filter.may_contain(pid(12345).to_be_bytes().as_slice()));
     }
 
     #[test]
@@ -105,6 +105,6 @@ mod tests {
             filter: vec![0xFF],
             hash_count: 0,
         };
-        assert!(!filter.may_contain(pid(12345).as_bytes()));
+        assert!(!filter.may_contain(pid(12345).to_be_bytes().as_slice()));
     }
 }

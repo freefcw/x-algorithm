@@ -35,8 +35,8 @@ impl Scorer<ScoredPostsQuery, PostCandidate> for PhoenixScorer {
                     let tweet_id = c.retweeted_tweet_id.unwrap_or(c.tweet_id);
                     let author_id = c.retweeted_user_id.unwrap_or(c.author_id);
                     x_algorithm_proto::recsys::TweetInfo {
-                        tweet_id: tweet_id.to_string(),
-                        author_id: author_id.to_string(),
+                        tweet_id,
+                        author_id,
                         safety_label_mask: 0,
                         ..Default::default()
                     }
@@ -124,21 +124,17 @@ impl PhoenixScorer {
             return predictions_map;
         };
 
-        let mut unparsable_ids = 0usize;
-        let mut unparsable_example: Option<String> = None;
+        let mut invalid_ids = 0usize;
+        let mut invalid_example: Option<u64> = None;
 
         for distribution in &distribution_set.candidate_distributions {
             let Some(candidate) = &distribution.candidate else {
                 continue;
             };
-            let Ok(tweet_id) = crate::models::ObjectId::parse(&candidate.tweet_id) else {
-                unparsable_ids += 1;
-                unparsable_example.get_or_insert_with(|| candidate.tweet_id.clone());
-                continue;
-            };
-            if tweet_id.is_nil() {
-                unparsable_ids += 1;
-                unparsable_example.get_or_insert_with(|| candidate.tweet_id.clone());
+            let tweet_id = candidate.tweet_id;
+            if tweet_id == 0 || tweet_id > i64::MAX as u64 {
+                invalid_ids += 1;
+                invalid_example = Some(tweet_id);
                 continue;
             }
 
@@ -165,11 +161,11 @@ impl PhoenixScorer {
             );
         }
 
-        if unparsable_ids > 0 {
+        if invalid_ids > 0 {
             log::warn!(
-                "PhoenixScorer: dropped {} prediction(s) whose tweet_id is not a 24-hex ObjectId (e.g. {:?})",
-                unparsable_ids,
-                unparsable_example.unwrap_or_default()
+                "PhoenixScorer: dropped {} prediction(s) with out-of-range tweet_id (e.g. {:?})",
+                invalid_ids,
+                invalid_example.unwrap_or_default()
             );
         }
 
@@ -330,14 +326,14 @@ mod tests {
     }
 
     #[test]
-    fn predictions_with_non_object_ids_are_dropped_not_nil() {
+    fn predictions_with_out_of_range_ids_are_dropped_not_nil() {
         use x_algorithm_proto::recsys::{
             CandidateDistribution, DistributionSet, PredictNextActionsResponse, TweetInfo,
         };
 
-        let distribution = |tweet_id: &str| CandidateDistribution {
+        let distribution = |tweet_id: u64| CandidateDistribution {
             candidate: Some(TweetInfo {
-                tweet_id: tweet_id.to_string(),
+                tweet_id,
                 ..Default::default()
             }),
             top_log_probs: vec![0.0; ActionName::ServerTweetFav as usize + 1],
@@ -346,10 +342,10 @@ mod tests {
         let response = PredictNextActionsResponse {
             distribution_sets: vec![DistributionSet {
                 candidate_distributions: vec![
-                    distribution("00000000000000000000000a"),
-                    distribution("5f1a2b3c4d5e6f7a8b9c0d1e"),
-                    distribution("10"),
-                    distribution(""),
+                    distribution(0xa),
+                    distribution(0x1e),
+                    distribution(0),
+                    distribution(i64::MAX as u64 + 1),
                 ],
             }],
         };
@@ -358,9 +354,8 @@ mod tests {
 
         assert_eq!(predictions_map.len(), 2);
         assert!(predictions_map.contains_key(&crate::models::pid(0xa)));
-        assert!(predictions_map
-            .contains_key(&crate::models::ObjectId::parse("5f1a2b3c4d5e6f7a8b9c0d1e").unwrap()));
-        assert!(!predictions_map.contains_key(&crate::models::PostId::NIL));
+        assert!(predictions_map.contains_key(&crate::models::pid(0x1e)));
+        assert!(!predictions_map.contains_key(&0));
     }
 
     #[test]

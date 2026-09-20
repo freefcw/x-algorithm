@@ -250,7 +250,7 @@ mod tests {
             .expect("current time after Unix epoch")
             .as_millis() as u64;
         let created_ms = now_ms.saturating_sub(age.as_millis() as u64);
-        crate::models::ObjectId::from_parts((created_ms / 1000) as u32, 1)
+        (created_ms.saturating_sub(id_service::SNOWFLAKE_EPOCH_MS) << 22) | 1
     }
 
     fn candidate(author_id: u64, age: Duration, views: Option<u64>) -> PostCandidate {

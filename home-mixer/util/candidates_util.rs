@@ -82,9 +82,9 @@ mod tests {
     #[test]
     fn test_get_related_post_ids() {
         let candidate = PostCandidate {
-            tweet_id: 100.into(),
-            retweeted_tweet_id: Some(101.into()),
-            in_reply_to_tweet_id: Some(102.into()),
+            tweet_id: 100,
+            retweeted_tweet_id: Some(101),
+            in_reply_to_tweet_id: Some(102),
             ..Default::default()
         };
         let ids = get_related_post_ids(&candidate);

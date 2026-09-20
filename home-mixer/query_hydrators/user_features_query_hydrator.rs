@@ -159,7 +159,7 @@ mod tests {
         let provider = UserFeaturesQueryHydrator::new(Arc::new(SlowStratoClient))
             .with_fetch_timeout(Duration::from_millis(1));
         let query = ScoredPostsQuery {
-            user_id: 42.into(),
+            user_id: 42,
             request_id: "slow-features".to_string(),
             prediction_id: 7,
             ..Default::default()
@@ -180,7 +180,7 @@ mod tests {
         });
         let provider = UserFeaturesQueryHydrator::new(client.clone());
         let query = ScoredPostsQuery {
-            user_id: 42.into(),
+            user_id: 42,
             request_id: "request-1".to_string(),
             prediction_id: 7,
             ..Default::default()
@@ -203,13 +203,13 @@ mod tests {
         });
         let provider = UserFeaturesQueryHydrator::new(client.clone());
         let first = ScoredPostsQuery {
-            user_id: 42.into(),
+            user_id: 42,
             request_id: "same-request-label".to_string(),
             prediction_id: 7,
             ..Default::default()
         };
         let second = ScoredPostsQuery {
-            user_id: 43.into(),
+            user_id: 43,
             request_id: first.request_id.clone(),
             prediction_id: first.prediction_id,
             ..Default::default()

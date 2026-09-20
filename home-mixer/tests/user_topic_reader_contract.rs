@@ -11,9 +11,7 @@ struct ExternalUserTopicReader;
 #[async_trait]
 impl UserTopicReader for ExternalUserTopicReader {
     async fn get_supplemental_topic_ids(&self, user_id: UserId) -> Result<Vec<i64>, anyhow::Error> {
-        Ok(vec![i64::try_from(
-            user_id.to_u64_be_padded().unwrap_or(0),
-        )?])
+        Ok(vec![i64::try_from(user_id)?])
     }
 }
 

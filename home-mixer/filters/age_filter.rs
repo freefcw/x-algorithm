@@ -14,10 +14,10 @@ impl AgeFilter {
     }
 
     fn is_within_age(&self, candidate: &PostCandidate) -> bool {
-        let Some(created_ms) = candidate.created_at_ms.or_else(|| {
-            let ts = candidate.tweet_id.timestamp_secs();
-            (ts > 0).then(|| u64::from(ts).saturating_mul(1000))
-        }) else {
+        let Some(created_ms) = candidate
+            .created_at_ms
+            .or_else(|| crate::models::ids::snowflake_timestamp_ms(candidate.tweet_id))
+        else {
             return false;
         };
         let Some(now_ms) = SystemTime::now()
@@ -61,8 +61,7 @@ mod tests {
     fn keeps_recent_created_at_and_drops_old_or_missing() {
         let filter = AgeFilter::new(Duration::from_secs(48 * 3600));
         let now = now_ms();
-        let from_parts_id =
-            crate::models::ObjectId::from_parts(u32::try_from(now / 1000).unwrap(), 9);
+        let from_parts_id = ((now - id_service::SNOWFLAKE_EPOCH_MS) << 22) | 9;
         let recent = PostCandidate {
             tweet_id: pid(1),
             author_id: uid(2),

@@ -625,7 +625,7 @@ mod tests {
         };
         let mutual_reply = PostCandidate {
             is_mutual_follow_author: Some(true),
-            in_reply_to_tweet_id: Some(1.into()),
+            in_reply_to_tweet_id: Some(1),
             phoenix_scores: base_scores.clone(),
             ..Default::default()
         };
@@ -653,8 +653,8 @@ mod tests {
         let query = ScoredPostsQuery::default();
         let candidates = vec![
             PostCandidate {
-                tweet_id: 1.into(),
-                author_id: 10.into(),
+                tweet_id: 1,
+                author_id: 10,
                 in_network: Some(true),
                 phoenix_scores: PhoenixScores {
                     favorite_score: Some(0.8),
@@ -663,8 +663,8 @@ mod tests {
                 ..Default::default()
             },
             PostCandidate {
-                tweet_id: 2.into(),
-                author_id: 10.into(),
+                tweet_id: 2,
+                author_id: 10,
                 in_network: Some(true),
                 phoenix_scores: PhoenixScores {
                     favorite_score: Some(0.7),
@@ -692,8 +692,8 @@ mod tests {
         let query = ScoredPostsQuery::default();
         let candidates = vec![
             PostCandidate {
-                tweet_id: 1.into(),
-                author_id: 10.into(),
+                tweet_id: 1,
+                author_id: 10,
                 in_network: Some(true),
                 phoenix_scores: PhoenixScores {
                     favorite_score: Some(0.5),
@@ -702,8 +702,8 @@ mod tests {
                 ..Default::default()
             },
             PostCandidate {
-                tweet_id: 2.into(),
-                author_id: 20.into(),
+                tweet_id: 2,
+                author_id: 20,
                 in_network: Some(false),
                 phoenix_scores: PhoenixScores {
                     favorite_score: Some(0.5),
@@ -730,10 +730,10 @@ mod tests {
         let query = ScoredPostsQuery::default();
         let candidates = vec![
             PostCandidate {
-                tweet_id: 1.into(),
-                author_id: 10.into(),
+                tweet_id: 1,
+                author_id: 10,
                 in_network: Some(true),
-                in_reply_to_tweet_id: Some(99.into()),
+                in_reply_to_tweet_id: Some(99),
                 phoenix_scores: PhoenixScores {
                     favorite_score: Some(0.5),
                     ..Default::default()
@@ -741,10 +741,10 @@ mod tests {
                 ..Default::default()
             },
             PostCandidate {
-                tweet_id: 2.into(),
-                author_id: 20.into(),
+                tweet_id: 2,
+                author_id: 20,
                 in_network: Some(true),
-                retweeted_tweet_id: Some(98.into()),
+                retweeted_tweet_id: Some(98),
                 phoenix_scores: PhoenixScores {
                     favorite_score: Some(0.5),
                     ..Default::default()
@@ -752,8 +752,8 @@ mod tests {
                 ..Default::default()
             },
             PostCandidate {
-                tweet_id: 3.into(),
-                author_id: 30.into(),
+                tweet_id: 3,
+                author_id: 30,
                 in_network: Some(true),
                 phoenix_scores: PhoenixScores {
                     favorite_score: Some(0.5),
@@ -775,8 +775,8 @@ mod tests {
     fn topic_feed_uses_topic_oon_weight_factor() {
         let make_candidates = || {
             vec![PostCandidate {
-                tweet_id: 1.into(),
-                author_id: 10.into(),
+                tweet_id: 1,
+                author_id: 10,
                 in_network: Some(false),
                 phoenix_scores: PhoenixScores {
                     favorite_score: Some(0.5),
@@ -811,8 +811,8 @@ mod tests {
             ..Default::default()
         };
         let candidates = vec![PostCandidate {
-            tweet_id: 1.into(),
-            author_id: 10.into(),
+            tweet_id: 1,
+            author_id: 10,
             in_network: Some(false),
             phoenix_scores: PhoenixScores {
                 favorite_score: Some(0.5),

@@ -33,12 +33,12 @@ mod tests {
         };
         let candidates = vec![
             PostCandidate {
-                tweet_id: 1.into(),
+                tweet_id: 1,
                 video_duration_ms: Some(30_000),
                 ..Default::default()
             },
             PostCandidate {
-                tweet_id: 2.into(),
+                tweet_id: 2,
                 ..Default::default()
             },
         ];

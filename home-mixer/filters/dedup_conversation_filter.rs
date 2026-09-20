@@ -54,9 +54,9 @@ fn get_conversation_id(candidate: &PostCandidate) -> crate::models::PostId {
 mod tests {
     use super::*;
 
-    fn candidate(tweet_id: impl Into<crate::models::PostId>, score: f64) -> PostCandidate {
+    fn candidate(tweet_id: u64, score: f64) -> PostCandidate {
         PostCandidate {
-            tweet_id: tweet_id.into(),
+            tweet_id,
             score: Some(score),
             ..Default::default()
         }
@@ -65,11 +65,11 @@ mod tests {
     #[test]
     fn retweet_and_reply_to_the_same_original_share_one_conversation() {
         let retweet = PostCandidate {
-            retweeted_tweet_id: Some(1.into()),
+            retweeted_tweet_id: Some(1),
             ..candidate(10, 0.2)
         };
         let reply = PostCandidate {
-            ancestors: vec![1.into()],
+            ancestors: vec![1],
             ..candidate(11, 0.9)
         };
 

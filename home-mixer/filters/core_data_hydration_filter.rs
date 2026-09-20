@@ -18,7 +18,7 @@ impl Filter<ScoredPostsQuery, PostCandidate> for CoreDataHydrationFilter {
 /// Author is required. Body text or media is enough: mrpyq treats a post with
 /// photos as recommendable even when the caption is empty.
 fn has_hydrated_core(candidate: &PostCandidate) -> bool {
-    !candidate.author_id.is_nil()
+    candidate.author_id != 0
         && (!candidate.tweet_text.trim().is_empty() || candidate.has_media == Some(true))
 }
 
@@ -63,7 +63,7 @@ mod tests {
         let result = CoreDataHydrationFilter.filter(
             &ScoredPostsQuery::default(),
             vec![
-                candidate(1, crate::models::UserId::NIL, "caption", Some(true)),
+                candidate(1, 0, "caption", Some(true)),
                 candidate(2, uid(11), "   ", None),
                 candidate(3, uid(12), "", Some(false)),
                 candidate(4, uid(13), "", None),

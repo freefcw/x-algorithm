@@ -53,15 +53,15 @@ impl Source<ScoredPostsQuery, PostCandidate> for TweetMixerSource {
         let result = candidates
             .into_iter()
             .filter_map(|candidate| {
-                let ts = candidate.tweet_id.timestamp_secs();
-                let within_age = if ts == 0 {
+                let created_ms = crate::models::ids::snowflake_timestamp_ms(candidate.tweet_id);
+                let within_age = if created_ms.is_none() {
                     false
                 } else {
                     SystemTime::now()
                         .duration_since(UNIX_EPOCH)
                         .ok()
                         .map(|now| {
-                            let created_ms = u64::from(ts).saturating_mul(1000);
+                            let created_ms = created_ms.expect("checked above");
                             now.as_millis() as u64 - created_ms
                                 <= Duration::from_secs(MAX_POST_AGE).as_millis() as u64
                         })
@@ -114,7 +114,7 @@ mod tests {
             .expect("clock")
             .as_millis() as u64;
         let created_ms = now_ms.saturating_sub(age.as_millis() as u64);
-        crate::models::ObjectId::from_parts((created_ms / 1000) as u32, 1)
+        (created_ms.saturating_sub(id_service::SNOWFLAKE_EPOCH_MS) << 22) | 1
     }
 
     #[test]
@@ -160,10 +160,10 @@ mod tests {
         };
 
         let query = ScoredPostsQuery {
-            user_id: 42.into(),
+            user_id: 42,
             user_agent: "agent".to_string(),
             country_code: String::new(),
-            seen_ids: vec![11.into(), 12.into()],
+            seen_ids: vec![11, 12],
             ..Default::default()
         };
         let candidates = source.source(&query).await.expect("source");

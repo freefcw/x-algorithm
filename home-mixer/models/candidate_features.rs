@@ -97,9 +97,8 @@ mod tests {
 
     #[test]
     fn core_data_without_view_count_remains_compatible() {
-        let core: PureCoreData =
-            serde_json::from_str(r#"{"authorId":"000000000000000000000007","text":"post"}"#)
-                .expect("legacy core data should deserialize");
+        let core: PureCoreData = serde_json::from_str(r#"{"authorId":7,"text":"post"}"#)
+            .expect("core data without view_count should deserialize");
 
         assert_eq!(core.author_id, crate::models::uid(7));
         assert_eq!(core.view_count, None);

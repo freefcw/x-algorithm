@@ -161,7 +161,8 @@ impl RedisFixture {
     }
 
     pub fn key(&self, key_prefix: &str, user_id: UserId, suffix: &str) -> String {
-        format!("{key_prefix}:{{{user_id}}}:{suffix}")
+        let external = ObjectId::from_u64_be_padded(user_id);
+        format!("{key_prefix}:{{{external}}}:{suffix}")
     }
 }
 

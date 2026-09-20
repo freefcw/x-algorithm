@@ -19,7 +19,7 @@ impl Hydrator<ScoredPostsQuery, PostCandidate> for InNetworkCandidateHydrator {
             .followed_user_ids
             .iter()
             .copied()
-            .filter(|id| !id.is_nil())
+            .filter(|id| *id != 0)
             .collect();
 
         let hydrated_candidates = candidates
@@ -56,7 +56,7 @@ mod tests {
     async fn ignores_nonpositive_followed_ids() {
         let query = ScoredPostsQuery {
             user_features: UserFeatures {
-                followed_user_ids: vec![crate::models::UserId::NIL, 10.into()],
+                followed_user_ids: vec![0, 10],
                 ..Default::default()
             },
             ..Default::default()
@@ -70,7 +70,7 @@ mod tests {
                         ..Default::default()
                     },
                     PostCandidate {
-                        author_id: 10.into(),
+                        author_id: 10,
                         ..Default::default()
                     },
                 ],

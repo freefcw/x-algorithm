@@ -52,7 +52,7 @@ impl Source<ScoredPostsQuery, PostCandidate> for PhoenixMoeSource {
                 let parsed = parse_tweet_info(&tweet);
                 if parsed.is_none() {
                     unparsable_ids += 1;
-                    unparsable_example.get_or_insert_with(|| tweet.tweet_id.clone());
+                    unparsable_example.get_or_insert_with(|| tweet.tweet_id.to_string());
                 }
                 parsed
             })
@@ -97,8 +97,8 @@ mod tests {
                 top_k_candidates: vec![recsys::ScoredCandidates {
                     candidates: vec![recsys::ScoredCandidate {
                         candidate: Some(recsys::TweetInfo {
-                            tweet_id: "000000000000000000000064".to_string(),
-                            author_id: "0000000000000000000000c8".to_string(),
+                            tweet_id: 100,
+                            author_id: 200,
                             ..Default::default()
                         }),
                         score: 0.9,

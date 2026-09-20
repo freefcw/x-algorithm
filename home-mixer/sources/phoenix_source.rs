@@ -42,8 +42,8 @@ impl Source<ScoredPostsQuery, PostCandidate> for PhoenixSource {
         .await
         .map_err(|e| format!("PhoenixSource: {e}"))?;
 
-        let mut unparsable_ids = 0usize;
-        let mut unparsable_example: Option<String> = None;
+        let mut invalid_ids = 0usize;
+        let mut invalid_example: Option<u64> = None;
         let candidates: Vec<PostCandidate> = response
             .top_k_candidates
             .into_iter()
@@ -52,8 +52,8 @@ impl Source<ScoredPostsQuery, PostCandidate> for PhoenixSource {
             .filter_map(|tweet_info| {
                 let parsed = parse_tweet_info(&tweet_info);
                 if parsed.is_none() {
-                    unparsable_ids += 1;
-                    unparsable_example.get_or_insert_with(|| tweet_info.tweet_id.clone());
+                    invalid_ids += 1;
+                    invalid_example = Some(tweet_info.tweet_id);
                 }
                 parsed
             })
@@ -67,11 +67,11 @@ impl Source<ScoredPostsQuery, PostCandidate> for PhoenixSource {
                 },
             )
             .collect();
-        if unparsable_ids > 0 {
+        if invalid_ids > 0 {
             log::warn!(
-                "PhoenixSource: dropped {} retrieved candidate(s) whose ids are not 24-hex ObjectIds (e.g. {:?})",
-                unparsable_ids,
-                unparsable_example.unwrap_or_default()
+                "PhoenixSource: dropped {} retrieved candidate(s) with out-of-range Snowflake IDs (e.g. {:?})",
+                invalid_ids,
+                invalid_example.unwrap_or_default()
             );
         }
 
@@ -79,9 +79,9 @@ impl Source<ScoredPostsQuery, PostCandidate> for PhoenixSource {
     }
 }
 
-/// Parse Phoenix `TweetInfo` identity fields into pipeline ObjectIds.
-/// Empty `in_reply_to_tweet_id` means not a reply. `"0"` is not a sentinel
-/// and fails closed (the whole candidate is dropped).
+/// Validate Phoenix `TweetInfo` numeric identity fields. `0`
+/// `in_reply_to_tweet_id` means not a reply; `0` in the required fields or any
+/// value above `i64::MAX` fails closed (the whole candidate is dropped).
 pub(crate) fn parse_tweet_info(
     tweet_info: &x_algorithm_proto::recsys::TweetInfo,
 ) -> Option<(
@@ -89,18 +89,14 @@ pub(crate) fn parse_tweet_info(
     crate::models::UserId,
     Option<crate::models::PostId>,
 )> {
-    use crate::models::ids::ObjectId;
-    let tweet_id = ObjectId::parse(&tweet_info.tweet_id)
-        .ok()
-        .filter(|id| !id.is_nil())?;
-    let author_id = ObjectId::parse(&tweet_info.author_id)
-        .ok()
-        .filter(|id| !id.is_nil())?;
-    let in_reply_to_tweet_id = match ObjectId::parse_optional(&tweet_info.in_reply_to_tweet_id) {
-        Ok(None) => None,
-        Ok(Some(id)) if id.is_nil() => None,
-        Ok(Some(id)) => Some(id),
-        Err(_) => return None,
+    fn valid(id: u64) -> Option<u64> {
+        (id != 0 && id <= i64::MAX as u64).then_some(id)
+    }
+    let tweet_id = valid(tweet_info.tweet_id)?;
+    let author_id = valid(tweet_info.author_id)?;
+    let in_reply_to_tweet_id = match tweet_info.in_reply_to_tweet_id {
+        0 => None,
+        id => Some(valid(id)?),
     };
     Some((tweet_id, author_id, in_reply_to_tweet_id))
 }
@@ -140,29 +136,24 @@ mod tests {
             _sequence: recsys::UserActionSequence,
             _max_results: u32,
         ) -> Result<recsys::RetrieveResponse, anyhow::Error> {
-            let tweet =
-                |tweet_id: &str, author_id: &str, in_reply_to: &str| recsys::ScoredCandidate {
-                    candidate: Some(recsys::TweetInfo {
-                        tweet_id: tweet_id.to_string(),
-                        author_id: author_id.to_string(),
-                        in_reply_to_tweet_id: in_reply_to.to_string(),
-                        ..Default::default()
-                    }),
-                    score: 0.5,
-                };
+            let tweet = |tweet_id: u64, author_id: u64, in_reply_to: u64| recsys::ScoredCandidate {
+                candidate: Some(recsys::TweetInfo {
+                    tweet_id,
+                    author_id,
+                    in_reply_to_tweet_id: in_reply_to,
+                    ..Default::default()
+                }),
+                score: 0.5,
+            };
             Ok(recsys::RetrieveResponse {
                 top_k_candidates: vec![recsys::ScoredCandidates {
                     candidates: vec![
-                        tweet("000000000000000000000064", "0000000000000000000000c8", ""),
-                        tweet(
-                            "000000000000000000000065",
-                            "0000000000000000000000c8",
-                            "000000000000000000000063",
-                        ),
-                        tweet("5f1a2b3c4d5e6f7a8b9c0d1e", "0000000000000000000000c8", ""),
-                        tweet("103", "0000000000000000000000c8", ""),
-                        tweet("000000000000000000000068", "not-a-id", ""),
-                        tweet("000000000000000000000069", "0000000000000000000000c8", "0"),
+                        tweet(0x64, 0xc8, 0),
+                        tweet(0x65, 0xc8, 0x63),
+                        tweet(0x66, 0xc8, 0),
+                        tweet(0, 0xc8, 0),
+                        tweet(0x68, 0, 0),
+                        tweet(0x69, 0xc8, i64::MAX as u64 + 1),
                     ],
                 }],
             })
@@ -170,7 +161,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn non_object_ids_are_dropped_instead_of_becoming_nil() {
+    async fn out_of_range_ids_are_dropped_instead_of_becoming_nil() {
         use crate::models::{pid, uid};
         let source = PhoenixSource {
             phoenix_retrieval_client: Arc::new(MixedIdRetrievalClient),
@@ -186,18 +177,17 @@ mod tests {
             .iter()
             .map(|c| (c.tweet_id, c.author_id, c.in_reply_to_tweet_id))
             .collect();
-        let hex = crate::models::ObjectId::parse("5f1a2b3c4d5e6f7a8b9c0d1e").unwrap();
         assert_eq!(
             ids,
             vec![
                 (pid(0x64), uid(0xc8), None),
                 (pid(0x65), uid(0xc8), Some(pid(0x63))),
-                (hex, uid(0xc8), None),
+                (pid(0x66), uid(0xc8), None),
             ]
         );
         assert!(candidates
             .iter()
-            .all(|c| !c.tweet_id.is_nil() && !c.author_id.is_nil()));
+            .all(|c| c.tweet_id != 0 && c.author_id != 0));
         assert!(candidates
             .iter()
             .all(|c| c.served_type == Some(pb::ServedType::ForYouPhoenixRetrieval)));
