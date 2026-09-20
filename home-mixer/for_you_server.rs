@@ -127,6 +127,44 @@ impl ForYouFeedServer {
         self.pipeline.shutdown_side_effects(timeout).await
     }
 
+    /// Batch reverse the numeric User IDs carried by non-post feed items
+    /// (WhoToFollow modules, ad `avoid_handles`) into external ObjectIds.
+    /// Post items are already externalized by the scored-posts egress.
+    pub(crate) async fn external_user_ids(
+        &self,
+        items: &[FeedItem],
+    ) -> Result<std::collections::HashMap<crate::models::UserId, String>, String> {
+        use crate::id::{EntityKind, SnowflakeId};
+        let mut ids = std::collections::HashSet::new();
+        for item in items {
+            match &item.content {
+                crate::models::feed_item::FeedItemContent::WhoToFollow(module) => {
+                    ids.extend(module.user_ids.iter().copied().filter(|id| *id != 0));
+                }
+                crate::models::feed_item::FeedItemContent::Advertisement(ad) => {
+                    ids.extend(ad.avoid_handles.iter().copied().filter(|id| *id != 0));
+                }
+                _ => {}
+            }
+        }
+        let ids = ids.into_iter().collect::<Vec<_>>();
+        let pairs = ids
+            .iter()
+            .map(|id| {
+                SnowflakeId::new(*id)
+                    .map(|snowflake| (snowflake, EntityKind::User))
+                    .map_err(|error| error.to_string())
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        let reversed = self
+            .query_builder
+            .identity()
+            .reverse_batch(&pairs)
+            .await
+            .map_err(|error| error.to_string())?;
+        Ok(ids.into_iter().zip(reversed).collect())
+    }
+
     pub async fn get_for_you_feed(&self, query: ScoredPostsQuery) -> ForYouFeedOutput {
         let started = Instant::now();
         let result = self.pipeline.execute(query.start_request()).await;

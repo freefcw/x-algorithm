@@ -2,13 +2,14 @@ use crate::candidate_pipeline::phoenix_candidate_pipeline::PhoenixCandidatePipel
 use crate::clients::served_persistence::{FeedStateServedPersistence, ServedPersistence};
 use crate::debug_access::{DebugAccessError, DebugAccessPolicy};
 use crate::feed_state::{FeedStateStore, InMemoryFeedStateStore};
-use crate::models::candidate::CandidateHelpers;
-use crate::models::ids::{wire_id, wire_optional_id};
+use crate::id::{EntityKind, SharedIdentityResolver, SnowflakeId};
+use crate::models::candidate::{CandidateHelpers, PostCandidate};
 use crate::models::query::ScoredPostsQuery;
 use crate::query_builder::QueryBuilder;
 use crate::rpc_policy::RpcPolicy;
 use crate::visibility::models::VisibilityDecision;
 use log::info;
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use std::time::Instant;
 use x_algorithm_proto::home_mixer as pb;
@@ -24,6 +25,7 @@ pub struct ScoredPostsOutput {
 pub struct ScoredPostsServer {
     pipeline: Arc<PhoenixCandidatePipeline>,
     query_builder: QueryBuilder,
+    identity: SharedIdentityResolver,
     debug_access: DebugAccessPolicy,
     rpc_policy: RpcPolicy,
     feed_state: Arc<dyn FeedStateStore>,
@@ -53,9 +55,11 @@ impl ScoredPostsServer {
                 stage.components.join(", ")
             );
         }
+        let identity = query_builder.identity();
         Self {
             pipeline,
             query_builder,
+            identity,
             debug_access: DebugAccessPolicy::default(),
             rpc_policy: RpcPolicy::default(),
             served_persist: Arc::new(FeedStateServedPersistence::new(Arc::clone(&state_store))),
@@ -129,37 +133,44 @@ impl ScoredPostsServer {
             .await
     }
 
-    pub async fn score(&self, query: ScoredPostsQuery) -> ScoredPostsOutput {
-        self.score_with_debug(query).await.0
+    pub async fn score(&self, query: ScoredPostsQuery) -> Result<ScoredPostsOutput, String> {
+        self.score_with_debug(query).await.map(|(output, _)| output)
     }
 
     pub(crate) async fn score_with_debug(
         &self,
         query: ScoredPostsQuery,
-    ) -> (ScoredPostsOutput, pb::PipelineDebugInfo) {
+    ) -> Result<(ScoredPostsOutput, pb::PipelineDebugInfo), String> {
         self.score_in_request_with_debug(query.start_request())
             .await
     }
 
     /// Score as part of an enclosing For You request, retaining its FeedState
     /// snapshot instead of starting a second request context.
-    pub(crate) async fn score_in_request(&self, query: ScoredPostsQuery) -> ScoredPostsOutput {
-        self.score_in_request_with_debug(query).await.0
+    pub(crate) async fn score_in_request(
+        &self,
+        query: ScoredPostsQuery,
+    ) -> Result<ScoredPostsOutput, String> {
+        self.score_in_request_with_debug(query)
+            .await
+            .map(|(output, _)| output)
     }
 
     async fn score_in_request_with_debug(
         &self,
         query: ScoredPostsQuery,
-    ) -> (ScoredPostsOutput, pb::PipelineDebugInfo) {
+    ) -> Result<(ScoredPostsOutput, pb::PipelineDebugInfo), String> {
         let start = Instant::now();
         let pipeline_result = self.pipeline.execute(query).await;
         let request_id = pipeline_result.query.request_id.clone();
+        let external = self.external_ids(&pipeline_result).await?;
         let debug = pipeline_debug_info(
             request_id.clone(),
             &pipeline_result.retrieved_candidates,
             &pipeline_result.filtered_candidates,
             &pipeline_result.selected_candidates,
-        );
+            &external,
+        )?;
         let selected_ids = pipeline_result
             .selected_candidates
             .iter()
@@ -168,8 +179,8 @@ impl ScoredPostsServer {
         let posts = pipeline_result
             .selected_candidates
             .into_iter()
-            .map(candidate_to_scored_post)
-            .collect::<Vec<_>>();
+            .map(|candidate| candidate_to_scored_post(candidate, &external))
+            .collect::<Result<Vec<_>, _>>()?;
 
         info!(
             "Scored Posts response - request_id {} - {} posts ({} ms)",
@@ -177,14 +188,117 @@ impl ScoredPostsServer {
             posts.len(),
             start.elapsed().as_millis()
         );
-        (
+        Ok((
             ScoredPostsOutput {
                 posts,
                 selected_ids,
                 request_id,
             },
             debug,
-        )
+        ))
+    }
+
+    /// Batch reverse every numeric ID the response exposes. Posts and users
+    /// reverse in two kind-scoped calls; zero IDs are the internal NIL sentinel
+    /// and skip the registry, mapping back to the empty wire form.
+    async fn external_ids(
+        &self,
+        result: &xai_candidate_pipeline::candidate_pipeline::PipelineResult<
+            ScoredPostsQuery,
+            PostCandidate,
+        >,
+    ) -> Result<ExternalIds, String> {
+        let mut post_ids = HashSet::new();
+        let mut user_ids = HashSet::new();
+        for candidate in result
+            .retrieved_candidates
+            .iter()
+            .chain(&result.filtered_candidates)
+            .chain(&result.selected_candidates)
+        {
+            collect_post_ids(candidate, &mut post_ids);
+            collect_user_ids(candidate, &mut user_ids);
+        }
+        Ok(ExternalIds {
+            posts: reverse_kind(&self.identity, EntityKind::Post, post_ids).await?,
+            users: reverse_kind(&self.identity, EntityKind::User, user_ids).await?,
+        })
+    }
+}
+
+fn collect_post_ids(candidate: &PostCandidate, out: &mut HashSet<u64>) {
+    for id in [candidate.tweet_id]
+        .into_iter()
+        .chain(candidate.retweeted_tweet_id)
+        .chain(candidate.in_reply_to_tweet_id)
+        .chain(candidate.ancestors.iter().copied())
+    {
+        if id != 0 {
+            out.insert(id);
+        }
+    }
+}
+
+fn collect_user_ids(candidate: &PostCandidate, out: &mut HashSet<u64>) {
+    for id in [candidate.author_id]
+        .into_iter()
+        .chain(candidate.retweeted_user_id)
+        .chain(candidate.get_screen_names().into_keys())
+    {
+        if id != 0 {
+            out.insert(id);
+        }
+    }
+}
+
+/// One batch of registry reversals at a single entity kind, keyed by the
+/// internal numeric ID for response assembly.
+async fn reverse_kind(
+    identity: &SharedIdentityResolver,
+    kind: EntityKind,
+    ids: HashSet<u64>,
+) -> Result<HashMap<u64, String>, String> {
+    let ids = ids.into_iter().collect::<Vec<_>>();
+    let pairs = ids
+        .iter()
+        .map(|id| {
+            SnowflakeId::new(*id)
+                .map(|snowflake| (snowflake, kind))
+                .map_err(|error| error.to_string())
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    let reversed = identity
+        .reverse_batch(&pairs)
+        .await
+        .map_err(|error| error.to_string())?;
+    Ok(ids.into_iter().zip(reversed).collect())
+}
+
+/// Registry-backed external wire IDs for one pipeline result.
+struct ExternalIds {
+    posts: HashMap<u64, String>,
+    users: HashMap<u64, String>,
+}
+
+impl ExternalIds {
+    fn post(&self, id: u64) -> Result<String, String> {
+        if id == 0 {
+            return Ok(String::new());
+        }
+        self.posts
+            .get(&id)
+            .cloned()
+            .ok_or_else(|| format!("ID Registry returned no post mapping for internal ID {id}"))
+    }
+
+    fn user(&self, id: u64) -> Result<String, String> {
+        if id == 0 {
+            return Ok(String::new());
+        }
+        self.users
+            .get(&id)
+            .cloned()
+            .ok_or_else(|| format!("ID Registry returned no user mapping for internal ID {id}"))
     }
 }
 
@@ -193,37 +307,44 @@ fn pipeline_debug_info(
     retrieved: &[crate::models::candidate::PostCandidate],
     filtered: &[crate::models::candidate::PostCandidate],
     selected: &[crate::models::candidate::PostCandidate],
-) -> pb::PipelineDebugInfo {
-    pb::PipelineDebugInfo {
+    external: &ExternalIds,
+) -> Result<pb::PipelineDebugInfo, String> {
+    Ok(pb::PipelineDebugInfo {
         request_id,
-        retrieved: Some(stage_debug(retrieved)),
-        filtered: Some(stage_debug(filtered)),
-        selected: Some(stage_debug(selected)),
-    }
+        retrieved: Some(stage_debug(retrieved, external)?),
+        filtered: Some(stage_debug(filtered, external)?),
+        selected: Some(stage_debug(selected, external)?),
+    })
 }
 
-fn stage_debug(candidates: &[crate::models::candidate::PostCandidate]) -> pb::PipelineStageDebug {
-    pb::PipelineStageDebug {
+fn stage_debug(
+    candidates: &[crate::models::candidate::PostCandidate],
+    external: &ExternalIds,
+) -> Result<pb::PipelineStageDebug, String> {
+    Ok(pb::PipelineStageDebug {
         count: u32::try_from(candidates.len()).unwrap_or(u32::MAX),
         tweet_ids: candidates
             .iter()
-            .map(|candidate| candidate.tweet_id.to_string())
-            .collect(),
-    }
+            .map(|candidate| external.post(candidate.tweet_id))
+            .collect::<Result<Vec<_>, _>>()?,
+    })
 }
 
-fn candidate_to_scored_post(candidate: crate::models::candidate::PostCandidate) -> ScoredPost {
+fn candidate_to_scored_post(
+    candidate: crate::models::candidate::PostCandidate,
+    external: &ExternalIds,
+) -> Result<ScoredPost, String> {
     let screen_names = candidate
         .get_screen_names()
         .into_iter()
-        .map(|(id, name)| (id.to_string(), name))
-        .collect();
-    ScoredPost {
-        tweet_id: wire_id(candidate.tweet_id),
-        author_id: wire_id(candidate.author_id),
-        retweeted_tweet_id: wire_optional_id(candidate.retweeted_tweet_id),
-        retweeted_user_id: wire_optional_id(candidate.retweeted_user_id),
-        in_reply_to_tweet_id: wire_optional_id(candidate.in_reply_to_tweet_id),
+        .map(|(id, name)| external.user(id).map(|id| (id, name)))
+        .collect::<Result<HashMap<_, _>, _>>()?;
+    Ok(ScoredPost {
+        tweet_id: external.post(candidate.tweet_id)?,
+        author_id: external.user(candidate.author_id)?,
+        retweeted_tweet_id: external.post(candidate.retweeted_tweet_id.unwrap_or(0))?,
+        retweeted_user_id: external.user(candidate.retweeted_user_id.unwrap_or(0))?,
+        in_reply_to_tweet_id: external.post(candidate.in_reply_to_tweet_id.unwrap_or(0))?,
         score: candidate.score.unwrap_or(0.0) as f32,
         in_network: candidate.in_network.unwrap_or(false),
         served_type: candidate
@@ -235,8 +356,8 @@ fn candidate_to_scored_post(candidate: crate::models::candidate::PostCandidate) 
         ancestors: candidate
             .ancestors
             .into_iter()
-            .map(|id| id.to_string())
-            .collect(),
+            .map(|id| external.post(id))
+            .collect::<Result<Vec<_>, _>>()?,
         screen_names,
         visibility_reason: match candidate.visibility_decision {
             VisibilityDecision::Restricted(reason) => {
@@ -255,7 +376,7 @@ fn candidate_to_scored_post(candidate: crate::models::candidate::PostCandidate) 
             .map(pb::BrandSafetyVerdict::from)
             .unwrap_or(pb::BrandSafetyVerdict::Unspecified) as i32,
         tweet_text: candidate.tweet_text,
-    }
+    })
 }
 
 #[cfg(test)]
@@ -263,6 +384,16 @@ mod tests {
     use super::*;
     use crate::models::brand_safety::BrandSafetyVerdict;
     use crate::models::candidate::PostCandidate;
+    use crate::models::ids::ObjectId;
+
+    fn external() -> ExternalIds {
+        ExternalIds {
+            posts: (1..=4)
+                .map(|n| (n, ObjectId::from_u64_be_padded(n).to_string()))
+                .collect(),
+            users: HashMap::new(),
+        }
+    }
 
     #[test]
     fn pipeline_debug_preserves_stage_counts_and_ids() {
@@ -285,7 +416,14 @@ mod tests {
             },
         ];
 
-        let debug = pipeline_debug_info("request-1".to_string(), &retrieved, &filtered, &selected);
+        let debug = pipeline_debug_info(
+            "request-1".to_string(),
+            &retrieved,
+            &filtered,
+            &selected,
+            &external(),
+        )
+        .expect("debug info");
 
         assert_eq!(debug.request_id, "request-1");
         assert_eq!(
@@ -323,10 +461,14 @@ mod tests {
         ];
 
         for (domain_verdict, wire_verdict) in cases {
-            let scored_post = candidate_to_scored_post(PostCandidate {
-                brand_safety_verdict: Some(domain_verdict),
-                ..Default::default()
-            });
+            let scored_post = candidate_to_scored_post(
+                PostCandidate {
+                    brand_safety_verdict: Some(domain_verdict),
+                    ..Default::default()
+                },
+                &external(),
+            )
+            .expect("scored post");
 
             assert_eq!(scored_post.brand_safety_verdict, wire_verdict as i32);
         }

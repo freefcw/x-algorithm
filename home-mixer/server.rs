@@ -31,6 +31,7 @@ const RPC_GET_FOR_YOU_FEED_V2: &str = "GetForYouFeedV2";
 pub struct HomeMixerServer {
     scored_posts_server: Arc<ScoredPostsServer>,
     for_you_feed_server: Arc<ForYouFeedServer>,
+    id_registry: Arc<crate::id::RegistryClient>,
 }
 
 impl HomeMixerServer {
@@ -50,7 +51,9 @@ impl HomeMixerServer {
                 "HOME_MIXER_MODE=degraded: caller identity, Gizmoduck, Phoenix metadata, and served persist contracts are still incomplete"
             );
         }
-        let query_builder = QueryBuilder::new(config.features);
+        let id_registry = Arc::new(crate::id::RegistryClient::new(&config.id_registry_url)?);
+        let identity: crate::id::SharedIdentityResolver = id_registry.clone();
+        let query_builder = QueryBuilder::with_identity(config.features, Arc::clone(&identity));
         // Stage summaries, side-effect outcomes and exposure-event publishes
         // land in the same registry the admin port exposes.
         let pipeline = crate::candidate_pipeline::phoenix_candidate_pipeline::PhoenixCandidatePipeline::
@@ -59,6 +62,7 @@ impl HomeMixerServer {
                 config.features,
                 config.uas,
                 Arc::clone(&metrics),
+                Arc::clone(&identity),
             )
             .await?;
         let debug_access = DebugAccessPolicy::new(config.features.debug_rpc, config.debug_token);
@@ -68,7 +72,7 @@ impl HomeMixerServer {
                 crate::params::LOCAL_REQUEST_TIMESTAMP_LIMIT,
             )),
             FeedStateConfig::Redis(redis) => Arc::new(
-                RedisFeedStateStore::new(redis)
+                RedisFeedStateStore::new_with_identity(redis, Arc::clone(&identity))
                     .await
                     .map(|store| store.with_calls(metrics.client_calls()))
                     .map_err(anyhow::Error::msg)?,
@@ -79,7 +83,9 @@ impl HomeMixerServer {
                 .with_debug_access(debug_access)
                 .with_rpc_policy(RpcPolicy::new(config.request_timeout, metrics)),
         );
-        Ok(Self::with_scored_posts_server(scored_posts_server))
+        let mut server = Self::with_scored_posts_server(scored_posts_server);
+        server.id_registry = id_registry;
+        Ok(server)
     }
 
     pub async fn new() -> anyhow::Result<Self> {
@@ -95,7 +101,17 @@ impl HomeMixerServer {
         HomeMixerServer {
             scored_posts_server,
             for_you_feed_server,
+            id_registry: Arc::new(
+                crate::id::RegistryClient::new("http://127.0.0.1:50070")
+                    .expect("test ID registry client"),
+            ),
         }
+    }
+
+    /// Shared Registry client for ingress and egress adapters. Calls are made
+    /// outside the recommendation pipeline's domain model.
+    pub fn id_registry(&self) -> Arc<crate::id::RegistryClient> {
+        Arc::clone(&self.id_registry)
     }
 
     pub fn metrics(&self) -> Arc<Metrics> {
@@ -199,11 +215,15 @@ async fn run_for_you_rpc(
         }
     })
     .await?;
+    let user_ids = server
+        .external_user_ids(&output.items)
+        .await
+        .map_err(Status::unavailable)?;
     Ok(Response::new(pb::ForYouFeedResponse {
         items: output
             .items
             .into_iter()
-            .map(|item| item.into_proto())
+            .map(|item| item.into_proto(&user_ids))
             .collect(),
         request_id: output.request_id,
     }))
@@ -226,7 +246,7 @@ impl pb::scored_posts_service_server::ScoredPostsService for ScoredPostsServer {
                 let user_id = query.user_id;
                 let request_time_ms = query.request_time_ms;
                 let output = within_budget(budget, &request_id, async {
-                    let output = self.score(query).await;
+                    let output = self.score(query).await.map_err(Status::unavailable)?;
                     self.persist_selected(user_id, &output.selected_ids, request_time_ms)
                         .await
                         .map_err(persist_unavailable)?;
@@ -257,7 +277,10 @@ impl pb::scored_posts_service_server::ScoredPostsService for ScoredPostsServer {
                 let user_id = query.user_id;
                 let request_time_ms = query.request_time_ms;
                 let (output, debug) = within_budget(budget, &request_id, async {
-                    let (output, debug) = self.score_with_debug(query).await;
+                    let (output, debug) = self
+                        .score_with_debug(query)
+                        .await
+                        .map_err(Status::unavailable)?;
                     self.persist_selected(user_id, &output.selected_ids, request_time_ms)
                         .await
                         .map_err(persist_unavailable)?;
@@ -302,7 +325,7 @@ mod tests {
         };
         let extracted = for_you_query_from_wrapper(pb::ForYouFeedQuery { query: Some(inner) })
             .expect("wrapped query");
-        assert_eq!(extracted.viewer_id, crate::models::uid(42).to_string());
+        assert_eq!(extracted.viewer_id, "00000000000000000000002a");
     }
 
     #[tokio::test]
@@ -363,8 +386,8 @@ mod tests {
                 client_app_id: 7,
                 country_code: "US".to_string(),
                 language_code: "en".to_string(),
-                seen_ids: vec![crate::models::pid(1).to_string(), "-1".to_string()],
-                served_ids: vec![crate::models::pid(2).to_string(), "-2".to_string()],
+                seen_ids: vec!["000000000000000000000001".to_string(), "-1".to_string()],
+                served_ids: vec!["000000000000000000000002".to_string(), "-2".to_string()],
                 in_network_only: true,
                 is_bottom_request: true,
                 bloom_filter_entries: vec![pb::ImpressionBloomFilterEntry {
@@ -377,7 +400,7 @@ mod tests {
                 new_user_topic_ids: vec![20],
                 exclude_videos: true,
                 enable_phoenix_moe: true,
-                impressed_post_ids: vec![crate::models::pid(7).to_string(), "-7".to_string()],
+                impressed_post_ids: vec!["000000000000000000000007".to_string(), "-7".to_string()],
                 past_request_timestamps_ms: vec![1_700_000_000_000],
                 cached_posts: Vec::new(),
                 is_preview: true,
@@ -401,9 +424,7 @@ mod tests {
         assert_eq!(query.served_ids, vec![crate::models::pid(2)]);
         assert!(query.in_network_only && query.is_bottom_request);
         assert_eq!(query.bloom_filter_entries.len(), 1);
-        assert!(query
-            .request_id
-            .ends_with(&format!("-{}", crate::models::uid(42))));
+        assert!(query.request_id.ends_with("-00000000000000000000002a"));
         assert!(query.prediction_id > 0);
         assert!(query.request_time_ms > 0);
         assert_eq!(query.topic_ids, vec![10]);

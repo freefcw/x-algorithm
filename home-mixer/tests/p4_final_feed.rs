@@ -2,6 +2,7 @@ use home_mixer::feed_state::{FeedStateStore, InMemoryFeedStateStore};
 use home_mixer::feed_stats::{FeedResponseStats, FeedStatsSink, InMemoryFeedStats};
 use home_mixer::for_you_server::ForYouFeedServer;
 use home_mixer::models::feed_item::{Advertisement, FeedItem, FeedItemContent, FeedItemKind};
+use home_mixer::models::ids::ObjectId;
 use home_mixer::models::query::ScoredPostsQuery;
 use home_mixer::models::{pid, uid};
 use home_mixer::scored_posts_server::ScoredPostsOutput;
@@ -15,10 +16,14 @@ use x_algorithm_proto::home_mixer::{
 };
 use xai_candidate_pipeline::source::Source;
 
+fn ext(id: u64) -> String {
+    ObjectId::from_u64_be_padded(id).to_string()
+}
+
 fn post(id: u64, score: f32) -> FeedItem {
     FeedItem::post(
         ScoredPost {
-            tweet_id: pid(id).to_string(),
+            tweet_id: ext(id),
             score,
             ..Default::default()
         },
@@ -29,7 +34,7 @@ fn post(id: u64, score: f32) -> FeedItem {
 fn ad_safe_post(id: u64, score: f32) -> FeedItem {
     FeedItem::post(
         ScoredPost {
-            tweet_id: pid(id).to_string(),
+            tweet_id: ext(id),
             score,
             brand_safety_verdict: BrandSafetyVerdict::SafeForAdjacency as i32,
             ..Default::default()
@@ -80,7 +85,7 @@ fn modules_are_inserted_without_rescoring_or_reordering_posts() {
         FeedItem::push_to_home(
             "notification-1",
             ScoredPost {
-                tweet_id: pid(99).to_string(),
+                tweet_id: ext(99),
                 score: 0.1,
                 ..Default::default()
             },
@@ -126,16 +131,8 @@ fn modules_are_inserted_without_rescoring_or_reordering_posts() {
 fn only_one_push_to_home_item_is_selected() {
     let result = BlenderSelector::new(BlenderConfig::default()).blend(vec![
         post(1, 1.0),
-        FeedItem::push_to_home(
-            "first",
-            ScoredPost::default(),
-            home_mixer::models::PostId::NIL,
-        ),
-        FeedItem::push_to_home(
-            "second",
-            ScoredPost::default(),
-            home_mixer::models::PostId::NIL,
-        ),
+        FeedItem::push_to_home("first", ScoredPost::default(), 0),
+        FeedItem::push_to_home("second", ScoredPost::default(), 0),
     ]);
 
     assert_eq!(result.selected[0].kind(), FeedItemKind::PushToHome);
@@ -165,12 +162,12 @@ impl ScoredPostsProvider for FakeScoredPostsProvider {
         Ok(ScoredPostsOutput {
             posts: vec![
                 ScoredPost {
-                    tweet_id: pid(30).to_string(),
+                    tweet_id: ext(30),
                     score: 0.9,
                     ..Default::default()
                 },
                 ScoredPost {
-                    tweet_id: pid(20).to_string(),
+                    tweet_id: ext(20),
                     score: 0.8,
                     ..Default::default()
                 },
@@ -335,7 +332,7 @@ fn partition_organic_matches_upstream_grouping() {
         ..Default::default()
     });
     let unsafe_post = ScoredPost {
-        tweet_id: pid(9).to_string(),
+        tweet_id: ext(9),
         score: 1.0,
         brand_safety_verdict: BrandSafetyVerdict::AvoidAdjacency as i32,
         ..Default::default()
@@ -400,7 +397,7 @@ fn ad_with_safety(
 fn ad_safe_post_with_author(id: u64, author_id: u64, text: &str, score: f32) -> FeedItem {
     FeedItem::post(
         ScoredPost {
-            tweet_id: pid(id).to_string(),
+            tweet_id: ext(id),
             author_id: uid(author_id).to_string(),
             score,
             tweet_text: text.to_string(),
@@ -414,7 +411,7 @@ fn ad_safe_post_with_author(id: u64, author_id: u64, text: &str, score: f32) -> 
 fn ad_low_risk_post(id: u64, score: f32) -> FeedItem {
     FeedItem::post(
         ScoredPost {
-            tweet_id: pid(id).to_string(),
+            tweet_id: ext(id),
             score,
             brand_safety_verdict: BrandSafetyVerdict::LowRisk as i32,
             ..Default::default()
@@ -689,19 +686,16 @@ fn partition_organic_reuses_group_after_rejected_ad() {
 
 #[test]
 fn domain_items_map_to_distinct_transport_variants() {
+    let external = std::collections::HashMap::from([(uid(10), ext(10)), (uid(20), ext(20))]);
     let items = vec![
         post(7, 0.7),
         FeedItem::advertisement("ad-1", 2),
         FeedItem::who_to_follow("wtf-1", vec![uid(10), uid(20)]),
         FeedItem::prompt("prompt-1"),
-        FeedItem::push_to_home(
-            "push-1",
-            ScoredPost::default(),
-            home_mixer::models::PostId::NIL,
-        ),
+        FeedItem::push_to_home("push-1", ScoredPost::default(), 0),
     ]
     .into_iter()
-    .map(FeedItem::into_proto)
+    .map(|item| item.into_proto(&external))
     .collect::<Vec<_>>();
 
     assert!(matches!(items[0].item, Some(feed_item::Item::Post(_))));
@@ -774,8 +768,8 @@ impl ScoredPostsProvider for ServedAwareScoredPostsProvider {
         let posts = selected_ids
             .iter()
             .map(|tweet_id| ScoredPost {
-                tweet_id: tweet_id.to_string(),
-                score: tweet_id.to_u64_be_padded().unwrap_or(0) as f32,
+                tweet_id: ext(*tweet_id),
+                score: *tweet_id as f32,
                 ..Default::default()
             })
             .collect();

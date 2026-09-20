@@ -146,7 +146,24 @@ impl FeedItem {
         }
     }
 
-    pub fn into_proto(self) -> pb::FeedItem {
+    /// `external_user_ids` maps internal numeric User IDs to ObjectId strings;
+    /// the server builds it in one registry batch before serialization. An ID
+    /// missing from the map is dropped rather than emitted as a decimal.
+    pub fn into_proto(
+        self,
+        external_user_ids: &std::collections::HashMap<crate::models::UserId, String>,
+    ) -> pb::FeedItem {
+        let external_users = |ids: Vec<crate::models::UserId>| {
+            ids.into_iter()
+                .filter_map(|id| match external_user_ids.get(&id) {
+                    Some(external) => Some(external.clone()),
+                    None => {
+                        log::warn!("dropping unmapped internal user ID {id} in feed item");
+                        None
+                    }
+                })
+                .collect()
+        };
         let item = match self.content {
             FeedItemContent::Post(post) => pb::feed_item::Item::Post(post),
             FeedItemContent::Advertisement(advertisement) => {
@@ -154,22 +171,14 @@ impl FeedItem {
                     ad_id: advertisement.ad_id,
                     requested_position: as_proto_position(advertisement.requested_position),
                     brand_safety_risk: advertisement.brand_safety_risk.into(),
-                    avoid_handles: advertisement
-                        .avoid_handles
-                        .into_iter()
-                        .map(|id| id.to_string())
-                        .collect(),
+                    avoid_handles: external_users(advertisement.avoid_handles),
                     avoid_keywords: advertisement.avoid_keywords,
                 })
             }
             FeedItemContent::WhoToFollow(module) => {
                 pb::feed_item::Item::WhoToFollow(pb::WhoToFollowModule {
                     module_id: module.module_id,
-                    user_ids: module
-                        .user_ids
-                        .into_iter()
-                        .map(|id| id.to_string())
-                        .collect(),
+                    user_ids: external_users(module.user_ids),
                 })
             }
             FeedItemContent::Prompt(prompt) => pb::feed_item::Item::Prompt(pb::Prompt {
