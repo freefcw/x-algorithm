@@ -1,228 +1,161 @@
-use axum::{
-    extract::State,
-    http::StatusCode,
-    routing::{get, post},
-    Json, Router,
-};
 use clap::Parser;
-use id_service::{EntityKind, IdError, IdRegistry, SnowflakeId, MAPPING_VERSION};
-use serde::{Deserialize, Serialize};
+use id_service::{http, logging, RedisIdRegistry, RedisIdRegistryConfig, MAPPING_VERSION};
 use std::net::SocketAddr;
 use std::sync::Arc;
-use tokio::sync::Mutex;
+use std::time::Duration;
 
 #[derive(Parser, Debug)]
 #[command(about = "ObjectId ↔ Snowflake identity service")]
 struct Args {
-    #[arg(long, default_value = "127.0.0.1:50070")]
+    #[arg(long, env = "ID_REGISTRY_LISTEN", default_value = "127.0.0.1:50070")]
     listen: SocketAddr,
-    #[arg(long, default_value = "./data/id-registry.jsonl")]
-    registry: String,
-    #[arg(long, default_value_t = 0)]
+    #[arg(long, env = "ID_REGISTRY_REDIS_URL")]
+    redis_url: Option<String>,
+    #[arg(long, env = "ID_REGISTRY_REDIS_CLUSTER_URLS", value_delimiter = ',')]
+    redis_cluster_urls: Option<Vec<String>>,
+    #[arg(
+        long,
+        env = "ID_REGISTRY_REDIS_KEY_PREFIX",
+        default_value = "id-registry:v2"
+    )]
+    redis_key_prefix: String,
+    #[arg(long, env = "ID_REGISTRY_CACHE_CAPACITY", default_value_t = 100_000)]
+    cache_capacity: usize,
+    #[arg(
+        long,
+        env = "ID_REGISTRY_REDIS_CONNECT_TIMEOUT_MS",
+        default_value_t = 2_000
+    )]
+    redis_connect_timeout_ms: u64,
+    #[arg(
+        long,
+        env = "ID_REGISTRY_REDIS_REQUEST_TIMEOUT_MS",
+        default_value_t = 500
+    )]
+    redis_request_timeout_ms: u64,
+    /// Snowflake worker id (0..=1023) embedded in allocated ids. Sequence
+    /// counters live in Redis, so replicas may share a worker id; distinct
+    /// ids only make allocations attributable to a replica.
+    #[arg(long, env = "ID_REGISTRY_WORKER_ID", default_value_t = 0)]
     worker_id: u64,
     /// Allow first-seen ObjectIDs to receive newly allocated Snowflakes.
     /// Keep disabled when the registry must preserve IDs from main, Thunder,
     /// or published Phoenix indexes; import trusted mappings instead.
-    #[arg(long, default_value_t = false)]
+    #[arg(long, env = "ID_REGISTRY_ALLOW_ALLOCATION", default_value_t = false)]
     allow_allocation: bool,
-}
-
-#[derive(Clone)]
-struct AppState {
-    registry: Arc<Mutex<IdRegistry>>,
-}
-
-#[derive(Deserialize)]
-struct ResolveRequest {
-    object_id: String,
-    entity_kind: EntityKind,
-    #[serde(default)]
-    trusted_snowflake_id: Option<u64>,
-}
-
-#[derive(Deserialize)]
-struct ResolveBatchRequest {
-    ids: Vec<ResolveRequest>,
-}
-
-#[derive(Deserialize)]
-struct ReverseRequest {
-    snowflake_id: u64,
-    entity_kind: EntityKind,
-}
-
-#[derive(Deserialize)]
-struct ReverseBatchRequest {
-    ids: Vec<ReverseRequest>,
-}
-
-#[derive(Serialize)]
-struct ResolveResponse {
-    object_id: String,
-    entity_kind: EntityKind,
-    snowflake_id: u64,
-    mapping_version: u32,
-}
-
-#[derive(Serialize)]
-struct ReverseResponse {
-    snowflake_id: u64,
-    object_id: String,
-    entity_kind: EntityKind,
-    mapping_version: u32,
+    /// Accept `trusted_snowflake_id` in resolve requests. Only migration
+    /// tooling should talk to a replica with this enabled; online replicas
+    /// reject such requests with 403.
+    #[arg(
+        long,
+        env = "ID_REGISTRY_ALLOW_TRUSTED_IMPORT",
+        default_value_t = false
+    )]
+    allow_trusted_import: bool,
+    /// Maximum number of ids in one batch request; larger batches get 413.
+    #[arg(long, env = "ID_REGISTRY_MAX_BATCH_SIZE", default_value_t = 10_000)]
+    max_batch_size: usize,
 }
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     let args = Args::parse();
-    if let Some(parent) = std::path::Path::new(&args.registry).parent() {
-        std::fs::create_dir_all(parent)?;
-    }
-    let registry =
-        IdRegistry::open_with_options(&args.registry, args.worker_id, args.allow_allocation)?;
-    let state = AppState {
-        registry: Arc::new(Mutex::new(registry)),
-    };
-    let app = Router::new()
-        .route("/healthz", get(|| async { "ok" }))
-        .route("/v1/resolve", post(resolve))
-        .route("/v1/resolve:batch", post(resolve_batch))
-        .route("/v1/reverse", post(reverse))
-        .route("/v1/reverse:batch", post(reverse_batch))
-        .with_state(state);
+    logging::init_from_env()?;
+    anyhow::ensure!(
+        args.cache_capacity > 0,
+        "ID registry cache capacity must be positive"
+    );
+    anyhow::ensure!(
+        args.max_batch_size > 0,
+        "ID registry max batch size must be positive"
+    );
+    log::info!(
+        "id-service starting: listen={} worker_id={} allow_allocation={} allow_trusted_import={} \
+         max_batch_size={} key_prefix={} cache_capacity={} redis_connect_timeout_ms={} \
+         redis_request_timeout_ms={} mapping_version={MAPPING_VERSION} redis={}",
+        args.listen,
+        args.worker_id,
+        args.allow_allocation,
+        args.allow_trusted_import,
+        args.max_batch_size,
+        args.redis_key_prefix,
+        args.cache_capacity,
+        args.redis_connect_timeout_ms,
+        args.redis_request_timeout_ms,
+        redis_endpoint_summary(&args),
+    );
+
+    let registry = RedisIdRegistry::connect(RedisIdRegistryConfig {
+        single_url: args.redis_url,
+        cluster_urls: args.redis_cluster_urls,
+        key_prefix: args.redis_key_prefix,
+        cache_capacity: args.cache_capacity,
+        worker_id: args.worker_id,
+        allow_allocation: args.allow_allocation,
+        allow_trusted_import: args.allow_trusted_import,
+        connect_timeout: Duration::from_millis(args.redis_connect_timeout_ms),
+        request_timeout: Duration::from_millis(args.redis_request_timeout_ms),
+    })
+    .await
+    .map_err(|error| anyhow::anyhow!(error.to_string()))?;
+
+    let app = http::router(Arc::new(registry), args.max_batch_size);
     let listener = tokio::net::TcpListener::bind(args.listen).await?;
-    axum::serve(listener, app).await?;
+    log::info!("id-service ready on {}", listener.local_addr()?);
+    axum::serve(listener, app)
+        .with_graceful_shutdown(shutdown_signal())
+        .await?;
+    log::info!("id-service stopped");
     Ok(())
 }
 
-async fn resolve(
-    State(state): State<AppState>,
-    Json(request): Json<ResolveRequest>,
-) -> Result<Json<ResolveResponse>, (StatusCode, String)> {
-    let mut registry = state.registry.lock().await;
-    let trusted = request
-        .trusted_snowflake_id
-        .map(SnowflakeId::new)
-        .transpose()
-        .map_err(internal_error)?;
-    let snowflake_id = registry
-        .resolve_one_with_trusted(&request.object_id, request.entity_kind, trusted)
-        .map_err(registry_error)?;
-    Ok(Json(ResolveResponse {
-        object_id: request.object_id,
-        entity_kind: request.entity_kind,
-        snowflake_id: snowflake_id.get(),
-        mapping_version: MAPPING_VERSION,
-    }))
-}
-
-async fn resolve_batch(
-    State(state): State<AppState>,
-    Json(request): Json<ResolveBatchRequest>,
-) -> Result<Json<Vec<ResolveResponse>>, (StatusCode, String)> {
-    let mut registry = state.registry.lock().await;
-    let ids = request
-        .ids
-        .iter()
-        .map(|item| {
-            Ok((
-                item.object_id.clone(),
-                item.entity_kind,
-                item.trusted_snowflake_id
-                    .map(SnowflakeId::new)
-                    .transpose()
-                    .map_err(internal_error)?,
-            ))
-        })
-        .collect::<Result<Vec<_>, (StatusCode, String)>>()?;
-    let snowflakes = registry
-        .resolve_batch_with_trusted(&ids)
-        .map_err(registry_error)?;
-    Ok(Json(
-        request
-            .ids
-            .into_iter()
-            .zip(snowflakes)
-            .map(|(item, id)| ResolveResponse {
-                object_id: item.object_id,
-                entity_kind: item.entity_kind,
-                snowflake_id: id.get(),
-                mapping_version: MAPPING_VERSION,
-            })
-            .collect(),
-    ))
-}
-
-async fn reverse(
-    State(state): State<AppState>,
-    Json(request): Json<ReverseRequest>,
-) -> Result<Json<ReverseResponse>, (StatusCode, String)> {
-    let snowflake_id = SnowflakeId::new(request.snowflake_id).map_err(internal_error)?;
-    let mut registry = state.registry.lock().await;
-    let mapping = registry
-        .reverse_one(snowflake_id, request.entity_kind)
-        .map_err(registry_error)?;
-    Ok(Json(ReverseResponse {
-        snowflake_id: mapping.snowflake_id.get(),
-        object_id: mapping.object_id,
-        entity_kind: mapping.entity_kind,
-        mapping_version: mapping.mapping_version,
-    }))
-}
-
-async fn reverse_batch(
-    State(state): State<AppState>,
-    Json(request): Json<ReverseBatchRequest>,
-) -> Result<Json<Vec<ReverseResponse>>, (StatusCode, String)> {
-    let ids = request
-        .ids
-        .iter()
-        .map(|item| {
-            SnowflakeId::new(item.snowflake_id)
-                .map(|id| (id, item.entity_kind))
-                .map_err(internal_error)
-        })
-        .collect::<Result<Vec<_>, _>>()?;
-    let mut registry = state.registry.lock().await;
-    let mappings = registry.reverse_batch(&ids).map_err(registry_error)?;
-    Ok(Json(
-        mappings
-            .into_iter()
-            .map(|mapping| ReverseResponse {
-                snowflake_id: mapping.snowflake_id.get(),
-                object_id: mapping.object_id,
-                entity_kind: mapping.entity_kind,
-                mapping_version: mapping.mapping_version,
-            })
-            .collect(),
-    ))
-}
-
-fn registry_error(error: IdError) -> (StatusCode, String) {
-    if matches!(error, IdError::EntityKindMismatch { .. }) {
-        return (StatusCode::CONFLICT, error.to_string());
+/// Redis endpoints for the startup log, with credentials redacted.
+fn redis_endpoint_summary(args: &Args) -> String {
+    match (&args.redis_url, &args.redis_cluster_urls) {
+        (Some(url), _) => logging::redact_url(url),
+        (None, Some(urls)) => format!(
+            "cluster[{}]",
+            urls.iter()
+                .map(|url| logging::redact_url(url))
+                .collect::<Vec<_>>()
+                .join(",")
+        ),
+        (None, None) => "unset".to_string(),
     }
-    internal_error(error)
 }
 
-fn internal_error(error: impl std::fmt::Display) -> (StatusCode, String) {
-    let message = error.to_string();
-    let status = if message.contains("allocation is disabled") {
-        StatusCode::NOT_FOUND
-    } else if message.contains("unsupported Snowflake")
-        || message.contains("invalid ObjectId")
-        || message.contains("predates Snowflake")
-        || message.contains("exceeds")
-    {
-        StatusCode::BAD_REQUEST
-    } else if message.contains("unknown") {
-        StatusCode::NOT_FOUND
-    } else if message.contains("conflict") || message.contains("duplicate") {
-        StatusCode::CONFLICT
-    } else if message.contains("I/O error") || message.contains("lock acquisition") {
-        StatusCode::SERVICE_UNAVAILABLE
-    } else {
-        StatusCode::INTERNAL_SERVER_ERROR
+/// Resolves on SIGTERM (orchestrator stop) or Ctrl-C so in-flight requests
+/// drain instead of being cut off.
+async fn shutdown_signal() {
+    let ctrl_c = async {
+        if let Err(error) = tokio::signal::ctrl_c().await {
+            log::warn!("failed to listen for Ctrl-C: {error}");
+            std::future::pending::<()>().await;
+        }
     };
-    (status, message)
+
+    #[cfg(unix)]
+    {
+        let terminate = async {
+            match tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate()) {
+                Ok(mut signal) => {
+                    signal.recv().await;
+                }
+                Err(error) => {
+                    log::warn!("failed to listen for SIGTERM: {error}");
+                    std::future::pending::<()>().await;
+                }
+            }
+        };
+        tokio::select! {
+            _ = ctrl_c => log::info!("received Ctrl-C, shutting down"),
+            _ = terminate => log::info!("received SIGTERM, shutting down"),
+        }
+    }
+
+    #[cfg(not(unix))]
+    {
+        ctrl_c.await;
+        log::info!("received Ctrl-C, shutting down");
+    }
 }

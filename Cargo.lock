@@ -949,11 +949,19 @@ name = "id-service"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "async-trait",
  "axum",
  "clap",
+ "env_logger",
+ "futures",
+ "http-body-util",
+ "log",
+ "prometheus",
+ "redis",
  "serde",
  "serde_json",
  "tokio",
+ "tower 0.4.13",
 ]
 
 [[package]]

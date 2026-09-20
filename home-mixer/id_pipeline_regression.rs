@@ -1,16 +1,14 @@
-//! Cross-boundary numeric-ID regression: one real `IdRegistry` import feeds
-//! query ingress, the Thunder wire request, the VM Ranker wire request, and
-//! egress reversal — proving the same Snowflake values survive end to end.
+//! Cross-boundary numeric-ID regression: one real `RedisIdRegistry` import
+//! feeds query ingress, the Thunder wire request, the VM Ranker wire request,
+//! and egress reversal — proving the same Snowflake values survive end to end.
 
 use crate::clients::in_network_posts_client::thunder_request;
 use crate::clients::vm_ranker_client::{GrpcVMRankerClient, VmRankCandidate, VmRankRequest};
 use crate::feature_policy::HomeMixerFeatures;
 use crate::id::{EntityKind, IdentityResolver, SnowflakeId};
 use crate::query_builder::QueryBuilder;
-use id_service::IdRegistry;
-use std::path::PathBuf;
-use std::sync::Mutex;
-use std::time::{SystemTime, UNIX_EPOCH};
+use id_service::{MemoryMappingStore, RedisIdRegistry};
+use std::sync::Arc;
 
 const VIEWER_OID: &str = "65f1a2b3c4d5e6f708091011";
 const POST_OID: &str = "66a1b2c3d4e5f60718293a4b";
@@ -19,7 +17,7 @@ const VIEWER_SNOWFLAKE: u64 = 101;
 const POST_SNOWFLAKE: u64 = 202;
 const AUTHOR_SNOWFLAKE: u64 = 303;
 
-struct RegistryIdentityResolver(Mutex<IdRegistry>);
+struct RegistryIdentityResolver(Arc<RedisIdRegistry>);
 
 #[tonic::async_trait]
 impl IdentityResolver for RegistryIdentityResolver {
@@ -27,7 +25,7 @@ impl IdentityResolver for RegistryIdentityResolver {
         &self,
         ids: &[(String, EntityKind)],
     ) -> anyhow::Result<Vec<SnowflakeId>> {
-        Ok(self.0.lock().unwrap().resolve_batch(ids)?)
+        Ok(self.0.resolve_batch(ids).await?)
     }
 
     async fn reverse_batch(
@@ -36,35 +34,26 @@ impl IdentityResolver for RegistryIdentityResolver {
     ) -> anyhow::Result<Vec<String>> {
         Ok(self
             .0
-            .lock()
-            .unwrap()
-            .reverse_batch(ids)?
+            .reverse_batch(ids)
+            .await?
             .into_iter()
             .map(|mapping| mapping.object_id)
             .collect())
     }
 }
 
-fn registry_path() -> PathBuf {
-    let nanos = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap()
-        .as_nanos();
-    std::env::temp_dir().join(format!(
-        "home-mixer-id-regression-{}-{nanos}.jsonl",
-        std::process::id()
-    ))
-}
-
-fn fixture() -> (PathBuf, std::sync::Arc<RegistryIdentityResolver>) {
-    let path = registry_path();
-    let mut registry = IdRegistry::open(&path, 0).expect("open temp registry");
+async fn fixture() -> Arc<RegistryIdentityResolver> {
+    // The fixture imports trusted mappings, so trusted import is enabled;
+    // allocation stays off like an online replica.
+    let registry = RedisIdRegistry::with_store(Arc::new(MemoryMappingStore::new()), 0, false, true)
+        .expect("build in-memory registry");
     registry
         .resolve_one_with_trusted(
             VIEWER_OID,
             EntityKind::User,
             Some(SnowflakeId::new(VIEWER_SNOWFLAKE).unwrap()),
         )
+        .await
         .expect("import viewer mapping");
     registry
         .resolve_one_with_trusted(
@@ -72,6 +61,7 @@ fn fixture() -> (PathBuf, std::sync::Arc<RegistryIdentityResolver>) {
             EntityKind::Post,
             Some(SnowflakeId::new(POST_SNOWFLAKE).unwrap()),
         )
+        .await
         .expect("import post mapping");
     registry
         .resolve_one_with_trusted(
@@ -79,16 +69,14 @@ fn fixture() -> (PathBuf, std::sync::Arc<RegistryIdentityResolver>) {
             EntityKind::User,
             Some(SnowflakeId::new(AUTHOR_SNOWFLAKE).unwrap()),
         )
+        .await
         .expect("import author mapping");
-    (
-        path,
-        std::sync::Arc::new(RegistryIdentityResolver(Mutex::new(registry))),
-    )
+    Arc::new(RegistryIdentityResolver(Arc::new(registry)))
 }
 
 #[tokio::test]
 async fn numeric_ids_round_trip_across_thunder_vm_and_egress() {
-    let (path, resolver) = fixture();
+    let resolver = fixture().await;
 
     let query = QueryBuilder::with_identity(
         HomeMixerFeatures::default(),
@@ -134,6 +122,4 @@ async fn numeric_ids_round_trip_across_thunder_vm_and_egress() {
         .await
         .expect("egress reverse resolves original ObjectIds");
     assert_eq!(external, vec![POST_OID.to_string(), AUTHOR_OID.to_string()]);
-
-    let _ = std::fs::remove_file(path);
 }

@@ -283,8 +283,8 @@ mod tests {
             let ids = body["ids"].as_array().unwrap();
             assert_eq!(ids.len(), 2);
             Json(json!([
-                {"object_id": ids[0]["object_id"], "entity_kind": ids[0]["entity_kind"], "snowflake_id": 9007199254740993_u64, "mapping_version": 1},
-                {"object_id": ids[1]["object_id"], "entity_kind": ids[1]["entity_kind"], "snowflake_id": 71, "mapping_version": 1}
+                {"object_id": ids[0]["object_id"], "entity_kind": ids[0]["entity_kind"], "snowflake_id": 9007199254740993_u64, "mapping_version": 2},
+                {"object_id": ids[1]["object_id"], "entity_kind": ids[1]["entity_kind"], "snowflake_id": 71, "mapping_version": 2}
             ]))
         }));
         let (endpoint, server) = serve(app).await;
@@ -301,7 +301,7 @@ mod tests {
         server.abort();
 
         let app = Router::new().route("/v1/resolve:batch", post(|| async {
-            Json(json!([{"object_id": "65f1a2b3c4d5e6f708091012", "entity_kind": "User", "snowflake_id": 71, "mapping_version": 1}]))
+            Json(json!([{"object_id": "65f1a2b3c4d5e6f708091012", "entity_kind": "User", "snowflake_id": 71, "mapping_version": 2}]))
         }));
         let (endpoint, server) = serve(app).await;
         let client = RegistryClient::new(&endpoint).unwrap();
@@ -314,7 +314,7 @@ mod tests {
         let app = Router::new().route("/v1/resolve:batch", post(|Json(body): Json<Value>| async move {
             let ids = body["ids"].as_array().unwrap();
             Json(json!([
-                {"object_id": ids[0]["object_id"], "entity_kind": ids[0]["entity_kind"], "snowflake_id": 71, "mapping_version": 2}
+                {"object_id": ids[0]["object_id"], "entity_kind": ids[0]["entity_kind"], "snowflake_id": 71, "mapping_version": 3}
             ]))
         }));
         let (endpoint, server) = serve(app).await;
@@ -335,8 +335,8 @@ mod tests {
             assert_eq!(ids[0]["entity_kind"], "Post");
             assert_eq!(ids[1]["entity_kind"], "Post");
             Json(json!([
-                {"snowflake_id": ids[0]["snowflake_id"], "object_id": "65f1a2b3c4d5e6f708091011", "entity_kind": "Post", "mapping_version": 1},
-                {"snowflake_id": ids[1]["snowflake_id"], "object_id": "65f1a2b3c4d5e6f708091012", "entity_kind": "Post", "mapping_version": 1}
+                {"snowflake_id": ids[0]["snowflake_id"], "object_id": "65f1a2b3c4d5e6f708091011", "entity_kind": "Post", "mapping_version": 2},
+                {"snowflake_id": ids[1]["snowflake_id"], "object_id": "65f1a2b3c4d5e6f708091012", "entity_kind": "Post", "mapping_version": 2}
             ]))
         }));
         let (endpoint, server) = serve(app).await;
@@ -358,7 +358,7 @@ mod tests {
 
         // Wrong entity kind echoed back.
         let app = Router::new().route("/v1/reverse:batch", post(|| async {
-            Json(json!([{"snowflake_id": 42, "object_id": "65f1a2b3c4d5e6f708091011", "entity_kind": "User", "mapping_version": 1}]))
+            Json(json!([{"snowflake_id": 42, "object_id": "65f1a2b3c4d5e6f708091011", "entity_kind": "User", "mapping_version": 2}]))
         }));
         let (endpoint, server) = serve(app).await;
         let client = RegistryClient::new(&endpoint).unwrap();
@@ -377,8 +377,8 @@ mod tests {
         // Rows returned out of order.
         let app = Router::new().route("/v1/reverse:batch", post(|| async {
             Json(json!([
-                {"snowflake_id": 43, "object_id": "65f1a2b3c4d5e6f708091012", "entity_kind": "Post", "mapping_version": 1},
-                {"snowflake_id": 42, "object_id": "65f1a2b3c4d5e6f708091011", "entity_kind": "Post", "mapping_version": 1}
+                {"snowflake_id": 43, "object_id": "65f1a2b3c4d5e6f708091012", "entity_kind": "Post", "mapping_version": 2},
+                {"snowflake_id": 42, "object_id": "65f1a2b3c4d5e6f708091011", "entity_kind": "Post", "mapping_version": 2}
             ]))
         }));
         let (endpoint, server) = serve(app).await;
@@ -392,7 +392,7 @@ mod tests {
 
         // Invalid ObjectId payload.
         let app = Router::new().route("/v1/reverse:batch", post(|| async {
-            Json(json!([{"snowflake_id": 42, "object_id": "not-an-object-id", "entity_kind": "Post", "mapping_version": 1}]))
+            Json(json!([{"snowflake_id": 42, "object_id": "not-an-object-id", "entity_kind": "Post", "mapping_version": 2}]))
         }));
         let (endpoint, server) = serve(app).await;
         let client = RegistryClient::new(&endpoint).unwrap();

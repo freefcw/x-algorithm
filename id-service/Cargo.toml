@@ -6,7 +6,18 @@ edition = "2021"
 [dependencies]
 anyhow = "1.0"
 axum = "0.7"
-clap = { version = "4.6", features = ["derive"] }
+clap = { version = "4.6", features = ["derive", "env"] }
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
-tokio = { version = "1.0", features = ["macros", "net", "rt-multi-thread", "sync"] }
+async-trait = "0.1"
+futures = "0.3"
+log = "0.4"
+env_logger = "0.11"
+prometheus = "0.13"
+redis = { version = "0.27.6", features = ["tokio-comp", "connection-manager", "cluster-async"] }
+tokio = { version = "1.0", features = ["macros", "net", "rt-multi-thread", "signal", "sync", "time"] }
+
+[dev-dependencies]
+# `ServiceExt::oneshot` drives the router in tests without a socket.
+tower = { version = "0.4", features = ["util"] }
+http-body-util = "0.1"

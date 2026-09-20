@@ -11,7 +11,7 @@ import numpy as np
 
 # Cross-language serving contract. Keep these values independent from any server implementation.
 FEATURE_SCHEMA = "phoenix-snowflake-id-actions-v3"
-IDENTITY_MAPPING_VERSION = 1
+IDENTITY_MAPPING_VERSION = 2
 ACTION_IDX_TO_ENUM = (1, 2, 3, 5, 6, 7, 8, 9, 10, 11, 12, 4, 13, 14, 15, 16, 17, 18)
 ALL_ACTION_ENUMS = tuple(range(1, 19))
 # Heads with a non-zero ranking contribution in Home Mixer.  Metadata may

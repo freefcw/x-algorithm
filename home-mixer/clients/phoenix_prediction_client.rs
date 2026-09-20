@@ -510,7 +510,10 @@ mod tests {
         );
         metadata.insert("model-version", "step-1".parse().unwrap());
         metadata.insert("random-weights", "false".parse().unwrap());
-        metadata.insert("identity-map-version", "1".parse().unwrap());
+        metadata.insert(
+            "identity-map-version",
+            id_service::MAPPING_VERSION.to_string().parse().unwrap(),
+        );
         metadata.insert(
             "identity-map-sha256",
             "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
@@ -593,7 +596,10 @@ mod tests {
         );
         metadata.insert("model-version", "step-000200@0123456789ab".parse().unwrap());
         metadata.insert("random-weights", "false".parse().unwrap());
-        metadata.insert("identity-map-version", "1".parse().unwrap());
+        metadata.insert(
+            "identity-map-version",
+            id_service::MAPPING_VERSION.to_string().parse().unwrap(),
+        );
         metadata.insert(
             "identity-map-sha256",
             "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
@@ -618,7 +624,10 @@ mod tests {
         );
         metadata.insert("model-version", "random".parse().unwrap());
         metadata.insert("random-weights", "true".parse().unwrap());
-        metadata.insert("identity-map-version", "1".parse().unwrap());
+        metadata.insert(
+            "identity-map-version",
+            id_service::MAPPING_VERSION.to_string().parse().unwrap(),
+        );
         metadata.insert(
             "identity-map-sha256",
             "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"

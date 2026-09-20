@@ -82,7 +82,7 @@ def test_training_input_builder_attributes_to_nearest_exposure(tmp_path):
     assert translated.candidateSets[0].candidates[0].authorId == 2
     identity_mapping = json.loads((tmp_path / "out" / "identity_mapping.json").read_text())
     assert identity_mapping == {
-        "mapping_version": 1,
+        "mapping_version": 2,
         "entries": [
             {"entity_kind": "Post", "object_id": post, "snowflake_id": 3},
             {"entity_kind": "User", "object_id": user, "snowflake_id": 1},
@@ -91,7 +91,7 @@ def test_training_input_builder_attributes_to_nearest_exposure(tmp_path):
     }
     metadata = json.loads((tmp_path / "out" / "training_input_metadata.json").read_text())
     assert metadata["feature_schema"] == "phoenix-snowflake-id-actions-v3"
-    assert metadata["identity_mapping_version"] == 1
+    assert metadata["identity_mapping_version"] == 2
     assert metadata["identity_count"] == 3
     assert len(metadata["identity_mapping_sha256"]) == 64
 
