@@ -1,6 +1,6 @@
 # ObjectId → Snowflake 统一身份服务
 
-状态：代码迁移完成，待真实历史映射导入与生产切换验收。
+状态：开发阶段已切换到 Redis 主存储，待按真实千万级数据量压测内存和吞吐。
 
 ## 目标
 
@@ -17,23 +17,66 @@
 
 ## 映射存储
 
-`id-service` 使用 append-only JSONL 文件作为持久化源。每条记录包含：
+生产 `id-service` 使用 Redis 作为共享持久化存储，不再把全量映射加载到每个服务副本的内存中。映射不再集中放进一个 Hash，而是使用按 CRC16 分片的独立 key；默认 256 个逻辑分片，每个 key 通过 hash-tag 固定到对应 slot：
 
 ```text
-object_id, entity_kind, snowflake_id
+id-registry:v2:object:{037}:user:<object_id>       -> <snowflake_id>
+id-registry:v2:object:{142}:post:<object_id>       -> <snowflake_id>
+id-registry:v2:snowflake:{091}:<snowflake_id>       -> user:<object_id> / post:<object_id>
 ```
 
-启动时建立索引；写入使用 `sync_data`，进程重启后可以恢复。ObjectId 与 Snowflake 都有唯一约束，映射一旦生成不复用、不覆盖。
+正向 key 按 `entity_kind:object_id` 分片，反向 key 按 Snowflake 分片，因此单次读只访问一个 key，批量读按 slot 分组 pipeline；不会产生两千万 field 集中在一个 big key、一个 slot 或一个分片上的问题。分片数是 schema 的一部分，不能在线随意修改。
+
+正向和反向索引位于不同 key，无法在 Redis Cluster 中用跨 slot Lua 做单事务提交。写入采用“反向先写、正向后写”的两阶段 `SET NX` 语义（Lua 脚本，返回 1 新建 / 0 同值已存在 / -1 冲突）：已有相同值视为幂等；反向阶段冲突表示该 Snowflake 已属于别的对象（`SnowflakeTaken`），正向阶段冲突表示该对象已绑定别的 Snowflake（`MappingConflict`）；正向写入发生冲突时，仅删除本次刚创建、且仍等于本次值的反向 key。已有映射不可覆盖。
+
+### 反向 orphan 的语义
+
+进程在两阶段之间崩溃或超时，会留下只有反向 key、没有正向 key 的 orphan（`snowflake:{..}:S -> post:<oid>`）。对它的处理规则：
+
+- 读路径 fail-closed：`find_by_snowflake` / `find_by_snowflake_batch` 在反向命中后必须再读对应正向 key 并校验其值等于该 Snowflake；不一致或缺失时视为“不存在”（`/v1/reverse` 返回 404，不进本地缓存），记 warn 日志 `orphan reverse mapping` 并累加 `id_service_orphan_reverse_mappings_total`。这样 `resolve(reverse(x)) != x` 的双射破裂不会暴露给调用方。
+- 同对象的 trusted 再导入会补齐正向 key（反向 reserve 返回 0，正向 reserve 返回 1），单条与批量路径一致；批量预检对 orphan 视为不存在，因此不会误报 409。
+- 分配路径若抽到的 Snowflake 恰好撞上 orphan，反向阶段返回 -1，分配器按下文规则重抽序列。
+- 服务**不会**在读或写路径上自动覆写或删除 orphan：它与正在进行中的两阶段写入在 Redis 里无法区分，自动清理有竞态。orphan 会一直占用该 Snowflake，直到用离线修复工具（扫描反向 key、校验正向 key、按业务决定补齐或删除）处理；当前仓库尚未提供该工具。
+
+### 元数据
+
+```text
+id-registry:v2:metadata:mapping_version   -> 2            （身份合同版本 MAPPING_VERSION）
+id-registry:v2:metadata:storage_schema    -> sharded-256  （存储布局版本 STORAGE_SCHEMA）
+```
+
+两者解耦：`mapping_version` 是对外身份合同版本（响应字段 `mapping_version`，客户端会校验），`storage_schema` 只描述 Redis key 布局。服务启动时对两个 key 各执行一次 `MULTI SETNX + GET EXEC`：首个副本写入，之后的副本只读回校验，值不一致时拒绝启动（`MappingVersionMismatch` / `StorageSchemaMismatch`），避免旧 Hash schema 或别的布局被静默当成当前布局使用。`/readyz` 只做 `GET` 校验，不会重建缺失的元数据：元数据缺失返回 503 “metadata is missing”。旧的 `v1` Hash 不做在线兼容，切换前必须单独完成迁移或重建。
+
+### 分配序列
+
+Snowflake 分配序列是 Redis 中按 `(worker_id, ObjectId 秒)` 分片的 counter（`{prefix}:sequence:{worker}:{second}`，`INCRBY n` + `EXPIRE` 在一个 Lua 脚本里完成，TTL 2 天）。counter 在 Redis 而不在进程内，因此多副本共享同一个 worker id 也不会重复分配；不同 worker id 只是让分配结果可追溯到副本。序列与已存在 Snowflake 的关系：
+
+- trusted 导入成功后，若 Snowflake 解码出的 worker 等于本服务的 `worker_id`，服务会把对应 `(worker, second)` counter 推到至少 `offset + 1`（只涨不降，`offset = 毫秒内偏移 * 4096 + sequence`），使同一秒后续分配直接跳过已占用的值；
+- 分配得到的 Snowflake 若仍撞上已存在的反向 key（其他 worker 导入的值、TTL 过期后迟到的同秒 ObjectId、或 orphan），分配器先重读对象（别的写者可能已抢先绑定），否则重抽序列，最多 `MAX_ALLOCATION_ATTEMPTS = 16` 次，用尽后返回 409 `SnowflakeTaken`；
+- 被整批拒绝的请求可能浪费几个序号；序号只是分配草稿，不是已生效身份，无副作用。
+
+Redis 应启用 AOF、复制和定期备份。`ID_REGISTRY_REDIS_URL` 用于单 Redis、代理、Sentinel 暴露地址或托管 Redis 入口；`ID_REGISTRY_REDIS_CLUSTER_URLS` 用于原生 Redis Cluster seed URLs，两个配置不能同时设置。
 
 `entity_kind` 当前为 `User` / `Post`，只用于防止实体语义混用；不是按系统分配多套 ID。
 
+旧的 `IdRegistry` JSONL 实现已删除：它没有外部调用方，且其单写者批量原子语义与 Redis 版并发语义容易互相误导；需要本地 fixture 时直接用 `RedisIdRegistry::with_store` 注入内存 `MappingStore`。
+
 ## 缓存策略
 
-- 用户：进程生命周期内缓存正向和反向映射。
-- 帖子：按 ObjectId 的秒级创建时间缓存 30 天；过期记录仍保留在磁盘，查询时从持久化索引恢复。
-- 单查：`resolve_one` / `reverse_one`。
-- 批查：`resolve_batch` / `reverse_batch`。
-- 推荐请求应在入口批量解析，不能让下游模块自行查表。
+Redis-backed registry 只保留有上限的进程内热点缓存：
+
+- `ID_REGISTRY_CACHE_CAPACITY` 同时限制正向和反向缓存，默认每个方向 100,000 条；
+- 用户映射默认不按时间过期，但受容量上限约束；
+- 帖子映射按 ObjectId 的秒级创建时间缓存 30 天，同时受容量上限约束；
+- Redis 才是完整映射的 source of truth，缓存淘汰不会丢数据；
+- 单查：`resolve_one` / `reverse_one`；
+- 批查：`resolve_batch` / `reverse_batch`；
+- 推荐请求应在入口批量解析，不能让下游模块自行查表；
+- batch 语义：整批先按 `(entity_kind, object_id)` 去重，再把能预见的冲突全部查清（已有映射和传入的可信 ID 对不上、可信 ID 已被别的对象占用、批内自相矛盾、关闭分配时存在未知 ID），任何一项冲突就整批拒绝（409；未知 ID 为 404 且消息列出数量和前 5 个 id；关闭 trusted 导入时带 `trusted_snowflake_id` 为 403），一个映射都不写，调用方可以放心修数据后重试。只有并发窗口（别的副本恰好在这批检查和写入之间抢先写了同一批对象）可能留下部分写入，此时重读获胜映射并返回，重试依然安全。单条 `resolve` 内部走同一条批量路径，两者语义一致。
+- 往返次数（Single 模式，每一轮是一个 pipeline，与 id 数量无关）：正向批查 1 轮；反查 2 轮（反向 GET + 正向校验 GET）；批量写 = 正向查 1 轮 + trusted 预检 1 轮（有 trusted 项时）+ 序列 `INCRBY` 1 轮（有分配项时）+ 写入 3 轮（反向 reserve、正向 reserve、冲突补偿删除，后两轮只含需要的项）+ 序列下限 1 轮（trusted 项落在本 worker 时）；分配撞车时每次重抽再加 1 轮重读 + 1 轮序列 + 3 轮写。Cluster 模式下每一轮按 slot 分组成多个 pipeline 并发执行，往返次数与 Single 模式相同，只是并发扇出。Lua 用 `EVALSHA` 预加载脚本；遇到 `NOSCRIPT`（脚本被 flush 或新节点）会重新 `SCRIPT LOAD` 并重试一次。
+- 超时预算：`ID_REGISTRY_REDIS_REQUEST_TIMEOUT_MS`（默认 500）约束的是**单个 Redis pipeline**，一次批量写最多要串行经过约 5～8 轮；Home Mixer `RegistryClient` 与 Phoenix `IdentityRegistryClient` 的 500 ms 是**整次 HTTP 请求**的上限。在线只读/分配少量 id 的请求通常一两轮即可，但迁移批量导入应使用更大的客户端超时或更小的批（`--max-batch-size` 默认 10000 只是硬上限），并且服务端单次 Redis 超时不应大于客户端预算的一小部分，否则客户端会先超时而服务端仍在写入。
+
+内存预算按每条本地缓存约 100～250 bytes 粗估。默认容量约占 20～50 MB 加 Rust 进程基础开销；千万级全量映射不会等比例复制到每个 Registry 副本。Redis 本身按两个独立索引 key 约 250～600 bytes / mapping 预估，千万级数据应先按约 3～6 GB 数据、8～16 GB Redis 实例做压测起点，并保留 AOF、复制和碎片余量。分片后单 key 只承载一条映射，resharding、RDB/AOF rewrite 和 `--bigkeys` 不再被一个超大 Hash 拖住；总吞吐仍需按分片和节点数压测。
 
 ## Snowflake 规则
 
@@ -65,7 +108,7 @@ object_id, entity_kind, snowflake_id
 - Phoenix、Thunder、VM Ranker 的内部状态、索引、embedding key、xrex 请求和内部事件使用 Snowflake。
 - Phoenix 对 Home Mixer 的兼容 gRPC 如果仍是字符串 ObjectId，则只在 Phoenix adapter 的入口转换；不能把字符串继续带入 xrex。
 - 禁止 MD5、截断、取低位等不可逆映射；禁止各模块自行分配 ID。历史数据必须通过 trusted Snowflake 导入，不能在线重新分配。
-- Registry 只有一个写入权威。独立服务运行时，Home Mixer/Thunder/Phoenix/VM Ranker 通过 Registry Client 访问，不直接共享并发写入同一个 JSONL 文件。
+- Registry 只有一个写入权威。独立服务运行时，Home Mixer/Thunder/Phoenix/VM Ranker 通过 Registry Client 访问，不直接操作 Redis 映射 key，也不共享并发写入本地文件。
 
 ### 执行阶段
 
@@ -80,11 +123,42 @@ object_id, entity_kind, snowflake_id
 
 配置：
 
-- id-service 默认只接受已有 mapping 或 `trusted_snowflake_id`；只有明确传入 `--allow-allocation` 才会为新 ObjectID 分配 Snowflake。生产环境如果要对齐 main、Thunder 或 Phoenix index，应保持关闭并先导入 trusted mapping。
+- `ID_REGISTRY_REDIS_URL` / `--redis-url`：单 Redis 连接入口；
+- `ID_REGISTRY_REDIS_CLUSTER_URLS` / `--redis-cluster-urls`：逗号分隔的原生 Redis Cluster seed URLs；与单 Redis URL 互斥；
+- `ID_REGISTRY_REDIS_KEY_PREFIX` / `--redis-key-prefix`：默认 `id-registry:v2`；schema 固定为 256 个分片；
+- `ID_REGISTRY_CACHE_CAPACITY` / `--cache-capacity`：每个方向的本地缓存上限，默认 `100000`；
+- `ID_REGISTRY_REDIS_CONNECT_TIMEOUT_MS`：Redis 连接超时，默认 `2000`（单节点与 Cluster 路径都生效）；
+- `ID_REGISTRY_REDIS_REQUEST_TIMEOUT_MS`：单个 Redis pipeline 的超时，默认 `500`（见上文超时预算）；
+- `ID_REGISTRY_LISTEN` / `--listen`：HTTP 监听地址，默认 `127.0.0.1:50070`；
+- `ID_REGISTRY_WORKER_ID` / `--worker-id`：Snowflake worker 标识（0..=1023），默认 `0`。序列 counter 在 Redis，多副本共享同一 worker id 也安全；使用不同 worker id 只是为了让分配结果可追溯到副本；
+- `ID_REGISTRY_ALLOW_ALLOCATION` / `--allow-allocation`：默认关闭。关闭时只接受已有 mapping 或 trusted 导入，未知 ObjectId 返回 404 并一次列出全部未知 id 的数量和前 5 个。生产环境如果要对齐 main、Thunder 或 Phoenix index，应保持关闭并先导入 trusted mapping；
+- `ID_REGISTRY_ALLOW_TRUSTED_IMPORT` / `--allow-trusted-import`：默认关闭。关闭时任何带 `trusted_snowflake_id` 的请求（单条或批量任一项）在读写之前整批返回 403，防止普通调用方绕过分配权威直接指定 Snowflake。只在迁移导入专用副本上开启，在线只读副本与 k8s 清单都不开；
+- `ID_REGISTRY_MAX_BATCH_SIZE` / `--max-batch-size`：单次批量请求的 id 数上限，默认 `10000`，超限返回 413；
+- `RUST_LOG`：日志过滤（`env_logger` 语法，如 `info` 或 `id_service=debug`）；`ID_REGISTRY_LOG_FORMAT`：`text`（默认）或 `json`，与 Home Mixer 的 `HOME_MIXER_LOG_FORMAT` 同一格式；
 - `ID_REGISTRY_URL`：Phoenix adapter 访问统一 Registry 的地址，默认 `http://127.0.0.1:50070`。
 - `HOME_MIXER_ID_REGISTRY_URL`：Home Mixer Registry client 地址，默认 `http://127.0.0.1:50070`。
 
 Home Mixer 启动会校验 Registry URL；实际 Registry 不可用时，首次需要解析身份的请求 fail-closed。Home Mixer 只使用 Registry Client，不直接打开或写入映射文件。
+
+### 运行状态、日志与停机
+
+- `/healthz` 只表示进程存活。
+- `/readyz` 只读地 `GET` `mapping_version` 与 `storage_schema` 两个元数据 key 并比对常量；Redis 不可用、元数据缺失或不匹配都返回 503，供负载均衡器摘除当前副本。探测不会写 Redis，也不会重建元数据（元数据只在启动时用 `SETNX` 写入一次）。
+- `/metrics` 与业务接口同一监听端口，Prometheus 文本格式：`id_service_requests_total{route,status}`、`id_service_conflicts_total{kind="mapping"|"snowflake_taken"|"entity_kind"}`、`id_service_trusted_imports_total`、`id_service_allocations_total`、`id_service_redis_errors_total`、`id_service_orphan_reverse_mappings_total`、`id_service_cache_entries{direction="object"|"snowflake"}`、`id_service_build_info{version}`。
+- 日志：启动打印配置摘要（Redis URL 中的用户名/密码已脱敏为 `***@`）、ready 地址、每次 trusted 导入（info）、每次冲突（warn）、每个 Redis 错误（error，带操作名如 `insert reverse`）、orphan 反向记录（warn）、收到信号与停止（info）。
+- 优雅停机：收到 SIGTERM 或 Ctrl-C 后停止接受新连接，等待在途请求完成再退出（退出码 0）。
+
+HTTP 状态码按错误变体映射，不做消息子串匹配：
+
+| 状态 | 错误 |
+| --- | --- |
+| 400 | ObjectId 非法、Snowflake 超出正 int64 / 早于 epoch、worker id 非法 |
+| 403 | 服务未开 `--allow-trusted-import` 而请求带 `trusted_snowflake_id` |
+| 404 | 分配关闭且存在未知 ObjectId；反查未知 Snowflake |
+| 409 | 对象已绑定别的 Snowflake；Snowflake 已属于别的对象；entity_kind 不匹配 |
+| 413 | 批量超过 `--max-batch-size` |
+| 503 | Redis 不可用 / 超时、mapping version 或 storage schema 不匹配、元数据缺失 |
+| 500 | 同秒序列耗尽、Redis 中记录损坏 |
 
 切换完成的验收条件：
 
@@ -95,4 +169,4 @@ Home Mixer 启动会校验 Registry URL；实际 Registry 不可用时，首次�
 5. xrex checkpoint、retrieval index 和 Registry 使用同一版本；
 6. 对外响应仍能通过反向索引恢复原始 ObjectId。
 
-当前状态：Registry crate 已完成单写持久化、批量原子提交、可信 Snowflake 导入和 Client 响应校验；Home Mixer 领域模型以及 Thunder、VM Ranker、Phoenix/xrex 在线协议均使用数值 ID，ObjectId 只保留在公开 RPC、Redis、mrpyq 和事件边界。Phoenix 训练输入会通过 Registry 输出 Snowflake，并生成带 mapping version 与 SHA-256 的 identity contract；adapter 启动时必须绑定该 contract 和显式 model version，Home Mixer 会校验返回 metadata。部署已提供单副本 ID Registry StatefulSet、PVC 和共享服务地址，跨边界回归测试覆盖 Registry → Home Mixer → Thunder/VM Ranker → reverse，Phoenix 测试覆盖训练输出 → 在线 translator。代码迁移已闭环；真实 trusted mapping、历史 Redis 数据和已发布 checkpoint/retrieval index 仍需在生产切换前按环境导入并验收。
+当前状态：Registry crate 的 JSONL 遗留实现已删除，Redis 版本拆为 `MappingStore` 存储端口、分片独立 key Redis adapter 和应用服务；服务入口支持单 Redis endpoint 与原生 Redis Cluster（连接与响应超时均显式配置），批量读写每轮一个 pipeline（Cluster 按 slot 分组并发），并使用有上限的双向本地缓存。全局 Snowflake 唯一性、两阶段写入、trusted 导入门禁、分配序列对已存在 Snowflake 的感知与有界重抽、mapping version 与 storage schema 元数据校验、只读 readiness、fail-closed 反查、批量写前整体校验（确定性冲突下整批不提交）、日志 / `/metrics` / 优雅停机、HTTP 层与应用层回归测试已补齐。开发阶段暂不处理旧 v1 Hash schema 兼容、反向 orphan 的离线修复工具和 Redis 故障切换后的历史数据恢复；上线前必须单独完成这三类验收。Home Mixer 领域模型以及 Thunder、VM Ranker、Phoenix/xrex 在线协议均使用数值 ID，ObjectId 只保留在公开 RPC、Redis、mrpyq 和事件边界。开发阶段先用 Redis 观察千万级映射的实际内存、命中率和吞吐，再决定是否引入 MongoDB 作为大规模冷数据主库。
