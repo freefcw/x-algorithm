@@ -1,13 +1,9 @@
-#[cfg(feature = "legacy-int-ids")]
 use crate::clients::thunder_client::{ThunderClient, ThunderCluster};
 use crate::models::ids::{PostId, UserId};
 use crate::models::query::ScoredPostsQuery;
-#[cfg(feature = "legacy-int-ids")]
 use crate::params as p;
 use tonic::async_trait;
-#[cfg(feature = "legacy-int-ids")]
 use x_algorithm_proto::thunder::in_network_posts_service_client::InNetworkPostsServiceClient;
-#[cfg(feature = "legacy-int-ids")]
 use x_algorithm_proto::thunder::{GetInNetworkPostsRequest, LightPost};
 
 /// Light in-network / fallback post used by ThunderSource and FallbackSource.
@@ -40,11 +36,7 @@ pub trait InNetworkPostsClient: Send + Sync {
     }
 }
 
-/// Fail-closed in-network adapter used when the integer Thunder contract is
-/// compiled out, or when a non-demo process has no mrpyq backend.
-///
-/// Real ObjectIds cannot round-trip through Thunder's `uint64` fields. Leaving
-/// this source assembled with a working integer client would query user 0.
+/// Fail-closed in-network adapter used when neither Thunder nor mrpyq is configured.
 pub struct DisabledInNetworkPostsClient;
 
 #[async_trait]
@@ -55,14 +47,12 @@ impl InNetworkPostsClient for DisabledInNetworkPostsClient {
         _max_results: u32,
     ) -> Result<Vec<InNetworkPost>, String> {
         Err(
-            "in-network source requires MRPYQ_RECOMMENDATION_DATA_ADDR; \
-             integer Thunder is demo-only and cannot carry real ObjectIds"
+            "in-network source requires THUNDER_GRPC_ADDR or MRPYQ_RECOMMENDATION_DATA_ADDR"
                 .to_string(),
         )
     }
 }
 
-#[cfg(feature = "legacy-int-ids")]
 #[async_trait]
 impl InNetworkPostsClient for ThunderClient {
     async fn get_in_network_posts(
@@ -115,7 +105,7 @@ impl InNetworkPostsClient for ThunderClient {
             .into_iter()
             .filter_map(in_network_post_from_light_post)
             .collect();
-        // posts 与 usable 的差值是无法无损转成 ObjectId 而被丢弃的部分，
+        // posts 与 usable 的差值是无法无损转成合法 Snowflake 而被丢弃的部分，
         // 否则这段丢弃在链路上不可见。
         log::info!(
             "thunder rpc GetInNetworkPosts max_results={requested} elapsed_ms={elapsed_ms} posts={returned} usable={}",
@@ -125,7 +115,6 @@ impl InNetworkPostsClient for ThunderClient {
     }
 }
 
-#[cfg(feature = "legacy-int-ids")]
 fn in_network_post_from_light_post(post: LightPost) -> Option<InNetworkPost> {
     let tweet_id = valid_id(post.post_id)?;
     let author_id = valid_id(post.author_id)?;
@@ -156,32 +145,19 @@ fn in_network_post_from_light_post(post: LightPost) -> Option<InNetworkPost> {
     })
 }
 
-#[cfg(feature = "legacy-int-ids")]
-fn valid_id(id: i64) -> Option<crate::models::ObjectId> {
-    u64::try_from(id)
-        .ok()
-        .filter(|id| *id != 0)
-        .map(crate::models::ObjectId::from_u64_be_padded)
+fn valid_id(id: i64) -> Option<u64> {
+    u64::try_from(id).ok().filter(|id| *id != 0)
 }
 
-#[cfg(feature = "legacy-int-ids")]
-fn thunder_u64(id: crate::models::ObjectId) -> Option<u64> {
-    id.to_u64_be_padded().filter(|id| *id != 0)
-}
-
-/// Convert a padded demo ObjectId into Thunder's integer wire field.
-/// Real 96-bit IDs return `None`; callers must fail closed rather than send 0.
-#[cfg(feature = "legacy-int-ids")]
-fn thunder_request(query: &ScoredPostsQuery) -> Result<GetInNetworkPostsRequest, String> {
-    let user_id = thunder_u64(query.user_id).ok_or_else(|| {
-        format!(
-            "Thunder adapter cannot round-trip user_id {id} through uint64",
-            id = query.user_id
-        )
-    })?;
+/// Send the query's internal Snowflake IDs to Thunder's integer wire fields.
+/// Out-of-range IDs fail closed rather than query user 0.
+pub(crate) fn thunder_request(
+    query: &ScoredPostsQuery,
+) -> Result<GetInNetworkPostsRequest, String> {
+    let user_id = checked_id(query.user_id, "user_id")?;
     let following_user_ids =
-        round_trip_ids(&query.user_features.followed_user_ids, "following_user_ids")?;
-    let exclude_tweet_ids = round_trip_ids(&query.seen_ids, "exclude_tweet_ids")?;
+        checked_ids(&query.user_features.followed_user_ids, "following_user_ids")?;
+    let exclude_tweet_ids = checked_ids(&query.seen_ids, "exclude_tweet_ids")?;
     Ok(GetInNetworkPostsRequest {
         user_id,
         following_user_ids,
@@ -193,20 +169,17 @@ fn thunder_request(query: &ScoredPostsQuery) -> Result<GetInNetworkPostsRequest,
     })
 }
 
-#[cfg(feature = "legacy-int-ids")]
-fn round_trip_ids(ids: &[crate::models::ObjectId], field: &str) -> Result<Vec<u64>, String> {
-    let mut out = Vec::with_capacity(ids.len());
-    for id in ids {
-        match thunder_u64(*id) {
-            Some(n) => out.push(n),
-            None => {
-                return Err(format!(
-                    "Thunder adapter cannot round-trip {field} id {id} through uint64"
-                ));
-            }
-        }
+fn checked_id(id: u64, field: &str) -> Result<u64, String> {
+    if id == 0 || id > i64::MAX as u64 {
+        return Err(format!(
+            "Thunder adapter received out-of-range {field} id {id}"
+        ));
     }
-    Ok(out)
+    Ok(id)
+}
+
+fn checked_ids(ids: &[u64], field: &str) -> Result<Vec<u64>, String> {
+    ids.iter().map(|id| checked_id(*id, field)).collect()
 }
 
 #[cfg(test)]
@@ -230,13 +203,13 @@ mod disabled_client_tests {
     }
 }
 
-#[cfg(all(test, feature = "legacy-int-ids"))]
+#[cfg(test)]
 mod tests {
     use super::*;
     use crate::models::uid;
 
     #[test]
-    fn legacy_light_post_maps_to_object_ids_and_created_at() {
+    fn numeric_light_post_maps_to_internal_ids_and_created_at() {
         let post = in_network_post_from_light_post(LightPost {
             post_id: 10,
             author_id: 20,
@@ -247,7 +220,7 @@ mod tests {
             source_user_id: Some(60),
             ..Default::default()
         })
-        .expect("valid legacy post");
+        .expect("valid numeric post");
 
         assert_eq!(post.tweet_id, crate::models::pid(10));
         assert_eq!(post.author_id, crate::models::uid(20));
@@ -262,7 +235,7 @@ mod tests {
     }
 
     #[test]
-    fn legacy_light_post_drops_zero_or_negative_identity() {
+    fn numeric_light_post_drops_zero_or_negative_identity() {
         assert!(in_network_post_from_light_post(LightPost {
             post_id: 0,
             author_id: 1,
@@ -277,7 +250,7 @@ mod tests {
         .is_none());
     }
 
-    fn padded_query(user_id: crate::models::UserId) -> ScoredPostsQuery {
+    fn numeric_query(user_id: crate::models::UserId) -> ScoredPostsQuery {
         ScoredPostsQuery {
             user_id,
             user_features: crate::models::user_features::UserFeatures {
@@ -290,8 +263,8 @@ mod tests {
     }
 
     #[test]
-    fn thunder_request_round_trips_padded_demo_ids() {
-        let request = thunder_request(&padded_query(uid(1))).expect("padded demo ids");
+    fn thunder_request_passes_internal_ids_through() {
+        let request = thunder_request(&numeric_query(uid(1))).expect("internal ids");
         assert_eq!(request.user_id, 1);
         assert_eq!(request.following_user_ids, vec![201, 202]);
         assert_eq!(request.exclude_tweet_ids, vec![9]);
@@ -299,26 +272,19 @@ mod tests {
     }
 
     #[test]
-    fn thunder_request_rejects_real_object_id_instead_of_user_zero() {
-        let user_id =
-            crate::models::ObjectId::parse("e305c05a62cd1ef55823cd86").expect("real object id");
-        let error = thunder_request(&padded_query(user_id)).expect_err("must not query user 0");
-        assert!(error.contains("cannot round-trip user_id"));
-        assert!(error.contains("e305c05a62cd1ef55823cd86"));
+    fn thunder_request_rejects_out_of_range_ids_instead_of_user_zero() {
+        let mut query = numeric_query(0);
+        let error = thunder_request(&query).expect_err("must not query user 0");
+        assert!(error.contains("out-of-range user_id"));
         assert!(!error.contains("user_id 0"));
-    }
 
-    #[test]
-    fn thunder_request_rejects_unpadded_follow_or_seen_ids() {
-        let real =
-            crate::models::ObjectId::parse("e305c05a62cd1ef55823cd86").expect("real object id");
-        let mut query = padded_query(uid(1));
-        query.user_features.followed_user_ids = vec![real];
+        query = numeric_query(uid(1));
+        query.user_features.followed_user_ids = vec![u64::MAX];
         let follow_error = thunder_request(&query).expect_err("must not drop follows silently");
         assert!(follow_error.contains("following_user_ids"));
 
         query.user_features.followed_user_ids = vec![uid(201)];
-        query.seen_ids = vec![real];
+        query.seen_ids = vec![i64::MAX as u64 + 1];
         let seen_error = thunder_request(&query).expect_err("must not drop seen ids silently");
         assert!(seen_error.contains("exclude_tweet_ids"));
     }

@@ -13,9 +13,11 @@
 //!
 //! 事件契约见 `docs/implementation/served-candidates-event-contract.md`。
 
+use crate::id::{EntityKind, SharedIdentityResolver, SnowflakeId};
 use crate::models::candidate::PostCandidate;
 use crate::models::query::ScoredPostsQuery;
 use serde::{Deserialize, Serialize};
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use tonic::async_trait;
 use xai_candidate_pipeline::side_effect::{SideEffect, SideEffectInput};
@@ -67,12 +69,27 @@ pub struct ServedCandidateRecord {
 }
 
 impl ServedCandidatesEvent {
-    pub fn from_served(query: &ScoredPostsQuery, candidates: &[PostCandidate]) -> Self {
-        Self {
+    /// Builds the event from pre-reversed external IDs. The side effect owns
+    /// the registry round-trip; numeric IDs never serialize into the event.
+    /// `None` means a required ID had no mapping, so the event is not emitted.
+    pub fn from_served(
+        query: &ScoredPostsQuery,
+        candidates: &[PostCandidate],
+        viewer_id: String,
+        posts: &HashMap<u64, String>,
+        users: &HashMap<u64, String>,
+    ) -> Option<Self> {
+        let external = |map: &HashMap<u64, String>, id: u64| -> Option<String> {
+            if id == 0 {
+                return Some(String::new());
+            }
+            map.get(&id).cloned()
+        };
+        Some(Self {
             schema_version: SERVED_CANDIDATES_EVENT_SCHEMA_VERSION,
             request_id: query.request_id.clone(),
             prediction_request_id: query.prediction_id,
-            viewer_id: query.user_id.to_string(),
+            viewer_id,
             request_time_ms: query.request_time_ms,
             is_shadow_traffic: query.is_shadow_traffic,
             in_network_only: query.in_network_only,
@@ -81,22 +98,27 @@ impl ServedCandidatesEvent {
             candidates: candidates
                 .iter()
                 .enumerate()
-                .map(|(position, candidate)| ServedCandidateRecord {
-                    position: u32::try_from(position).unwrap_or(u32::MAX),
-                    post_id: candidate.tweet_id.to_string(),
-                    author_id: candidate.author_id.to_string(),
-                    retweeted_post_id: candidate.retweeted_tweet_id.map(|id| id.to_string()),
-                    served_type: candidate
-                        .served_type
-                        .map(|served_type| served_type.as_str_name().to_string()),
-                    in_network: candidate.in_network,
-                    score: candidate.score,
-                    weighted_score: candidate.weighted_score,
-                    degraded_reason: candidate.degraded_reason.clone(),
-                    created_at_ms: candidate.created_at_ms,
+                .map(|(position, candidate)| {
+                    Some(ServedCandidateRecord {
+                        position: u32::try_from(position).unwrap_or(u32::MAX),
+                        post_id: external(posts, candidate.tweet_id)?,
+                        author_id: external(users, candidate.author_id)?,
+                        retweeted_post_id: match candidate.retweeted_tweet_id {
+                            Some(id) => Some(external(posts, id)?),
+                            None => None,
+                        },
+                        served_type: candidate
+                            .served_type
+                            .map(|served_type| served_type.as_str_name().to_string()),
+                        in_network: candidate.in_network,
+                        score: candidate.score,
+                        weighted_score: candidate.weighted_score,
+                        degraded_reason: candidate.degraded_reason.clone(),
+                        created_at_ms: candidate.created_at_ms,
+                    })
                 })
-                .collect(),
-        }
+                .collect::<Option<Vec<_>>>()?,
+        })
     }
 }
 
@@ -113,12 +135,72 @@ pub trait ServedCandidatesSink: Send + Sync {
 
 pub struct ServedCandidatesKafkaSideEffect {
     sink: Arc<dyn ServedCandidatesSink>,
+    identity: SharedIdentityResolver,
 }
 
 impl ServedCandidatesKafkaSideEffect {
+    /// `new` keeps service-free tests working through the padded resolver;
+    /// production assembly uses `with_identity` with the shared registry.
     pub fn new(sink: Arc<dyn ServedCandidatesSink>) -> Self {
-        Self { sink }
+        Self::with_identity(sink, Arc::new(crate::id::PaddedIdentityResolver))
     }
+
+    pub fn with_identity(
+        sink: Arc<dyn ServedCandidatesSink>,
+        identity: SharedIdentityResolver,
+    ) -> Self {
+        Self { sink, identity }
+    }
+
+    async fn external_ids(
+        &self,
+        query: &ScoredPostsQuery,
+        candidates: &[PostCandidate],
+    ) -> Result<(String, HashMap<u64, String>, HashMap<u64, String>), String> {
+        let mut post_ids = HashSet::new();
+        let mut user_ids = HashSet::from([query.user_id]);
+        for candidate in candidates {
+            for id in [candidate.tweet_id]
+                .into_iter()
+                .chain(candidate.retweeted_tweet_id)
+            {
+                if id != 0 {
+                    post_ids.insert(id);
+                }
+            }
+            if candidate.author_id != 0 {
+                user_ids.insert(candidate.author_id);
+            }
+        }
+        let posts = reverse_kind(&self.identity, EntityKind::Post, post_ids).await?;
+        let users = reverse_kind(&self.identity, EntityKind::User, user_ids).await?;
+        let viewer_id = users
+            .get(&query.user_id)
+            .cloned()
+            .ok_or_else(|| "ID Registry returned no viewer mapping".to_string())?;
+        Ok((viewer_id, posts, users))
+    }
+}
+
+async fn reverse_kind(
+    identity: &SharedIdentityResolver,
+    kind: EntityKind,
+    ids: HashSet<u64>,
+) -> Result<HashMap<u64, String>, String> {
+    let ids = ids.into_iter().collect::<Vec<_>>();
+    let pairs = ids
+        .iter()
+        .map(|id| {
+            SnowflakeId::new(*id)
+                .map(|snowflake| (snowflake, kind))
+                .map_err(|error| error.to_string())
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    let reversed = identity
+        .reverse_batch(&pairs)
+        .await
+        .map_err(|error| error.to_string())?;
+    Ok(ids.into_iter().zip(reversed).collect())
 }
 
 #[async_trait]
@@ -136,7 +218,18 @@ impl SideEffect<ScoredPostsQuery, PostCandidate> for ServedCandidatesKafkaSideEf
             return Ok(());
         }
 
-        let event = ServedCandidatesEvent::from_served(&input.query, &input.selected_candidates);
+        let (viewer_id, posts, users) = self
+            .external_ids(&input.query, &input.selected_candidates)
+            .await?;
+        let Some(event) = ServedCandidatesEvent::from_served(
+            &input.query,
+            &input.selected_candidates,
+            viewer_id,
+            &posts,
+            &users,
+        ) else {
+            return Err("Served-candidates event dropped: unmapped internal ID".to_string());
+        };
         self.sink
             .publish(&event)
             .await
@@ -152,9 +245,14 @@ impl SideEffect<ScoredPostsQuery, PostCandidate> for ServedCandidatesKafkaSideEf
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::models::ids::ObjectId;
     use crate::models::{pid, uid};
     use std::sync::Mutex;
     use x_algorithm_proto::home_mixer as pb;
+
+    fn ext(n: u64) -> String {
+        ObjectId::from_u64_be_padded(n).to_string()
+    }
 
     #[derive(Default)]
     struct RecordingSink {
@@ -236,7 +334,7 @@ mod tests {
         assert_eq!(event.schema_version, SERVED_CANDIDATES_EVENT_SCHEMA_VERSION);
         assert_eq!(event.request_id, "req-1");
         assert_eq!(event.prediction_request_id, 77);
-        assert_eq!(event.viewer_id, uid(42).to_string());
+        assert_eq!(event.viewer_id, ext(42));
         assert_eq!(event.request_time_ms, 1_700_000_000_000);
         assert!(event.is_shadow_traffic && event.is_bottom_request);
         assert_eq!(event.client_app_id, 3);
@@ -245,8 +343,8 @@ mod tests {
             vec![
                 ServedCandidateRecord {
                     position: 0,
-                    post_id: pid(9).to_string(),
-                    author_id: uid(8).to_string(),
+                    post_id: ext(9),
+                    author_id: ext(8),
                     retweeted_post_id: None,
                     served_type: Some("FOR_YOU_PHOENIX_RETRIEVAL".to_string()),
                     in_network: Some(false),
@@ -257,9 +355,9 @@ mod tests {
                 },
                 ServedCandidateRecord {
                     position: 1,
-                    post_id: pid(10).to_string(),
-                    author_id: uid(11).to_string(),
-                    retweeted_post_id: Some(pid(5).to_string()),
+                    post_id: ext(10),
+                    author_id: ext(11),
+                    retweeted_post_id: Some(ext(5)),
                     served_type: Some("FOR_YOU_IN_NETWORK".to_string()),
                     in_network: Some(true),
                     score: Some(0.5),
@@ -288,15 +386,24 @@ mod tests {
 
     #[test]
     fn event_json_is_the_stable_wire_shape() {
-        let event = ServedCandidatesEvent::from_served(&query(), &candidates()[..1]);
+        let posts = HashMap::from([(9, ext(9))]);
+        let users = HashMap::from([(8, ext(8))]);
+        let event = ServedCandidatesEvent::from_served(
+            &query(),
+            &candidates()[..1],
+            ext(42),
+            &posts,
+            &users,
+        )
+        .expect("mapped event");
         let json: serde_json::Value = serde_json::to_value(&event).expect("serialize");
 
         assert_eq!(json["schema_version"], 1);
         assert_eq!(json["request_id"], "req-1");
-        assert_eq!(json["viewer_id"], uid(42).to_string());
+        assert_eq!(json["viewer_id"], ext(42));
         let first = &json["candidates"][0];
         assert_eq!(first["position"], 0);
-        assert_eq!(first["post_id"], pid(9).to_string());
+        assert_eq!(first["post_id"], ext(9));
         assert_eq!(first["served_type"], "FOR_YOU_PHOENIX_RETRIEVAL");
         // Optional fields stay present as null so consumers see one shape.
         assert!(first["degraded_reason"].is_null());

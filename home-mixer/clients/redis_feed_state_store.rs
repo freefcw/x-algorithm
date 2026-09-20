@@ -7,8 +7,9 @@ use crate::clients::redis_conn::{
     parse_cluster_urls, redis_error, validate_redis_url, ManagedRedisConnection,
 };
 use crate::feed_state::{FeedStateSnapshot, FeedStateStore};
+use crate::id::{EntityKind, SnowflakeId};
 use crate::metrics::ClientCallRecorder;
-use crate::models::{PostId, UserId};
+use crate::models::{ObjectId, PostId, UserId};
 
 const DEFAULT_KEY_PREFIX: &str = "home_mixer:feed_state";
 const DEFAULT_TTL_SECS: u64 = 7 * 24 * 60 * 60;
@@ -129,6 +130,7 @@ impl RedisFeedStateConfig {
 /// have been executed.
 pub struct RedisFeedStateStore {
     connection: ManagedRedisConnection,
+    identity: crate::id::SharedIdentityResolver,
     key_prefix: String,
     max_served_ids: usize,
     max_request_timestamps: usize,
@@ -138,7 +140,20 @@ pub struct RedisFeedStateStore {
 }
 
 impl RedisFeedStateStore {
+    /// Test/compatibility constructor: resolves zero-padded ObjectIds without
+    /// external services. Production must use [`Self::new_with_identity`].
     pub async fn new(config: RedisFeedStateConfig) -> Result<Self, String> {
+        Self::new_with_identity(
+            config,
+            std::sync::Arc::new(crate::id::PaddedIdentityResolver::new()),
+        )
+        .await
+    }
+
+    pub async fn new_with_identity(
+        config: RedisFeedStateConfig,
+        identity: crate::id::SharedIdentityResolver,
+    ) -> Result<Self, String> {
         config.validate()?;
 
         let connection = ManagedRedisConnection::connect(
@@ -151,6 +166,7 @@ impl RedisFeedStateStore {
 
         Ok(Self {
             connection,
+            identity,
             key_prefix: config.key_prefix,
             max_served_ids: config.max_served_ids,
             max_request_timestamps: config.max_request_timestamps,
@@ -166,10 +182,28 @@ impl RedisFeedStateStore {
         self
     }
 
-    fn key(&self, user_id: UserId, suffix: &str) -> String {
+    /// Redis keys keep the external ObjectId form; `user_id` is the reversed
+    /// 24-hex string, not the internal Snowflake.
+    fn key(&self, user_id: &ObjectId, suffix: &str) -> String {
         // The hash tag keeps a user's pair collocated under cluster routing
         // and cluster-aware proxies alike.
         format!("{}:{{{user_id}}}:{suffix}", self.key_prefix)
+    }
+
+    /// Reverse the internal viewer Snowflake to the ObjectId the Redis key
+    /// space is written in.
+    async fn external_user(&self, user_id: UserId) -> Result<ObjectId, String> {
+        let snowflake = SnowflakeId::new(user_id)
+            .map_err(|error| format!("invalid internal user id: {error}"))?;
+        let object_id = self
+            .identity
+            .reverse_batch(&[(snowflake, EntityKind::User)])
+            .await
+            .map_err(|error| format!("reverse feed-state user id: {error}"))?
+            .into_iter()
+            .next()
+            .ok_or_else(|| "ID Registry returned no user mapping".to_string())?;
+        ObjectId::parse(&object_id).map_err(|error| format!("ID Registry returned {error}"))
     }
 }
 
@@ -209,8 +243,9 @@ impl FeedStateStore for RedisFeedStateStore {
 
 impl RedisFeedStateStore {
     async fn load_inner(&self, user_id: UserId) -> Result<FeedStateSnapshot, String> {
-        let served_key = self.key(user_id, "served");
-        let timestamps_key = self.key(user_id, "timestamps");
+        let external_user = self.external_user(user_id).await?;
+        let served_key = self.key(&external_user, "served");
+        let timestamps_key = self.key(&external_user, "timestamps");
         let mut pipeline = redis::pipe();
         pipeline
             .atomic()
@@ -231,13 +266,24 @@ impl RedisFeedStateStore {
         .map_err(|_| "Redis feed-state load timed out".to_string())?
         .map_err(|error| redis_error("Redis feed-state load", &error))?;
 
-        let served_post_ids = served
+        // Members are stored as external ObjectIds; resolve them to the
+        // internal Snowflake IDs the domain model carries.
+        let external_ids = served
             .into_iter()
             .map(|value| {
-                PostId::parse(&value)
+                ObjectId::parse(&value)
+                    .map(|_| (value, EntityKind::Post))
                     .map_err(|error| format!("invalid served post id in Redis: {error}"))
             })
             .collect::<Result<Vec<_>, _>>()?;
+        let served_post_ids = self
+            .identity
+            .resolve_batch(&external_ids)
+            .await
+            .map_err(|error| format!("resolve feed-state served ids: {error}"))?
+            .into_iter()
+            .map(|id| id.get())
+            .collect();
         Ok(FeedStateSnapshot {
             served_post_ids,
             request_timestamps_ms,
@@ -250,12 +296,28 @@ impl RedisFeedStateStore {
         served_post_ids: Vec<PostId>,
         request_timestamp_ms: i64,
     ) -> Result<(), String> {
-        let served_key = self.key(user_id, "served");
-        let timestamps_key = self.key(user_id, "timestamps");
+        let external_user = self.external_user(user_id).await?;
+        // Members are stored as external ObjectIds; reverse the internal
+        // Snowflake IDs before writing.
+        let internal_ids = served_post_ids
+            .iter()
+            .map(|id| {
+                SnowflakeId::new(*id)
+                    .map(|id| (id, EntityKind::Post))
+                    .map_err(|error| format!("invalid served post id: {error}"))
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        let external_post_ids = self
+            .identity
+            .reverse_batch(&internal_ids)
+            .await
+            .map_err(|error| format!("reverse feed-state served ids: {error}"))?;
+        let served_key = self.key(&external_user, "served");
+        let timestamps_key = self.key(&external_user, "timestamps");
         let mut pipeline = redis::pipe();
         pipeline.atomic();
 
-        for post_id in served_post_ids {
+        for post_id in external_post_ids {
             let post_id = post_id.to_string();
             pipeline
                 .cmd("LREM")

@@ -106,11 +106,11 @@ mod tests {
             .with_write_timeout(Duration::from_millis(1));
         let input = Arc::new(SideEffectInput {
             query: Arc::new(ScoredPostsQuery {
-                user_id: 42.into(),
+                user_id: 42,
                 ..Default::default()
             }),
             selected_candidates: vec![PostCandidate {
-                tweet_id: 100.into(),
+                tweet_id: 100,
                 ..Default::default()
             }],
             non_selected_candidates: Vec::new(),

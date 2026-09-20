@@ -33,7 +33,6 @@ pub mod served_candidates_sink;
 pub mod served_persistence;
 pub mod socialgraph_client;
 pub mod strato_client;
-#[cfg(feature = "legacy-int-ids")]
 pub mod thunder_client;
 pub mod topic_retrieval_client;
 pub mod tweet_entity_service_client;

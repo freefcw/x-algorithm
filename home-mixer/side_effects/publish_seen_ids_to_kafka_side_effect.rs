@@ -91,9 +91,9 @@ mod tests {
         assert!(!side_effect.enable(Arc::clone(&empty_query)));
 
         let query = ScoredPostsQuery {
-            user_id: 42.into(),
+            user_id: 42,
             request_time_ms: 1_700_000_000_000,
-            seen_ids: vec![1.into(), 2.into()],
+            seen_ids: vec![1, 2],
             ..Default::default()
         };
         assert!(side_effect.enable(Arc::new(query.clone())));

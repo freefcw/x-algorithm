@@ -23,6 +23,7 @@ use crate::clients::mrpyq_viewer_relation_client::{
 };
 use crate::clients::strato_client::StratoClient;
 use crate::clients::tweet_entity_service_client::TESClient;
+use crate::id::{EntityKind, SharedIdentityResolver, SnowflakeId};
 use crate::metrics::ClientCallRecorder;
 use crate::models::candidate_features::{
     MediaEntities, MediaEntity, MediaInfo, PureCoreData, VideoInfo,
@@ -58,13 +59,15 @@ pub struct MrpyqPipelineAdapters {
 /// signal.
 pub fn pipeline_adapters_from_env(
     demo_mode: bool,
+    identity: SharedIdentityResolver,
 ) -> anyhow::Result<Option<MrpyqPipelineAdapters>> {
-    pipeline_adapters_from_env_with_calls(demo_mode, ClientCallRecorder::default())
+    pipeline_adapters_from_env_with_calls(demo_mode, ClientCallRecorder::default(), identity)
 }
 
 pub fn pipeline_adapters_from_env_with_calls(
     demo_mode: bool,
     calls: ClientCallRecorder,
+    identity: SharedIdentityResolver,
 ) -> anyhow::Result<Option<MrpyqPipelineAdapters>> {
     if demo_mode {
         return Ok(None);
@@ -81,20 +84,49 @@ pub fn pipeline_adapters_from_env_with_calls(
     log::info!(
         "using mrpyq RecommendationDataService for TES / in-network / fallback / first-stage eligibility, and ViewerRelationService for block / mute"
     );
-    Ok(Some(pipeline_adapters(client, relations)))
+    Ok(Some(pipeline_adapters(client, relations, identity)))
 }
 
 pub fn pipeline_adapters(
     client: Arc<dyn MrpyqRecommendationDataClient>,
     relations: Arc<dyn MrpyqViewerRelationClient>,
+    identity: SharedIdentityResolver,
 ) -> MrpyqPipelineAdapters {
-    let cache = Arc::new(ContentCache::new(Arc::clone(&client)));
+    let cache = Arc::new(ContentCache::new(
+        Arc::clone(&client),
+        Arc::clone(&identity),
+    ));
     MrpyqPipelineAdapters {
         tes: Arc::new(MrpyqTESClient::with_cache(Arc::clone(&cache))),
-        in_network: Arc::new(MrpyqInNetworkPostsClient::new(client)),
+        in_network: Arc::new(MrpyqInNetworkPostsClient::with_identity(
+            client,
+            Arc::clone(&identity),
+        )),
         vf: Arc::new(MrpyqFirstStageEligibilityClient::with_cache(cache)),
-        strato: Arc::new(MrpyqStratoClient::new(relations)),
+        strato: Arc::new(MrpyqStratoClient::with_identity(relations, identity)),
     }
+}
+
+/// Reverses internal numeric IDs back to external ObjectIds at the mrpyq
+/// boundary. An unmapped ID fails the whole batch: a guessed string would hit
+/// mrpyq's stores as an ID nobody allocated.
+async fn reverse_external_ids(
+    identity: &SharedIdentityResolver,
+    kind: EntityKind,
+    ids: impl IntoIterator<Item = u64>,
+) -> Result<Vec<String>, String> {
+    let pairs = ids
+        .into_iter()
+        .map(|id| {
+            SnowflakeId::new(id)
+                .map(|snowflake| (snowflake, kind))
+                .map_err(|error| error.to_string())
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    identity
+        .reverse_batch(&pairs)
+        .await
+        .map_err(|error| error.to_string())
 }
 
 /// Shares one hydration pass between the TES and VF ports.
@@ -113,17 +145,27 @@ pub fn pipeline_adapters(
 /// the next call starts a new one.
 struct ContentCache {
     client: Arc<dyn MrpyqRecommendationDataClient>,
+    identity: SharedIdentityResolver,
     state: Mutex<CacheState>,
 }
 
 /// Result of one hydration pass, shared by everyone who joined it.
-type FetchCell = OnceCell<Result<Arc<Vec<RecommendationContent>>, MrpyqClientError>>;
+type FetchCell = OnceCell<Result<Arc<Vec<(PostId, HydratedContent)>>, MrpyqClientError>>;
+
+/// A fetched feed plus its author resolved into the internal numeric domain.
+/// Author resolution is part of the fetch: `creator_member_id` is an external
+/// ObjectId, so ports downstream only ever see numeric IDs.
+#[derive(Clone)]
+struct HydratedContent {
+    content: RecommendationContent,
+    author_id: Option<UserId>,
+}
 
 #[derive(Default)]
 struct CacheState {
     /// `None` records a feed mrpyq did not return, so a missing feed is not
     /// re-requested by every port.
-    contents: HashMap<PostId, Option<RecommendationContent>>,
+    contents: HashMap<PostId, Option<HydratedContent>>,
     /// Keyed by the sorted feed set a caller is about to fetch. Core data and
     /// media entities are polled concurrently over the same candidates, so
     /// their keys match and they join one RPC batch.
@@ -145,9 +187,13 @@ impl CacheState {
 }
 
 impl ContentCache {
-    fn new(client: Arc<dyn MrpyqRecommendationDataClient>) -> Self {
+    fn new(
+        client: Arc<dyn MrpyqRecommendationDataClient>,
+        identity: SharedIdentityResolver,
+    ) -> Self {
         Self {
             client,
+            identity,
             state: Mutex::new(CacheState::default()),
         }
     }
@@ -155,7 +201,7 @@ impl ContentCache {
     async fn contents_by_id(
         &self,
         post_ids: &[PostId],
-    ) -> Result<HashMap<PostId, RecommendationContent>, MrpyqClientError> {
+    ) -> Result<HashMap<PostId, HydratedContent>, MrpyqClientError> {
         let mut missing = {
             let mut state = self.state.lock().await;
             state.evict_if_stale();
@@ -190,14 +236,7 @@ impl ContentCache {
                 .get_or_init(|| async {
                     let started = Instant::now();
                     let chunks = missing.chunks(MAX_FEED_IDS).len();
-                    let result =
-                        futures::future::try_join_all(missing.chunks(MAX_FEED_IDS).map(|chunk| {
-                            self.client.batch_get_contents(
-                                chunk.iter().map(ToString::to_string).collect(),
-                            )
-                        }))
-                        .await
-                        .map(|pages| Arc::new(pages.concat()));
+                    let result = self.fetch_contents(&missing).await;
                     match &result {
                         Ok(contents) => log::info!(
                             "mrpyq adapter hydrate elapsed_ms={} missing={} chunks={} contents={}",
@@ -231,11 +270,12 @@ impl ContentCache {
             let fetched = fetched?;
             state.filled_at.get_or_insert_with(Instant::now);
             state.contents.extend(missing.iter().map(|id| (*id, None)));
-            for content in fetched.iter() {
-                if let Some(id) = parse_object_id(&content.feed_id) {
-                    state.contents.insert(id, Some(content.clone()));
-                }
-            }
+            state.contents.extend(
+                fetched
+                    .iter()
+                    .cloned()
+                    .map(|(id, content)| (id, Some(content))),
+            );
         }
 
         let state = self.state.lock().await;
@@ -244,17 +284,121 @@ impl ContentCache {
             .filter_map(|id| Some((*id, state.contents.get(id)?.clone()?)))
             .collect())
     }
+
+    /// Fetches one disjoint set of internal post IDs: reversed to external
+    /// ObjectIds for mrpyq, then validated back into the requested set — a
+    /// `feed_id` the registry did not hand out for this batch is dropped rather
+    /// than trusted. `creator_member_id` is resolved in one batch for the whole
+    /// page; feeds whose author cannot be represented still hydrate, they just
+    /// carry `author_id: None` like a missing feed does.
+    async fn fetch_contents(
+        &self,
+        missing: &[PostId],
+    ) -> Result<Arc<Vec<(PostId, HydratedContent)>>, MrpyqClientError> {
+        let external =
+            reverse_external_ids(&self.identity, EntityKind::Post, missing.iter().copied())
+                .await
+                .map_err(MrpyqClientError::Unavailable)?;
+        let external_to_internal: HashMap<crate::models::ObjectId, PostId> = missing
+            .iter()
+            .copied()
+            .zip(external.iter())
+            .filter_map(|(internal, raw)| {
+                crate::models::ObjectId::parse(raw)
+                    .ok()
+                    .map(|id| (id, internal))
+            })
+            .collect();
+        let pages = futures::future::try_join_all(
+            external
+                .chunks(MAX_FEED_IDS)
+                .map(|chunk| self.client.batch_get_contents(chunk.to_vec())),
+        )
+        .await?;
+        let fetched: Vec<(PostId, RecommendationContent)> = pages
+            .concat()
+            .into_iter()
+            .filter_map(|content| {
+                let Some(feed) = crate::models::ObjectId::parse(&content.feed_id)
+                    .ok()
+                    .filter(|id| !id.is_nil())
+                else {
+                    log::warn!(
+                        "dropping mrpyq content with invalid feed_id {}",
+                        content.feed_id
+                    );
+                    return None;
+                };
+                match external_to_internal.get(&feed) {
+                    Some(internal) => Some((*internal, content)),
+                    None => {
+                        log::warn!(
+                            "dropping mrpyq content with unrequested feed_id {}",
+                            content.feed_id
+                        );
+                        None
+                    }
+                }
+            })
+            .collect();
+        let mut author_ids = HashMap::new();
+        let author_requests: Vec<(String, EntityKind)> = fetched
+            .iter()
+            .filter_map(|(_, content)| {
+                crate::models::ObjectId::parse(&content.creator_member_id)
+                    .ok()
+                    .filter(|id| !id.is_nil())
+                    .map(|_| (content.creator_member_id.clone(), EntityKind::User))
+            })
+            .collect();
+        let resolved = self
+            .identity
+            .resolve_batch(&author_requests)
+            .await
+            .map_err(|error| MrpyqClientError::Unavailable(error.to_string()))?;
+        for ((raw, _), snowflake) in author_requests.iter().zip(resolved) {
+            author_ids.insert(raw.clone(), snowflake.get());
+        }
+        Ok(Arc::new(
+            fetched
+                .into_iter()
+                .map(|(id, content)| {
+                    let author_id = author_ids.get(&content.creator_member_id).copied();
+                    if author_id.is_none() {
+                        log::warn!(
+                            "mrpyq content {} has an unresolvable creator_member_id {}",
+                            content.feed_id,
+                            content.creator_member_id
+                        );
+                    }
+                    (id, HydratedContent { content, author_id })
+                })
+                .collect(),
+        ))
+    }
 }
 
 pub struct MrpyqInNetworkPostsClient {
     client: Arc<dyn MrpyqRecommendationDataClient>,
+    identity: SharedIdentityResolver,
     recall_budget: Duration,
 }
 
 impl MrpyqInNetworkPostsClient {
+    /// `new` keeps the service-free test path working: the padded resolver maps
+    /// `00000000`-prefixed ObjectIds without a registry. Production assembly
+    /// goes through `with_identity` with the shared registry client.
     pub fn new(client: Arc<dyn MrpyqRecommendationDataClient>) -> Self {
+        Self::with_identity(client, Arc::new(crate::id::PaddedIdentityResolver))
+    }
+
+    pub fn with_identity(
+        client: Arc<dyn MrpyqRecommendationDataClient>,
+        identity: SharedIdentityResolver,
+    ) -> Self {
         Self {
             client,
+            identity,
             recall_budget: RECALL_BUDGET,
         }
     }
@@ -263,6 +407,12 @@ impl MrpyqInNetworkPostsClient {
     fn with_recall_budget(mut self, budget: Duration) -> Self {
         self.recall_budget = budget;
         self
+    }
+
+    async fn viewer_account_id(&self, query: &ScoredPostsQuery) -> Result<String, String> {
+        let reversed =
+            reverse_external_ids(&self.identity, EntityKind::User, [query.user_id]).await?;
+        Ok(reversed[0].clone())
     }
 
     async fn list_posts(
@@ -275,7 +425,7 @@ impl MrpyqInNetworkPostsClient {
         let limit = (max_results as usize).clamp(1, MAX_FEED_IDS.saturating_mul(MAX_LIST_PAGES));
         let deadline = Instant::now() + self.recall_budget;
         let min_created_secs = min_created_at_secs();
-        let mut posts = Vec::new();
+        let mut posts: Vec<crate::models::ObjectId> = Vec::new();
         let mut seen = HashSet::new();
         let mut page_token = String::new();
         let mut pages = 0usize;
@@ -348,7 +498,22 @@ impl MrpyqInNetworkPostsClient {
             started.elapsed().as_millis(),
             posts.len(),
         );
-        Ok(posts)
+        let requests: Vec<(String, EntityKind)> = posts
+            .iter()
+            .map(|id| (id.to_string(), EntityKind::Post))
+            .collect();
+        let resolved = self
+            .identity
+            .resolve_batch(&requests)
+            .await
+            .map_err(|error| error.to_string())?;
+        Ok(resolved
+            .into_iter()
+            .map(|snowflake| InNetworkPost {
+                tweet_id: snowflake.get(),
+                ..Default::default()
+            })
+            .collect())
     }
 }
 
@@ -372,8 +537,8 @@ fn min_created_at_secs() -> u64 {
 /// Returns whether the page held a candidate `AgeFilter` would drop.
 fn append_valid_posts(
     page: &CandidatePage,
-    posts: &mut Vec<InNetworkPost>,
-    seen: &mut HashSet<PostId>,
+    posts: &mut Vec<crate::models::ObjectId>,
+    seen: &mut HashSet<crate::models::ObjectId>,
     limit: usize,
     min_created_secs: u64,
 ) -> bool {
@@ -396,10 +561,7 @@ fn append_valid_posts(
         if !seen.insert(tweet_id) {
             continue;
         }
-        posts.push(InNetworkPost {
-            tweet_id,
-            ..Default::default()
-        });
+        posts.push(tweet_id);
     }
     saw_stale
 }
@@ -412,7 +574,7 @@ impl InNetworkPostsClient for MrpyqInNetworkPostsClient {
         max_results: u32,
     ) -> Result<Vec<InNetworkPost>, String> {
         self.list_posts(
-            query.user_id.to_string(),
+            self.viewer_account_id(query).await?,
             CandidateSource::Network,
             max_results,
         )
@@ -425,7 +587,7 @@ impl InNetworkPostsClient for MrpyqInNetworkPostsClient {
         max_results: u32,
     ) -> Result<Vec<InNetworkPost>, String> {
         self.list_posts(
-            query.user_id.to_string(),
+            self.viewer_account_id(query).await?,
             CandidateSource::Fallback,
             max_results,
         )
@@ -438,8 +600,13 @@ pub struct MrpyqTESClient {
 }
 
 impl MrpyqTESClient {
+    /// `new` is the service-free test path; production assembly uses
+    /// `pipeline_adapters`, which shares the registry-backed identity.
     pub fn new(client: Arc<dyn MrpyqRecommendationDataClient>) -> Self {
-        Self::with_cache(Arc::new(ContentCache::new(client)))
+        Self::with_cache(Arc::new(ContentCache::new(
+            client,
+            Arc::new(crate::id::PaddedIdentityResolver),
+        )))
     }
 
     fn with_cache(cache: Arc<ContentCache>) -> Self {
@@ -463,7 +630,14 @@ impl TESClient for MrpyqTESClient {
         );
         Ok(tweet_ids
             .into_iter()
-            .map(|id| (id, by_id.get(&id).and_then(core_data_from_content)))
+            .map(|id| {
+                (
+                    id,
+                    by_id.get(&id).and_then(|hydrated| {
+                        core_data_from_content(&hydrated.content, hydrated.author_id)
+                    }),
+                )
+            })
             .collect())
     }
 
@@ -481,7 +655,14 @@ impl TESClient for MrpyqTESClient {
         );
         Ok(tweet_ids
             .into_iter()
-            .map(|id| (id, by_id.get(&id).map(media_entities_from_content)))
+            .map(|id| {
+                (
+                    id,
+                    by_id
+                        .get(&id)
+                        .map(|hydrated| media_entities_from_content(&hydrated.content)),
+                )
+            })
             .collect())
     }
 
@@ -510,8 +691,13 @@ pub struct MrpyqFirstStageEligibilityClient {
 }
 
 impl MrpyqFirstStageEligibilityClient {
+    /// `new` is the service-free test path; production assembly uses
+    /// `pipeline_adapters`, which shares the registry-backed identity.
     pub fn new(client: Arc<dyn MrpyqRecommendationDataClient>) -> Self {
-        Self::with_cache(Arc::new(ContentCache::new(client)))
+        Self::with_cache(Arc::new(ContentCache::new(
+            client,
+            Arc::new(crate::id::PaddedIdentityResolver),
+        )))
     }
 
     fn with_cache(cache: Arc<ContentCache>) -> Self {
@@ -533,10 +719,10 @@ impl VisibilityFilteringClient for MrpyqFirstStageEligibilityClient {
         let by_id = self.cache.contents_by_id(&tweet_ids).await?;
         let mut results = HashMap::new();
         for id in tweet_ids {
-            let Some(content) = by_id.get(&id) else {
+            let Some(hydrated) = by_id.get(&id) else {
                 continue;
             };
-            results.insert(id, visibility_reason(content));
+            results.insert(id, visibility_reason(&hydrated.content));
         }
         log::info!(
             "mrpyq adapter vf elapsed_ms={} requested={requested} decided={}",
@@ -564,11 +750,21 @@ impl VisibilityFilteringClient for MrpyqFirstStageEligibilityClient {
 /// member-id query — see `docs/implementation/mrpyq-member-dimension-requirements.md` §6.1.
 pub struct MrpyqStratoClient {
     client: Arc<dyn MrpyqViewerRelationClient>,
+    identity: SharedIdentityResolver,
 }
 
 impl MrpyqStratoClient {
+    /// `new` is the service-free test path; production assembly uses
+    /// `pipeline_adapters`, which shares the registry-backed identity.
     pub fn new(client: Arc<dyn MrpyqViewerRelationClient>) -> Self {
-        Self { client }
+        Self::with_identity(client, Arc::new(crate::id::PaddedIdentityResolver))
+    }
+
+    pub fn with_identity(
+        client: Arc<dyn MrpyqViewerRelationClient>,
+        identity: SharedIdentityResolver,
+    ) -> Self {
+        Self { client, identity }
     }
 }
 
@@ -576,7 +772,11 @@ impl MrpyqStratoClient {
 impl StratoClient for MrpyqStratoClient {
     async fn get_user_features(&self, user_id: UserId) -> Result<Vec<u8>, anyhow::Error> {
         let started = Instant::now();
-        let relations = match self.client.get_viewer_relations(user_id.to_string()).await {
+        let account_id = reverse_external_ids(&self.identity, EntityKind::User, [user_id])
+            .await
+            .map_err(anyhow::Error::msg)?
+            .remove(0);
+        let relations = match self.client.get_viewer_relations(account_id).await {
             Ok(relations) => relations,
             Err(error) => {
                 log::warn!(
@@ -588,9 +788,15 @@ impl StratoClient for MrpyqStratoClient {
         };
         let features = UserFeatures {
             muted_keywords: relations.muted_keywords,
-            blocked_user_ids: parse_member_ids(relations.blocked_account_ids, "blocked"),
-            blocked_by_user_ids: parse_member_ids(relations.blocked_by_account_ids, "blocked_by"),
-            muted_user_ids: parse_member_ids(relations.muted_account_ids, "muted"),
+            blocked_user_ids: self
+                .resolve_member_ids(relations.blocked_account_ids, "blocked")
+                .await?,
+            blocked_by_user_ids: self
+                .resolve_member_ids(relations.blocked_by_account_ids, "blocked_by")
+                .await?,
+            muted_user_ids: self
+                .resolve_member_ids(relations.muted_account_ids, "muted")
+                .await?,
             ..Default::default()
         };
         log::info!(
@@ -613,29 +819,53 @@ impl StratoClient for MrpyqStratoClient {
     }
 }
 
-/// Drops IDs the signed relation store cannot represent, keeping the rest.
-/// Rejecting the whole list over one bad entry would discard every other block
-/// the viewer does have.
-fn parse_member_ids(raw: Vec<String>, relation: &str) -> Vec<UserId> {
-    raw.into_iter()
-        .filter_map(|id| match UserId::parse(id.trim()) {
-            Ok(parsed) if !parsed.is_nil() => Some(parsed),
-            _ => {
-                log::warn!("mrpyq {relation} relation has an unusable member ID; not enforced");
-                None
-            }
-        })
-        .collect()
+impl MrpyqStratoClient {
+    /// Drops IDs the signed relation store cannot represent, keeping the rest.
+    /// Rejecting the whole list over one bad entry would discard every other
+    /// block the viewer does have. Registry failure fails the port: an
+    /// unresolved list cannot be trusted to be empty.
+    async fn resolve_member_ids(
+        &self,
+        raw: Vec<String>,
+        relation: &str,
+    ) -> Result<Vec<UserId>, anyhow::Error> {
+        let requests: Vec<(String, EntityKind)> = raw
+            .into_iter()
+            .filter_map(|id| {
+                let trimmed = id.trim();
+                match crate::models::ObjectId::parse(trimmed) {
+                    Ok(parsed) if !parsed.is_nil() => Some((trimmed.to_string(), EntityKind::User)),
+                    _ => {
+                        log::warn!(
+                            "mrpyq {relation} relation has an unusable member ID; not enforced"
+                        );
+                        None
+                    }
+                }
+            })
+            .collect();
+        Ok(self
+            .identity
+            .resolve_batch(&requests)
+            .await?
+            .into_iter()
+            .map(SnowflakeId::get)
+            .collect())
+    }
 }
 
-fn parse_object_id(raw: &str) -> Option<PostId> {
-    PostId::parse(raw.trim()).ok().filter(|id| !id.is_nil())
+fn parse_object_id(raw: &str) -> Option<crate::models::ObjectId> {
+    crate::models::ObjectId::parse(raw.trim())
+        .ok()
+        .filter(|id| !id.is_nil())
 }
 
-fn core_data_from_content(content: &RecommendationContent) -> Option<PureCoreData> {
-    let author_id = parse_object_id(&content.creator_member_id)?;
+fn core_data_from_content(
+    content: &RecommendationContent,
+    author_id: Option<UserId>,
+) -> Option<PureCoreData> {
     Some(PureCoreData {
-        author_id,
+        author_id: author_id?,
         text: content.text.clone(),
         created_at_ms: u64::try_from(content.created_at_ms)
             .ok()
@@ -687,8 +917,77 @@ mod tests {
     use crate::clients::mrpyq_viewer_relation_client::{
         DisabledMrpyqViewerRelationClient, ViewerRelations,
     };
+    use crate::id::{IdentityResolver, PaddedIdentityResolver};
+    use crate::models::ids::ObjectId;
     use crate::models::{pid, uid};
     use std::sync::Mutex;
+
+    /// External ObjectId string for a fixture numeric ID.
+    fn ext(n: u64) -> String {
+        ObjectId::from_u64_be_padded(n).to_string()
+    }
+
+    /// In-network fixtures carry real timestamp ObjectIds, which the padded
+    /// resolver cannot express; this test double assigns fresh numerics and
+    /// remembers them so reverse round-trips. Unknown reverse lookups fall back
+    /// to the padded form so the viewer path needs no fixture setup.
+    #[derive(Default)]
+    struct TestResolver {
+        state: Mutex<TestResolverState>,
+    }
+
+    #[derive(Default)]
+    struct TestResolverState {
+        next: u64,
+        fwd: HashMap<(EntityKind, String), u64>,
+        rev: HashMap<u64, String>,
+    }
+
+    impl TestResolver {
+        fn numeric(&self, kind: EntityKind, object_id: ObjectId) -> u64 {
+            self.state.lock().expect("resolver").fwd[&(kind, object_id.to_string())]
+        }
+    }
+
+    #[async_trait]
+    impl IdentityResolver for TestResolver {
+        async fn resolve_batch(
+            &self,
+            ids: &[(String, EntityKind)],
+        ) -> anyhow::Result<Vec<SnowflakeId>> {
+            let mut state = self.state.lock().expect("resolver");
+            let mut resolved = Vec::with_capacity(ids.len());
+            for (raw, kind) in ids {
+                let key = (*kind, raw.clone());
+                let value = match state.fwd.get(&key) {
+                    Some(value) => *value,
+                    None => {
+                        state.next += 1;
+                        let value = state.next;
+                        state.fwd.insert(key, value);
+                        state.rev.insert(value, raw.clone());
+                        value
+                    }
+                };
+                resolved.push(SnowflakeId::new(value)?);
+            }
+            Ok(resolved)
+        }
+
+        async fn reverse_batch(
+            &self,
+            ids: &[(SnowflakeId, EntityKind)],
+        ) -> anyhow::Result<Vec<String>> {
+            let state = self.state.lock().expect("resolver");
+            Ok(ids
+                .iter()
+                .map(|(id, _)| match state.rev.get(&id.get()) {
+                    Some(raw) => raw.clone(),
+                    None => ObjectId::from_u64_be_padded(id.get()).to_string(),
+                })
+                .collect())
+        }
+    }
 
     struct FakeMrpyq {
         pages: Mutex<HashMap<(CandidateSource, String), CandidatePage>>,
@@ -819,7 +1118,11 @@ mod tests {
     /// The content-cache tests only drive the TES / VF ports, so they leave the
     /// relation source unconfigured.
     fn content_adapters(client: Arc<dyn MrpyqRecommendationDataClient>) -> MrpyqPipelineAdapters {
-        pipeline_adapters(client, Arc::new(DisabledMrpyqViewerRelationClient))
+        pipeline_adapters(
+            client,
+            Arc::new(DisabledMrpyqViewerRelationClient),
+            Arc::new(PaddedIdentityResolver),
+        )
     }
 
     fn candidate_page(
@@ -845,27 +1148,34 @@ mod tests {
     }
 
     /// `list_posts` 按 `MAX_POST_AGE` 裁候选，所以列表 fixture 的 feed_id 必须带
-    /// 真实时间戳；`pid(n)` 的时间戳是 0，只能用在水合路径上。
-    fn pid_aged(age_secs: u64, seq: u64) -> PostId {
+    /// 真实时间戳；`pid(n)` 对应的外部填充 ID 时间戳是 0，只能用在水合路径上。
+    fn pid_aged(age_secs: u64, seq: u64) -> ObjectId {
         let now_secs = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .expect("clock")
             .as_secs();
-        PostId::from_parts((now_secs - age_secs) as u32, seq)
+        ObjectId::from_parts((now_secs - age_secs) as u32, seq)
     }
 
-    fn fresh_pid(seq: u64) -> PostId {
+    fn fresh_pid(seq: u64) -> ObjectId {
         pid_aged(60, seq)
     }
 
-    fn stale_pid(seq: u64) -> PostId {
+    fn stale_pid(seq: u64) -> ObjectId {
         pid_aged(MAX_POST_AGE + 3_600, seq)
+    }
+
+    fn viewer_query() -> ScoredPostsQuery {
+        ScoredPostsQuery {
+            user_id: uid(9),
+            ..Default::default()
+        }
     }
 
     fn eligible_content(feed: PostId, author: UserId) -> RecommendationContent {
         RecommendationContent {
-            feed_id: feed.to_string(),
-            creator_member_id: author.to_string(),
+            feed_id: ext(feed),
+            creator_member_id: ext(author),
             text: "post body".to_string(),
             created_at_ms: 1_700_000_000_000,
             like_count: 4,
@@ -892,31 +1202,45 @@ mod tests {
                 true,
             ),
         ));
-        let posts = MrpyqInNetworkPostsClient::new(ready)
-            .get_in_network_posts(
-                &ScoredPostsQuery {
-                    user_id: uid(9),
-                    ..Default::default()
-                },
-                10,
-            )
-            .await
-            .expect("network posts");
+        let resolver = Arc::new(TestResolver::default());
+        let posts = MrpyqInNetworkPostsClient::with_identity(
+            ready,
+            resolver.clone() as crate::id::SharedIdentityResolver,
+        )
+        .get_in_network_posts(
+            &ScoredPostsQuery {
+                user_id: uid(9),
+                ..Default::default()
+            },
+            10,
+        )
+        .await
+        .expect("network posts");
         assert_eq!(
             posts.iter().map(|post| post.tweet_id).collect::<Vec<_>>(),
-            vec![first, second]
+            vec![
+                resolver.numeric(EntityKind::Post, first),
+                resolver.numeric(EntityKind::Post, second),
+            ]
         );
-        assert!(posts.iter().all(|post| post.author_id.is_nil()));
+        assert!(posts.iter().all(|post| post.author_id == 0));
 
         let not_ready = Arc::new(FakeMrpyq::new().with_page(
             CandidateSource::Network,
             "",
             candidate_page(CandidateSource::Network, &[&first.to_string()], "", false),
         ));
-        let empty = MrpyqInNetworkPostsClient::new(not_ready)
-            .get_in_network_posts(&ScoredPostsQuery::default(), 10)
-            .await
-            .expect("not ready");
+        let empty =
+            MrpyqInNetworkPostsClient::with_identity(not_ready, Arc::new(TestResolver::default()))
+                .get_in_network_posts(
+                    &ScoredPostsQuery {
+                        user_id: uid(9),
+                        ..Default::default()
+                    },
+                    10,
+                )
+                .await
+                .expect("not ready");
         assert!(empty.is_empty());
     }
 
@@ -936,13 +1260,20 @@ mod tests {
                     candidate_page(CandidateSource::Network, &[&second.to_string()], "", true),
                 ),
         );
-        let posts = MrpyqInNetworkPostsClient::new(fake)
-            .get_in_network_posts(&ScoredPostsQuery::default(), 2)
-            .await
-            .expect("pages");
+        let resolver = Arc::new(TestResolver::default());
+        let posts = MrpyqInNetworkPostsClient::with_identity(
+            fake,
+            resolver.clone() as crate::id::SharedIdentityResolver,
+        )
+        .get_in_network_posts(&viewer_query(), 2)
+        .await
+        .expect("pages");
         assert_eq!(
             posts.iter().map(|post| post.tweet_id).collect::<Vec<_>>(),
-            vec![first, second]
+            vec![
+                resolver.numeric(EntityKind::Post, first),
+                resolver.numeric(EntityKind::Post, second),
+            ]
         );
     }
 
@@ -980,12 +1311,22 @@ mod tests {
     #[tokio::test]
     async fn tes_rejects_non_object_id_author_as_missing() {
         let fake = Arc::new(FakeMrpyq::new().with_contents(vec![RecommendationContent {
-            feed_id: pid(1).to_string(),
+            feed_id: ext(1),
             creator_member_id: "member-1".to_string(),
             text: "post".to_string(),
             recommendation_eligible: true,
             ..Default::default()
         }]));
+        let core = MrpyqTESClient::new(fake)
+            .get_tweet_core_datas(vec![pid(1)])
+            .await
+            .expect("core");
+        assert_eq!(core.get(&pid(1)).cloned().flatten(), None);
+    }
+
+    #[tokio::test]
+    async fn tes_drops_content_with_an_unrequested_feed_id() {
+        let fake = Arc::new(FakeMrpyq::new().with_contents(vec![eligible_content(pid(2), uid(7))]));
         let core = MrpyqTESClient::new(fake)
             .get_tweet_core_datas(vec![pid(1)])
             .await
@@ -1149,13 +1490,20 @@ mod tests {
                     ),
                 ),
         );
-        let posts = MrpyqInNetworkPostsClient::new(fake)
-            .get_in_network_posts(&ScoredPostsQuery::default(), 2)
-            .await
-            .expect("pages");
+        let resolver = Arc::new(TestResolver::default());
+        let posts = MrpyqInNetworkPostsClient::with_identity(
+            fake,
+            resolver.clone() as crate::id::SharedIdentityResolver,
+        )
+        .get_in_network_posts(&viewer_query(), 2)
+        .await
+        .expect("pages");
         assert_eq!(
             posts.iter().map(|post| post.tweet_id).collect::<Vec<_>>(),
-            vec![first, second]
+            vec![
+                resolver.numeric(EntityKind::Post, first),
+                resolver.numeric(EntityKind::Post, second),
+            ]
         );
     }
 
@@ -1181,24 +1529,32 @@ mod tests {
                     candidate_page(CandidateSource::Network, &[&third.to_string()], "", true),
                 ),
         );
-        let posts = MrpyqInNetworkPostsClient::new(fake)
-            .with_recall_budget(Duration::from_millis(50))
-            .get_in_network_posts(&ScoredPostsQuery::default(), 10)
-            .await
-            .expect("budget exhaustion degrades to the pages already read");
+        let resolver = Arc::new(TestResolver::default());
+        let posts = MrpyqInNetworkPostsClient::with_identity(
+            fake,
+            resolver.clone() as crate::id::SharedIdentityResolver,
+        )
+        .with_recall_budget(Duration::from_millis(50))
+        .get_in_network_posts(&viewer_query(), 10)
+        .await
+        .expect("budget exhaustion degrades to the pages already read");
         assert_eq!(
             posts.iter().map(|post| post.tweet_id).collect::<Vec<_>>(),
-            vec![first, second]
+            vec![
+                resolver.numeric(EntityKind::Post, first),
+                resolver.numeric(EntityKind::Post, second),
+            ]
         );
     }
 
     #[tokio::test]
     async fn in_network_surfaces_a_first_page_failure() {
         let fake = Arc::new(FakeMrpyq::new().with_list_error("", MrpyqClientError::Timeout));
-        let error = MrpyqInNetworkPostsClient::new(fake)
-            .get_in_network_posts(&ScoredPostsQuery::default(), 10)
-            .await
-            .expect_err("a failed first page has no partial result to fall back on");
+        let error =
+            MrpyqInNetworkPostsClient::with_identity(fake, Arc::new(TestResolver::default()))
+                .get_in_network_posts(&viewer_query(), 10)
+                .await
+                .expect_err("a failed first page has no partial result to fall back on");
         assert!(error.contains("timed out"), "{error}");
     }
 
@@ -1214,13 +1570,17 @@ mod tests {
                 )
                 .with_list_error("p2", MrpyqClientError::Unavailable("down".to_string())),
         );
-        let posts = MrpyqInNetworkPostsClient::new(fake)
-            .get_in_network_posts(&ScoredPostsQuery::default(), 10)
-            .await
-            .expect("a later page failure degrades to the pages already read");
+        let resolver = Arc::new(TestResolver::default());
+        let posts = MrpyqInNetworkPostsClient::with_identity(
+            fake,
+            resolver.clone() as crate::id::SharedIdentityResolver,
+        )
+        .get_in_network_posts(&viewer_query(), 10)
+        .await
+        .expect("a later page failure degrades to the pages already read");
         assert_eq!(
             posts.iter().map(|post| post.tweet_id).collect::<Vec<_>>(),
-            vec![first]
+            vec![resolver.numeric(EntityKind::Post, first)]
         );
     }
 
@@ -1252,13 +1612,17 @@ mod tests {
                     ),
                 ),
         );
-        let posts = MrpyqInNetworkPostsClient::new(fake)
-            .get_in_network_posts(&ScoredPostsQuery::default(), 10)
-            .await
-            .expect("network posts");
+        let resolver = Arc::new(TestResolver::default());
+        let posts = MrpyqInNetworkPostsClient::with_identity(
+            fake,
+            resolver.clone() as crate::id::SharedIdentityResolver,
+        )
+        .get_in_network_posts(&viewer_query(), 10)
+        .await
+        .expect("network posts");
         assert_eq!(
             posts.iter().map(|post| post.tweet_id).collect::<Vec<_>>(),
-            vec![fresh]
+            vec![resolver.numeric(EntityKind::Post, fresh)]
         );
     }
 
@@ -1267,8 +1631,8 @@ mod tests {
         let fake = Arc::new(FakeMrpyq::new().with_contents(vec![
             eligible_content(pid(1), uid(7)),
             RecommendationContent {
-                feed_id: pid(2).to_string(),
-                creator_member_id: uid(8).to_string(),
+                feed_id: ext(2),
+                creator_member_id: ext(8),
                 recommendation_eligible: false,
                 ineligible_reason: IneligibleReason::Deleted,
                 ..Default::default()
@@ -1296,7 +1660,11 @@ mod tests {
 
     #[test]
     fn demo_mode_does_not_load_env_backed_mrpyq_adapters() {
-        assert!(pipeline_adapters_from_env(true).unwrap().is_none());
+        assert!(
+            pipeline_adapters_from_env(true, Arc::new(TestResolver::default()))
+                .unwrap()
+                .is_none()
+        );
     }
 
     #[tokio::test]
@@ -1307,11 +1675,15 @@ mod tests {
             "",
             candidate_page(CandidateSource::Fallback, &[&only.to_string()], "", true),
         ));
-        let posts = MrpyqInNetworkPostsClient::new(fake)
-            .get_fallback_posts(&ScoredPostsQuery::default(), 10)
-            .await
-            .expect("fallback");
-        assert_eq!(posts[0].tweet_id, only);
+        let resolver = Arc::new(TestResolver::default());
+        let posts = MrpyqInNetworkPostsClient::with_identity(
+            fake,
+            resolver.clone() as crate::id::SharedIdentityResolver,
+        )
+        .get_fallback_posts(&viewer_query(), 10)
+        .await
+        .expect("fallback");
+        assert_eq!(posts[0].tweet_id, resolver.numeric(EntityKind::Post, only));
     }
 
     /// 兜底池按入池时间排序，老帖也可能排在顶部，所以超龄候选只能逐条裁掉，
@@ -1332,13 +1704,17 @@ mod tests {
                     candidate_page(CandidateSource::Fallback, &[&fresh.to_string()], "", true),
                 ),
         );
-        let posts = MrpyqInNetworkPostsClient::new(fake)
-            .get_fallback_posts(&ScoredPostsQuery::default(), 10)
-            .await
-            .expect("fallback");
+        let resolver = Arc::new(TestResolver::default());
+        let posts = MrpyqInNetworkPostsClient::with_identity(
+            fake,
+            resolver.clone() as crate::id::SharedIdentityResolver,
+        )
+        .get_fallback_posts(&viewer_query(), 10)
+        .await
+        .expect("fallback");
         assert_eq!(
             posts.iter().map(|post| post.tweet_id).collect::<Vec<_>>(),
-            vec![fresh]
+            vec![resolver.numeric(EntityKind::Post, fresh)]
         );
     }
 
@@ -1365,9 +1741,9 @@ mod tests {
     #[tokio::test]
     async fn strato_port_carries_block_mute_and_keyword_state() {
         let features = viewer_features(ViewerRelations {
-            blocked_account_ids: vec![uid(2).to_string()],
-            blocked_by_account_ids: vec![uid(3).to_string()],
-            muted_account_ids: vec![uid(4).to_string()],
+            blocked_account_ids: vec![ext(2)],
+            blocked_by_account_ids: vec![ext(3)],
+            muted_account_ids: vec![ext(4)],
             muted_keywords: vec!["spoiler".to_string()],
         })
         .await;
@@ -1384,11 +1760,7 @@ mod tests {
     #[tokio::test]
     async fn one_unusable_member_id_does_not_discard_the_other_blocks() {
         let features = viewer_features(ViewerRelations {
-            blocked_account_ids: vec![
-                "not-an-object-id".to_string(),
-                String::new(),
-                uid(2).to_string(),
-            ],
+            blocked_account_ids: vec!["not-an-object-id".to_string(), String::new(), ext(2)],
             ..Default::default()
         })
         .await;

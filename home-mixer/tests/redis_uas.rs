@@ -340,7 +340,7 @@ async fn the_sequence_hydrator_consumes_the_projected_actions() {
     assert_eq!(metadata.length, 2);
     assert_eq!(metadata.first_sequence_time, (now - 3_000) as u64);
     assert_eq!(metadata.last_sequence_time, (now - 1_000) as u64);
-    assert_eq!(sequence.user_id, user.to_string());
+    assert_eq!(sequence.user_id, user);
 }
 
 #[tokio::test]

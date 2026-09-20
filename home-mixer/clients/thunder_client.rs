@@ -45,46 +45,29 @@ pub struct ThunderClient {
 }
 
 impl ThunderClient {
-    /// 创建 Thunder 客户端
-    ///
-    /// 连接到本地或远程的 Thunder gRPC 服务。
-    /// 默认连接 localhost:50052（Thunder 的标准端口）。
-    ///
-    /// TODO: 从配置文件或环境变量读取 Thunder 地址
-    pub async fn new() -> Self {
-        let thunder_addr = std::env::var("THUNDER_GRPC_ADDR")
-            .unwrap_or_else(|_| "http://localhost:50052".to_string());
-
-        let channel = Channel::from_shared(thunder_addr)
-            .expect("Invalid Thunder address")
+    pub fn from_addr(endpoint: String) -> Result<Self, String> {
+        let channel = Channel::from_shared(endpoint)
+            .map_err(|error| format!("invalid Thunder endpoint: {error}"))?
             .connect_lazy();
+        Ok(Self { channel })
+    }
 
-        Self { channel }
+    pub fn from_env() -> Result<Option<Self>, String> {
+        let Some(endpoint) = std::env::var("THUNDER_GRPC_ADDR")
+            .ok()
+            .map(|value| value.trim().to_string())
+            .filter(|value| !value.is_empty())
+        else {
+            return Ok(None);
+        };
+        Self::from_addr(endpoint).map(Some)
     }
 
     /// 获取指定集群的一个随机 gRPC 通道
     ///
     /// 原始实现从连接池中随机选择一个连接以实现负载均衡。
     /// 当前简化实现返回唯一的通道。
-    ///
-    /// # Arguments
-    /// * `_cluster` - 目标 Thunder 集群（当前忽略）
-    ///
-    /// # Returns
-    /// Some(channel) 如果连接可用，None 如果无可用连接
     pub fn get_random_channel(&self, _cluster: ThunderCluster) -> Option<Channel> {
-        // The current Thunder wire contract still carries business IDs as
-        // integer fields. Keep this adapter behind the explicit legacy feature
-        // so a no-default-features build cannot accidentally send ObjectIds
-        // through a lossy u64 conversion. P3 will remove this gate when the
-        // wire schema is migrated to strings.
-        #[cfg(feature = "legacy-int-ids")]
-        {
-            Some(self.channel.clone())
-        }
-        #[cfg(not(feature = "legacy-int-ids"))]
-        {
-            None
-        }
+        Some(self.channel.clone())
     }
 }

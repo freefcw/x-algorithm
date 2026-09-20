@@ -25,7 +25,6 @@ use crate::clients::served_candidates_sink::{
 };
 
 use crate::clients::strato_client::StratoClient;
-#[cfg(feature = "legacy-int-ids")]
 use crate::clients::thunder_client::ThunderClient;
 use crate::clients::topic_retrieval_client::TopicRetrievalClient;
 use crate::clients::tweet_entity_service_client::TESClient;
@@ -33,7 +32,6 @@ use crate::clients::uas_fetcher::{
     DisabledUserActionSequenceFetcher, RedisUserActionSequenceStore, UserActionSequenceOps,
 };
 use crate::clients::user_topic_reader::UserTopicReader;
-#[cfg(feature = "legacy-int-ids")]
 use crate::clients::vm_ranker_client::GrpcVMRankerClient;
 use crate::feature_policy::HomeMixerFeatures;
 use crate::feed_state::FeedStateStore;
@@ -52,6 +50,7 @@ use crate::filters::topic_ids_filter::TopicIdsFilter;
 use crate::filters::vf_filter::VFFilter;
 use crate::filters::video_filter::VideoFilter;
 use crate::filters::viewer_muted_keyword_filter::ViewerMutedKeywordFilter;
+use crate::id::SharedIdentityResolver;
 use crate::metrics::Metrics;
 use crate::models::candidate::PostCandidate;
 use crate::models::query::ScoredPostsQuery;
@@ -73,7 +72,6 @@ use crate::scorers::author_cold_start::{AuthorColdStart, AuthorColdStartScorer, 
 use crate::scorers::phoenix_scorer::PhoenixScorer;
 use crate::scorers::ranking_scorer::RankingScorer;
 use crate::scorers::rule_fallback_scorer::RuleFallbackScorer;
-#[cfg(feature = "legacy-int-ids")]
 use crate::scorers::vm_ranker::VMRanker;
 use crate::selectors::TopKScoreSelector;
 use crate::side_effects::phoenix_request_cache_side_effect::PhoenixRequestCacheSideEffect;
@@ -154,6 +152,9 @@ pub struct PhoenixDependencies {
     /// effect unassembled; see `clients/served_candidates_sink.rs`.
     pub served_candidates_sink: Option<Arc<dyn ServedCandidatesSink>>,
     pub features: HomeMixerFeatures,
+    /// Shared ObjectId ↔ Snowflake boundary used by the adapters and side
+    /// effects that cross external identity contracts.
+    pub identity: SharedIdentityResolver,
 }
 
 impl PhoenixCandidatePipeline {
@@ -251,6 +252,7 @@ impl PhoenixCandidatePipeline {
             fallback_client,
             served_candidates_sink,
             features,
+            identity,
         } = dependencies;
         // Query Hydrators
         let sequence_provider = Arc::new(UserActionSeqQueryHydrator::new(uas_fetcher));
@@ -279,8 +281,8 @@ impl PhoenixCandidatePipeline {
         });
 
         // Sources follow the upstream order. TweetMixer remains U3 and is omitted.
-        // Integer Thunder cannot carry real ObjectIds, so the in-network source is
-        // left unassembled when neither mrpyq nor the demo adapter is present.
+        // Numeric Thunder serves in-network recall when configured; otherwise
+        // the mrpyq in-network adapter backs it.
         let mut sources: Vec<Box<dyn Source<ScoredPostsQuery, PostCandidate>>> = Vec::new();
         if let Some(client) = in_network_client {
             sources.push(Box::new(ThunderSource { client }));
@@ -357,7 +359,6 @@ impl PhoenixCandidatePipeline {
         // 可选旁路：VM Ranker 二次重排（上游 scorers 第三位）。开关 + 地址
         // 齐备时装配本仓库 vm-ranker 服务的 gRPC Adapter；缺地址时禁用旁路
         // 并保留主链（与 MoE 相同的降级规则）。
-        #[cfg(feature = "legacy-int-ids")]
         if features.vm_ranker {
             match std::env::var("VM_RANKER_GRPC_ADDR") {
                 Ok(addr) if !addr.trim().is_empty() => {
@@ -380,12 +381,6 @@ impl PhoenixCandidatePipeline {
                     );
                 }
             }
-        }
-        #[cfg(not(feature = "legacy-int-ids"))]
-        if features.vm_ranker {
-            log::warn!(
-                "HOME_MIXER_ENABLE_VM_RANKER is set but legacy-int-ids is disabled; VM Ranker adapter is unavailable"
-            );
         }
         if features.author_cold_start {
             scorers.push(Box::new(AuthorColdStartScorer::new(author_cold_start)));
@@ -417,7 +412,9 @@ impl PhoenixCandidatePipeline {
         // SE-11: the served exposure log is assembled only when a sink is
         // configured; once assembled it records every request.
         if let Some(sink) = served_candidates_sink {
-            side_effects.push(Box::new(ServedCandidatesKafkaSideEffect::new(sink)));
+            side_effects.push(Box::new(ServedCandidatesKafkaSideEffect::with_identity(
+                sink, identity,
+            )));
         }
         let side_effects = Arc::new(side_effects);
 
@@ -457,15 +454,22 @@ impl PhoenixCandidatePipeline {
         mode: HomeMixerMode,
         features: HomeMixerFeatures,
     ) -> anyhow::Result<PhoenixCandidatePipeline> {
-        Self::assemble_with_uas(mode, features, UasConfig::from_env(mode)?).await
+        Self::assemble_with_uas(
+            mode,
+            features,
+            UasConfig::from_env(mode)?,
+            registry_identity_from_env()?,
+        )
+        .await
     }
 
     pub async fn assemble_with_uas(
         mode: HomeMixerMode,
         features: HomeMixerFeatures,
         uas: UasConfig,
+        identity: SharedIdentityResolver,
     ) -> anyhow::Result<PhoenixCandidatePipeline> {
-        Self::assemble_with_optional_topic_clients(mode, None, features, uas, None).await
+        Self::assemble_with_optional_topic_clients(mode, None, features, uas, None, identity).await
     }
 
     /// Like [`Self::assemble_with_uas`], and additionally reports to the
@@ -477,6 +481,7 @@ impl PhoenixCandidatePipeline {
         features: HomeMixerFeatures,
         uas: UasConfig,
         metrics: Arc<Metrics>,
+        identity: SharedIdentityResolver,
     ) -> anyhow::Result<PhoenixCandidatePipeline> {
         let pipeline = Self::assemble_with_optional_topic_clients(
             mode,
@@ -484,6 +489,7 @@ impl PhoenixCandidatePipeline {
             features,
             uas,
             Some(Arc::clone(&metrics)),
+            identity,
         )
         .await?;
         Ok(pipeline.with_observer(metrics as Arc<dyn PipelineObserver>))
@@ -503,6 +509,7 @@ impl PhoenixCandidatePipeline {
             HomeMixerFeatures::from_env(),
             UasConfig::from_env(mode)?,
             None,
+            registry_identity_from_env()?,
         )
         .await
     }
@@ -517,6 +524,7 @@ impl PhoenixCandidatePipeline {
         features: HomeMixerFeatures,
         uas: UasConfig,
         metrics: Option<Arc<Metrics>>,
+        identity: SharedIdentityResolver,
     ) -> anyhow::Result<PhoenixCandidatePipeline> {
         let features = features_for_mode(mode, features);
         uas.validate(mode)?;
@@ -526,11 +534,15 @@ impl PhoenixCandidatePipeline {
             .as_ref()
             .map(|metrics| metrics.client_calls())
             .unwrap_or_default();
-        let mrpyq_adapters = pipeline_adapters_from_env_with_calls(false, client_calls.clone())
-            .context("failed to create mrpyq recommendation data adapters")?;
+        let mrpyq_adapters = pipeline_adapters_from_env_with_calls(
+            false,
+            client_calls.clone(),
+            Arc::clone(&identity),
+        )
+        .context("failed to create mrpyq recommendation data adapters")?;
         if mrpyq_adapters.is_none() {
             anyhow::bail!(
-                "MRPYQ_RECOMMENDATION_DATA_ADDR is required; integer Thunder cannot carry real ObjectIds"
+                "MRPYQ_RECOMMENDATION_DATA_ADDR is required for TES, viewer relations, and fallback data"
             );
         }
         let mrpyq_adapters = mrpyq_adapters.as_ref();
@@ -546,9 +558,12 @@ impl PhoenixCandidatePipeline {
                 // The projection job and Home Mixer share HOME_MIXER_REDIS_URL
                 // by default; UAS_REDIS_URL points at a dedicated Redis when
                 // feed state and UAS are operated separately.
-                let store = RedisUserActionSequenceStore::new(config)
-                    .await
-                    .map(|store| store.with_calls(client_calls.clone()))
+                let store = RedisUserActionSequenceStore::new_with_identity(
+                    config,
+                    Arc::clone(&identity),
+                )
+                .await
+                .map(|store| store.with_calls(client_calls.clone()))
                     .map_err(|error| {
                         // Name both variables: outside demo the UAS target is
                         // usually the shared HOME_MIXER_REDIS_URL, so a Redis
@@ -575,7 +590,10 @@ impl PhoenixCandidatePipeline {
                 .await?
                 .with_calls(client_calls.clone()),
         );
-        let in_network_client = assemble_in_network_client(false, mrpyq_adapters).await;
+        let in_network_client = assemble_in_network_client(mrpyq_adapters)
+            .await
+            .map_err(anyhow::Error::msg)
+            .context("failed to configure in-network recall")?;
         let fallback_client = mrpyq_adapters.map(|adapters| Arc::clone(&adapters.in_network));
         let gizmoduck_client: Arc<dyn GizmoduckClient + Send + Sync> =
             Arc::new(DisabledGizmoduckClient::new().await?);
@@ -629,10 +647,21 @@ impl PhoenixCandidatePipeline {
                 fallback_client,
                 served_candidates_sink,
                 features,
+                identity,
             })
             .await,
         )
     }
+}
+
+/// Registry identity for the assembly paths that own no `HomeMixerConfig`:
+/// `HOME_MIXER_ID_REGISTRY_URL`, defaulting to the local registry.
+fn registry_identity_from_env() -> anyhow::Result<SharedIdentityResolver> {
+    let url = std::env::var("HOME_MIXER_ID_REGISTRY_URL")
+        .ok()
+        .filter(|value| !value.trim().is_empty())
+        .unwrap_or_else(|| "http://127.0.0.1:50070".to_string());
+    Ok(Arc::new(crate::id::RegistryClient::new(&url)?))
 }
 
 /// Give every side effect its shutdown hook with the same remaining budget.
@@ -646,23 +675,14 @@ pub(crate) async fn shutdown_side_effects<'a, C>(
     futures::future::join_all(side_effects.map(|side_effect| side_effect.shutdown(timeout))).await;
 }
 
-/// Real in-network recall is mrpyq. Integer Thunder exists only for explicit
-/// demo mode, because it cannot carry real ObjectIds.
 async fn assemble_in_network_client(
-    demo_mode: bool,
     mrpyq_adapters: Option<&MrpyqPipelineAdapters>,
-) -> Option<Arc<dyn InNetworkPostsClient>> {
-    #[cfg(not(feature = "legacy-int-ids"))]
-    let _ = demo_mode;
-
-    if let Some(adapters) = mrpyq_adapters {
-        return Some(Arc::clone(&adapters.in_network));
+) -> Result<Option<Arc<dyn InNetworkPostsClient>>, String> {
+    if let Some(client) = ThunderClient::from_env()? {
+        log::info!("using numeric Thunder for in-network recall");
+        return Ok(Some(Arc::new(client)));
     }
-    #[cfg(feature = "legacy-int-ids")]
-    if demo_mode {
-        return Some(Arc::new(ThunderClient::new().await));
-    }
-    None
+    Ok(mrpyq_adapters.map(|adapters| Arc::clone(&adapters.in_network)))
 }
 
 fn features_for_mode(_mode: HomeMixerMode, mut features: HomeMixerFeatures) -> HomeMixerFeatures {
@@ -672,12 +692,6 @@ fn features_for_mode(_mode: HomeMixerMode, mut features: HomeMixerFeatures) -> H
         );
         features.author_cold_start = false;
         features.cold_start_thompson_sampling = false;
-    }
-    if features.vm_ranker {
-        log::warn!(
-            "VM Ranker still uses integer proto and cannot carry real ObjectIds; disabling it outside demo mode"
-        );
-        features.vm_ranker = false;
     }
     features
 }
@@ -756,7 +770,7 @@ mod tests {
     }
 
     #[test]
-    fn integer_vm_ranker_is_disabled_outside_demo() {
+    fn numeric_vm_ranker_remains_enabled_when_requested() {
         let features = features_for_mode(
             HomeMixerMode::Degraded,
             HomeMixerFeatures {
@@ -764,7 +778,7 @@ mod tests {
                 ..Default::default()
             },
         );
-        assert!(!features.vm_ranker);
+        assert!(features.vm_ranker);
     }
 
     #[tokio::test]

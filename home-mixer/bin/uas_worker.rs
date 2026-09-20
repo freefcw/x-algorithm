@@ -569,10 +569,17 @@ async fn run(
     metrics: Arc<WorkerMetrics>,
     client_calls: home_mixer::metrics::ClientCallRecorder,
 ) -> anyhow::Result<()> {
-    let store = RedisUserActionSequenceStore::new(config)
-        .await
-        .map(|store| store.with_calls(client_calls))
-        .map_err(anyhow::Error::msg)?;
+    let registry_url = env::var("HOME_MIXER_ID_REGISTRY_URL")
+        .ok()
+        .filter(|value| !value.trim().is_empty())
+        .unwrap_or_else(|| "http://127.0.0.1:50070".to_string());
+    let identity = home_mixer::id::RegistryClient::new(&registry_url)
+        .map_err(|error| anyhow::anyhow!("invalid HOME_MIXER_ID_REGISTRY_URL: {error}"))?;
+    let store =
+        RedisUserActionSequenceStore::new_with_identity(config, std::sync::Arc::new(identity))
+            .await
+            .map(|store| store.with_calls(client_calls))
+            .map_err(anyhow::Error::msg)?;
     // A demo Home Mixer only reads this Redis when UAS_REDIS_URL is set on
     // its side too; say which variable chose the target so a local bring-up
     // that "projects but is not read" is easy to diagnose.
@@ -662,12 +669,18 @@ mod tests {
     #[test]
     fn event_parser_accepts_the_public_contract_and_ignores_unknown_fields() {
         let action = parse_event(VALID_EVENT).expect("valid UAS event");
-        assert_eq!(action.user_id(), home_mixer::models::uid(7));
+        assert_eq!(
+            action.user_id(),
+            home_mixer::models::ids::ObjectId::from_u64_be_padded(7)
+        );
         assert_eq!(action.action_time_ms(), 1_700_000_000_000);
 
         let with_surface = VALID_EVENT.replacen('}', r#","product_surface":2}"#, 1);
         let action = parse_event(&with_surface).expect("integer product_surface is consumed");
-        assert_eq!(action.user_id(), home_mixer::models::uid(7));
+        assert_eq!(
+            action.user_id(),
+            home_mixer::models::ids::ObjectId::from_u64_be_padded(7)
+        );
 
         let extended = VALID_EVENT.replacen('}', r#","event_id":"evt-1"}"#, 1);
         assert!(parse_event(&extended).is_ok(), "producers may add fields");

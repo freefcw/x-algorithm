@@ -26,7 +26,7 @@ use crate::clients::redis_conn::{
     parse_cluster_urls, redis_error, validate_redis_url, ManagedRedisConnection,
 };
 use crate::metrics::ClientCallRecorder;
-use crate::models::ids::{ObjectId, PostId, UserId};
+use crate::models::ids::{ObjectId, UserId};
 use crate::recsys_compat::{
     is_supported_action_type, is_supported_product_surface, MAX_PRODUCT_SURFACE,
     MAX_SUPPORTED_ACTION_TYPE,
@@ -116,18 +116,22 @@ pub struct UserActionEvent {
 /// the timestamp is positive and the action type is one the model consumes.
 /// It can only be built through [`UserActionEvent::validate`], so sinks do
 /// not re-validate and a sink error is always a storage error.
+///
+/// IDs stay external `ObjectId`s: the Redis key/member space is the
+/// ObjectId wire format, and the projection writer must not pay a Registry
+/// round-trip just to write back what it already has.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ValidatedUserAction {
-    user_id: UserId,
-    tweet_id: PostId,
-    author_id: UserId,
+    user_id: ObjectId,
+    tweet_id: ObjectId,
+    author_id: ObjectId,
     action_time_ms: i64,
     action_type: i32,
     product_surface: i32,
 }
 
 impl ValidatedUserAction {
-    pub fn user_id(&self) -> UserId {
+    pub fn user_id(&self) -> ObjectId {
         self.user_id
     }
 
@@ -201,7 +205,9 @@ impl StoredUserAction {
         }
     }
 
-    fn into_action(self) -> Result<uas_compat::UserAction, String> {
+    /// Decode into the still-external identities stored on the member. The
+    /// reader resolves them to Snowflake IDs in one batch afterwards.
+    fn into_external(self) -> Result<DecodedUserAction, String> {
         // v1 members stay readable until they age out of the 7-day window.
         // They predate product_surface and always decode as 0.
         let product_surface = match self.version {
@@ -219,22 +225,32 @@ impl StoredUserAction {
         if !is_supported_product_surface(product_surface) {
             return Err(format!("unsupported product_surface {product_surface}"));
         }
-        Ok(uas_compat::UserAction {
-            tweet_id: Some(tweet_id),
-            author_id: Some(author_id),
-            action_time_ms: Some(self.action_time_ms),
-            action_type: Some(self.action_type),
-            product_surface: Some(product_surface),
+        Ok(DecodedUserAction {
+            tweet_id,
+            author_id,
+            action_time_ms: self.action_time_ms,
+            action_type: self.action_type,
+            product_surface,
         })
     }
 }
 
+/// One decoded member with its external ObjectIds intact, pending the batch
+/// resolve that turns the sequence numeric.
+struct DecodedUserAction {
+    tweet_id: ObjectId,
+    author_id: ObjectId,
+    action_time_ms: i64,
+    action_type: i32,
+    product_surface: i32,
+}
+
 /// Decode one ZSET member. Corrupt payloads and unknown versions are reported
 /// so the reader can skip them rather than lose the user's whole sequence.
-fn decode_stored_member(member: &str) -> Result<uas_compat::UserAction, String> {
+fn decode_stored_member(member: &str) -> Result<DecodedUserAction, String> {
     serde_json::from_str::<StoredUserAction>(member)
         .map_err(|error| format!("member is not a StoredUserAction: {error}"))?
-        .into_action()
+        .into_external()
 }
 
 #[derive(Clone, Eq, PartialEq)]
@@ -350,6 +366,7 @@ impl RedisUserActionSequenceConfig {
 /// by action time; the member is the JSON [`StoredUserAction`].
 pub struct RedisUserActionSequenceStore {
     connection: ManagedRedisConnection,
+    identity: crate::id::SharedIdentityResolver,
     key_prefix: String,
     max_actions: usize,
     window: Duration,
@@ -360,7 +377,20 @@ pub struct RedisUserActionSequenceStore {
 }
 
 impl RedisUserActionSequenceStore {
+    /// Test/compatibility constructor: resolves zero-padded ObjectIds without
+    /// external services. Production must use [`Self::new_with_identity`].
     pub async fn new(config: RedisUserActionSequenceConfig) -> Result<Self, String> {
+        Self::new_with_identity(
+            config,
+            std::sync::Arc::new(crate::id::PaddedIdentityResolver::new()),
+        )
+        .await
+    }
+
+    pub async fn new_with_identity(
+        config: RedisUserActionSequenceConfig,
+        identity: crate::id::SharedIdentityResolver,
+    ) -> Result<Self, String> {
         config.validate()?;
         let connection = ManagedRedisConnection::connect(
             Some(config.url.as_str()),
@@ -376,6 +406,7 @@ impl RedisUserActionSequenceStore {
         })?;
         Ok(Self {
             connection,
+            identity,
             key_prefix: config.key_prefix,
             max_actions: config.max_actions,
             window: config.window,
@@ -392,7 +423,9 @@ impl RedisUserActionSequenceStore {
         self
     }
 
-    fn key(&self, user_id: UserId) -> String {
+    /// Redis keys keep the external ObjectId form; `user_id` is the reversed
+    /// 24-hex string, not the internal Snowflake.
+    fn key(&self, user_id: &ObjectId) -> String {
         // The hash tag keeps a user's key within one slot under cluster
         // routing and matches the feed-state key layout.
         format!("{}:{{{user_id}}}:actions", self.key_prefix)
@@ -412,7 +445,7 @@ impl UserActionEventSink for RedisUserActionSequenceStore {
         }
         let payload = serde_json::to_string(&StoredUserAction::from_validated(action))
             .map_err(|e| format!("serialize UAS action: {e}"))?;
-        let key = self.key(action.user_id);
+        let key = self.key(&action.user_id);
         let mut pipeline = redis::pipe();
         pipeline
             .atomic()
@@ -486,6 +519,22 @@ impl RedisUserActionSequenceStore {
     ) -> Result<uas_compat::UserActionSequence, anyhow::Error> {
         let now = current_time_ms();
         let cutoff = now.saturating_sub(duration_ms(self.window));
+        // The stored key space is external ObjectIds; reverse the internal
+        // viewer identity before addressing Redis.
+        let external_user = self
+            .identity
+            .reverse_batch(&[(
+                crate::id::SnowflakeId::new(user_id)
+                    .map_err(|error| anyhow::anyhow!("invalid internal user id: {error}"))?,
+                crate::id::EntityKind::User,
+            )])
+            .await
+            .map_err(|error| anyhow::anyhow!("reverse UAS user id: {error}"))?
+            .into_iter()
+            .next()
+            .ok_or_else(|| anyhow::anyhow!("ID Registry returned no user mapping"))?;
+        let external_user = ObjectId::parse(&external_user)
+            .map_err(|error| anyhow::anyhow!("ID Registry returned {error}"))?;
         let mut pipeline = redis::pipe();
         // Newest first, so LIMIT keeps the most recent actions when the stored
         // set is larger than this reader's bound (for example when the
@@ -493,7 +542,7 @@ impl RedisUserActionSequenceStore {
         // reversed back into time order below.
         pipeline
             .cmd("ZREVRANGEBYSCORE")
-            .arg(self.key(user_id))
+            .arg(self.key(&external_user))
             .arg(now)
             .arg(cutoff)
             .arg("LIMIT")
@@ -507,11 +556,11 @@ impl RedisUserActionSequenceStore {
         .map_err(|_| anyhow::anyhow!("UAS Redis read timed out"))?
         .map_err(|e| anyhow::anyhow!("{}", redis_error("UAS Redis read", &e)))?;
 
-        let mut actions = Vec::with_capacity(members.len());
+        let mut decoded = Vec::with_capacity(members.len());
         let mut undecodable = 0usize;
         for member in members.iter().rev() {
             match decode_stored_member(member) {
-                Ok(action) => actions.push(action),
+                Ok(action) => decoded.push(action),
                 Err(error) => {
                     undecodable += 1;
                     log::debug!("skipping UAS member for user {user_id}: {error}");
@@ -523,9 +572,44 @@ impl RedisUserActionSequenceStore {
             // Redis for the whole window and the user may request often.
             log::warn!(
                 "skipped {undecodable} undecodable UAS members for user {user_id}; {} usable actions remain",
-                actions.len()
+                decoded.len()
             );
         }
+        let external_ids = decoded
+            .iter()
+            .flat_map(|action| {
+                [
+                    (action.tweet_id.to_string(), crate::id::EntityKind::Post),
+                    (action.author_id.to_string(), crate::id::EntityKind::User),
+                ]
+            })
+            .collect::<Vec<_>>();
+        let resolved = self
+            .identity
+            .resolve_batch(&external_ids)
+            .await
+            .map_err(|error| anyhow::anyhow!("resolve UAS identities: {error}"))?;
+        let mut resolved = resolved.into_iter();
+        let actions = decoded
+            .into_iter()
+            .map(|action| uas_compat::UserAction {
+                tweet_id: Some(
+                    resolved
+                        .next()
+                        .expect("registry result count validated")
+                        .get(),
+                ),
+                author_id: Some(
+                    resolved
+                        .next()
+                        .expect("registry result count validated")
+                        .get(),
+                ),
+                action_time_ms: Some(action.action_time_ms),
+                action_type: Some(action.action_type),
+                product_surface: Some(action.product_surface),
+            })
+            .collect::<Vec<_>>();
         // The projection stores no publish time of its own (that would make
         // replayed members differ), so both metadata fields approximate it
         // with the newest action time.
@@ -620,9 +704,9 @@ mod redis_tests {
     #[test]
     fn event_boundary_validates_ids_timestamp_and_action_type() {
         let action = event(1_700_000_000_000, 3).validate().expect("valid event");
-        assert_eq!(action.user_id(), crate::models::uid(7));
-        assert_eq!(action.tweet_id, crate::models::pid(9));
-        assert_eq!(action.author_id, crate::models::uid(11));
+        assert_eq!(action.user_id(), ObjectId::from_u64_be_padded(7));
+        assert_eq!(action.tweet_id, ObjectId::from_u64_be_padded(9));
+        assert_eq!(action.author_id, ObjectId::from_u64_be_padded(11));
         assert_eq!(action.action_time_ms(), 1_700_000_000_000);
 
         assert!(event(0, 3).validate().is_err(), "non-positive timestamp");
@@ -651,11 +735,11 @@ mod redis_tests {
             r#"{"version":2,"tweet_id":"000000000000000000000009","author_id":"00000000000000000000000b","action_time_ms":1700000000000,"action_type":3,"product_surface":0}"#
         );
         let decoded = decode_stored_member(&member).expect("round trip");
-        assert_eq!(decoded.tweet_id, Some(crate::models::pid(9)));
-        assert_eq!(decoded.author_id, Some(crate::models::uid(11)));
-        assert_eq!(decoded.action_time_ms, Some(1_700_000_000_000));
-        assert_eq!(decoded.action_type, Some(3));
-        assert_eq!(decoded.product_surface, Some(0));
+        assert_eq!(decoded.tweet_id, ObjectId::from_u64_be_padded(9));
+        assert_eq!(decoded.author_id, ObjectId::from_u64_be_padded(11));
+        assert_eq!(decoded.action_time_ms, 1_700_000_000_000);
+        assert_eq!(decoded.action_type, 3);
+        assert_eq!(decoded.product_surface, 0);
     }
 
     #[test]
@@ -664,7 +748,7 @@ mod redis_tests {
             r#"{"version":1,"tweet_id":"000000000000000000000009","author_id":"00000000000000000000000b","action_time_ms":1700000000000,"action_type":3}"#,
         )
         .expect("v1 members remain readable");
-        assert_eq!(decoded.product_surface, Some(0));
+        assert_eq!(decoded.product_surface, 0);
     }
 
     #[test]

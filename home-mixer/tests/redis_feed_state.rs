@@ -2,10 +2,9 @@
 
 mod common;
 
-use common::{object_id, unix_redis_url, RedisFixture};
+use common::{unix_redis_url, RedisFixture};
 use home_mixer::clients::redis_feed_state_store::{RedisFeedStateConfig, RedisFeedStateStore};
 use home_mixer::feed_state::{FeedStateSnapshot, FeedStateStore, InMemoryFeedStateStore};
-use home_mixer::models::ObjectId;
 use std::fs;
 use std::net::Shutdown;
 use std::os::unix::net::{UnixListener, UnixStream};
@@ -32,9 +31,9 @@ async fn missing_users_are_empty_and_independent_adapters_share_isolated_user_st
     let second = RedisFeedStateStore::new(redis.config(prefix, 10, 10))
         .await
         .expect("create second adapter");
-    let alice = object_id("e305c05a62cd1ef55823cd86");
-    let bob = object_id("a105c05a62cd1ef55823cd86");
-    let post = object_id("5f1a2b3c4d5e6f7a8b9c0d1e");
+    let alice = 1007;
+    let bob = 1014;
+    let post = 1021;
 
     assert_eq!(
         first.load(alice).await.unwrap(),
@@ -70,11 +69,11 @@ async fn redis_matches_in_memory_deduplication_order_and_truncation_including_ze
         .await
         .expect("create Redis adapter");
     let local = InMemoryFeedStateStore::new(3, 2);
-    let user = object_id("8f1a2b3c4d5e6f7a8b9c0d1e");
-    let a = object_id("111111111111111111111111");
-    let b = object_id("222222222222222222222222");
-    let c = object_id("333333333333333333333333");
-    let d = object_id("444444444444444444444444");
+    let user = 1028;
+    let a = 1035;
+    let b = 1042;
+    let c = 1049;
+    let d = 1056;
     let updates = [
         (vec![a, b, a], i64::MIN),
         (vec![c, b, d], -1),
@@ -115,14 +114,14 @@ async fn concurrent_adapters_do_not_lose_updates_and_round_trip_full_width_value
             .await
             .expect("create second adapter"),
     );
-    let user = object_id("ffffffff00000000ffffffff");
+    let user = 1063;
     let barrier = Arc::new(Barrier::new(UPDATE_COUNT + 1));
     let mut tasks = Vec::with_capacity(UPDATE_COUNT);
     let mut expected_ids = Vec::with_capacity(UPDATE_COUNT);
     let mut expected_timestamps = Vec::with_capacity(UPDATE_COUNT);
 
     for index in 0..UPDATE_COUNT {
-        let id = ObjectId::from_parts(0x8000_0000 + index as u32, u64::MAX - index as u64);
+        let id = 0x8000_0000u64 + index as u64;
         let timestamp = if index == 0 {
             i64::MIN
         } else if index == 1 {
@@ -163,9 +162,9 @@ async fn concurrent_adapters_do_not_lose_updates_and_round_trip_full_width_value
 #[ignore = "requires redis-server"]
 async fn ttl_slides_expires_and_none_removes_an_existing_expiry() {
     let redis = RedisFixture::start();
-    let user = object_id("cafebabedeadbeef01020304");
-    let first_post = object_id("00112233445566778899aabb");
-    let second_post = object_id("ffeeddccbbaa998877665544");
+    let user = 1070;
+    let first_post = 1077;
+    let second_post = 1084;
 
     let mut expiring_config = redis.config("test:sliding-ttl", 10, 10);
     expiring_config.ttl_secs = Some(1);
@@ -234,8 +233,8 @@ async fn malformed_redis_state_is_reported_instead_of_becoming_empty_state() {
     let store = RedisFeedStateStore::new(redis.config(prefix, 10, 10))
         .await
         .expect("create Redis adapter");
-    let user = object_id("1234567890abcdef12345678");
-    let post = object_id("abcdef1234567890abcdef12");
+    let user = 1091;
+    let post = 1098;
     store.record(user, vec![post], 10).await.unwrap();
 
     let served_key = redis.key(prefix, user, "served");
@@ -289,8 +288,8 @@ async fn paused_redis_times_out_without_blocking_tokio_and_recovers_for_later_re
     let store = RedisFeedStateStore::new(config)
         .await
         .expect("create Redis adapter");
-    let user = object_id("102030405060708090a0b0c0");
-    let post = object_id("c0b0a0908070605040302010");
+    let user = 1105;
+    let post = 1112;
     store.record(user, vec![post], 1).await.unwrap();
 
     pause_redis(&redis, 600);
@@ -346,8 +345,8 @@ async fn first_read_after_a_server_side_disconnect_sees_the_served_history() {
     let store = RedisFeedStateStore::new(redis.config("test:disconnect", 10, 10))
         .await
         .expect("create Redis adapter");
-    let user = object_id("0a0b0c0d0e0f000102030405");
-    let post = object_id("aaaabbbbccccddddeeeeffff");
+    let user = 1119;
+    let post = 1126;
     store.record(user, vec![post], 1).await.unwrap();
 
     // A proxy idle timeout or server-side eviction closes the adapter's
@@ -373,8 +372,8 @@ async fn first_read_after_a_redis_restart_sees_the_persisted_history() {
     let store = RedisFeedStateStore::new(redis.config("test:restart", 10, 10))
         .await
         .expect("create Redis adapter");
-    let user = object_id("1a1b1c1d1e1f000102030405");
-    let post = object_id("bbbbccccddddeeeeffff0000");
+    let user = 1133;
+    let post = 1140;
     store.record(user, vec![post], 1).await.unwrap();
 
     // Maintenance restart or failover with no request in flight.
@@ -401,8 +400,8 @@ async fn first_read_after_an_outage_recovers_without_a_restart_of_the_adapter() 
     let store = RedisFeedStateStore::new(config)
         .await
         .expect("create Redis adapter");
-    let user = object_id("2a2b2c2d2e2f000102030405");
-    let post = object_id("ccccddddeeeeffff00001111");
+    let user = 1147;
+    let post = 1154;
     store.record(user, vec![post], 1).await.unwrap();
 
     // While Redis is down every request fails closed at the write, so the
@@ -527,10 +526,9 @@ async fn cluster_routing_round_trips_feed_state_across_many_users() {
 
     // Enough users to spread over the 3 masters' slots; each record is one
     // hash-tagged MULTI, so success itself proves slot collocation.
-    for sequence in 1..=12u32 {
-        let user_hex = format!("{sequence:0>24}");
-        let user = ObjectId::parse(&user_hex).expect("24-hex user id");
-        let post = object_id(&format!("{:0>24}", sequence + 100));
+    for sequence in 1..=12u64 {
+        let user = sequence;
+        let post = sequence + 100;
         store
             .record(user, vec![post], -(sequence as i64))
             .await
@@ -544,14 +542,11 @@ async fn cluster_routing_round_trips_feed_state_across_many_users() {
     }
 
     // Users stay independent under cluster routing.
-    let first = object_id("000000000000000000000001");
-    let second = object_id("000000000000000000000002");
+    let first = 1161;
+    let second = 1168;
     assert_eq!(
         store.load(second).await.unwrap().served_post_ids,
-        vec![object_id("000000000000000000000102")]
+        vec![1175]
     );
-    assert_eq!(
-        store.load(first).await.unwrap().served_post_ids,
-        vec![object_id("000000000000000000000101")]
-    );
+    assert_eq!(store.load(first).await.unwrap().served_post_ids, vec![1182]);
 }

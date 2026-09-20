@@ -54,7 +54,7 @@ fn external_topic_adapters_can_enter_service_assembly() {
     );
 
     let pipeline = runtime.block_on(PhoenixCandidatePipeline::prod_with_topic_clients(clients));
-    // Real-mode assembly cannot fall back to integer Thunder.
+    // Real-mode assembly still requires mrpyq for TES, viewer relations, and fallback data.
     if std::env::var("MRPYQ_RECOMMENDATION_DATA_ADDR").is_ok_and(|addr| !addr.trim().is_empty()) {
         drop(pipeline.expect("topic adapters can enter assembly"));
     } else {

@@ -37,6 +37,8 @@ pub mod sources;
 pub mod util;
 
 // 内联替代模块（替代原始 xai_* 私有依赖）
+#[cfg(test)]
+mod id_pipeline_regression;
 pub mod post_text;
 pub mod recsys_compat;
 pub mod uas_compat;

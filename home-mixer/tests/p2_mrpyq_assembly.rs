@@ -39,7 +39,11 @@ async fn mrpyq_address_switches_degraded_assembly_onto_the_business_ports() {
     // A configured but unusable backend must fail assembly instead of quietly
     // degrading to the Disabled ports, which would serve an empty feed.
     std::env::set_var(ADDRESS_ENV, "not a uri");
-    assert!(pipeline_adapters_from_env(false).is_err());
+    assert!(pipeline_adapters_from_env(
+        false,
+        std::sync::Arc::new(home_mixer::id::PaddedIdentityResolver::new())
+    )
+    .is_err());
 
     std::env::remove_var(ADDRESS_ENV);
 }
