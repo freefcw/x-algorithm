@@ -10,7 +10,6 @@
 use crate::models::candidate::PhoenixScores;
 use crate::models::ids::{PostId, UserId};
 use tonic::async_trait;
-#[cfg(feature = "legacy-int-ids")]
 use x_algorithm_proto::vm_ranker as pb;
 
 /// 对应上游 `RankCandidate`。
@@ -66,12 +65,11 @@ pub trait VMRankerClient: Send + Sync {
 /// 真实 gRPC Adapter：调用本仓库 `vm-ranker` 服务（wire 为本地重建的
 /// `vm_ranker.proto`，与上游内部服务不保证兼容）。由装配在
 /// `HOME_MIXER_ENABLE_VM_RANKER=1` 且提供 `VM_RANKER_GRPC_ADDR` 时注入。
-#[cfg(feature = "legacy-int-ids")]
+/// 两侧都携带内部 Snowflake ID，无需 Registry 往返。
 pub struct GrpcVMRankerClient {
     channel: tonic::transport::Channel,
 }
 
-#[cfg(feature = "legacy-int-ids")]
 impl GrpcVMRankerClient {
     /// 建立可复用的惰性连接。地址非法在装配期就暴露，而不是留到每次请求。
     pub fn new(endpoint: String) -> Result<Self, String> {
@@ -84,19 +82,18 @@ impl GrpcVMRankerClient {
         Ok(Self { channel })
     }
 
-    fn to_u64(id: crate::models::ObjectId) -> Option<u64> {
-        id.to_u64_be_padded().filter(|id| *id != 0)
+    fn checked_id(id: u64, field: &str) -> Result<u64, String> {
+        if id == 0 || id > i64::MAX as u64 {
+            return Err(format!(
+                "VM Ranker adapter received out-of-range {field} {id}"
+            ));
+        }
+        Ok(id)
     }
 
-    fn require_u64(id: crate::models::ObjectId, field: &str) -> Result<u64, String> {
-        Self::to_u64(id).ok_or_else(|| {
-            format!("VM Ranker adapter cannot round-trip {field} {id} through uint64")
-        })
-    }
-
-    fn to_proto(request: VmRankRequest) -> Result<pb::RankRequest, String> {
+    pub(crate) fn to_proto(request: VmRankRequest) -> Result<pb::RankRequest, String> {
         Ok(pb::RankRequest {
-            viewer_id: Self::require_u64(request.viewer_id, "viewer_id")?,
+            viewer_id: Self::checked_id(request.viewer_id, "viewer_id")?,
             value_model_id: request.value_model_id.unwrap_or_default(),
             request_timestamp_ms: u64::try_from(request.request_timestamp_ms).unwrap_or(0),
             viewer_following_count: u32::try_from(request.viewer_following_count).unwrap_or(0),
@@ -110,15 +107,15 @@ impl GrpcVMRankerClient {
                 .into_iter()
                 .map(|c| {
                     Ok(pb::RankCandidate {
-                        tweet_id: Self::require_u64(c.tweet_id, "tweet_id")?,
-                        author_id: Self::require_u64(c.author_id, "author_id")?,
+                        tweet_id: Self::checked_id(c.tweet_id, "tweet_id")?,
+                        author_id: Self::checked_id(c.author_id, "author_id")?,
                         in_network: c.in_network,
                         is_retweet: c.is_retweet,
                         is_reply: c.is_reply,
                         author_followers_count: c.author_followers_count,
                         vqv_ineligible: c.vqv_ineligible,
                         retweeted_tweet_id: match c.retweeted_tweet_id {
-                            Some(id) => Self::require_u64(id, "retweeted_tweet_id")?,
+                            Some(id) => Self::checked_id(id, "retweeted_tweet_id")?,
                             None => 0,
                         },
                         score: c.score,
@@ -162,7 +159,6 @@ impl GrpcVMRankerClient {
     }
 }
 
-#[cfg(feature = "legacy-int-ids")]
 #[async_trait]
 impl VMRankerClient for GrpcVMRankerClient {
     async fn rank(&self, request: VmRankRequest) -> Result<VmRankResponse, String> {
@@ -173,6 +169,11 @@ impl VMRankerClient for GrpcVMRankerClient {
 
         let candidate_count = request.candidates.len();
         let started = std::time::Instant::now();
+        let requested_ids = request
+            .candidates
+            .iter()
+            .map(|candidate| candidate.tweet_id)
+            .collect::<std::collections::HashSet<_>>();
         let proto = Self::to_proto(request)?;
         let response = match client.rank(proto).await {
             Ok(response) => response.into_inner(),
@@ -192,20 +193,28 @@ impl VMRankerClient for GrpcVMRankerClient {
             response.candidates.len(),
         );
 
-        Ok(VmRankResponse {
-            candidates: response
-                .candidates
-                .into_iter()
-                .map(|c| VmRankedCandidate {
-                    tweet_id: crate::models::ObjectId::from_u64_be_padded(c.tweet_id),
-                    score: c.score,
+        let candidates = response
+            .candidates
+            .into_iter()
+            .map(|candidate| {
+                let tweet_id = candidate.tweet_id;
+                if tweet_id == 0 || tweet_id > i64::MAX as u64 || !requested_ids.contains(&tweet_id)
+                {
+                    return Err(format!(
+                        "VM Ranker returned candidate ID {tweet_id} outside the request"
+                    ));
+                }
+                Ok(VmRankedCandidate {
+                    tweet_id,
+                    score: candidate.score,
                 })
-                .collect(),
-        })
+            })
+            .collect::<Result<Vec<_>, String>>()?;
+        Ok(VmRankResponse { candidates })
     }
 }
 
-#[cfg(all(test, feature = "legacy-int-ids"))]
+#[cfg(test)]
 mod tests {
     use super::*;
 
@@ -241,7 +250,7 @@ mod tests {
         }
     }
 
-    fn padded_request() -> VmRankRequest {
+    fn numeric_request() -> VmRankRequest {
         VmRankRequest {
             viewer_id: crate::models::uid(1),
             candidates: vec![VmRankCandidate {
@@ -255,10 +264,10 @@ mod tests {
 
     #[test]
     fn phoenix_score_heads_map_to_matching_proto_slots() {
-        let mut request = padded_request();
+        let mut request = numeric_request();
         request.candidates[0].phoenix_scores = distinct_phoenix_scores();
 
-        let proto = GrpcVMRankerClient::to_proto(request).expect("padded ids");
+        let proto = GrpcVMRankerClient::to_proto(request).expect("numeric ids");
         let scores = proto.candidates[0].phoenix_scores.unwrap();
 
         assert_eq!(scores.favorite_score, Some(1.0));
@@ -301,20 +310,20 @@ mod tests {
                 max_selected_rank: 60,
             }),
             candidates: vec![VmRankCandidate {
-                tweet_id: 11.into(),
-                author_id: 22.into(),
+                tweet_id: 11,
+                author_id: 22,
                 in_network: true,
                 is_retweet: true,
                 is_reply: false,
                 author_followers_count: 333,
                 vqv_ineligible: true,
-                retweeted_tweet_id: Some(44.into()),
+                retweeted_tweet_id: Some(44),
                 score: Some(0.5),
                 phoenix_scores: PhoenixScores::default(),
             }],
         };
 
-        let proto = GrpcVMRankerClient::to_proto(request).expect("padded ids");
+        let proto = GrpcVMRankerClient::to_proto(request).expect("numeric ids");
 
         assert_eq!(proto.viewer_id, 42);
         assert_eq!(proto.request_timestamp_ms, 1_700_000_000_000);
@@ -339,7 +348,7 @@ mod tests {
     /// 上游以 0 表示"非转推"，缺省的 `value_model_id` 在服务端记为 unknown。
     #[test]
     fn absent_optionals_use_upstream_defaults() {
-        let proto = GrpcVMRankerClient::to_proto(padded_request()).expect("padded ids");
+        let proto = GrpcVMRankerClient::to_proto(numeric_request()).expect("numeric ids");
 
         assert_eq!(proto.value_model_id, "");
         assert!(proto.dpp_params.is_none());
@@ -351,25 +360,26 @@ mod tests {
     /// 负时间戳来自上游没有的输入，转换必须落到 0 而不是回绕成巨大的正数。
     #[test]
     fn negative_timestamp_saturates_to_zero() {
-        let mut request = padded_request();
+        let mut request = numeric_request();
         request.request_timestamp_ms = -1;
 
         assert_eq!(
             GrpcVMRankerClient::to_proto(request)
-                .expect("padded ids")
+                .expect("numeric ids")
                 .request_timestamp_ms,
             0
         );
     }
 
     #[test]
-    fn real_object_ids_fail_closed_instead_of_viewer_zero() {
-        let real =
-            crate::models::ObjectId::parse("e305c05a62cd1ef55823cd86").expect("real object id");
-        let mut request = padded_request();
-        request.viewer_id = real;
+    fn out_of_range_ids_fail_closed_instead_of_viewer_zero() {
+        let mut request = numeric_request();
+        request.viewer_id = 0;
         let error = GrpcVMRankerClient::to_proto(request).expect_err("must not query viewer 0");
         assert!(error.contains("viewer_id"));
-        assert!(error.contains("e305c05a62cd1ef55823cd86"));
+
+        let mut request = numeric_request();
+        request.viewer_id = i64::MAX as u64 + 1;
+        assert!(GrpcVMRankerClient::to_proto(request).is_err());
     }
 }

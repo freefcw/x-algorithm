@@ -4,6 +4,7 @@ use std::sync::Arc;
 use half::f16;
 
 use crate::helpers::dot_product;
+use crate::internal_id::SnowflakeId;
 use crate::metrics::{
     DPP_AVG_SIMILARITY, DPP_EMBEDDING_MISS_RATIO, DPP_LOG_DET, DPP_POOL_SCORES, DPP_POOL_SIZE,
     DPP_RESCALING, DPP_SELECTED_COUNT, DPP_TERMINAL_CV, DPP_TOP_K_OVERLAP,
@@ -16,11 +17,11 @@ pub struct DppConfig {
     pub top_k: usize,
     pub theta: f64,
     pub max_selected_rank: usize,
-    pub debug_viewer_id: u64,
+    pub debug_viewer_id: Option<SnowflakeId>,
 }
 
 pub struct DppInput {
-    pub id: u64,
+    pub id: SnowflakeId,
     pub score: f64,
     pub embedding: Arc<Vec<f16>>,
     pub norm: f64,
@@ -28,7 +29,7 @@ pub struct DppInput {
 }
 
 pub struct DppResult {
-    pub id: u64,
+    pub id: SnowflakeId,
     pub score: f64,
 }
 
@@ -36,7 +37,7 @@ pub fn rescore(
     inputs: &[DppInput],
     seed: Option<&DppInput>,
     config: &DppConfig,
-    _viewer_id: u64,
+    _viewer_id: SnowflakeId,
 ) -> Vec<DppResult> {
     let n = inputs.len();
     if n == 0 {
@@ -199,7 +200,7 @@ pub fn rescore(
         .with_label_values(&["unchanged"])
         .observe(k as f64);
 
-    let original_top_k: HashSet<u64> = sorted[..k.min(n)]
+    let original_top_k: HashSet<SnowflakeId> = sorted[..k.min(n)]
         .iter()
         .map(|&idx| inputs[idx].id)
         .collect();
@@ -355,7 +356,7 @@ mod tests {
             .sum::<f32>()
             .sqrt() as f64;
         DppInput {
-            id,
+            id: SnowflakeId::new(id.max(1)).expect("test IDs must be positive Snowflakes"),
             score,
             embedding: Arc::new(emb),
             norm,
@@ -368,22 +369,27 @@ mod tests {
             top_k: 10,
             theta: 0.5,
             max_selected_rank: 50,
-            debug_viewer_id: 0,
+            debug_viewer_id: None,
         }
     }
 
     #[test]
     fn empty_input() {
-        let result = rescore(&[], None, &default_config(), 0);
+        let result = rescore(&[], None, &default_config(), SnowflakeId::new(1).unwrap());
         assert!(result.is_empty());
     }
 
     #[test]
     fn single_candidate() {
         let inputs = vec![make_input(1, 5.0, &[1.0, 0.0, 0.0])];
-        let result = rescore(&inputs, None, &default_config(), 0);
+        let result = rescore(
+            &inputs,
+            None,
+            &default_config(),
+            SnowflakeId::new(1).unwrap(),
+        );
         assert_eq!(result.len(), 1);
-        assert_eq!(result[0].id, 1);
+        assert_eq!(result[0].id, SnowflakeId::new(1).unwrap());
         assert!((result[0].score - 5.0).abs() < 1e-9);
     }
 
@@ -400,11 +406,11 @@ mod tests {
             theta: 0.5,
             max_selected_rank: 10,
 
-            debug_viewer_id: 0,
+            debug_viewer_id: None,
         };
-        let result = rescore(&inputs, None, &config, 0);
+        let result = rescore(&inputs, None, &config, SnowflakeId::new(1).unwrap());
         assert_eq!(result.len(), 1);
-        assert_eq!(result[0].id, 1);
+        assert_eq!(result[0].id, SnowflakeId::new(1).unwrap());
     }
 
     #[test]
@@ -419,10 +425,10 @@ mod tests {
             theta: 0.5,
             max_selected_rank: 10,
 
-            debug_viewer_id: 0,
+            debug_viewer_id: None,
         };
-        let result = rescore(&inputs, None, &config, 0);
-        let ids: Vec<u64> = result.iter().map(|r| r.id).collect();
+        let result = rescore(&inputs, None, &config, SnowflakeId::new(1).unwrap());
+        let ids: Vec<u64> = result.iter().map(|r| r.id.get()).collect();
         assert!(ids.contains(&3), "orthogonal candidate should be selected");
         assert!(
             !ids.contains(&2),
@@ -432,10 +438,14 @@ mod tests {
 
     #[test]
     fn filter_only_preserves_original_scores() {
-        let inputs: Vec<DppInput> = (0..20)
+        let inputs: Vec<DppInput> = (1..=20)
             .map(|i| {
                 let angle = i as f32 * std::f32::consts::PI / 10.0;
-                make_input(i as u64, 10.0 - i as f64 * 0.4, &[angle.cos(), angle.sin()])
+                make_input(
+                    i as u64,
+                    10.0 - (i - 1) as f64 * 0.4,
+                    &[angle.cos(), angle.sin()],
+                )
             })
             .collect();
         let config = DppConfig {
@@ -443,16 +453,16 @@ mod tests {
             theta: 0.5,
             max_selected_rank: 20,
 
-            debug_viewer_id: 0,
+            debug_viewer_id: None,
         };
-        let result = rescore(&inputs, None, &config, 0);
+        let result = rescore(&inputs, None, &config, SnowflakeId::new(1).unwrap());
         assert!(result.len() <= 10, "at most top_k items returned");
         assert!(!result.is_empty(), "should select at least one item");
         for w in result.windows(2) {
             assert!(w[0].score >= w[1].score, "descending");
         }
         for r in &result {
-            let orig = &inputs[r.id as usize];
+            let orig = &inputs[(r.id.get() - 1) as usize];
             assert!(
                 (r.score - orig.score).abs() < 1e-9,
                 "id={} score={} should match original={}",
@@ -465,10 +475,10 @@ mod tests {
 
     #[test]
     fn max_selected_rank_limits_pool() {
-        let inputs: Vec<DppInput> = (0..100)
+        let inputs: Vec<DppInput> = (1..=100)
             .map(|i| {
                 let angle = i as f32 * std::f32::consts::PI / 100.0;
-                make_input(i, 100.0 - i as f64, &[angle.cos(), angle.sin()])
+                make_input(i, 101.0 - i as f64, &[angle.cos(), angle.sin()])
             })
             .collect();
         let config = DppConfig {
@@ -476,13 +486,13 @@ mod tests {
             theta: 0.5,
             max_selected_rank: 10,
 
-            debug_viewer_id: 0,
+            debug_viewer_id: None,
         };
-        let result = rescore(&inputs, None, &config, 0);
+        let result = rescore(&inputs, None, &config, SnowflakeId::new(1).unwrap());
         assert!(result.len() <= 5, "at most top_k items");
         assert!(!result.is_empty());
         for r in &result {
-            assert!(r.id < 10, "from top-10 pool");
+            assert!(r.id.get() <= 10, "from top-10 pool");
         }
     }
 
@@ -497,17 +507,17 @@ mod tests {
             top_k: 2,
             theta: 0.5,
             max_selected_rank: 10,
-            debug_viewer_id: 0,
+            debug_viewer_id: None,
         };
 
-        let ids: Vec<u64> = rescore(&inputs, None, &config, 0)
+        let ids: Vec<u64> = rescore(&inputs, None, &config, SnowflakeId::new(1).unwrap())
             .iter()
-            .map(|r| r.id)
+            .map(|r| r.id.get())
             .collect();
         assert!(ids.contains(&1) && ids.contains(&2));
 
-        let result = rescore(&inputs, Some(&seed), &config, 0);
-        let ids: Vec<u64> = result.iter().map(|r| r.id).collect();
+        let result = rescore(&inputs, Some(&seed), &config, SnowflakeId::new(1).unwrap());
+        let ids: Vec<u64> = result.iter().map(|r| r.id.get()).collect();
         assert!(
             !ids.contains(&1),
             "seed near-duplicate should be suppressed, got {ids:?}"
@@ -527,10 +537,10 @@ mod tests {
             top_k: 2,
             theta: 0.5,
             max_selected_rank: 10,
-            debug_viewer_id: 0,
+            debug_viewer_id: None,
         };
-        let result = rescore(&inputs, Some(&seed), &config, 0);
-        let ids: Vec<u64> = result.iter().map(|r| r.id).collect();
+        let result = rescore(&inputs, Some(&seed), &config, SnowflakeId::new(1).unwrap());
+        let ids: Vec<u64> = result.iter().map(|r| r.id.get()).collect();
         assert_eq!(ids.len(), 2, "seed must not eat top_k budget, got {ids:?}");
         assert!(ids.contains(&1) && ids.contains(&2));
     }

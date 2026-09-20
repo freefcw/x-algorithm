@@ -97,10 +97,10 @@ enum MaskType {
 
 // 聚合后的单条用户行为记录
 message AggregatedUserAction {
-  // 帖子 ID（业务字符串 ID，模型侧直接哈希，不做整数映射）
-  string tweet_id = 1;
+  // 帖子 ID（内部 Snowflake 数值 ID）
+  uint64 tweet_id = 1;
   // 帖子作者 ID
-  string author_id = 2;
+  uint64 author_id = 2;
   // 曝光时间（毫秒时间戳）
   uint64 impressed_time_ms = 3;
   // 该帖子上的行为位掩码（每个 bit 对应一种 ActionName）
@@ -130,7 +130,7 @@ message UserActionSequenceDataContainer {
 // 用户行为序列 —— 传递给 Phoenix 模型的完整上下文
 message UserActionSequence {
   // 用户 ID
-  string user_id = 1;
+  uint64 user_id = 1;
   // 序列元数据
   UserActionSequenceMeta metadata = 2;
   // 行为数据
@@ -145,10 +145,10 @@ message UserActionSequence {
 
 // 推文基本信息 —— 传入 Phoenix 用于预测
 message TweetInfo {
-  string tweet_id = 1;
-  string author_id = 2;
-  // 帖子被回复的原始帖 ID（如果适用）
-  string in_reply_to_tweet_id = 3;
+  uint64 tweet_id = 1;
+  uint64 author_id = 2;
+  // 帖子被回复的原始帖 ID（如果适用；0 表示无）
+  uint64 in_reply_to_tweet_id = 3;
   // 候选安全标签位掩码；位语义对齐 Phoenix 引擎合同的
   // TweetInfo.safetyLabelMask / Candidate.safetyLabelMask。
   // 当前唯一定义的位是 SAFETY_BIT_AUTHOR_NSFW（见 x-algorithm-proto 同名常量），
@@ -174,7 +174,7 @@ message DistributionSet {
 // 精排预测请求
 message PredictNextActionsRequest {
   // 目标用户 ID
-  string user_id = 1;
+  uint64 user_id = 1;
   // 用户最近的行为序列
   UserActionSequence user_action_sequence = 2;
   // 待评分的候选帖子列表
@@ -207,7 +207,7 @@ message ScoredCandidates {
 // 召回请求
 message RetrieveRequest {
   // 目标用户 ID
-  string user_id = 1;
+  uint64 user_id = 1;
   // 用户行为序列
   UserActionSequence user_action_sequence = 2;
   // 请求的最大召回数量

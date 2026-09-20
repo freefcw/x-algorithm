@@ -43,10 +43,15 @@ async fn main() -> Result<()> {
             top_k: args.dpp_top_k,
             theta: args.dpp_theta,
             max_selected_rank: args.dpp_max_selected_rank,
-            debug_viewer_id: args.dpp_debug_viewer_id,
+            debug_viewer_id: (args.dpp_debug_viewer_id != 0)
+                .then(|| xai_vm_ranker::internal_id::SnowflakeId::new(args.dpp_debug_viewer_id))
+                .transpose()
+                .map_err(|error| {
+                    anyhow::anyhow!("invalid DPP debug viewer Snowflake ID: {error}")
+                })?,
         };
         info!(
-            "DPP enabled: top_k={}, theta={}, max_selected_rank={}, embedding_dim={}, debug_viewer_id={}",
+            "DPP enabled: top_k={}, theta={}, max_selected_rank={}, embedding_dim={}, debug_viewer_id={:?}",
             config.top_k,
             config.theta,
             config.max_selected_rank,

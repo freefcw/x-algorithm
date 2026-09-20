@@ -9,6 +9,7 @@ use x_algorithm_proto::vm_ranker::{
     RankRequest, RankResponse, RankedCandidate,
 };
 
+use crate::internal_id::SnowflakeId;
 use crate::metrics::{
     Timer, IN_FLIGHT_REQUESTS, REJECTED_REQUESTS, SCORE_CANDIDATES_IN, SCORE_DURATION,
     SCORE_ERRORS, SCORE_REQUESTS,
@@ -57,7 +58,19 @@ impl VmRankerService for VMRankerServiceImpl {
 
         SCORE_REQUESTS.with_label_values(&[model_id]).inc();
 
-        let viewer_id = req.viewer_id;
+        let viewer_id = SnowflakeId::new(req.viewer_id)
+            .map_err(|error| Status::invalid_argument(format!("invalid viewer_id: {error}")))?;
+        for candidate in &req.candidates {
+            SnowflakeId::new(candidate.tweet_id)
+                .map_err(|error| Status::invalid_argument(format!("invalid tweet_id: {error}")))?;
+            SnowflakeId::new(candidate.author_id)
+                .map_err(|error| Status::invalid_argument(format!("invalid author_id: {error}")))?;
+            if candidate.retweeted_tweet_id != 0 {
+                SnowflakeId::new(candidate.retweeted_tweet_id).map_err(|error| {
+                    Status::invalid_argument(format!("invalid retweeted_tweet_id: {error}"))
+                })?;
+            }
+        }
 
         let _permit = match self.request_semaphore.try_acquire() {
             Ok(permit) => {

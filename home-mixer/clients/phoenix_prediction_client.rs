@@ -128,7 +128,7 @@ impl PhoenixPredictionClient for ProdPhoenixPredictionClient {
         let requested = candidates.clone();
         let candidate_count = requested.len();
         let request = recsys::PredictNextActionsRequest {
-            user_id: user_id.to_string(),
+            user_id,
             user_action_sequence: Some(sequence),
             candidates,
         };
@@ -212,9 +212,19 @@ pub fn validate_serving_metadata(
         .ok_or_else(|| anyhow::anyhow!("Phoenix response missing metadata feature-schema"))?
         .to_str()
         .map_err(|_| anyhow::anyhow!("Phoenix metadata feature-schema is not valid ASCII"))?;
-    if schema != "phoenix-string-id-actions-v2" {
+    if schema != "phoenix-snowflake-id-actions-v3" {
         anyhow::bail!("Phoenix metadata feature-schema mismatch: got {schema}");
     }
+
+    let identity_map_version = metadata
+        .get("identity-map-version")
+        .ok_or_else(|| anyhow::anyhow!("Phoenix response missing metadata identity-map-version"))?
+        .to_str()
+        .map_err(|_| anyhow::anyhow!("Phoenix metadata identity-map-version is not valid ASCII"))?;
+    anyhow::ensure!(
+        identity_map_version == id_service::MAPPING_VERSION.to_string(),
+        "Phoenix metadata identity-map-version mismatch: got {identity_map_version}"
+    );
 
     let model_version = metadata
         .get("model-version")
@@ -298,10 +308,10 @@ pub fn validate_predict_response(
         let Some(candidate) = &dist.candidate else {
             anyhow::bail!("Phoenix response has a distribution without candidate");
         };
-        if candidate.tweet_id.is_empty() {
+        if candidate.tweet_id == 0 {
             anyhow::bail!("Phoenix response has empty tweet_id");
         }
-        if !seen.insert(candidate.tweet_id.clone()) {
+        if !seen.insert(candidate.tweet_id) {
             anyhow::bail!(
                 "Phoenix response has duplicate tweet_id {}",
                 candidate.tweet_id
@@ -317,7 +327,7 @@ pub fn validate_predict_response(
         let requested_author = requested
             .iter()
             .find(|tweet| tweet.tweet_id == candidate.tweet_id)
-            .map(|tweet| tweet.author_id.as_str())
+            .map(|tweet| tweet.author_id)
             .unwrap_or_default();
         anyhow::ensure!(
             candidate.author_id == requested_author,
@@ -336,7 +346,7 @@ pub fn validate_predict_response(
             candidate.tweet_id,
             dist.continuous_actions_values.len()
         );
-        returned.insert(candidate.tweet_id.clone());
+        returned.insert(candidate.tweet_id);
         if dist.top_log_probs.iter().any(|v| !v.is_finite())
             || dist
                 .continuous_actions_values
@@ -475,10 +485,11 @@ mod tests {
         let mut metadata = MetadataMap::new();
         metadata.insert(
             "feature-schema",
-            "phoenix-string-id-actions-v2".parse().unwrap(),
+            "phoenix-snowflake-id-actions-v3".parse().unwrap(),
         );
         metadata.insert("model-version", "step-1".parse().unwrap());
         metadata.insert("random-weights", "false".parse().unwrap());
+        metadata.insert("identity-map-version", "1".parse().unwrap());
         metadata.insert(
             "supported-actions",
             (1..=18)
@@ -551,10 +562,11 @@ mod tests {
         let mut metadata = MetadataMap::new();
         metadata.insert(
             "feature-schema",
-            "phoenix-string-id-actions-v2".parse().unwrap(),
+            "phoenix-snowflake-id-actions-v3".parse().unwrap(),
         );
         metadata.insert("model-version", "step-000200@0123456789ab".parse().unwrap());
         metadata.insert("random-weights", "false".parse().unwrap());
+        metadata.insert("identity-map-version", "1".parse().unwrap());
         // What a bundle trained with `--observed-actions favorite,reply,report` advertises.
         metadata.insert("supported-actions", "1,2,18".parse().unwrap());
         assert!(validate_serving_metadata(&metadata, false).is_ok());
@@ -569,10 +581,11 @@ mod tests {
         let mut metadata = MetadataMap::new();
         metadata.insert(
             "feature-schema",
-            "phoenix-string-id-actions-v2".parse().unwrap(),
+            "phoenix-snowflake-id-actions-v3".parse().unwrap(),
         );
         metadata.insert("model-version", "random".parse().unwrap());
         metadata.insert("random-weights", "true".parse().unwrap());
+        metadata.insert("identity-map-version", "1".parse().unwrap());
         metadata.insert(
             "supported-actions",
             REQUIRED_SUPPORTED_ACTIONS
@@ -601,12 +614,12 @@ mod tests {
     #[test]
     fn validate_predict_response_rejects_nan_duplicate_and_missing() {
         let requested = vec![recsys::TweetInfo {
-            tweet_id: "000000000000000000000001".to_string(),
+            tweet_id: 1,
             ..Default::default()
         }];
-        let dist = |id: &str, prob: f32| recsys::CandidateDistribution {
+        let dist = |id: u64, prob: f32| recsys::CandidateDistribution {
             candidate: Some(recsys::TweetInfo {
-                tweet_id: id.to_string(),
+                tweet_id: id,
                 ..Default::default()
             }),
             top_log_probs: vec![prob; 19],
@@ -618,39 +631,27 @@ mod tests {
             }],
         };
 
-        assert!(validate_predict_response(
-            &requested,
-            &wrap(vec![dist("000000000000000000000001", 0.0)])
-        )
-        .is_ok());
-        assert!(validate_predict_response(
-            &requested,
-            &wrap(vec![dist("000000000000000000000001", f32::NAN)])
-        )
-        .is_err());
-        assert!(validate_predict_response(
-            &requested,
-            &wrap(vec![
-                dist("000000000000000000000001", 0.0),
-                dist("000000000000000000000001", 0.1),
-            ])
-        )
-        .is_err());
+        assert!(validate_predict_response(&requested, &wrap(vec![dist(1, 0.0)])).is_ok());
+        assert!(validate_predict_response(&requested, &wrap(vec![dist(1, f32::NAN)])).is_err());
+        assert!(
+            validate_predict_response(&requested, &wrap(vec![dist(1, 0.0), dist(1, 0.1),]))
+                .is_err()
+        );
         assert!(validate_predict_response(&requested, &wrap(vec![])).is_err());
     }
 
     #[test]
     fn validate_predict_response_rejects_unknown_author_and_shape() {
         let requested = vec![recsys::TweetInfo {
-            tweet_id: "000000000000000000000001".into(),
-            author_id: "000000000000000000000002".into(),
+            tweet_id: 1,
+            author_id: 2,
             ..Default::default()
         }];
         let distribution =
-            |tweet_id: &str, author_id: &str, width: usize| recsys::CandidateDistribution {
+            |tweet_id: u64, author_id: u64, width: usize| recsys::CandidateDistribution {
                 candidate: Some(recsys::TweetInfo {
-                    tweet_id: tweet_id.into(),
-                    author_id: author_id.into(),
+                    tweet_id,
+                    author_id,
                     ..Default::default()
                 }),
                 top_log_probs: vec![0.0; width],
@@ -661,32 +662,10 @@ mod tests {
                 candidate_distributions: vec![distribution],
             }],
         };
-        assert!(validate_predict_response(
-            &requested,
-            &response(distribution(
-                "0000000000000000000000ff",
-                "000000000000000000000002",
-                19,
-            ))
-        )
-        .is_err());
-        assert!(validate_predict_response(
-            &requested,
-            &response(distribution(
-                "000000000000000000000001",
-                "000000000000000000000003",
-                19,
-            ))
-        )
-        .is_err());
-        assert!(validate_predict_response(
-            &requested,
-            &response(distribution(
-                "000000000000000000000001",
-                "000000000000000000000002",
-                18,
-            ))
-        )
-        .is_err());
+        assert!(
+            validate_predict_response(&requested, &response(distribution(0xff, 2, 19))).is_err()
+        );
+        assert!(validate_predict_response(&requested, &response(distribution(1, 3, 19))).is_err());
+        assert!(validate_predict_response(&requested, &response(distribution(1, 2, 18))).is_err());
     }
 }

@@ -8,6 +8,7 @@ use x_algorithm_proto::vm_ranker::{RankCandidate, RankRequest, RankedCandidate};
 
 use super::DppContext;
 use crate::dpp::{self, DppInput};
+use crate::internal_id::SnowflakeId;
 
 fn l2_norm(v: &[f16]) -> f64 {
     v.iter()
@@ -61,6 +62,8 @@ fn build_dpp_inputs(req: &RankRequest, ctx: &DppContext) -> Vec<DppInput> {
             } else {
                 c.tweet_id
             };
+            let embedding_id = SnowflakeId::new(embedding_id)
+                .expect("RankRequest IDs are validated at the service boundary");
             let fetched = ctx.store.client.get(embedding_id);
             let embedding_missing = fetched.is_none();
             let (embedding, norm) = match fetched {
@@ -71,7 +74,8 @@ fn build_dpp_inputs(req: &RankRequest, ctx: &DppContext) -> Vec<DppInput> {
                 None => (random_unit_embedding(dim), 1.0),
             };
             DppInput {
-                id: c.tweet_id,
+                id: SnowflakeId::new(c.tweet_id)
+                    .expect("RankRequest IDs are validated at the service boundary"),
                 score,
                 embedding,
                 norm,
@@ -83,10 +87,12 @@ fn build_dpp_inputs(req: &RankRequest, ctx: &DppContext) -> Vec<DppInput> {
 
 pub fn rank(req: &RankRequest, ctx: &DppContext) -> Vec<RankedCandidate> {
     let inputs = build_dpp_inputs(req, ctx);
-    let results = dpp::rescore(&inputs, None, &ctx.config, req.viewer_id);
+    let viewer_id = SnowflakeId::new(req.viewer_id)
+        .expect("RankRequest viewer ID is validated at the service boundary");
+    let results = dpp::rescore(&inputs, None, &ctx.config, viewer_id);
 
-    let debug = ctx.config.debug_viewer_id != 0 && req.viewer_id == ctx.config.debug_viewer_id;
-    let selected_ids: HashSet<u64> = results.iter().map(|r| r.id).collect();
+    let debug = ctx.config.debug_viewer_id == Some(viewer_id);
+    let selected_ids: HashSet<SnowflakeId> = results.iter().map(|r| r.id).collect();
 
     if debug {
         let mut sorted_inputs: Vec<&DppInput> = inputs.iter().collect();
@@ -96,7 +102,7 @@ pub fn rank(req: &RankRequest, ctx: &DppContext) -> Vec<RankedCandidate> {
                 .unwrap_or(std::cmp::Ordering::Equal)
         });
 
-        let dropped: Vec<(usize, u64)> = sorted_inputs
+        let dropped: Vec<(usize, SnowflakeId)> = sorted_inputs
             .iter()
             .enumerate()
             .filter(|(_, inp)| !selected_ids.contains(&inp.id))
@@ -143,7 +149,9 @@ pub fn rank(req: &RankRequest, ctx: &DppContext) -> Vec<RankedCandidate> {
         .iter()
         .map(|c| RankedCandidate {
             tweet_id: c.tweet_id,
-            score: if selected_ids.contains(&c.tweet_id) {
+            score: if selected_ids
+                .contains(&SnowflakeId::new(c.tweet_id).expect("validated candidate ID"))
+            {
                 c.score.unwrap_or(0.0)
             } else {
                 0.0

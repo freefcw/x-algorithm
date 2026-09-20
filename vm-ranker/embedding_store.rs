@@ -12,25 +12,27 @@ use std::sync::Arc;
 use anyhow::Result;
 use half::f16;
 
+use crate::internal_id::SnowflakeId;
+
 /// 上游 mm_embedding_client 的查询面。
 pub trait MmEmbeddingsLookup: Send + Sync {
-    fn get(&self, id: u64) -> Option<Arc<Vec<f16>>>;
+    fn get(&self, id: SnowflakeId) -> Option<Arc<Vec<f16>>>;
 }
 
 /// 进程内 embedding 表；空表即"全部缺失"，DPP 走随机向量降级路径。
 #[derive(Default)]
 pub struct InMemoryMmEmbeddings {
-    entries: HashMap<u64, Arc<Vec<f16>>>,
+    entries: HashMap<SnowflakeId, Arc<Vec<f16>>>,
 }
 
 impl InMemoryMmEmbeddings {
-    pub fn new(entries: HashMap<u64, Arc<Vec<f16>>>) -> Self {
+    pub fn new(entries: HashMap<SnowflakeId, Arc<Vec<f16>>>) -> Self {
         Self { entries }
     }
 }
 
 impl MmEmbeddingsLookup for InMemoryMmEmbeddings {
-    fn get(&self, id: u64) -> Option<Arc<Vec<f16>>> {
+    fn get(&self, id: SnowflakeId) -> Option<Arc<Vec<f16>>> {
         self.entries.get(&id).cloned()
     }
 }
@@ -40,7 +42,7 @@ pub struct MmEmbeddingsClient {
 }
 
 impl MmEmbeddingsClient {
-    pub fn get(&self, id: u64) -> Option<Arc<Vec<f16>>> {
+    pub fn get(&self, id: SnowflakeId) -> Option<Arc<Vec<f16>>> {
         self.lookup.get(id)
     }
 }

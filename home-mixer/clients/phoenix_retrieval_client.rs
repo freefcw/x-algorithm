@@ -138,7 +138,7 @@ impl PhoenixRetrievalClient for ProdPhoenixRetrievalClient {
 
         let mut client = PhoenixRetrievalServiceClient::new(channel.clone());
         let request = recsys::RetrieveRequest {
-            user_id: user_id.to_string(),
+            user_id,
             user_action_sequence: Some(sequence),
             max_results,
         };
@@ -214,11 +214,11 @@ fn validate_retrieve_response(
             anyhow::bail!("Phoenix retrieval response has a candidate without TweetInfo");
         };
         anyhow::ensure!(
-            !candidate.tweet_id.is_empty(),
+            candidate.tweet_id != 0,
             "Phoenix retrieval response has empty tweet_id"
         );
         anyhow::ensure!(
-            ids.insert(candidate.tweet_id.clone()),
+            ids.insert(candidate.tweet_id),
             "Phoenix retrieval response has duplicate tweet_id {}",
             candidate.tweet_id
         );
