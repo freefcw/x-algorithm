@@ -19,4 +19,6 @@ cache-keys = [
     { file = "hatch_build.py" },
     { file = "backend_proxy.py" },
     { file = "proto/**" },
+    # id_registry.proto is canonical in the repository-level Rust proto tree.
+    { file = "../../../../proto/definitions/id_registry.proto" },
 ]

@@ -45,3 +45,8 @@ pub mod recsys {
 pub mod vm_ranker {
     tonic::include_proto!("vm_ranker");
 }
+
+/// ObjectId ↔ Snowflake identity registry protocol.
+pub mod id_registry {
+    tonic::include_proto!("id_registry");
+}

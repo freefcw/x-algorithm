@@ -9,11 +9,15 @@ from pathlib import Path
 from hatchling.builders.hooks.plugin.interface import BuildHookInterface
 
 PARENT_DIR = "."
+ROOT_ID_REGISTRY_PROTO = (
+    Path(__file__).resolve().parents[4] / "proto" / "definitions" / "id_registry.proto"
+)
 
 PROTOS = [
     "proto/recsys.proto",
     "proto/copy.proto",
     "proto/recsys_kafka.proto",
+    str(ROOT_ID_REGISTRY_PROTO),
 ]
 
 
@@ -37,13 +41,17 @@ def run_protoc(out_dir: Path) -> None:
     includes = []
     protos = []
     for proto in PROTOS:
-        p = xai_root / proto
-        if skip_missing and not p.exists():
-            print(
-                f"xai-proto hatch_build: SKIPPING {proto} (absent; XAI_PROTO_SKIP_MISSING=1)",
-                file=sys.stderr,
-            )
-            continue
+        p = Path(proto)
+        if not p.is_absolute():
+            p = xai_root / p
+        if not p.exists():
+            if skip_missing:
+                print(
+                    f"xai-proto hatch_build: SKIPPING {p} (absent; XAI_PROTO_SKIP_MISSING=1)",
+                    file=sys.stderr,
+                )
+                continue
+            raise FileNotFoundError(f"xai-proto hatch_build: missing proto {p}")
         includes.append(f"-I{p.parent}")
         protos.append(str(p))
 

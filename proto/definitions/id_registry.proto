@@ -1,0 +1,58 @@
+syntax = "proto3";
+
+package id_registry;
+
+// Canonical ObjectId ↔ Snowflake Registry RPC surface.
+service IdentityRegistryService {
+  rpc Resolve(ResolveRequest) returns (ResolveResponse);
+  rpc ResolveBatch(ResolveBatchRequest) returns (ResolveBatchResponse);
+  rpc Reverse(ReverseRequest) returns (ReverseResponse);
+  rpc ReverseBatch(ReverseBatchRequest) returns (ReverseBatchResponse);
+}
+
+enum EntityKind {
+  ENTITY_KIND_UNSPECIFIED = 0;
+  USER = 1;
+  POST = 2;
+}
+
+message ResolveRequest {
+  string object_id = 1;
+  EntityKind entity_kind = 2;
+  optional uint64 trusted_snowflake_id = 3;
+}
+
+message ResolveResponse {
+  string object_id = 1;
+  EntityKind entity_kind = 2;
+  uint64 snowflake_id = 3;
+  uint32 mapping_version = 4;
+}
+
+message ResolveBatchRequest {
+  repeated ResolveRequest ids = 1;
+}
+
+message ResolveBatchResponse {
+  repeated ResolveResponse rows = 1;
+}
+
+message ReverseRequest {
+  uint64 snowflake_id = 1;
+  EntityKind entity_kind = 2;
+}
+
+message ReverseResponse {
+  uint64 snowflake_id = 1;
+  string object_id = 2;
+  EntityKind entity_kind = 3;
+  uint32 mapping_version = 4;
+}
+
+message ReverseBatchRequest {
+  repeated ReverseRequest ids = 1;
+}
+
+message ReverseBatchResponse {
+  repeated ReverseResponse rows = 1;
+}

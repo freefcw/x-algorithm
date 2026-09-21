@@ -13,6 +13,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         proto_dir.join("viewer_relation.proto"),
         proto_dir.join("phoenix_recsys.proto"),
         proto_dir.join("vm_ranker.proto"),
+        proto_dir.join("id_registry.proto"),
     ];
 
     // 生成 Rust 代码，包含 gRPC 服务端和客户端桩（stubs）
