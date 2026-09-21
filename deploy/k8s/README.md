@@ -9,7 +9,7 @@
 |---|---|---|
 | `home-mixer.yaml` | 推荐服务 Deployment + gRPC Service | 50051 (gRPC)、9090 (admin) |
 | `uas-worker.yaml` | 行为序列投影 job Deployment | 9091 (admin) |
-| `id-registry.yaml` | ObjectId ↔ Snowflake 身份映射 Deployment + HTTP Service；依赖 Redis（`ID_REGISTRY_REDIS_URL` / `ID_REGISTRY_REDIS_CLUSTER_URLS`），默认不开 `--allow-allocation`（未知 ID 404）和 `--allow-trusted-import`（带 trusted 的请求 403）；`/metrics` 与业务接口同端口 | 50070 (HTTP) |
+| `id-registry.yaml` | ObjectId ↔ Snowflake 身份映射 Deployment + gRPC 主 Service / HTTP 兼容 Service；依赖 Redis（`ID_REGISTRY_REDIS_URL` / `ID_REGISTRY_REDIS_CLUSTER_URLS`），默认不开 `--allow-allocation`（未知 ID 404）和 `--allow-trusted-import`（带 trusted 的请求 403）；探针与 `/metrics` 走保留的 HTTP 端口 | 50072 (gRPC), 50070 (HTTP) |
 
 `thunder` 按主干计划不部署（整数 proto 无法承载真实 ObjectId），清单未提供。
 
@@ -33,21 +33,26 @@ xrex 服务伪装成旧的 `phoenix-gateway`。
      stdin 模式且永不就绪）；SASL/SSL 变量见 `docs/home-mixer/07-config-and-params.md`。
    - id-registry：`ID_REGISTRY_REDIS_URL`（占位 `redis://redis:6379/`）或
      `ID_REGISTRY_REDIS_CLUSTER_URLS`；Redis 不可达或 mapping version 不匹配时
-     `/readyz` 返回 503，副本不会就绪。`HOME_MIXER_ID_REGISTRY_URL` 指向
-     `http://id-registry:50070`。
+     `/readyz` 返回 503，副本不会就绪。`HOME_MIXER_ID_REGISTRY_GRPC_ADDR` 指向
+     gRPC `http://id-registry:50072`；50070 只为旧 HTTP 客户端和运维探针保留，Home Mixer
+     不会在 gRPC 失败后切换到 HTTP。
 3. **探针**：home-mixer / uas-worker / id-registry 走 HTTP（`/healthz` `/readyz`，
-   home-mixer 与 uas-worker 在管理端口，id-registry 在业务端口 50070）。
+   home-mixer 与 uas-worker 在管理端口，id-registry 的 HTTP 兼容端口 50070）。
    Phoenix xrex 服务的 readiness 端口需在其单独的 Deployment 中显式配置。
 4. **优雅停机**：home-mixer `terminationGracePeriodSeconds`（30）必须大于
    `--shutdown-delay-secs + --drain-timeout-secs`（默认 0 + 20 s）；
    uas-worker 取 60 s（Kafka 消费位移提交）。
-5. **Prometheus**：Pod annotation 已带 `prometheus.io/scrape`；如果你的采集器用
+5. **Prometheus**：home-mixer、uas-worker 和 id-registry Pod annotation 都带
+   `prometheus.io/scrape`；如果你的采集器用
    ServiceMonitor / PodMonitor，改成对应 CRD。
 6. **资源与副本数**：全部是占位值，按 h201 实测调整。
 
 ## 验证步骤（建议顺序）
 
 ```bash
+# Registry must be available before Home Mixer starts resolving identities.
+kubectl apply -f deploy/k8s/id-registry.yaml
+kubectl rollout status deploy/id-registry
 kubectl apply -f deploy/k8s/home-mixer.yaml
 kubectl rollout status deploy/home-mixer
 # 冒烟：使用你的生产客户端对 home-mixer Service 调一次 GetScoredPosts

@@ -67,9 +67,9 @@ WORKDIR /home/home-mixer
 ENV RUST_LOG=info \
     HOME_MIXER_LOG_FORMAT=json
 
-# 50051 gRPC；9090 home-mixer 管理端口（/healthz /readyz /metrics）；
-# 9091 uas-worker 管理端口（UAS_WORKER_METRICS_PORT）。
-EXPOSE 50051 9090 9091
+# 50051 home-mixer gRPC；50072 id-service gRPC；50070 id-service HTTP
+# compatibility/management port；9090 home-mixer admin；9091 uas-worker admin。
+EXPOSE 50051 50070 50072 9090 9091
 
 # k8s 探针：readinessProbe httpGet :9090/readyz，livenessProbe httpGet :9090/healthz。
 # terminationGracePeriodSeconds 需大于 --shutdown-delay-secs + --drain-timeout-secs（默认 0 + 20）。

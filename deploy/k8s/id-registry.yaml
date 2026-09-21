@@ -11,9 +11,14 @@ spec:
   selector:
     app.kubernetes.io/name: id-registry
   ports:
+    # Keep the legacy HTTP port so existing callers can roll forward first;
+    # gRPC uses a new port during the migration window.
     - name: http
       port: 50070
       targetPort: http
+    - name: grpc
+      port: 50072
+      targetPort: grpc
 ---
 apiVersion: apps/v1
 kind: Deployment
@@ -28,6 +33,10 @@ spec:
     metadata:
       labels:
         app.kubernetes.io/name: id-registry
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "50070"
+        prometheus.io/path: /metrics
     spec:
       # 进程收到 SIGTERM 后优雅停机：停止接受新连接并排空在途请求。
       # 一次批量写最多串行经过约 5～8 个 Redis pipeline（每个默认 500 ms 超时），
@@ -37,11 +46,14 @@ spec:
         - name: id-registry
           image: home-mixer:dev
           command: ["/usr/local/bin/id-service"]
-          # 所有 flag 都有同名环境变量（ID_REGISTRY_LISTEN、ID_REGISTRY_WORKER_ID、
+          # 所有 flag 都有同名环境变量（ID_REGISTRY_GRPC_LISTEN、
+          # ID_REGISTRY_HTTP_LISTEN、ID_REGISTRY_WORKER_ID、
           # ID_REGISTRY_ALLOW_ALLOCATION、ID_REGISTRY_ALLOW_TRUSTED_IMPORT、
-          # ID_REGISTRY_MAX_BATCH_SIZE），这里保留 args 形式便于阅读。
+          # ID_REGISTRY_MAX_BATCH_SIZE）；旧 ID_REGISTRY_LISTEN/--listen 仍可用于
+          # 迁移期间指定 HTTP 端口。这里保留 args 形式便于阅读。
           args:
-            - "--listen=0.0.0.0:50070"
+            - "--grpc-listen=0.0.0.0:50072"
+            - "--http-listen=0.0.0.0:50070"
             # 序列计数器在 Redis，多副本共享 worker id 也安全；不同 worker id
             # 只是让分配结果可追溯到副本。
             - "--worker-id=0"
@@ -71,6 +83,8 @@ spec:
           ports:
             - name: http
               containerPort: 50070
+            - name: grpc
+              containerPort: 50072
           livenessProbe:
             httpGet:
               path: /healthz
