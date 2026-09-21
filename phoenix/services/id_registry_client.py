@@ -134,6 +134,18 @@ class IdentityRegistryClient:
         """
         self._resolve_or_allocate_batch(ids, allocate=True)
 
+    def resolve_batch_with_trusted(
+        self,
+        ids: list[tuple[str, str, int | None]],
+    ) -> None:
+        """Compatibility alias for trusted migration imports.
+
+        Older migration callers used this name when trusted imports shared the
+        Resolve endpoint. Trusted requests now belong to Allocate, so preserve
+        the method while routing it through the write-side RPC.
+        """
+        self.allocate_batch_with_trusted(ids)
+
     def _resolve_or_allocate_batch(
         self,
         ids: list[tuple[str, str, int | None]],

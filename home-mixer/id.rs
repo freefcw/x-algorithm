@@ -576,19 +576,23 @@ impl RegistryClient {
         &self,
         request: &[(String, EntityKind, Option<SnowflakeId>)],
     ) -> anyhow::Result<Vec<SnowflakeId>> {
+        if request.is_empty() {
+            return Ok(Vec::new());
+        }
         let deadline = Instant::now() + ID_REGISTRY_REQUEST_TIMEOUT;
+        let started = Instant::now();
+        let method = if self.grpc.is_some() {
+            "allocate_grpc"
+        } else {
+            "allocate_http"
+        };
         let rows = if let Some(grpc) = &self.grpc {
-            let started = Instant::now();
             match grpc.allocate_batch(request, remaining(deadline)?).await {
-                Ok(rows) => {
-                    self.calls
-                        .record("id_registry", "allocate_grpc", "ok", started);
-                    rows
-                }
+                Ok(rows) => rows,
                 Err(error) => {
                     self.calls.record(
                         "id_registry",
-                        "allocate_grpc",
+                        method,
                         registry_error_label(&error, "mapping_miss"),
                         started,
                     );
@@ -600,17 +604,12 @@ impl RegistryClient {
                 .http
                 .as_ref()
                 .ok_or_else(|| anyhow::anyhow!("ID Registry transport is not configured"))?;
-            let started = Instant::now();
             match http.allocate_batch(request, remaining(deadline)?).await {
-                Ok(rows) => {
-                    self.calls
-                        .record("id_registry", "allocate_http", "ok", started);
-                    rows
-                }
+                Ok(rows) => rows,
                 Err(error) => {
                     self.calls.record(
                         "id_registry",
-                        "allocate_http",
+                        method,
                         registry_error_label(&error, "mapping_miss"),
                         started,
                     );
@@ -618,13 +617,21 @@ impl RegistryClient {
                 }
             }
         };
-        validate_resolve_rows(rows, request)
+        let result = validate_resolve_rows(rows, request);
+        if result.is_ok() {
+            self.calls.record("id_registry", method, "ok", started);
+        } else {
+            self.calls
+                .record("id_registry", method, "rejected", started);
+        }
+        result
     }
 
     /// Resolve IDs while optionally preserving an existing native Snowflake.
-    /// Migration tooling should use this for IDs already present in main,
-    /// Thunder, or a Phoenix checkpoint; online callers must not invent a
-    /// second numeric identity for an existing data asset.
+    /// With no trusted IDs this is read-only. When a trusted ID is present,
+    /// the request is routed through AllocateBatch for compatibility with
+    /// migration tooling; callers that need the intent to be explicit should
+    /// prefer [`Self::allocate_batch_with_trusted`].
     pub async fn resolve_batch_with_trusted(
         &self,
         ids: &[(String, EntityKind, Option<SnowflakeId>)],
@@ -632,19 +639,38 @@ impl RegistryClient {
         if ids.is_empty() {
             return Ok(Vec::new());
         }
+        let allocate = ids.iter().any(|(_, _, trusted)| trusted.is_some());
         let deadline = Instant::now() + ID_REGISTRY_REQUEST_TIMEOUT;
         if let Some(grpc) = &self.grpc {
             let started = std::time::Instant::now();
-            match grpc.resolve_batch(ids, remaining(deadline)?).await {
+            let result = if allocate {
+                grpc.allocate_batch(ids, remaining(deadline)?).await
+            } else {
+                grpc.resolve_batch(ids, remaining(deadline)?).await
+            };
+            match result {
                 Ok(rows) => {
-                    self.calls
-                        .record("id_registry", "resolve_grpc", "ok", started);
-                    return validate_resolve_rows(rows, ids);
+                    let result = validate_resolve_rows(rows, ids);
+                    self.calls.record(
+                        "id_registry",
+                        if allocate {
+                            "allocate_grpc"
+                        } else {
+                            "resolve_grpc"
+                        },
+                        if result.is_ok() { "ok" } else { "rejected" },
+                        started,
+                    );
+                    return result;
                 }
                 Err(error) => {
                     self.calls.record(
                         "id_registry",
-                        "resolve_grpc",
+                        if allocate {
+                            "allocate_grpc"
+                        } else {
+                            "resolve_grpc"
+                        },
                         registry_error_label(&error, "mapping_miss"),
                         started,
                     );
@@ -657,23 +683,39 @@ impl RegistryClient {
             anyhow::anyhow!("ID Registry HTTP compatibility transport is not configured")
         })?;
         let started = std::time::Instant::now();
-        let rows = match http.resolve_batch(ids, remaining(deadline)?).await {
-            Ok(rows) => {
-                self.calls
-                    .record("id_registry", "resolve_http", "ok", started);
-                rows
-            }
+        let result = if allocate {
+            http.allocate_batch(ids, remaining(deadline)?).await
+        } else {
+            http.resolve_batch(ids, remaining(deadline)?).await
+        };
+        let rows = match result {
+            Ok(rows) => rows,
             Err(error) => {
                 self.calls.record(
                     "id_registry",
-                    "resolve_http",
+                    if allocate {
+                        "allocate_http"
+                    } else {
+                        "resolve_http"
+                    },
                     registry_error_label(&error, "mapping_miss"),
                     started,
                 );
                 return Err(error);
             }
         };
-        validate_resolve_rows(rows, ids)
+        let result = validate_resolve_rows(rows, ids);
+        self.calls.record(
+            "id_registry",
+            if allocate {
+                "allocate_http"
+            } else {
+                "resolve_http"
+            },
+            if result.is_ok() { "ok" } else { "rejected" },
+            started,
+        );
+        result
     }
 
     pub async fn resolve_one(
@@ -700,9 +742,14 @@ impl RegistryClient {
             let started = std::time::Instant::now();
             match grpc.reverse_batch(ids, remaining(deadline)?).await {
                 Ok(rows) => {
-                    self.calls
-                        .record("id_registry", "reverse_grpc", "ok", started);
-                    return validate_reverse_rows(rows, ids);
+                    let result = validate_reverse_rows(rows, ids);
+                    self.calls.record(
+                        "id_registry",
+                        "reverse_grpc",
+                        if result.is_ok() { "ok" } else { "rejected" },
+                        started,
+                    );
+                    return result;
                 }
                 Err(error) => {
                     self.calls.record(
@@ -719,12 +766,8 @@ impl RegistryClient {
             anyhow::anyhow!("ID Registry HTTP compatibility transport is not configured")
         })?;
         let started = std::time::Instant::now();
-        let rows = match http.reverse_batch(ids, remaining(deadline)?).await {
-            Ok(rows) => {
-                self.calls
-                    .record("id_registry", "reverse_http", "ok", started);
-                rows
-            }
+        let result = match http.reverse_batch(ids, remaining(deadline)?).await {
+            Ok(rows) => validate_reverse_rows(rows, ids),
             Err(error) => {
                 self.calls.record(
                     "id_registry",
@@ -735,7 +778,13 @@ impl RegistryClient {
                 return Err(error);
             }
         };
-        validate_reverse_rows(rows, ids)
+        self.calls.record(
+            "id_registry",
+            "reverse_http",
+            if result.is_ok() { "ok" } else { "rejected" },
+            started,
+        );
+        result
     }
 }
 
@@ -828,7 +877,7 @@ mod tests {
         let ids = [("65f1a2b3c4d5e6f708091011".to_string(), EntityKind::User)];
 
         let resolved = client
-            .allocate_batch_with_trusted(&[(
+            .resolve_batch_with_trusted(&[(
                 ids[0].0.clone(),
                 ids[0].1,
                 Some(SnowflakeId::new(4242).unwrap()),
@@ -868,6 +917,12 @@ mod tests {
         assert!(metrics_text.contains(
             "home_mixer_client_calls_total{client=\"id_registry\",method=\"resolve_grpc\",result=\"error\"} 1"
         ));
+    }
+
+    #[tokio::test]
+    async fn empty_allocation_batch_does_not_call_registry() {
+        let client = RegistryClient::new(&unused_endpoint()).unwrap();
+        assert!(client.allocate_batch(&[]).await.unwrap().is_empty());
     }
 
     #[tokio::test]
@@ -949,6 +1004,42 @@ mod tests {
             .await
             .unwrap_err();
         assert!(error.to_string().contains("mapping_version"));
+        server.abort();
+    }
+
+    #[tokio::test]
+    async fn allocation_contract_rejection_is_not_recorded_as_ok() {
+        let app = Router::new().route(
+            "/v1/allocate:batch",
+            post(|Json(body): Json<Value>| async move {
+                let ids = body["ids"].as_array().unwrap();
+                Json(json!([{
+                    "object_id": ids[0]["object_id"],
+                    "entity_kind": ids[0]["entity_kind"],
+                    "snowflake_id": 71,
+                    "mapping_version": 3
+                }]))
+            }),
+        );
+        let (endpoint, server) = serve(app).await;
+        let metrics = crate::metrics::Metrics::new();
+        let client = RegistryClient::new(&endpoint)
+            .unwrap()
+            .with_calls(metrics.client_calls());
+
+        let error = client
+            .allocate_batch(&[("65f1a2b3c4d5e6f708091011".into(), EntityKind::User)])
+            .await
+            .unwrap_err();
+        assert!(error.to_string().contains("mapping_version"));
+
+        let text = metrics.encode().unwrap();
+        assert!(text.contains(
+            "home_mixer_client_calls_total{client=\"id_registry\",method=\"allocate_http\",result=\"rejected\"} 1"
+        ));
+        assert!(!text.contains(
+            "home_mixer_client_calls_total{client=\"id_registry\",method=\"allocate_http\",result=\"ok\"} 1"
+        ));
         server.abort();
     }
 

@@ -12,6 +12,7 @@ from typing import Any
 
 import grpc
 
+from services.id_registry_client import IdentityRegistryClient  # noqa: F401
 from services.model_contract import (
     FEATURE_SCHEMA,
     IDENTITY_MAPPING_VERSION,

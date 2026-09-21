@@ -10,6 +10,7 @@ from services.id_registry_client import IdentityRegistryClient
 from services.recsys_proto import load_proto_modules
 from services.xrex_adapter import (
     IDENTITY_MAPPING_VERSION,
+    IdentityRegistryClient as LegacyIdentityRegistryClient,
     PhoenixAdapter,
     PhoenixXrexTranslator,
     XREX_TO_PHOENIX_ACTION,
@@ -309,6 +310,27 @@ def test_registry_client_allocate_batch_uses_grpc_allocate_rpc(monkeypatch: pyte
     client.allocate_batch_with_trusted([(oid(1), "Post", 42)])
 
     assert calls == ["AllocateBatch"]
+
+
+def test_legacy_registry_client_import_and_trusted_method_use_allocate(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    assert LegacyIdentityRegistryClient is IdentityRegistryClient
+    captured = []
+    rows = [
+        {
+            "object_id": oid(1),
+            "entity_kind": "Post",
+            "snowflake_id": 42,
+            "mapping_version": IDENTITY_MAPPING_VERSION,
+        }
+    ]
+    _patch_urlopen(monkeypatch, rows, captured)
+    client = LegacyIdentityRegistryClient("http://registry.test")
+
+    client.resolve_batch_with_trusted([(oid(1), "Post", 42)])
+
+    assert captured[0].full_url == "http://registry.test/v1/allocate:batch"
 
 
 def test_registry_client_does_not_fallback_to_http_when_grpc_is_unavailable(

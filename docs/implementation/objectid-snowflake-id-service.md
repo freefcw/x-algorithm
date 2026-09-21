@@ -73,7 +73,7 @@ Redis-backed registry 只保留有上限的进程内热点缓存：
 - 批查：`resolve_batch` / `reverse_batch`；
 - 推荐请求应在入口批量解析，不能让下游模块自行查表；
 - 批量 allocation 语义：整批先按 `(entity_kind, object_id)` 去重，再把能预见的冲突全部查清（已有映射和传入的可信 ID 对不上、可信 ID 已被别的对象占用、批内自相矛盾、关闭分配时存在未知 ID），任何一项冲突就整批拒绝（409；allocation 关闭时为 404；关闭 trusted 导入时带 `trusted_snowflake_id` 为 403），一个映射都不写，调用方可以放心修数据后重试。只有并发窗口（别的副本恰好在这批检查和写入之间抢先写了同一批对象）可能留下部分写入，此时重读获胜映射并返回，重试依然安全。
-- 在线协议把读写语义分开：`Resolve/ResolveBatch` 只读取已有 mapping，未知 ObjectId 永远返回 404；只有显式的 `Allocate/AllocateBatch` 才允许为新对象创建 mapping。Home Mixer 身份摄入和 UAS worker 才能调用 Allocate，普通下游、存储适配器和出口只能调用 Resolve/Reverse。
+- 在线协议把读写语义分开：`Resolve/ResolveBatch` 只读取已有 mapping，未知 ObjectId 永远返回 404；只有显式的 `Allocate/AllocateBatch` 才允许为新对象创建 mapping。Home Mixer 的身份来源适配器（包括 QueryBuilder、mrpyq 等受信任来源）和 UAS worker 可以调用 Allocate；普通存储适配器和出口只能调用 Resolve/Reverse。
 - 往返次数（Single 模式，每一轮是一个 pipeline，与 id 数量无关）：正向批查 1 轮；反查 2 轮（反向 GET + 正向校验 GET）；批量写 = 正向查 1 轮 + trusted 预检 1 轮（有 trusted 项时）+ 序列 `INCRBY` 1 轮（有分配项时）+ 写入 3 轮（反向 reserve、正向 reserve、冲突补偿删除，后两轮只含需要的项）+ 序列下限 1 轮（trusted 项落在本 worker 时）；分配撞车时每次重抽再加 1 轮重读 + 1 轮序列 + 3 轮写。Cluster 模式下每一轮按 slot 分组成多个 pipeline 并发执行，往返次数与 Single 模式相同，只是并发扇出。Lua 用 `EVALSHA` 预加载脚本；遇到 `NOSCRIPT`（脚本被 flush 或新节点）会重新 `SCRIPT LOAD` 并重试一次。
 - 超时预算：`ID_REGISTRY_REDIS_REQUEST_TIMEOUT_MS`（默认 500）约束的是**单个 Redis pipeline**，一次批量写最多要串行经过约 5～8 轮；Home Mixer Registry gRPC 调用和 Phoenix `IdentityRegistryClient` 都有客户端 deadline，Home Mixer gRPC 失败不会再发 HTTP 请求。在线只读/分配少量 id 的请求通常一两轮即可，但迁移批量导入应使用更大的客户端超时或更小的批（`--max-batch-size` 默认 10000 只是硬上限），并且服务端单次 Redis 超时不应大于客户端预算的一小部分，否则客户端会先超时而服务端仍在写入。
 
