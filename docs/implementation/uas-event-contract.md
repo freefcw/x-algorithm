@@ -165,13 +165,13 @@ mrpyq 业务事件 ──Kafka topic──▶ uas-worker ──Redis ZSET──�
 | `UAS_KAFKA_SASL_MECHANISM` / `UAS_KAFKA_SASL_USERNAME` / `UAS_KAFKA_SASL_PASSWORD` | `PLAIN` / — / — | 仅 SASL 协议需要。`SSL` / `SASL_SSL` / SCRAM 要求以 `--features kafka-ssl` 构建（容器镜像默认如此） |
 | `UAS_WORKER_METRICS_PORT` | `9091` | 管理 HTTP 端口：`/healthz`、`/readyz`（订阅成功后 200）、`/metrics`；`0` 关闭 |
 
-offset 管理：`enable.auto.commit=true` + `enable.auto.offset.store=false`，每条消息处理完（写入、跳过或判定无效）后手工 store，librdkafka 周期提交；收到 SIGTERM / Ctrl-C 时同步提交后退出。Redis 写失败在进程内按 100 ms 起步、5 s 上限指数退避重试，总预算 60 s；预算耗尽 job 退出、该 offset 不提交，由进程管理器重启后重放。
+offset 管理：`enable.auto.commit=true` + `enable.auto.offset.store=false`，每条消息处理完（写入、跳过或判定无效）后手工 store，librdkafka 周期提交；收到 SIGTERM / Ctrl-C 时同步提交后退出。每条有效事件先确保 user / post / author 已在 ID Registry 注册（本地有上限缓存命中时不发 RPC），再写 UAS Redis；任一依赖失败都在进程内按 100 ms 起步、5 s 上限指数退避重试，总预算 60 s。预算耗尽 job 退出、该 offset 不提交，由进程管理器重启后重放。
 
 ### 6.2 mrpyq 需交付
 
 - [ ] broker 地址、topic 名
 - [ ] 认证方式与凭据（或确认内网 PLAINTEXT）
-- [ ] 分区数与预计事件 QPS（用于决定 `uas-worker` 实例数；单实例串行，吞吐受 Redis 往返时间限制）
+- [ ] 分区数与预计事件 QPS（用于决定 `uas-worker` 实例数；单实例串行，吞吐同时受 ID Registry allocation 与 UAS Redis 往返限制）
 - [ ] retention 设置（建议 ≥ 7 天）
 - [ ] §3 表中每一类动作是否可发、由服务端还是客户端发、触发时机
 - [ ] 视频有效观看（8）和停留（12）的阈值定义
@@ -187,7 +187,7 @@ offset 管理：`enable.auto.commit=true` + `enable.auto.offset.store=false`，�
    cat events.jsonl | UAS_REDIS_URL=redis://localhost:6379/ RUST_LOG=info cargo run -p home-mixer --bin uas-worker
    ```
 
-2. **Kafka 试跑**：mrpyq 往测试 topic 发事件，推荐侧以 Kafka 模式运行 `uas-worker`，观察每 60 s 一行的统计日志 `uas-worker: projected=... skipped_outside_window=... skipped_future=... invalid=... storage_retries=... storage_failures=...`，或抓 `:9091/metrics` 的 `uas_worker_events_total{outcome}`（两者同源）。`invalid` 应为 0；`skipped_future` 持续非零说明 mrpyq 侧时钟快；`uas_worker_consumer_lag` 不收敛说明单实例吞吐不够。
+2. **Kafka 试跑**：mrpyq 往测试 topic 发事件，推荐侧以 Kafka 模式运行 `uas-worker`，观察每 60 s 一行的统计日志 `uas-worker: projected=... skipped_outside_window=... skipped_future=... invalid=... storage_retries=... storage_failures=...`，或抓 `:9091/metrics` 的 `uas_worker_events_total{outcome}`（两者同源）。依赖失败用 `home_mixer_client_calls_total` 归因：`id_registry/allocate_grpc` 对应身份注册，`redis_uas/write` 对应 Redis 投影。`invalid` 应为 0；`skipped_future` 持续非零说明 mrpyq 侧时钟快；`uas_worker_consumer_lag` 不收敛说明单实例吞吐不够。
 
 3. **Redis 内容检查**（注意 key 带 hash tag 花括号）：
 
@@ -227,7 +227,7 @@ offset 管理：`enable.auto.commit=true` + `enable.auto.offset.store=false`，�
 
 ### 8.4 吞吐
 
-`uas-worker` 单实例串行处理，每条事件一次 Redis 往返。事件 QPS 高于单实例能力时按 topic 分区起多实例，ZSET 写入幂等保证多实例安全。每个实例在 `UAS_WORKER_METRICS_PORT`（默认 9091）暴露 `uas_worker_consumer_lag{topic,partition}`（librdkafka 每 15 s 上报）与 `uas_worker_last_projected_action_timestamp_seconds`；lag 持续增长或投影时间戳落后当前时间过久，就是该加实例的信号。
+`uas-worker` 单实例串行处理。稳态每条事件有一次 UAS Redis ZSET 写入；首次看到某个身份、本地 allocation 缓存未命中或缓存达到上限时，还会先执行一次 ID Registry `AllocateBatch`。Registry 内部可能为新映射执行多轮 Redis 操作，因此不能再按“一事件一次 Redis 往返”估算容量。事件 QPS 高于单实例能力时按 topic 分区起多实例，mapping 注册和 ZSET 写入均幂等。每个实例在 `UAS_WORKER_METRICS_PORT`（默认 9091）暴露 `uas_worker_consumer_lag{topic,partition}` 与 `uas_worker_last_projected_action_timestamp_seconds`；lag 持续增长或投影时间戳落后当前时间过久，就是该压测依赖或增加实例的信号。
 
 ---
 

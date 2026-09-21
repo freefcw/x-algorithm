@@ -136,9 +136,9 @@ UAS 是进程内 `UserActionSequenceOps` 端口，不额外启动在线微服务
 
 - 事件只在 JSON 边界校验一次（ID 为 24 位小写 hex 且非 nil、`action_time_ms > 0`、`action_type` 在模型 action_mask 范围 1..=18 内，范围与 `recsys_compat::ACTION_MASK_LEN` 同源）；不合法的毒丸消息记 warn 后丢弃并推进 offset，未知字段忽略。
 - 早于 7 天窗口的重放事件、以及领先 job 本机时钟超过 `UAS_MAX_FUTURE_SKEW_MS`（5 分钟）的“未来”事件，都作为已处理事件跳过并分别计数（`skipped_outside_window` / `skipped_future`）；偏差在容忍范围内的事件按原时间戳写入，在 Home Mixer 的读窗口追上之前不可见。
-- Redis 写入是幂等的（相同事件序列化为字节相同的成员），所以 job 先在进程内按 100 ms 起步、5 s 上限的指数退避重试，总预算 `UAS_PROJECTION_RETRY_BUDGET_MS`（60 s，小于 Kafka `max.poll.interval.ms`）；预算耗尽才退出，该 offset 不提交，由进程管理器重启后重放。同一分区之后的消息不会被提前处理。
+- 写入前，job 先通过 ID Registry 的 `AllocateBatch` 注册事件携带的 user / post / author ObjectId；进程内有上限的缓存会跳过已经成功注册的身份，缓存未命中时才发生 Registry RPC。随后事件写入 Redis，只有两步都成功投影才可见。身份注册和 Redis ZSET 写入都幂等，因此任一步失败都按 100 ms 起步、5 s 上限指数退避重试，总预算 `UAS_PROJECTION_RETRY_BUDGET_MS`（60 s，小于 Kafka `max.poll.interval.ms`）；预算耗尽才退出，该 offset 不提交，由进程管理器重启后重放。同一分区之后的消息不会被提前处理。
 - offset 由 job 在消息处理完成后手工 store（`enable.auto.offset.store=false`），librdkafka 周期自动提交；收到 SIGTERM / Ctrl-C 时同步提交已处理的 offset 再退出。job 每 60 秒输出一行计数（projected / skipped / invalid / storage_retries / storage_failures）。
-- job 单实例串行处理，吞吐受 Redis 往返时间限制；需要更高吞吐时按 topic 分区横向多实例，ZSET 写入的幂等性保证多实例安全。
+- job 单实例串行处理；稳态至少包含一次 UAS Redis 往返，新身份或本地 allocation 缓存未命中时还包含一次 Registry gRPC 往返，吞吐必须按两条依赖共同压测。需要更高吞吐时按 topic 分区横向多实例，mapping 注册和 ZSET 写入的幂等性保证多实例安全。
 
 Home Mixer 读取侧对无法解码的成员（损坏数据、未知 `version`）逐条跳过并按次告警，不会因为一个坏成员让该用户整条序列失效；`StoredUserAction::VERSION` 升级时读取端必须继续解码旧版本直到旧成员过期。
 
@@ -278,7 +278,7 @@ RPC 入口：
 
 mrpyq / Redis / Phoenix 没有按 RPC 方法拆的调用级指标；`home_mixer_stage_duration_seconds{stage="hydrators"}`、`{stage="scorers"}` 与 `home_mixer_component_failures_total` 已能定位到是哪个依赖慢或失败，见 [09 排障与可观测性](./09-debugging-and-observability.md)。
 
-`uas-worker` 在 `UAS_WORKER_METRICS_PORT`（默认 9091）上用同一套管理路由暴露自己的家族：`uas_worker_events_total{outcome}`（`projected` / `skipped_outside_window` / `skipped_future` / `invalid` / `storage_failure`，与 60 秒一行的日志同源）、`uas_worker_storage_retries_total`、`uas_worker_last_projected_action_timestamp_seconds`（最新写入行为的发生时间，`time() - 它` 即投影滞后）、`uas_worker_consumer_lag{topic,partition}`（librdkafka 每 15 s 上报的分区 lag，rebalance 后不残留旧分区，未知 lag 不计），外加 `home_mixer_ready` / `home_mixer_build_info`。
+`uas-worker` 在 `UAS_WORKER_METRICS_PORT`（默认 9091）上用同一套管理路由暴露自己的家族：`uas_worker_events_total{outcome}`（`projected` / `skipped_outside_window` / `skipped_future` / `invalid` / `storage_failure`，与 60 秒一行的日志同源）、`uas_worker_storage_retries_total`、`uas_worker_last_projected_action_timestamp_seconds`（最新写入行为的发生时间，`time() - 它` 即投影滞后）、`uas_worker_consumer_lag{topic,partition}`（librdkafka 每 15 s 上报的分区 lag，rebalance 后不残留旧分区，未知 lag 不计），外加 `home_mixer_ready` / `home_mixer_build_info`。依赖归因看同一端口的 `home_mixer_client_calls_total`：`client="id_registry",method="allocate_grpc"` 是身份注册，`client="redis_uas",method="write"` 是投影写入；前者的 `mapping_miss` 表示 Registry 拒绝创建映射，`error` 表示传输、超时或其他错误。
 
 ## 5. 召回参数
 
