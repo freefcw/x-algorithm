@@ -50,7 +50,7 @@ use crate::filters::topic_ids_filter::TopicIdsFilter;
 use crate::filters::vf_filter::VFFilter;
 use crate::filters::video_filter::VideoFilter;
 use crate::filters::viewer_muted_keyword_filter::ViewerMutedKeywordFilter;
-use crate::id::SharedIdentityResolver;
+use crate::id::{SharedIdentityIngress, SharedIdentityReader};
 use crate::metrics::Metrics;
 use crate::models::candidate::PostCandidate;
 use crate::models::query::ScoredPostsQuery;
@@ -154,7 +154,7 @@ pub struct PhoenixDependencies {
     pub features: HomeMixerFeatures,
     /// Shared ObjectId ↔ Snowflake boundary used by the adapters and side
     /// effects that cross external identity contracts.
-    pub identity: SharedIdentityResolver,
+    pub identity: SharedIdentityReader,
 }
 
 impl PhoenixCandidatePipeline {
@@ -467,7 +467,7 @@ impl PhoenixCandidatePipeline {
         mode: HomeMixerMode,
         features: HomeMixerFeatures,
         uas: UasConfig,
-        identity: SharedIdentityResolver,
+        identity: SharedIdentityIngress,
     ) -> anyhow::Result<PhoenixCandidatePipeline> {
         Self::assemble_with_optional_topic_clients(mode, None, features, uas, None, identity).await
     }
@@ -481,7 +481,7 @@ impl PhoenixCandidatePipeline {
         features: HomeMixerFeatures,
         uas: UasConfig,
         metrics: Arc<Metrics>,
-        identity: SharedIdentityResolver,
+        identity: SharedIdentityIngress,
     ) -> anyhow::Result<PhoenixCandidatePipeline> {
         let pipeline = Self::assemble_with_optional_topic_clients(
             mode,
@@ -524,7 +524,7 @@ impl PhoenixCandidatePipeline {
         features: HomeMixerFeatures,
         uas: UasConfig,
         metrics: Option<Arc<Metrics>>,
-        identity: SharedIdentityResolver,
+        identity: SharedIdentityIngress,
     ) -> anyhow::Result<PhoenixCandidatePipeline> {
         let features = features_for_mode(mode, features);
         uas.validate(mode)?;
@@ -656,7 +656,7 @@ impl PhoenixCandidatePipeline {
 
 /// Registry identity for assembly paths that own no `HomeMixerConfig`.
 /// Home Mixer production paths use gRPC only.
-fn registry_identity_from_env() -> anyhow::Result<SharedIdentityResolver> {
+fn registry_identity_from_env() -> anyhow::Result<SharedIdentityIngress> {
     let grpc_addr = std::env::var("HOME_MIXER_ID_REGISTRY_GRPC_ADDR")
         .ok()
         .filter(|value| !value.trim().is_empty())

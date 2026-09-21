@@ -58,7 +58,7 @@ impl WorkerMetrics {
             .expect("valid events opts"),
             storage_retries: IntCounter::new(
                 "uas_worker_storage_retries_total",
-                "Redis writes retried after a transient failure",
+                "Projection attempts retried after an identity-registry or Redis failure",
             )
             .expect("valid retries opts"),
             last_projected_action: IntGauge::new(
@@ -139,7 +139,8 @@ enum ProjectionResult {
     Skipped(SkipReason),
     /// Poison message: never reaches storage and is dropped.
     Invalid(String),
-    /// Storage kept failing past the retry budget; the record is not settled.
+    /// An identity-registry or Redis dependency kept failing past the retry
+    /// budget; the record is not settled.
     StorageUnavailable(String),
 }
 
@@ -150,9 +151,10 @@ impl ProjectionResult {
     }
 }
 
-/// In-process retry for idempotent Redis writes. Bounded well below Kafka's
-/// `max.poll.interval.ms` so a stalled Redis surfaces as a job exit and
-/// replay rather than as a silent consumer-group eviction.
+/// In-process retry for the idempotent identity-registration and Redis-write
+/// sequence. Bounded well below Kafka's `max.poll.interval.ms` so a stalled
+/// dependency surfaces as a job exit and replay rather than as a silent
+/// consumer-group eviction.
 #[derive(Clone, Copy, Debug)]
 struct RetryPolicy {
     initial_backoff: Duration,
@@ -267,7 +269,7 @@ impl<'a> Projector<'a> {
                     self.stats.storage_retries += 1;
                     self.metrics.storage_retries.inc();
                     log::warn!(
-                        "UAS Redis write for user {} failed ({error}); retrying in {backoff:?}",
+                        "UAS projection for user {} failed ({error}); retrying in {backoff:?}",
                         action.user_id()
                     );
                     tokio::time::sleep(backoff).await;

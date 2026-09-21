@@ -65,9 +65,10 @@ pub trait UserActionSequenceOps: Send + Sync {
 pub trait UserActionEventSink: Send + Sync {
     /// Project one validated action.
     ///
-    /// `Err` always means the storage backend failed. The action itself was
-    /// accepted at the [`UserActionEvent::validate`] boundary, so callers may
-    /// retry the same action without re-validating; the write is idempotent.
+    /// `Err` means an identity-registration or Redis dependency failed. The
+    /// action itself was accepted at the [`UserActionEvent::validate`]
+    /// boundary, so callers may retry it without re-validating; both operations
+    /// are idempotent.
     async fn record(&self, action: &ValidatedUserAction) -> Result<RecordOutcome, String>;
 }
 
@@ -366,7 +367,11 @@ impl RedisUserActionSequenceConfig {
 /// by action time; the member is the JSON [`StoredUserAction`].
 pub struct RedisUserActionSequenceStore {
     connection: ManagedRedisConnection,
-    identity: crate::id::SharedIdentityResolver,
+    identity: crate::id::SharedIdentityIngress,
+    /// Identities this process has already registered with the Registry.
+    /// Bounds the Allocate RPC fan-out on the write hot path; membership is
+    /// only an optimization, the Registry stays the source of truth.
+    allocated: std::sync::Mutex<std::collections::HashSet<(crate::id::EntityKind, String)>>,
     key_prefix: String,
     max_actions: usize,
     window: Duration,
@@ -389,7 +394,7 @@ impl RedisUserActionSequenceStore {
 
     pub async fn new_with_identity(
         config: RedisUserActionSequenceConfig,
-        identity: crate::id::SharedIdentityResolver,
+        identity: crate::id::SharedIdentityIngress,
     ) -> Result<Self, String> {
         config.validate()?;
         let connection = ManagedRedisConnection::connect(
@@ -407,6 +412,7 @@ impl RedisUserActionSequenceStore {
         Ok(Self {
             connection,
             identity,
+            allocated: std::sync::Mutex::new(std::collections::HashSet::new()),
             key_prefix: config.key_prefix,
             max_actions: config.max_actions,
             window: config.window,
@@ -443,6 +449,11 @@ impl UserActionEventSink for RedisUserActionSequenceStore {
         if action.action_time_ms > now.saturating_add(duration_ms(self.max_future_skew)) {
             return Ok(RecordOutcome::Skipped(SkipReason::FutureTimestamp));
         }
+        // UAS is an ingress boundary: register every external identity before
+        // the projection becomes visible in Redis.  Readers remain
+        // existing-only, so a later read can never discover an unregistered
+        // action that this writer accepted.
+        allocate_uas_identities(&self.identity, &self.allocated, action).await?;
         let payload = serde_json::to_string(&StoredUserAction::from_validated(action))
             .map_err(|e| format!("serialize UAS action: {e}"))?;
         let key = self.key(&action.user_id);
@@ -492,6 +503,51 @@ impl UserActionEventSink for RedisUserActionSequenceStore {
         write?;
         Ok(RecordOutcome::Stored)
     }
+}
+
+/// Upper bound on the in-process allocation cache. Past the cap, events are
+/// still allocated through the Registry, just not remembered locally.
+const MAX_CACHED_ALLOCATIONS: usize = 100_000;
+
+async fn allocate_uas_identities(
+    identity: &crate::id::SharedIdentityIngress,
+    allocated: &std::sync::Mutex<std::collections::HashSet<(crate::id::EntityKind, String)>>,
+    action: &ValidatedUserAction,
+) -> Result<(), String> {
+    let candidates = [
+        (crate::id::EntityKind::User, action.user_id.to_string()),
+        (crate::id::EntityKind::Post, action.tweet_id.to_string()),
+        (crate::id::EntityKind::User, action.author_id.to_string()),
+    ];
+    // Drop duplicates within the event (a self-action repeats the user id)
+    // and identities this process already registered, so steady-state traffic
+    // costs zero Registry round trips.
+    let pending: Vec<(String, crate::id::EntityKind)> = {
+        let cache = allocated.lock().expect("allocation cache poisoned");
+        candidates
+            .iter()
+            .filter(|(kind, object_id)| !cache.contains(&(*kind, object_id.clone())))
+            .map(|(kind, object_id)| (object_id.clone(), *kind))
+            .collect::<std::collections::HashSet<_>>()
+            .into_iter()
+            .collect()
+    };
+    if pending.is_empty() {
+        return Ok(());
+    }
+    identity
+        .allocate_batch(&pending)
+        .await
+        .map_err(|error| format!("allocate UAS identities: {error}"))?;
+    let mut cache = allocated.lock().expect("allocation cache poisoned");
+    if cache.len() + pending.len() <= MAX_CACHED_ALLOCATIONS {
+        cache.extend(
+            pending
+                .into_iter()
+                .map(|(object_id, kind)| (kind, object_id)),
+        );
+    }
+    Ok(())
 }
 
 #[async_trait]
@@ -679,6 +735,76 @@ impl UserActionSequenceOps for DisabledUserActionSequenceFetcher {
 #[cfg(test)]
 mod redis_tests {
     use super::*;
+    use crate::id::{IdentityAllocator, IdentityReader};
+
+    struct FailingAllocator;
+
+    #[tonic::async_trait]
+    impl IdentityReader for FailingAllocator {
+        async fn resolve_batch(
+            &self,
+            _ids: &[(String, crate::id::EntityKind)],
+        ) -> anyhow::Result<Vec<crate::id::SnowflakeId>> {
+            Ok(Vec::new())
+        }
+
+        async fn reverse_batch(
+            &self,
+            _ids: &[(crate::id::SnowflakeId, crate::id::EntityKind)],
+        ) -> anyhow::Result<Vec<String>> {
+            Ok(Vec::new())
+        }
+    }
+
+    #[tonic::async_trait]
+    impl IdentityAllocator for FailingAllocator {
+        async fn allocate_batch(
+            &self,
+            _ids: &[(String, crate::id::EntityKind)],
+        ) -> anyhow::Result<Vec<crate::id::SnowflakeId>> {
+            anyhow::bail!("allocation rejected")
+        }
+    }
+
+    #[derive(Default)]
+    struct CountingAllocator {
+        batches: std::sync::Mutex<Vec<Vec<String>>>,
+    }
+
+    #[tonic::async_trait]
+    impl IdentityReader for CountingAllocator {
+        async fn resolve_batch(
+            &self,
+            _ids: &[(String, crate::id::EntityKind)],
+        ) -> anyhow::Result<Vec<crate::id::SnowflakeId>> {
+            Ok(Vec::new())
+        }
+
+        async fn reverse_batch(
+            &self,
+            _ids: &[(crate::id::SnowflakeId, crate::id::EntityKind)],
+        ) -> anyhow::Result<Vec<String>> {
+            Ok(Vec::new())
+        }
+    }
+
+    #[tonic::async_trait]
+    impl IdentityAllocator for CountingAllocator {
+        async fn allocate_batch(
+            &self,
+            ids: &[(String, crate::id::EntityKind)],
+        ) -> anyhow::Result<Vec<crate::id::SnowflakeId>> {
+            self.batches
+                .lock()
+                .unwrap()
+                .push(ids.iter().map(|(id, _)| id.clone()).collect());
+            Ok(ids
+                .iter()
+                .enumerate()
+                .map(|(index, _)| crate::id::SnowflakeId::new(index as u64 + 1).unwrap())
+                .collect())
+        }
+    }
 
     fn event(action_time_ms: i64, action_type: i32) -> UserActionEvent {
         UserActionEvent {
@@ -722,6 +848,54 @@ mod redis_tests {
         let mut bad_author = event(1, 1);
         bad_author.author_id = "not-an-object-id".to_string();
         assert!(bad_author.validate().is_err(), "malformed author id");
+    }
+
+    #[tokio::test]
+    async fn uas_allocation_failure_happens_before_any_redis_write() {
+        let action = event(1_700_000_000_000, 3).validate().unwrap();
+        let identity: crate::id::SharedIdentityIngress = std::sync::Arc::new(FailingAllocator);
+        let allocated = std::sync::Mutex::new(std::collections::HashSet::new());
+        let error = allocate_uas_identities(&identity, &allocated, &action)
+            .await
+            .unwrap_err();
+        assert!(error.contains("allocation rejected"));
+    }
+
+    #[tokio::test]
+    async fn uas_allocation_dedups_and_caches_registered_identities() {
+        let action = event(1_700_000_000_000, 3).validate().unwrap();
+        let allocator = std::sync::Arc::new(CountingAllocator::default());
+        let identity: crate::id::SharedIdentityIngress = allocator.clone();
+        let allocated = std::sync::Mutex::new(std::collections::HashSet::new());
+
+        allocate_uas_identities(&identity, &allocated, &action)
+            .await
+            .unwrap();
+        allocate_uas_identities(&identity, &allocated, &action)
+            .await
+            .unwrap();
+
+        let batches = allocator.batches.lock().unwrap();
+        assert_eq!(batches.len(), 1, "second event must hit the cache");
+        assert_eq!(batches[0].len(), 3, "user, tweet, author exactly once");
+    }
+
+    #[tokio::test]
+    async fn uas_allocation_dedups_self_action_identities() {
+        let mut self_action = event(1_700_000_000_000, 3);
+        self_action.author_id = self_action.user_id.clone();
+        let action = self_action.validate().unwrap();
+        let allocator = std::sync::Arc::new(CountingAllocator::default());
+        let identity: crate::id::SharedIdentityIngress = allocator.clone();
+        let allocated = std::sync::Mutex::new(std::collections::HashSet::new());
+
+        allocate_uas_identities(&identity, &allocated, &action)
+            .await
+            .unwrap();
+
+        let batches = allocator.batches.lock().unwrap();
+        assert_eq!(batches.len(), 1);
+        assert_eq!(batches[0].len(), 2, "user == author is sent once");
     }
 
     #[test]

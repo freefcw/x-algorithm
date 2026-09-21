@@ -23,7 +23,7 @@ use crate::clients::mrpyq_viewer_relation_client::{
 };
 use crate::clients::strato_client::StratoClient;
 use crate::clients::tweet_entity_service_client::TESClient;
-use crate::id::{EntityKind, SharedIdentityResolver, SnowflakeId};
+use crate::id::{EntityKind, SharedIdentityIngress, SnowflakeId};
 use crate::metrics::ClientCallRecorder;
 use crate::models::candidate_features::{
     MediaEntities, MediaEntity, MediaInfo, PureCoreData, VideoInfo,
@@ -59,7 +59,7 @@ pub struct MrpyqPipelineAdapters {
 /// signal.
 pub fn pipeline_adapters_from_env(
     demo_mode: bool,
-    identity: SharedIdentityResolver,
+    identity: SharedIdentityIngress,
 ) -> anyhow::Result<Option<MrpyqPipelineAdapters>> {
     pipeline_adapters_from_env_with_calls(demo_mode, ClientCallRecorder::default(), identity)
 }
@@ -67,7 +67,7 @@ pub fn pipeline_adapters_from_env(
 pub fn pipeline_adapters_from_env_with_calls(
     demo_mode: bool,
     calls: ClientCallRecorder,
-    identity: SharedIdentityResolver,
+    identity: SharedIdentityIngress,
 ) -> anyhow::Result<Option<MrpyqPipelineAdapters>> {
     if demo_mode {
         return Ok(None);
@@ -90,7 +90,7 @@ pub fn pipeline_adapters_from_env_with_calls(
 pub fn pipeline_adapters(
     client: Arc<dyn MrpyqRecommendationDataClient>,
     relations: Arc<dyn MrpyqViewerRelationClient>,
-    identity: SharedIdentityResolver,
+    identity: SharedIdentityIngress,
 ) -> MrpyqPipelineAdapters {
     let cache = Arc::new(ContentCache::new(
         Arc::clone(&client),
@@ -111,7 +111,7 @@ pub fn pipeline_adapters(
 /// boundary. An unmapped ID fails the whole batch: a guessed string would hit
 /// mrpyq's stores as an ID nobody allocated.
 async fn reverse_external_ids(
-    identity: &SharedIdentityResolver,
+    identity: &SharedIdentityIngress,
     kind: EntityKind,
     ids: impl IntoIterator<Item = u64>,
 ) -> Result<Vec<String>, String> {
@@ -145,7 +145,7 @@ async fn reverse_external_ids(
 /// the next call starts a new one.
 struct ContentCache {
     client: Arc<dyn MrpyqRecommendationDataClient>,
-    identity: SharedIdentityResolver,
+    identity: SharedIdentityIngress,
     state: Mutex<CacheState>,
 }
 
@@ -189,7 +189,7 @@ impl CacheState {
 impl ContentCache {
     fn new(
         client: Arc<dyn MrpyqRecommendationDataClient>,
-        identity: SharedIdentityResolver,
+        identity: SharedIdentityIngress,
     ) -> Self {
         Self {
             client,
@@ -353,9 +353,9 @@ impl ContentCache {
             .collect();
         let resolved = self
             .identity
-            .resolve_batch(&author_requests)
+            .allocate_batch(&author_requests)
             .await
-            .map_err(|error| MrpyqClientError::Unavailable(error.to_string()))?;
+            .map_err(|error| MrpyqClientError::Unavailable(format!("allocate authors: {error}")))?;
         for ((raw, _), snowflake) in author_requests.iter().zip(resolved) {
             author_ids.insert(raw.clone(), snowflake.get());
         }
@@ -380,7 +380,7 @@ impl ContentCache {
 
 pub struct MrpyqInNetworkPostsClient {
     client: Arc<dyn MrpyqRecommendationDataClient>,
-    identity: SharedIdentityResolver,
+    identity: SharedIdentityIngress,
     recall_budget: Duration,
 }
 
@@ -394,7 +394,7 @@ impl MrpyqInNetworkPostsClient {
 
     pub fn with_identity(
         client: Arc<dyn MrpyqRecommendationDataClient>,
-        identity: SharedIdentityResolver,
+        identity: SharedIdentityIngress,
     ) -> Self {
         Self {
             client,
@@ -504,9 +504,9 @@ impl MrpyqInNetworkPostsClient {
             .collect();
         let resolved = self
             .identity
-            .resolve_batch(&requests)
+            .allocate_batch(&requests)
             .await
-            .map_err(|error| error.to_string())?;
+            .map_err(|error| format!("allocate posts: {error}"))?;
         Ok(resolved
             .into_iter()
             .map(|snowflake| InNetworkPost {
@@ -750,7 +750,7 @@ impl VisibilityFilteringClient for MrpyqFirstStageEligibilityClient {
 /// member-id query — see `docs/implementation/mrpyq-member-dimension-requirements.md` §6.1.
 pub struct MrpyqStratoClient {
     client: Arc<dyn MrpyqViewerRelationClient>,
-    identity: SharedIdentityResolver,
+    identity: SharedIdentityIngress,
 }
 
 impl MrpyqStratoClient {
@@ -762,7 +762,7 @@ impl MrpyqStratoClient {
 
     pub fn with_identity(
         client: Arc<dyn MrpyqViewerRelationClient>,
-        identity: SharedIdentityResolver,
+        identity: SharedIdentityIngress,
     ) -> Self {
         Self { client, identity }
     }
@@ -846,7 +846,7 @@ impl MrpyqStratoClient {
             .collect();
         Ok(self
             .identity
-            .resolve_batch(&requests)
+            .allocate_batch(&requests)
             .await?
             .into_iter()
             .map(SnowflakeId::get)
@@ -917,7 +917,7 @@ mod tests {
     use crate::clients::mrpyq_viewer_relation_client::{
         DisabledMrpyqViewerRelationClient, ViewerRelations,
     };
-    use crate::id::{IdentityResolver, PaddedIdentityResolver};
+    use crate::id::{IdentityAllocator, IdentityReader, PaddedIdentityResolver};
     use crate::models::ids::ObjectId;
     use crate::models::{pid, uid};
     use std::sync::Mutex;
@@ -950,7 +950,7 @@ mod tests {
     }
 
     #[async_trait]
-    impl IdentityResolver for TestResolver {
+    impl IdentityReader for TestResolver {
         async fn resolve_batch(
             &self,
             ids: &[(String, EntityKind)],
@@ -986,6 +986,16 @@ mod tests {
                     None => ObjectId::from_u64_be_padded(id.get()).to_string(),
                 })
                 .collect())
+        }
+    }
+
+    #[async_trait]
+    impl IdentityAllocator for TestResolver {
+        async fn allocate_batch(
+            &self,
+            ids: &[(String, EntityKind)],
+        ) -> anyhow::Result<Vec<SnowflakeId>> {
+            self.resolve_batch(ids).await
         }
     }
 
@@ -1205,7 +1215,7 @@ mod tests {
         let resolver = Arc::new(TestResolver::default());
         let posts = MrpyqInNetworkPostsClient::with_identity(
             ready,
-            resolver.clone() as crate::id::SharedIdentityResolver,
+            resolver.clone() as crate::id::SharedIdentityIngress,
         )
         .get_in_network_posts(
             &ScoredPostsQuery {
@@ -1263,7 +1273,7 @@ mod tests {
         let resolver = Arc::new(TestResolver::default());
         let posts = MrpyqInNetworkPostsClient::with_identity(
             fake,
-            resolver.clone() as crate::id::SharedIdentityResolver,
+            resolver.clone() as crate::id::SharedIdentityIngress,
         )
         .get_in_network_posts(&viewer_query(), 2)
         .await
@@ -1493,7 +1503,7 @@ mod tests {
         let resolver = Arc::new(TestResolver::default());
         let posts = MrpyqInNetworkPostsClient::with_identity(
             fake,
-            resolver.clone() as crate::id::SharedIdentityResolver,
+            resolver.clone() as crate::id::SharedIdentityIngress,
         )
         .get_in_network_posts(&viewer_query(), 2)
         .await
@@ -1532,7 +1542,7 @@ mod tests {
         let resolver = Arc::new(TestResolver::default());
         let posts = MrpyqInNetworkPostsClient::with_identity(
             fake,
-            resolver.clone() as crate::id::SharedIdentityResolver,
+            resolver.clone() as crate::id::SharedIdentityIngress,
         )
         .with_recall_budget(Duration::from_millis(50))
         .get_in_network_posts(&viewer_query(), 10)
@@ -1573,7 +1583,7 @@ mod tests {
         let resolver = Arc::new(TestResolver::default());
         let posts = MrpyqInNetworkPostsClient::with_identity(
             fake,
-            resolver.clone() as crate::id::SharedIdentityResolver,
+            resolver.clone() as crate::id::SharedIdentityIngress,
         )
         .get_in_network_posts(&viewer_query(), 10)
         .await
@@ -1615,7 +1625,7 @@ mod tests {
         let resolver = Arc::new(TestResolver::default());
         let posts = MrpyqInNetworkPostsClient::with_identity(
             fake,
-            resolver.clone() as crate::id::SharedIdentityResolver,
+            resolver.clone() as crate::id::SharedIdentityIngress,
         )
         .get_in_network_posts(&viewer_query(), 10)
         .await
@@ -1678,7 +1688,7 @@ mod tests {
         let resolver = Arc::new(TestResolver::default());
         let posts = MrpyqInNetworkPostsClient::with_identity(
             fake,
-            resolver.clone() as crate::id::SharedIdentityResolver,
+            resolver.clone() as crate::id::SharedIdentityIngress,
         )
         .get_fallback_posts(&viewer_query(), 10)
         .await
@@ -1707,7 +1717,7 @@ mod tests {
         let resolver = Arc::new(TestResolver::default());
         let posts = MrpyqInNetworkPostsClient::with_identity(
             fake,
-            resolver.clone() as crate::id::SharedIdentityResolver,
+            resolver.clone() as crate::id::SharedIdentityIngress,
         )
         .get_fallback_posts(&viewer_query(), 10)
         .await

@@ -55,7 +55,8 @@ impl HomeMixerServer {
             crate::id::RegistryClient::new_with_grpc(&config.id_registry_grpc_addr)?
                 .with_calls(metrics.client_calls()),
         );
-        let identity: crate::id::SharedIdentityResolver = id_registry.clone();
+        let identity: crate::id::SharedIdentityIngress = id_registry.clone();
+        let reader: crate::id::SharedIdentityReader = id_registry.clone();
         let query_builder = QueryBuilder::with_identity(config.features, Arc::clone(&identity));
         // Stage summaries, side-effect outcomes and exposure-event publishes
         // land in the same registry the admin port exposes.
@@ -75,7 +76,7 @@ impl HomeMixerServer {
                 crate::params::LOCAL_REQUEST_TIMESTAMP_LIMIT,
             )),
             FeedStateConfig::Redis(redis) => Arc::new(
-                RedisFeedStateStore::new_with_identity(redis, Arc::clone(&identity))
+                RedisFeedStateStore::new_with_identity(redis, Arc::clone(&reader))
                     .await
                     .map(|store| store.with_calls(metrics.client_calls()))
                     .map_err(anyhow::Error::msg)?,

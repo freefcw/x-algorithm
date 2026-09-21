@@ -2,7 +2,7 @@ use crate::candidate_pipeline::phoenix_candidate_pipeline::PhoenixCandidatePipel
 use crate::clients::served_persistence::{FeedStateServedPersistence, ServedPersistence};
 use crate::debug_access::{DebugAccessError, DebugAccessPolicy};
 use crate::feed_state::{FeedStateStore, InMemoryFeedStateStore};
-use crate::id::{EntityKind, SharedIdentityResolver, SnowflakeId};
+use crate::id::{EntityKind, SharedIdentityReader, SnowflakeId};
 use crate::models::candidate::{CandidateHelpers, PostCandidate};
 use crate::models::query::ScoredPostsQuery;
 use crate::query_builder::QueryBuilder;
@@ -25,7 +25,7 @@ pub struct ScoredPostsOutput {
 pub struct ScoredPostsServer {
     pipeline: Arc<PhoenixCandidatePipeline>,
     query_builder: QueryBuilder,
-    identity: SharedIdentityResolver,
+    identity: SharedIdentityReader,
     debug_access: DebugAccessPolicy,
     rpc_policy: RpcPolicy,
     feed_state: Arc<dyn FeedStateStore>,
@@ -254,7 +254,7 @@ fn collect_user_ids(candidate: &PostCandidate, out: &mut HashSet<u64>) {
 /// One batch of registry reversals at a single entity kind, keyed by the
 /// internal numeric ID for response assembly.
 async fn reverse_kind(
-    identity: &SharedIdentityResolver,
+    identity: &SharedIdentityReader,
     kind: EntityKind,
     ids: HashSet<u64>,
 ) -> Result<HashMap<u64, String>, String> {

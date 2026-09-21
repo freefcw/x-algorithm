@@ -5,7 +5,7 @@
 use crate::clients::in_network_posts_client::thunder_request;
 use crate::clients::vm_ranker_client::{GrpcVMRankerClient, VmRankCandidate, VmRankRequest};
 use crate::feature_policy::HomeMixerFeatures;
-use crate::id::{EntityKind, IdentityResolver, SnowflakeId};
+use crate::id::{EntityKind, IdentityAllocator, IdentityReader, SnowflakeId};
 use crate::query_builder::QueryBuilder;
 use id_service::{MemoryMappingStore, RedisIdRegistry};
 use std::sync::Arc;
@@ -20,14 +20,13 @@ const AUTHOR_SNOWFLAKE: u64 = 303;
 struct RegistryIdentityResolver(Arc<RedisIdRegistry>);
 
 #[tonic::async_trait]
-impl IdentityResolver for RegistryIdentityResolver {
+impl IdentityReader for RegistryIdentityResolver {
     async fn resolve_batch(
         &self,
         ids: &[(String, EntityKind)],
     ) -> anyhow::Result<Vec<SnowflakeId>> {
         Ok(self.0.resolve_batch(ids).await?)
     }
-
     async fn reverse_batch(
         &self,
         ids: &[(SnowflakeId, EntityKind)],
@@ -39,6 +38,16 @@ impl IdentityResolver for RegistryIdentityResolver {
             .into_iter()
             .map(|mapping| mapping.object_id)
             .collect())
+    }
+}
+
+#[tonic::async_trait]
+impl IdentityAllocator for RegistryIdentityResolver {
+    async fn allocate_batch(
+        &self,
+        ids: &[(String, EntityKind)],
+    ) -> anyhow::Result<Vec<SnowflakeId>> {
+        Ok(self.0.resolve_batch(ids).await?)
     }
 }
 
@@ -80,7 +89,7 @@ async fn numeric_ids_round_trip_across_thunder_vm_and_egress() {
 
     let query = QueryBuilder::with_identity(
         HomeMixerFeatures::default(),
-        std::sync::Arc::clone(&resolver) as crate::id::SharedIdentityResolver,
+        std::sync::Arc::clone(&resolver) as crate::id::SharedIdentityIngress,
     )
     .build(x_algorithm_proto::home_mixer::ScoredPostsQuery {
         viewer_id: VIEWER_OID.to_string(),

@@ -25,22 +25,39 @@ pub struct RegistryClient {
 
 pub type SharedRegistryClient = std::sync::Arc<RegistryClient>;
 
-/// Injectable ObjectId ↔ Snowflake boundary. Production resolves through the
-/// shared ID Registry; tests and compatibility constructors can substitute a
-/// deterministic implementation.
+/// Read-only ObjectId ↔ Snowflake boundary.
 #[tonic::async_trait]
-pub trait IdentityResolver: Send + Sync {
+pub trait IdentityReader: Send + Sync {
     async fn resolve_batch(&self, ids: &[(String, EntityKind)])
         -> anyhow::Result<Vec<SnowflakeId>>;
-
     async fn reverse_batch(&self, ids: &[(SnowflakeId, EntityKind)])
         -> anyhow::Result<Vec<String>>;
 }
 
-pub type SharedIdentityResolver = std::sync::Arc<dyn IdentityResolver>;
+/// Write-side identity capability. Only ingress adapters receive this trait.
+#[tonic::async_trait]
+pub trait IdentityAllocator: Send + Sync {
+    async fn allocate_batch(
+        &self,
+        ids: &[(String, EntityKind)],
+    ) -> anyhow::Result<Vec<SnowflakeId>>;
+}
+
+/// Combined capability used only by ingress normalizers.
+pub trait IdentityIngress: IdentityReader + IdentityAllocator {}
+impl<T: IdentityReader + IdentityAllocator> IdentityIngress for T {}
+
+pub type SharedIdentityReader = std::sync::Arc<dyn IdentityReader>;
+// An `Arc<dyn IdentityIngress>` narrows to `Arc<dyn IdentityReader>` via
+// trait upcasting, but only at explicit coercion sites (struct fields, let
+// bindings, return positions) — routing it through generic functions like
+// `Arc::clone` fails to compile. When one owner needs both views, erase the
+// concrete `Arc<RegistryClient>` into each trait object separately (see
+// `HomeMixerServer::build_with_metrics`).
+pub type SharedIdentityIngress = std::sync::Arc<dyn IdentityIngress>;
 
 #[tonic::async_trait]
-impl IdentityResolver for RegistryClient {
+impl IdentityReader for RegistryClient {
     async fn resolve_batch(
         &self,
         ids: &[(String, EntityKind)],
@@ -53,6 +70,16 @@ impl IdentityResolver for RegistryClient {
         ids: &[(SnowflakeId, EntityKind)],
     ) -> anyhow::Result<Vec<String>> {
         RegistryClient::reverse_batch(self, ids).await
+    }
+}
+
+#[tonic::async_trait]
+impl IdentityAllocator for RegistryClient {
+    async fn allocate_batch(
+        &self,
+        ids: &[(String, EntityKind)],
+    ) -> anyhow::Result<Vec<SnowflakeId>> {
+        RegistryClient::allocate_batch(self, ids).await
     }
 }
 
@@ -70,7 +97,7 @@ impl PaddedIdentityResolver {
 }
 
 #[tonic::async_trait]
-impl IdentityResolver for PaddedIdentityResolver {
+impl IdentityReader for PaddedIdentityResolver {
     async fn resolve_batch(
         &self,
         ids: &[(String, EntityKind)],
@@ -105,6 +132,16 @@ impl IdentityResolver for PaddedIdentityResolver {
                 Ok(crate::models::ObjectId::from_u64_be_padded(id.get()).to_string())
             })
             .collect()
+    }
+}
+
+#[tonic::async_trait]
+impl IdentityAllocator for PaddedIdentityResolver {
+    async fn allocate_batch(
+        &self,
+        ids: &[(String, EntityKind)],
+    ) -> anyhow::Result<Vec<SnowflakeId>> {
+        IdentityReader::resolve_batch(self, ids).await
     }
 }
 
@@ -149,6 +186,12 @@ trait RegistryTransport: Send + Sync {
         ids: &[(SnowflakeId, EntityKind)],
         timeout: Duration,
     ) -> anyhow::Result<Vec<ReversedId>>;
+
+    async fn allocate_batch(
+        &self,
+        ids: &[(String, EntityKind, Option<SnowflakeId>)],
+        timeout: Duration,
+    ) -> anyhow::Result<Vec<ResolvedId>>;
 }
 
 fn http_client() -> anyhow::Result<reqwest::Client> {
@@ -227,6 +270,33 @@ impl RegistryTransport for HttpRegistryTransport {
             .client
             .post(self.endpoint.join("/v1/reverse:batch")?)
             .json(&payload)
+            .timeout(timeout)
+            .send()
+            .await?
+            .error_for_status()?
+            .json()
+            .await?)
+    }
+
+    async fn allocate_batch(
+        &self,
+        ids: &[(String, EntityKind, Option<SnowflakeId>)],
+        timeout: Duration,
+    ) -> anyhow::Result<Vec<ResolvedId>> {
+        let payload = ids
+            .iter()
+            .map(|(id, kind, trusted)| {
+                let mut value = serde_json::json!({"object_id": id, "entity_kind": kind});
+                if let Some(trusted) = trusted {
+                    value["trusted_snowflake_id"] = serde_json::json!(trusted.get());
+                }
+                value
+            })
+            .collect::<Vec<_>>();
+        Ok(self
+            .client
+            .post(self.endpoint.join("/v1/allocate:batch")?)
+            .json(&serde_json::json!({"ids": payload}))
             .timeout(timeout)
             .send()
             .await?
@@ -325,6 +395,44 @@ impl RegistryTransport for GrpcRegistryTransport {
                     snowflake_id: row.snowflake_id,
                     object_id: row.object_id,
                     entity_kind: entity_kind(row.entity_kind)?,
+                    mapping_version: row.mapping_version,
+                })
+            })
+            .collect()
+    }
+
+    async fn allocate_batch(
+        &self,
+        ids: &[(String, EntityKind, Option<SnowflakeId>)],
+        timeout: Duration,
+    ) -> anyhow::Result<Vec<ResolvedId>> {
+        let request = registry_pb::ResolveBatchRequest {
+            ids: ids
+                .iter()
+                .map(|(object_id, kind, trusted)| registry_pb::ResolveRequest {
+                    object_id: object_id.clone(),
+                    entity_kind: proto_kind(*kind),
+                    trusted_snowflake_id: trusted.map(SnowflakeId::get),
+                })
+                .collect(),
+        };
+        let mut request = tonic::Request::new(request);
+        request.set_timeout(timeout);
+        let response =
+            registry_pb::identity_registry_service_client::IdentityRegistryServiceClient::new(
+                self.channel().await,
+            )
+            .allocate_batch(request)
+            .await?
+            .into_inner();
+        response
+            .rows
+            .into_iter()
+            .map(|row| {
+                Ok(ResolvedId {
+                    object_id: row.object_id,
+                    entity_kind: entity_kind(row.entity_kind)?,
+                    snowflake_id: row.snowflake_id,
                     mapping_version: row.mapping_version,
                 })
             })
@@ -449,6 +557,70 @@ impl RegistryClient {
         .await
     }
 
+    /// Allocate identities for a trusted ingress.  This is intentionally a
+    /// separate client method from `resolve_batch`: only the small number of
+    /// ingress adapters should call it.  The Registry server still enforces
+    /// whether allocation is enabled.
+    pub async fn allocate_batch(
+        &self,
+        ids: &[(String, EntityKind)],
+    ) -> anyhow::Result<Vec<SnowflakeId>> {
+        let request = ids
+            .iter()
+            .map(|(id, kind)| (id.clone(), *kind, None))
+            .collect::<Vec<_>>();
+        self.allocate_batch_with_trusted(&request).await
+    }
+
+    pub async fn allocate_batch_with_trusted(
+        &self,
+        request: &[(String, EntityKind, Option<SnowflakeId>)],
+    ) -> anyhow::Result<Vec<SnowflakeId>> {
+        let deadline = Instant::now() + ID_REGISTRY_REQUEST_TIMEOUT;
+        let rows = if let Some(grpc) = &self.grpc {
+            let started = Instant::now();
+            match grpc.allocate_batch(request, remaining(deadline)?).await {
+                Ok(rows) => {
+                    self.calls
+                        .record("id_registry", "allocate_grpc", "ok", started);
+                    rows
+                }
+                Err(error) => {
+                    self.calls.record(
+                        "id_registry",
+                        "allocate_grpc",
+                        registry_error_label(&error, "mapping_miss"),
+                        started,
+                    );
+                    return Err(error);
+                }
+            }
+        } else {
+            let http = self
+                .http
+                .as_ref()
+                .ok_or_else(|| anyhow::anyhow!("ID Registry transport is not configured"))?;
+            let started = Instant::now();
+            match http.allocate_batch(request, remaining(deadline)?).await {
+                Ok(rows) => {
+                    self.calls
+                        .record("id_registry", "allocate_http", "ok", started);
+                    rows
+                }
+                Err(error) => {
+                    self.calls.record(
+                        "id_registry",
+                        "allocate_http",
+                        registry_error_label(&error, "mapping_miss"),
+                        started,
+                    );
+                    return Err(error);
+                }
+            }
+        };
+        validate_resolve_rows(rows, request)
+    }
+
     /// Resolve IDs while optionally preserving an existing native Snowflake.
     /// Migration tooling should use this for IDs already present in main,
     /// Thunder, or a Phoenix checkpoint; online callers must not invent a
@@ -470,8 +642,12 @@ impl RegistryClient {
                     return validate_resolve_rows(rows, ids);
                 }
                 Err(error) => {
-                    self.calls
-                        .record("id_registry", "resolve_grpc", "error", started);
+                    self.calls.record(
+                        "id_registry",
+                        "resolve_grpc",
+                        registry_error_label(&error, "mapping_miss"),
+                        started,
+                    );
                     return Err(error);
                 }
             }
@@ -481,10 +657,22 @@ impl RegistryClient {
             anyhow::anyhow!("ID Registry HTTP compatibility transport is not configured")
         })?;
         let started = std::time::Instant::now();
-        let result = http.resolve_batch(ids, remaining(deadline)?).await;
-        self.calls
-            .record("id_registry", "resolve_http", "ok", started);
-        let rows = result?;
+        let rows = match http.resolve_batch(ids, remaining(deadline)?).await {
+            Ok(rows) => {
+                self.calls
+                    .record("id_registry", "resolve_http", "ok", started);
+                rows
+            }
+            Err(error) => {
+                self.calls.record(
+                    "id_registry",
+                    "resolve_http",
+                    registry_error_label(&error, "mapping_miss"),
+                    started,
+                );
+                return Err(error);
+            }
+        };
         validate_resolve_rows(rows, ids)
     }
 
@@ -517,8 +705,12 @@ impl RegistryClient {
                     return validate_reverse_rows(rows, ids);
                 }
                 Err(error) => {
-                    self.calls
-                        .record("id_registry", "reverse_grpc", "error", started);
+                    self.calls.record(
+                        "id_registry",
+                        "reverse_grpc",
+                        registry_error_label(&error, "reverse_miss"),
+                        started,
+                    );
                     return Err(error);
                 }
             }
@@ -527,11 +719,43 @@ impl RegistryClient {
             anyhow::anyhow!("ID Registry HTTP compatibility transport is not configured")
         })?;
         let started = std::time::Instant::now();
-        let result = http.reverse_batch(ids, remaining(deadline)?).await;
-        self.calls
-            .record("id_registry", "reverse_http", "ok", started);
-        let rows = result?;
+        let rows = match http.reverse_batch(ids, remaining(deadline)?).await {
+            Ok(rows) => {
+                self.calls
+                    .record("id_registry", "reverse_http", "ok", started);
+                rows
+            }
+            Err(error) => {
+                self.calls.record(
+                    "id_registry",
+                    "reverse_http",
+                    registry_error_label(&error, "reverse_miss"),
+                    started,
+                );
+                return Err(error);
+            }
+        };
         validate_reverse_rows(rows, ids)
+    }
+}
+
+fn registry_error_label(error: &anyhow::Error, not_found_label: &'static str) -> &'static str {
+    // Only transport-level "not found" (gRPC NotFound / HTTP 404) counts as a
+    // mapping miss; everything else — including client-side row validation
+    // failures like an unsupported mapping_version — is a genuine error.
+    let is_not_found = error.chain().any(|cause| {
+        cause
+            .downcast_ref::<tonic::Status>()
+            .is_some_and(|status| status.code() == tonic::Code::NotFound)
+            || cause
+                .downcast_ref::<reqwest::Error>()
+                .and_then(|error| error.status())
+                .is_some_and(|status| status == reqwest::StatusCode::NOT_FOUND)
+    });
+    if is_not_found {
+        not_found_label
+    } else {
+        "error"
     }
 }
 
@@ -604,7 +828,7 @@ mod tests {
         let ids = [("65f1a2b3c4d5e6f708091011".to_string(), EntityKind::User)];
 
         let resolved = client
-            .resolve_batch_with_trusted(&[(
+            .allocate_batch_with_trusted(&[(
                 ids[0].0.clone(),
                 ids[0].1,
                 Some(SnowflakeId::new(4242).unwrap()),
@@ -674,7 +898,7 @@ mod tests {
             .resolve_batch(&[("65f1a2b3c4d5e6f708091011".into(), EntityKind::User)])
             .await
             .unwrap_err();
-        assert!(error.to_string().contains("allocation is disabled"));
+        assert!(error.to_string().contains("no ObjectId mapping exists"));
         grpc_server.abort();
     }
 

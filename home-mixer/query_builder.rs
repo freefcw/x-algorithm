@@ -1,5 +1,5 @@
 use crate::feature_policy::HomeMixerFeatures;
-use crate::id::{EntityKind, PaddedIdentityResolver, RegistryClient, SharedIdentityResolver};
+use crate::id::{EntityKind, PaddedIdentityResolver, RegistryClient, SharedIdentityIngress};
 use crate::models::ids::{parse_wire_id, ObjectId};
 use crate::models::query::ScoredPostsQuery;
 use crate::util::request_util::{current_time_ms, generate_request_id};
@@ -14,7 +14,7 @@ use x_algorithm_proto::home_mixer as pb;
 #[derive(Clone)]
 pub struct QueryBuilder {
     features: HomeMixerFeatures,
-    identity: SharedIdentityResolver,
+    identity: SharedIdentityIngress,
 }
 
 impl Default for QueryBuilder {
@@ -37,7 +37,7 @@ impl QueryBuilder {
         }
     }
 
-    pub fn with_identity(features: HomeMixerFeatures, identity: SharedIdentityResolver) -> Self {
+    pub fn with_identity(features: HomeMixerFeatures, identity: SharedIdentityIngress) -> Self {
         Self { features, identity }
     }
 
@@ -48,7 +48,7 @@ impl QueryBuilder {
     /// Shared resolver for the egress boundary (public response, side
     /// effects). The same instance that ingress resolved through must reverse
     /// the internal Snowflake IDs back to ObjectIds.
-    pub(crate) fn identity(&self) -> SharedIdentityResolver {
+    pub(crate) fn identity(&self) -> SharedIdentityIngress {
         Arc::clone(&self.identity)
     }
 
@@ -100,11 +100,14 @@ impl QueryBuilder {
                 .iter()
                 .map(|id| (id.to_string(), EntityKind::Post)),
         );
+        // Query RPC is one of the deliberately small identity ingress points.
+        // All IDs carried by this request are allowed to create a mapping;
+        // reverse/lookup paths do not call this creation helper.
         let resolved = self
             .identity
-            .resolve_batch(&external_ids)
+            .allocate_batch(&external_ids)
             .await
-            .map_err(|error| Status::unavailable(format!("resolve request IDs: {error}")))?;
+            .map_err(|error| Status::unavailable(format!("allocate request IDs: {error}")))?;
         let mut resolved = resolved.into_iter();
         let user_id = resolved.next().expect("registry result count validated");
         let seen_ids = seen_ids

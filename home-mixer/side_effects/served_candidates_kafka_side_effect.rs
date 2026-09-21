@@ -13,7 +13,7 @@
 //!
 //! 事件契约见 `docs/implementation/served-candidates-event-contract.md`。
 
-use crate::id::{EntityKind, SharedIdentityResolver, SnowflakeId};
+use crate::id::{EntityKind, SharedIdentityReader, SnowflakeId};
 use crate::models::candidate::PostCandidate;
 use crate::models::query::ScoredPostsQuery;
 use serde::{Deserialize, Serialize};
@@ -135,7 +135,7 @@ pub trait ServedCandidatesSink: Send + Sync {
 
 pub struct ServedCandidatesKafkaSideEffect {
     sink: Arc<dyn ServedCandidatesSink>,
-    identity: SharedIdentityResolver,
+    identity: SharedIdentityReader,
 }
 
 impl ServedCandidatesKafkaSideEffect {
@@ -147,7 +147,7 @@ impl ServedCandidatesKafkaSideEffect {
 
     pub fn with_identity(
         sink: Arc<dyn ServedCandidatesSink>,
-        identity: SharedIdentityResolver,
+        identity: SharedIdentityReader,
     ) -> Self {
         Self { sink, identity }
     }
@@ -183,7 +183,7 @@ impl ServedCandidatesKafkaSideEffect {
 }
 
 async fn reverse_kind(
-    identity: &SharedIdentityResolver,
+    identity: &SharedIdentityReader,
     kind: EntityKind,
     ids: HashSet<u64>,
 ) -> Result<HashMap<u64, String>, String> {

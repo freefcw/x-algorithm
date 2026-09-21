@@ -3,7 +3,8 @@
 //! Internal business identities are registry-allocated Snowflake `u64` values
 //! (production guarantees `1..=i64::MAX`). External proto and Redis boundaries
 //! still carry 24-char lowercase hex ObjectIds; adapters map between the two
-//! through `crate::id::IdentityResolver`. Timestamps, counters, thresholds,
+//! through `crate::id::IdentityReader` or `crate::id::IdentityIngress`.
+//! Timestamps, counters, thresholds,
 //! and request-local IDs stay `u64`.
 
 use serde::{Deserialize, Deserializer, Serialize, Serializer};

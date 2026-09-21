@@ -130,7 +130,7 @@ impl RedisFeedStateConfig {
 /// have been executed.
 pub struct RedisFeedStateStore {
     connection: ManagedRedisConnection,
-    identity: crate::id::SharedIdentityResolver,
+    identity: crate::id::SharedIdentityReader,
     key_prefix: String,
     max_served_ids: usize,
     max_request_timestamps: usize,
@@ -152,7 +152,7 @@ impl RedisFeedStateStore {
 
     pub async fn new_with_identity(
         config: RedisFeedStateConfig,
-        identity: crate::id::SharedIdentityResolver,
+        identity: crate::id::SharedIdentityReader,
     ) -> Result<Self, String> {
         config.validate()?;
 
