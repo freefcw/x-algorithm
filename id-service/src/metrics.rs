@@ -3,8 +3,10 @@
 //! One process-wide registry, reached through [`metrics`]: the HTTP layer
 //! records per-route outcomes, the application service records conflicts,
 //! trusted imports and allocations, and the Redis adapter records failed
-//! commands and orphan reverse entries. The local caches are gauges refreshed
-//! at scrape time from [`crate::RedisIdRegistry::cache_sizes`].
+//! commands and orphan reverse entries. Local cache entry counts are gauges
+//! refreshed at scrape time from [`crate::RedisIdRegistry::cache_sizes`];
+//! cache lookups (hit/miss/expired) and capacity evictions are counters
+//! recorded inline by the cache itself.
 
 use prometheus::{
     Encoder, IntCounter, IntCounterVec, IntGauge, IntGaugeVec, Opts, Registry, TextEncoder,
@@ -27,6 +29,8 @@ pub struct Metrics {
     redis_errors: IntCounter,
     orphan_reverse_mappings: IntCounter,
     cache_entries: IntGaugeVec,
+    cache_lookups: IntCounterVec,
+    cache_evictions: IntCounterVec,
 }
 
 impl Default for Metrics {
@@ -96,6 +100,22 @@ impl Metrics {
             &["direction"],
         )
         .expect("valid cache opts");
+        let cache_lookups = IntCounterVec::new(
+            Opts::new(
+                "id_service_cache_lookups_total",
+                "Local cache lookups by direction and result (hit, miss, expired)",
+            ),
+            &["direction", "result"],
+        )
+        .expect("valid cache lookups opts");
+        let cache_evictions = IntCounterVec::new(
+            Opts::new(
+                "id_service_cache_evictions_total",
+                "Local cache entries evicted because the cache exceeded its capacity, by direction",
+            ),
+            &["direction"],
+        )
+        .expect("valid cache evictions opts");
 
         for collector in [
             Box::new(build_info) as Box<dyn prometheus::core::Collector>,
@@ -106,6 +126,8 @@ impl Metrics {
             Box::new(redis_errors.clone()),
             Box::new(orphan_reverse_mappings.clone()),
             Box::new(cache_entries.clone()),
+            Box::new(cache_lookups.clone()),
+            Box::new(cache_evictions.clone()),
         ] {
             registry.register(collector).expect("register metric");
         }
@@ -119,6 +141,8 @@ impl Metrics {
             redis_errors,
             orphan_reverse_mappings,
             cache_entries,
+            cache_lookups,
+            cache_evictions,
         }
     }
 
@@ -146,6 +170,17 @@ impl Metrics {
 
     pub fn record_orphan_reverse_mapping(&self) {
         self.orphan_reverse_mappings.inc();
+    }
+
+    /// `result` is `hit`, `miss`, or `expired` (TTL-expired on read).
+    pub fn record_cache_lookup(&self, direction: &'static str, result: &'static str) {
+        self.cache_lookups
+            .with_label_values(&[direction, result])
+            .inc();
+    }
+
+    pub fn record_cache_eviction(&self, direction: &'static str) {
+        self.cache_evictions.with_label_values(&[direction]).inc();
     }
 
     /// Refresh the cache gauges from `(object_entries, snowflake_entries)`.
@@ -186,6 +221,10 @@ mod tests {
         metrics.record_redis_error();
         metrics.record_orphan_reverse_mapping();
         metrics.set_cache_sizes((3, 4));
+        metrics.record_cache_lookup("object", "hit");
+        metrics.record_cache_lookup("object", "miss");
+        metrics.record_cache_lookup("snowflake", "expired");
+        metrics.record_cache_eviction("object");
         let text = metrics.encode().unwrap();
         for expected in [
             &format!(
@@ -200,6 +239,10 @@ mod tests {
             "id_service_orphan_reverse_mappings_total 1",
             "id_service_cache_entries{direction=\"object\"} 3",
             "id_service_cache_entries{direction=\"snowflake\"} 4",
+            "id_service_cache_lookups_total{direction=\"object\",result=\"hit\"} 1",
+            "id_service_cache_lookups_total{direction=\"object\",result=\"miss\"} 1",
+            "id_service_cache_lookups_total{direction=\"snowflake\",result=\"expired\"} 1",
+            "id_service_cache_evictions_total{direction=\"object\"} 1",
         ] {
             assert!(text.contains(expected), "missing {expected}\n{text}");
         }

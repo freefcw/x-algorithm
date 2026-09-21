@@ -146,6 +146,8 @@ pub struct SequenceFloor {
 /// conveniences that fixtures may override to count per-item traffic.
 #[async_trait]
 pub trait MappingStore: Send + Sync {
+    /// Returns exactly one row per input id, in input order (`None` when the
+    /// mapping is absent); callers rely on the positional alignment.
     async fn find_by_object_batch(
         &self,
         ids: &[(String, EntityKind)],
@@ -386,6 +388,68 @@ impl RedisIdRegistry {
             .map(|(object_id, entity_kind)| (object_id.clone(), *entity_kind, None))
             .collect::<Vec<_>>();
         self.resolve_batch_with_trusted(&trusted).await
+    }
+
+    /// Read-only resolution. Unlike `resolve_batch`, this method never writes
+    /// or allocates; it is used by downstream readers and all egress paths.
+    pub async fn resolve_existing_batch(
+        &self,
+        ids: &[(String, EntityKind)],
+    ) -> Result<Vec<SnowflakeId>, IdError> {
+        for (object_id, _) in ids {
+            crate::validate_object_id(object_id)?;
+        }
+        let mappings = self.store.find_by_object_batch(ids).await?;
+        if mappings.len() != ids.len() {
+            return Err(IdError::CorruptRecord {
+                key: "mapping store batch".to_string(),
+                reason: format!(
+                    "find_by_object_batch returned {} rows for {} inputs",
+                    mappings.len(),
+                    ids.len()
+                ),
+            });
+        }
+        let unknown = ids
+            .iter()
+            .zip(&mappings)
+            .filter(|(_, mapping)| mapping.is_none())
+            .map(|((object_id, kind), _)| (*kind, object_id.as_str()))
+            .collect::<Vec<_>>();
+        if !unknown.is_empty() {
+            return Err(IdError::UnknownObjectIds(unknown_ids_summary(
+                unknown.into_iter(),
+            )));
+        }
+        let mut result = Vec::with_capacity(ids.len());
+        for ((_, kind), mapping) in ids.iter().zip(mappings) {
+            let mapping = mapping.expect("unknown ids rejected above");
+            if mapping.entity_kind != *kind {
+                return Err(IdError::EntityKindMismatch {
+                    snowflake_id: mapping.snowflake_id,
+                    expected: *kind,
+                    actual: mapping.entity_kind,
+                });
+            }
+            result.push(mapping.snowflake_id);
+        }
+        Ok(result)
+    }
+
+    /// Read one existing mapping without making transport handlers interpret
+    /// the cardinality of a batch result themselves.
+    pub async fn resolve_existing_one(
+        &self,
+        object_id: &str,
+        entity_kind: EntityKind,
+    ) -> Result<SnowflakeId, IdError> {
+        let mut resolved = self
+            .resolve_existing_batch(&[(object_id.to_string(), entity_kind)])
+            .await?;
+        resolved.pop().ok_or_else(|| IdError::CorruptRecord {
+            key: "mapping store batch".to_string(),
+            reason: "single existing mapping lookup returned no result".to_string(),
+        })
     }
 
     /// Resolve a batch, allocating or importing what is missing.
@@ -867,11 +931,20 @@ fn snowflake_taken(
 /// Summary of every unknown id when allocation is disabled: the count and
 /// the first five ids, so a caller can find the missing imports.
 fn allocation_disabled(items: &[&RequestItem]) -> IdError {
+    IdError::AllocationDisabled(unknown_ids_summary(
+        items
+            .iter()
+            .map(|item| (item.entity_kind, item.object_id.as_str())),
+    ))
+}
+
+fn unknown_ids_summary<'a>(items: impl Iterator<Item = (EntityKind, &'a str)>) -> String {
     const PREVIEW: usize = 5;
+    let items = items.collect::<Vec<_>>();
     let preview = items
         .iter()
         .take(PREVIEW)
-        .map(|item| format!("{:?} {}", item.entity_kind, item.object_id))
+        .map(|(kind, object_id)| format!("{kind:?} {object_id}"))
         .collect::<Vec<_>>()
         .join(", ");
     let summary = if items.len() == 1 {
@@ -881,7 +954,7 @@ fn allocation_disabled(items: &[&RequestItem]) -> IdError {
     } else {
         format!("{} ids, first {PREVIEW}: {preview}", items.len())
     };
-    IdError::AllocationDisabled(summary)
+    summary
 }
 
 fn allocation_timestamp_ms(object_id: &str) -> Result<u64, IdError> {
@@ -1171,8 +1244,8 @@ impl RedisMappingStore {
             connection,
             key_prefix: prefix,
             request_timeout,
-            object_cache: Mutex::new(BoundedCache::new(cache_capacity)),
-            snowflake_cache: Mutex::new(BoundedCache::new(cache_capacity)),
+            object_cache: Mutex::new(BoundedCache::new(cache_capacity, "object")),
+            snowflake_cache: Mutex::new(BoundedCache::new(cache_capacity, "snowflake")),
         };
         store.load_scripts().await?;
         store.ensure_metadata().await?;
@@ -1685,6 +1758,8 @@ where
     order: VecDeque<(K, u64)>,
     next_generation: u64,
     capacity: usize,
+    /// Metrics label identifying the lookup direction (`object`/`snowflake`).
+    direction: &'static str,
 }
 
 impl<K, V> BoundedCache<K, V>
@@ -1692,24 +1767,30 @@ where
     K: Eq + std::hash::Hash + Clone,
     V: Clone,
 {
-    fn new(capacity: usize) -> Self {
+    fn new(capacity: usize, direction: &'static str) -> Self {
         Self {
             values: HashMap::new(),
             order: VecDeque::new(),
             next_generation: 0,
             capacity,
+            direction,
         }
     }
 
     fn get(&mut self, key: &K) -> Option<V> {
-        let entry = self.values.get(key)?.clone();
+        let Some(entry) = self.values.get(key).cloned() else {
+            metrics().record_cache_lookup(self.direction, "miss");
+            return None;
+        };
         if entry
             .expires_at_secs
             .is_some_and(|expiry| expiry <= crate::now_secs())
         {
             self.values.remove(key);
+            metrics().record_cache_lookup(self.direction, "expired");
             return None;
         }
+        metrics().record_cache_lookup(self.direction, "hit");
         self.next_generation = self.next_generation.wrapping_add(1);
         let generation = self.next_generation;
         if let Some(current) = self.values.get_mut(key) {
@@ -1750,6 +1831,7 @@ where
                 .is_some_and(|entry| entry.generation == generation)
             {
                 self.values.remove(&key);
+                metrics().record_cache_eviction(self.direction);
             }
         }
         if self.order.len() > self.capacity.saturating_mul(2).saturating_add(1) {
@@ -2072,6 +2154,51 @@ mod tests {
     const OTHER_POST: &str = "66f1a2b3c4d5e6f708091013";
 
     use super::MemoryMappingStore as MemoryStore;
+
+    struct ShortObjectBatchStore;
+
+    #[async_trait::async_trait]
+    impl MappingStore for ShortObjectBatchStore {
+        async fn find_by_object_batch(
+            &self,
+            _ids: &[(String, EntityKind)],
+        ) -> Result<Vec<Option<Mapping>>, IdError> {
+            Ok(Vec::new())
+        }
+
+        async fn find_by_snowflake_batch(
+            &self,
+            ids: &[SnowflakeId],
+        ) -> Result<Vec<Option<Mapping>>, IdError> {
+            Ok(vec![None; ids.len()])
+        }
+
+        async fn insert_if_absent_batch(
+            &self,
+            mappings: &[Mapping],
+        ) -> Result<Vec<InsertOutcome>, IdError> {
+            Ok(vec![InsertOutcome::Inserted; mappings.len()])
+        }
+
+        async fn next_sequence_batch(
+            &self,
+            reservations: &[SequenceReservation],
+        ) -> Result<Vec<u64>, IdError> {
+            Ok(vec![1; reservations.len()])
+        }
+
+        async fn observe_sequence_batch(&self, _floors: &[SequenceFloor]) -> Result<(), IdError> {
+            Ok(())
+        }
+
+        async fn check_ready(&self) -> Result<(), IdError> {
+            Ok(())
+        }
+
+        fn cache_sizes(&self) -> (usize, usize) {
+            (0, 0)
+        }
+    }
 
     fn registry(store: &Arc<MemoryStore>, allow_allocation: bool) -> RedisIdRegistry {
         RedisIdRegistry::with_store(store.clone(), 0, allow_allocation, true).unwrap()
@@ -2530,6 +2657,39 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn read_only_resolution_reports_unknown_mappings_without_allocation_language() {
+        for allow_allocation in [false, true] {
+            let store = Arc::new(MemoryStore::new());
+            let registry = registry(&store, allow_allocation);
+            let error = registry
+                .resolve_existing_batch(&[(POST.to_string(), EntityKind::Post)])
+                .await
+                .unwrap_err();
+            assert_eq!(error, IdError::UnknownObjectIds(format!("Post {POST}")));
+            assert_eq!(
+                error.to_string(),
+                format!("no ObjectId mapping exists for Post {POST}")
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn read_only_resolution_rejects_misaligned_store_results() {
+        let registry =
+            RedisIdRegistry::with_store(Arc::new(ShortObjectBatchStore), 0, true, true).unwrap();
+        let error = registry
+            .resolve_existing_one(POST, EntityKind::Post)
+            .await
+            .unwrap_err();
+        assert!(matches!(
+            error,
+            IdError::CorruptRecord { ref key, ref reason }
+                if key == "mapping store batch"
+                    && reason == "find_by_object_batch returned 0 rows for 1 inputs"
+        ));
+    }
+
+    #[tokio::test]
     async fn orphan_reverse_entries_are_invisible_and_repaired_by_the_same_import() {
         let store = Arc::new(MemoryStore::new());
         let registry = registry(&store, true);
@@ -2732,7 +2892,7 @@ mod tests {
 
     #[test]
     fn bounded_cache_evicts_old_entries() {
-        let mut cache = BoundedCache::new(2);
+        let mut cache = BoundedCache::new(2, "test");
         cache.insert("a", 1, None);
         cache.insert("b", 2, None);
         assert_eq!(cache.get(&"a"), Some(1));

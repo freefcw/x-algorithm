@@ -42,6 +42,9 @@ pub enum IdError {
     /// Allocation is disabled and the listed ObjectIds have no mapping. The
     /// payload is a human-readable summary (count plus the first few ids).
     AllocationDisabled(String),
+    /// A read-only resolve requested ObjectIds that have no existing mapping.
+    /// The payload is a human-readable summary (count plus the first few ids).
+    UnknownObjectIds(String),
     /// The request carried `trusted_snowflake_id` for this ObjectId but the
     /// service was started without `--allow-trusted-import`.
     TrustedImportDisabled(String),
@@ -94,6 +97,9 @@ impl fmt::Display for IdError {
             Self::InvalidWorkerId(id) => write!(f, "worker id {id} exceeds {MAX_WORKER_ID}"),
             Self::AllocationDisabled(summary) => {
                 write!(f, "allocation is disabled and no mapping exists for {summary}")
+            }
+            Self::UnknownObjectIds(summary) => {
+                write!(f, "no ObjectId mapping exists for {summary}")
             }
             Self::TrustedImportDisabled(id) => write!(
                 f,

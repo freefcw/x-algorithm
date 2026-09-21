@@ -76,7 +76,9 @@ fn status_for(error: IdError) -> Status {
         | IdError::BeforeSnowflakeEpoch(_)
         | IdError::InvalidWorkerId(_) => Code::InvalidArgument,
         IdError::TrustedImportDisabled(_) => Code::PermissionDenied,
-        IdError::AllocationDisabled(_) | IdError::UnknownSnowflake(_) => Code::NotFound,
+        IdError::AllocationDisabled(_)
+        | IdError::UnknownObjectIds(_)
+        | IdError::UnknownSnowflake(_) => Code::NotFound,
         IdError::MappingConflict { .. }
         | IdError::SnowflakeTaken { .. }
         | IdError::EntityKindMismatch { .. } => Code::AlreadyExists,
@@ -122,9 +124,14 @@ impl IdentityRegistryService for GrpcIdRegistryService {
             crate::validate_object_id(&request.object_id).map_err(status_for)?;
             let kind = entity_kind(request.entity_kind)?;
             let trusted = request.trusted_snowflake_id.map(snowflake).transpose()?;
+            if trusted.is_some() {
+                return Err(status_for(IdError::TrustedImportDisabled(
+                    request.object_id.clone(),
+                )));
+            }
             let resolved = self
                 .registry
-                .resolve_one_with_trusted(&request.object_id, kind, trusted)
+                .resolve_existing_one(&request.object_id, kind)
                 .await
                 .map_err(status_for)?;
             Ok(Response::new(resolve_response(
@@ -139,6 +146,76 @@ impl IdentityRegistryService for GrpcIdRegistryService {
     }
 
     async fn resolve_batch(
+        &self,
+        request: Request<pb::ResolveBatchRequest>,
+    ) -> Result<Response<pb::ResolveBatchResponse>, Status> {
+        let result = async {
+            let request = request.into_inner();
+            self.check_batch_size(request.ids.len())?;
+            // Match the HTTP contract: trusted imports are rejected with 403
+            // before any per-item validation.
+            if request
+                .ids
+                .iter()
+                .any(|item| item.trusted_snowflake_id.is_some())
+            {
+                return Err(status_for(IdError::TrustedImportDisabled(
+                    "resolve does not accept trusted imports".to_string(),
+                )));
+            }
+            let ids = request
+                .ids
+                .iter()
+                .map(|item| {
+                    crate::validate_object_id(&item.object_id).map_err(status_for)?;
+                    Ok((item.object_id.clone(), entity_kind(item.entity_kind)?))
+                })
+                .collect::<Result<Vec<_>, Status>>()?;
+            let resolved = self
+                .registry
+                .resolve_existing_batch(&ids)
+                .await
+                .map_err(status_for)?;
+            let rows = request
+                .ids
+                .into_iter()
+                .zip(ids.into_iter().map(|(_, kind)| kind))
+                .zip(resolved)
+                .map(|((item, kind), id)| resolve_response(item.object_id, kind, id))
+                .collect();
+            Ok(Response::new(pb::ResolveBatchResponse { rows }))
+        }
+        .await;
+        record_rpc("grpc.ResolveBatch", &result);
+        result
+    }
+
+    async fn allocate(
+        &self,
+        request: Request<pb::ResolveRequest>,
+    ) -> Result<Response<pb::ResolveResponse>, Status> {
+        let result = async {
+            let request = request.into_inner();
+            crate::validate_object_id(&request.object_id).map_err(status_for)?;
+            let kind = entity_kind(request.entity_kind)?;
+            let trusted = request.trusted_snowflake_id.map(snowflake).transpose()?;
+            let resolved = self
+                .registry
+                .resolve_one_with_trusted(&request.object_id, kind, trusted)
+                .await
+                .map_err(status_for)?;
+            Ok(Response::new(resolve_response(
+                request.object_id,
+                kind,
+                resolved,
+            )))
+        }
+        .await;
+        record_rpc("grpc.Allocate", &result);
+        result
+    }
+
+    async fn allocate_batch(
         &self,
         request: Request<pb::ResolveBatchRequest>,
     ) -> Result<Response<pb::ResolveBatchResponse>, Status> {
@@ -172,7 +249,7 @@ impl IdentityRegistryService for GrpcIdRegistryService {
             Ok(Response::new(pb::ResolveBatchResponse { rows }))
         }
         .await;
-        record_rpc("grpc.ResolveBatch", &result);
+        record_rpc("grpc.AllocateBatch", &result);
         result
     }
 
@@ -238,7 +315,7 @@ mod tests {
         let registry = Arc::new(RedisIdRegistry::with_store(store, 0, true, true).unwrap());
         let service = GrpcIdRegistryService::new(registry, 10);
         let response = service
-            .resolve_batch(Request::new(pb::ResolveBatchRequest {
+            .allocate_batch(Request::new(pb::ResolveBatchRequest {
                 ids: vec![pb::ResolveRequest {
                     object_id: "65f1a2b3c4d5e6f708091011".into(),
                     entity_kind: pb::EntityKind::User as i32,
@@ -270,6 +347,10 @@ mod tests {
     fn maps_domain_errors_to_stable_grpc_codes() {
         assert_eq!(
             status_for(IdError::UnknownSnowflake(42)).code(),
+            Code::NotFound
+        );
+        assert_eq!(
+            status_for(IdError::UnknownObjectIds("User unknown".into())).code(),
             Code::NotFound
         );
         assert_eq!(

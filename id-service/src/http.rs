@@ -89,7 +89,9 @@ pub fn status_for(error: &IdError) -> StatusCode {
         | IdError::BeforeSnowflakeEpoch(_)
         | IdError::InvalidWorkerId(_) => StatusCode::BAD_REQUEST,
         IdError::TrustedImportDisabled(_) => StatusCode::FORBIDDEN,
-        IdError::AllocationDisabled(_) | IdError::UnknownSnowflake(_) => StatusCode::NOT_FOUND,
+        IdError::AllocationDisabled(_)
+        | IdError::UnknownObjectIds(_)
+        | IdError::UnknownSnowflake(_) => StatusCode::NOT_FOUND,
         IdError::MappingConflict { .. }
         | IdError::SnowflakeTaken { .. }
         | IdError::EntityKindMismatch { .. } => StatusCode::CONFLICT,
@@ -116,6 +118,8 @@ pub fn router(registry: Arc<RedisIdRegistry>, max_batch_size: usize) -> Router {
         .route("/metrics", get(metrics_page))
         .route("/v1/resolve", post(resolve))
         .route("/v1/resolve:batch", post(resolve_batch))
+        .route("/v1/allocate", post(allocate))
+        .route("/v1/allocate:batch", post(allocate_batch))
         .route("/v1/reverse", post(reverse))
         .route("/v1/reverse:batch", post(reverse_batch))
         .layer(middleware::from_fn(record_request))
@@ -177,13 +181,15 @@ async fn resolve(
     State(state): State<AppState>,
     Json(request): Json<ResolveRequest>,
 ) -> Result<Json<ResolveResponse>, ApiError> {
-    let trusted = request
-        .trusted_snowflake_id
-        .map(parse_snowflake)
-        .transpose()?;
+    if request.trusted_snowflake_id.is_some() {
+        return Err(ApiError(
+            StatusCode::FORBIDDEN,
+            "trusted import is only available on allocate".into(),
+        ));
+    }
     let snowflake_id = state
         .registry
-        .resolve_one_with_trusted(&request.object_id, request.entity_kind, trusted)
+        .resolve_existing_one(&request.object_id, request.entity_kind)
         .await?;
     Ok(Json(ResolveResponse {
         object_id: request.object_id,
@@ -194,6 +200,42 @@ async fn resolve(
 }
 
 async fn resolve_batch(
+    State(state): State<AppState>,
+    Json(request): Json<ResolveBatchRequest>,
+) -> Result<Json<Vec<ResolveResponse>>, ApiError> {
+    check_batch_size(request.ids.len(), state.max_batch_size)?;
+    if request
+        .ids
+        .iter()
+        .any(|item| item.trusted_snowflake_id.is_some())
+    {
+        return Err(ApiError(
+            StatusCode::FORBIDDEN,
+            "trusted import is only available on allocate".into(),
+        ));
+    }
+    let ids = request
+        .ids
+        .iter()
+        .map(|item| (item.object_id.clone(), item.entity_kind))
+        .collect::<Vec<_>>();
+    let snowflakes = state.registry.resolve_existing_batch(&ids).await?;
+    Ok(Json(
+        request
+            .ids
+            .into_iter()
+            .zip(snowflakes)
+            .map(|(item, id)| ResolveResponse {
+                object_id: item.object_id,
+                entity_kind: item.entity_kind,
+                snowflake_id: id.get(),
+                mapping_version: MAPPING_VERSION,
+            })
+            .collect(),
+    ))
+}
+
+async fn allocate_batch(
     State(state): State<AppState>,
     Json(request): Json<ResolveBatchRequest>,
 ) -> Result<Json<Vec<ResolveResponse>>, ApiError> {
@@ -223,6 +265,26 @@ async fn resolve_batch(
             })
             .collect(),
     ))
+}
+
+async fn allocate(
+    State(state): State<AppState>,
+    Json(request): Json<ResolveRequest>,
+) -> Result<Json<ResolveResponse>, ApiError> {
+    let trusted = request
+        .trusted_snowflake_id
+        .map(parse_snowflake)
+        .transpose()?;
+    let id = state
+        .registry
+        .resolve_one_with_trusted(&request.object_id, request.entity_kind, trusted)
+        .await?;
+    Ok(Json(ResolveResponse {
+        object_id: request.object_id,
+        entity_kind: request.entity_kind,
+        snowflake_id: id.get(),
+        mapping_version: MAPPING_VERSION,
+    }))
 }
 
 async fn reverse(
@@ -390,7 +452,7 @@ mod tests {
         let (store, app) = app();
         let (status, body) = post_json(
             &app,
-            "/v1/resolve",
+            "/v1/allocate",
             json!({"object_id": USER, "entity_kind": "User", "trusted_snowflake_id": 4242}),
         )
         .await;
@@ -411,7 +473,7 @@ mod tests {
         // Allocation for a new post; the batch keeps input order and echoes each item.
         let (status, body) = post_json(
             &app,
-            "/v1/resolve:batch",
+            "/v1/allocate:batch",
             json!({"ids": [
                 {"object_id": POST, "entity_kind": "Post"},
                 {"object_id": USER, "entity_kind": "User"},
@@ -466,14 +528,14 @@ mod tests {
         // 400: invalid ObjectId, invalid Snowflake in body.
         let (status, _) = post_json(
             &app,
-            "/v1/resolve",
+            "/v1/allocate",
             json!({"object_id": "not-hex", "entity_kind": "User"}),
         )
         .await;
         assert_eq!(status, StatusCode::BAD_REQUEST);
         let (status, _) = post_json(
             &app,
-            "/v1/resolve",
+            "/v1/allocate",
             json!({"object_id": USER, "entity_kind": "User", "trusted_snowflake_id": 0}),
         )
         .await;
@@ -505,20 +567,20 @@ mod tests {
         // 409: trusted id already bound elsewhere, existing mapping contradicted, kind mismatch.
         post_json(
             &app,
-            "/v1/resolve",
+            "/v1/allocate",
             json!({"object_id": USER, "entity_kind": "User", "trusted_snowflake_id": 7}),
         )
         .await;
         let (status, body) = post_json(
             &app,
-            "/v1/resolve",
+            "/v1/allocate",
             json!({"object_id": POST, "entity_kind": "Post", "trusted_snowflake_id": 7}),
         )
         .await;
         assert_eq!(status, StatusCode::CONFLICT, "{body}");
         let (status, _) = post_json(
             &app,
-            "/v1/resolve",
+            "/v1/allocate",
             json!({"object_id": USER, "entity_kind": "User", "trusted_snowflake_id": 8}),
         )
         .await;
@@ -546,7 +608,8 @@ mod tests {
 
     #[tokio::test]
     async fn allocation_and_trusted_import_gates() {
-        // Allocation disabled: unknown ids are 404 and list every id.
+        // Read-only misses are 404 regardless of the allocation setting and
+        // do not claim that allocation is disabled.
         let store = Arc::new(MemoryMappingStore::new());
         let app = app_with(store, false, true, 100);
         let (status, body) = post_json(
@@ -564,20 +627,36 @@ mod tests {
             text.contains("2 ids") && text.contains(USER) && text.contains(POST),
             "{text}"
         );
+        assert!(text.contains("no ObjectId mapping exists"), "{text}");
+        assert!(!text.contains("allocation is disabled"), "{text}");
+
+        // The explicit write endpoint reports the disabled allocation gate.
+        let (status, body) = post_json(
+            &app,
+            "/v1/allocate:batch",
+            json!({"ids": [
+                {"object_id": USER, "entity_kind": "User"},
+                {"object_id": POST, "entity_kind": "Post"},
+            ]}),
+        )
+        .await;
+        assert_eq!(status, StatusCode::NOT_FOUND);
+        let text = body.as_str().unwrap();
+        assert!(text.contains("allocation is disabled"), "{text}");
 
         // Trusted import disabled: 403 before anything is written.
         let store = Arc::new(MemoryMappingStore::new());
         let app = app_with(store.clone(), true, false, 100);
         let (status, body) = post_json(
             &app,
-            "/v1/resolve",
+            "/v1/allocate",
             json!({"object_id": USER, "entity_kind": "User", "trusted_snowflake_id": 4242}),
         )
         .await;
         assert_eq!(status, StatusCode::FORBIDDEN, "{body}");
         let (status, _) = post_json(
             &app,
-            "/v1/resolve:batch",
+            "/v1/allocate:batch",
             json!({"ids": [
                 {"object_id": POST, "entity_kind": "Post"},
                 {"object_id": USER, "entity_kind": "User", "trusted_snowflake_id": 4242},
@@ -623,6 +702,10 @@ mod tests {
         assert_eq!(status_for(&corrupt), StatusCode::INTERNAL_SERVER_ERROR);
         assert_eq!(
             status_for(&IdError::UnknownSnowflake(1)),
+            StatusCode::NOT_FOUND
+        );
+        assert_eq!(
+            status_for(&IdError::UnknownObjectIds("User unknown".into())),
             StatusCode::NOT_FOUND
         );
         assert_eq!(
