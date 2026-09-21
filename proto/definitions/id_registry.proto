@@ -6,6 +6,9 @@ package id_registry;
 service IdentityRegistryService {
   rpc Resolve(ResolveRequest) returns (ResolveResponse);
   rpc ResolveBatch(ResolveBatchRequest) returns (ResolveBatchResponse);
+  // Explicit write-side registration. Resolve is read-only and never allocates.
+  rpc Allocate(ResolveRequest) returns (ResolveResponse);
+  rpc AllocateBatch(ResolveBatchRequest) returns (ResolveBatchResponse);
   rpc Reverse(ReverseRequest) returns (ReverseResponse);
   rpc ReverseBatch(ReverseBatchRequest) returns (ReverseBatchResponse);
 }
