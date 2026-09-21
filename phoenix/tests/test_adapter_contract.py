@@ -6,10 +6,10 @@ import urllib.request
 import grpc
 import pytest
 
+from services.id_registry_client import IdentityRegistryClient
 from services.recsys_proto import load_proto_modules
 from services.xrex_adapter import (
     IDENTITY_MAPPING_VERSION,
-    IdentityRegistryClient,
     PhoenixAdapter,
     PhoenixXrexTranslator,
     XREX_TO_PHOENIX_ACTION,
@@ -266,7 +266,7 @@ def test_registry_client_prefers_grpc_for_production_defaults(monkeypatch: pytes
             )
 
     monkeypatch.setattr(id_registry_pb2_grpc, "IdentityRegistryServiceStub", FakeStub)
-    monkeypatch.setattr("services.xrex_adapter.grpc.insecure_channel", lambda endpoint: endpoint)
+    monkeypatch.setattr("services.id_registry_client.grpc.insecure_channel", lambda endpoint: endpoint)
     monkeypatch.setenv("ID_REGISTRY_GRPC_ADDR", "registry.test:50072")
     client = IdentityRegistryClient()
 
@@ -276,6 +276,39 @@ def test_registry_client_prefers_grpc_for_production_defaults(monkeypatch: pytes
     assert request.ids[0].object_id == oid(1)
     assert request.ids[0].entity_kind == id_registry_pb2.POST
     assert timeout is not None and 0 < timeout <= 0.5
+
+
+def test_registry_client_allocate_batch_uses_grpc_allocate_rpc(monkeypatch: pytest.MonkeyPatch) -> None:
+    calls = []
+
+    class FakeStub:
+        def __init__(self, channel) -> None:
+            pass
+
+        def ResolveBatch(self, request, timeout=None):
+            calls.append("ResolveBatch")
+            raise AssertionError("trusted imports must not use ResolveBatch")
+
+        def AllocateBatch(self, request, timeout=None):
+            calls.append("AllocateBatch")
+            return id_registry_pb2.ResolveBatchResponse(
+                rows=[
+                    id_registry_pb2.ResolveResponse(
+                        object_id=request.ids[0].object_id,
+                        entity_kind=id_registry_pb2.POST,
+                        snowflake_id=request.ids[0].trusted_snowflake_id,
+                        mapping_version=IDENTITY_MAPPING_VERSION,
+                    )
+                ]
+            )
+
+    monkeypatch.setattr(id_registry_pb2_grpc, "IdentityRegistryServiceStub", FakeStub)
+    monkeypatch.setattr("services.id_registry_client.grpc.insecure_channel", lambda endpoint: endpoint)
+    client = IdentityRegistryClient(grpc_endpoint="registry.test:50072")
+
+    client.allocate_batch_with_trusted([(oid(1), "Post", 42)])
+
+    assert calls == ["AllocateBatch"]
 
 
 def test_registry_client_does_not_fallback_to_http_when_grpc_is_unavailable(
@@ -296,7 +329,7 @@ def test_registry_client_does_not_fallback_to_http_when_grpc_is_unavailable(
             raise Unavailable()
 
     monkeypatch.setattr(id_registry_pb2_grpc, "IdentityRegistryServiceStub", FailingStub)
-    monkeypatch.setattr("services.xrex_adapter.grpc.insecure_channel", lambda endpoint: endpoint)
+    monkeypatch.setattr("services.id_registry_client.grpc.insecure_channel", lambda endpoint: endpoint)
     monkeypatch.setattr(
         urllib.request,
         "urlopen",
@@ -323,7 +356,7 @@ def test_registry_client_does_not_fallback_for_internal_grpc_errors(
             raise Internal()
 
     monkeypatch.setattr(id_registry_pb2_grpc, "IdentityRegistryServiceStub", FailingStub)
-    monkeypatch.setattr("services.xrex_adapter.grpc.insecure_channel", lambda endpoint: endpoint)
+    monkeypatch.setattr("services.id_registry_client.grpc.insecure_channel", lambda endpoint: endpoint)
     monkeypatch.setattr(
         urllib.request,
         "urlopen",
@@ -354,7 +387,7 @@ def test_registry_client_gives_grpc_the_remaining_deadline(
             raise Unavailable()
 
     monkeypatch.setattr(id_registry_pb2_grpc, "IdentityRegistryServiceStub", CapturingStub)
-    monkeypatch.setattr("services.xrex_adapter.grpc.insecure_channel", lambda endpoint: endpoint)
+    monkeypatch.setattr("services.id_registry_client.grpc.insecure_channel", lambda endpoint: endpoint)
     client = IdentityRegistryClient(grpc_endpoint="registry.test:50072", timeout_seconds=0.5)
 
     with pytest.raises(RuntimeError, match="gRPC request failed"):
@@ -385,7 +418,7 @@ def test_registry_client_reverse_uses_grpc_and_validates_object_id(
             )
 
     monkeypatch.setattr(id_registry_pb2_grpc, "IdentityRegistryServiceStub", FakeStub)
-    monkeypatch.setattr("services.xrex_adapter.grpc.insecure_channel", lambda endpoint: endpoint)
+    monkeypatch.setattr("services.id_registry_client.grpc.insecure_channel", lambda endpoint: endpoint)
     client = IdentityRegistryClient(grpc_endpoint="registry.test:50072")
 
     assert client.reverse(42, "Post") == oid(7)
@@ -402,7 +435,7 @@ def test_registry_client_rejects_invalid_registry_inputs(monkeypatch: pytest.Mon
         client.reverse_batch([(0, "Post")])
 
 
-def test_registry_client_resolve_batch_preserves_trusted_snowflake(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_registry_client_allocate_batch_preserves_trusted_snowflake(monkeypatch: pytest.MonkeyPatch) -> None:
     captured = []
     rows = [
         {
@@ -415,8 +448,9 @@ def test_registry_client_resolve_batch_preserves_trusted_snowflake(monkeypatch: 
     _patch_urlopen(monkeypatch, rows, captured)
     client = IdentityRegistryClient("http://registry.test")
 
-    client.resolve_batch_with_trusted([(oid(1), "Post", 42)])
+    client.allocate_batch_with_trusted([(oid(1), "Post", 42)])
 
+    assert captured[0].full_url == "http://registry.test/v1/allocate:batch"
     request_body = json.loads(captured[0].data)
     assert request_body == {
         "ids": [
@@ -458,7 +492,7 @@ def test_registry_client_rechecks_cached_value_for_trusted_import(
     client = IdentityRegistryClient("http://registry.test")
 
     client.resolve_batch([(oid(1), "Post")])
-    client.resolve_batch_with_trusted([(oid(1), "Post", 42)])
+    client.allocate_batch_with_trusted([(oid(1), "Post", 42)])
 
     assert len(calls) == 2
     assert calls[1]["ids"][0]["trusted_snowflake_id"] == 42
