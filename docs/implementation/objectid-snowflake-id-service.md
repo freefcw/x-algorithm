@@ -17,7 +17,7 @@
 
 ## 映射存储
 
-生产 `id-service` 使用 Redis 作为共享持久化存储，不再把全量映射加载到每个服务副本的内存中。映射不再集中放进一个 Hash，而是使用按 CRC16 分片的独立 key；默认 256 个逻辑分片，每个 key 通过 hash-tag 固定到对应 slot：
+生产 `id-service` 默认使用 Redis 作为共享持久化存储，不再把全量映射加载到每个服务副本的内存中。Redis 适配器带有有界进程内缓存，命中时作为二级存储，未命中再访问 Redis；写入 Redis 成功后回填缓存。开发调试可将 `ID_REGISTRY_REDIS_ENABLED=false` 切换到纯内存模式，此时只在当前进程内保存映射，适合单进程本地运行，不提供跨副本或跨重启的一致性。映射不再集中放进一个 Hash，而是使用按 CRC16 分片的独立 key；默认 256 个逻辑分片，每个 key 通过 hash-tag 固定到对应 slot：
 
 ```text
 id-registry:v2:object:{037}:user:<object_id>       -> <snowflake_id>
@@ -123,7 +123,8 @@ Redis-backed registry 只保留有上限的进程内热点缓存：
 
 配置：
 
-- `ID_REGISTRY_REDIS_URL` / `--redis-url`：单 Redis 连接入口；
+- `ID_REGISTRY_REDIS_ENABLED` / `--redis-enabled`：是否启用 Redis，默认 `true`。关闭时使用进程内 `MemoryMappingStore`，适合本地开发调试；映射和序列计数不会跨进程或重启持久化；
+- `ID_REGISTRY_REDIS_URL` / `--redis-url`：单 Redis 连接入口（Redis 模式下必填）；
 - `ID_REGISTRY_REDIS_CLUSTER_URLS` / `--redis-cluster-urls`：逗号分隔的原生 Redis Cluster seed URLs；与单 Redis URL 互斥；
 - `ID_REGISTRY_REDIS_KEY_PREFIX` / `--redis-key-prefix`：默认 `id-registry:v2`；schema 固定为 256 个分片；
 - `ID_REGISTRY_CACHE_CAPACITY` / `--cache-capacity`：每个方向的本地缓存上限，默认 `100000`；
