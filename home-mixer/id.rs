@@ -79,7 +79,11 @@ impl IdentityAllocator for RegistryClient {
         &self,
         ids: &[(String, EntityKind)],
     ) -> anyhow::Result<Vec<SnowflakeId>> {
-        RegistryClient::allocate_batch(self, ids).await
+        let request = ids
+            .iter()
+            .map(|(id, kind)| (id.clone(), *kind, None))
+            .collect::<Vec<_>>();
+        RegistryClient::allocate_batch(self, &request).await
     }
 }
 
@@ -230,13 +234,13 @@ impl RegistryTransport for HttpRegistryTransport {
     ) -> anyhow::Result<Vec<ResolvedId>> {
         let payload = ids
             .iter()
-            .map(|(id, kind, trusted)| {
+            .map(|(id, kind, provided)| {
                 let mut value = serde_json::json!({
                     "object_id": id,
                     "entity_kind": kind,
                 });
-                if let Some(trusted) = trusted {
-                    value["trusted_snowflake_id"] = serde_json::json!(trusted.get());
+                if let Some(provided) = provided {
+                    value["snowflake_id"] = serde_json::json!(provided.get());
                 }
                 value
             })
@@ -285,10 +289,10 @@ impl RegistryTransport for HttpRegistryTransport {
     ) -> anyhow::Result<Vec<ResolvedId>> {
         let payload = ids
             .iter()
-            .map(|(id, kind, trusted)| {
+            .map(|(id, kind, provided)| {
                 let mut value = serde_json::json!({"object_id": id, "entity_kind": kind});
-                if let Some(trusted) = trusted {
-                    value["trusted_snowflake_id"] = serde_json::json!(trusted.get());
+                if let Some(provided) = provided {
+                    value["snowflake_id"] = serde_json::json!(provided.get());
                 }
                 value
             })
@@ -334,10 +338,10 @@ impl RegistryTransport for GrpcRegistryTransport {
         let request = registry_pb::ResolveBatchRequest {
             ids: ids
                 .iter()
-                .map(|(object_id, kind, trusted)| registry_pb::ResolveRequest {
+                .map(|(object_id, kind, provided)| registry_pb::ResolveRequest {
                     object_id: object_id.clone(),
                     entity_kind: proto_kind(*kind),
-                    snowflake_id: trusted.map(SnowflakeId::get),
+                    snowflake_id: provided.map(SnowflakeId::get),
                 })
                 .collect(),
         };
@@ -409,10 +413,10 @@ impl RegistryTransport for GrpcRegistryTransport {
         let request = registry_pb::ResolveBatchRequest {
             ids: ids
                 .iter()
-                .map(|(object_id, kind, trusted)| registry_pb::ResolveRequest {
+                .map(|(object_id, kind, provided)| registry_pb::ResolveRequest {
                     object_id: object_id.clone(),
                     entity_kind: proto_kind(*kind),
-                    snowflake_id: trusted.map(SnowflakeId::get),
+                    snowflake_id: provided.map(SnowflakeId::get),
                 })
                 .collect(),
         };
@@ -467,7 +471,7 @@ fn validate_resolve_rows(
     );
     rows.into_iter()
         .zip(ids)
-        .map(|(row, (id, kind, trusted))| {
+        .map(|(row, (id, kind, provided))| {
             anyhow::ensure!(
                 row.object_id == *id && row.entity_kind == *kind,
                 "ID Registry response identity mismatch"
@@ -478,10 +482,10 @@ fn validate_resolve_rows(
                 row.mapping_version
             );
             let resolved = SnowflakeId::new(row.snowflake_id)?;
-            if let Some(trusted) = trusted {
+            if let Some(provided) = provided {
                 anyhow::ensure!(
-                    resolved == *trusted,
-                    "ID Registry returned a mismatched trusted Snowflake"
+                    resolved == *provided,
+                    "ID Registry returned a mismatched provided Snowflake"
                 );
             }
             Ok(resolved)
@@ -545,34 +549,72 @@ impl RegistryClient {
         self
     }
 
+    /// Read-only resolution: unknown ObjectIds come back as an error and
+    /// nothing is written. Ingress adapters that may create mappings use
+    /// [`Self::allocate_batch`] instead.
     pub async fn resolve_batch(
         &self,
         ids: &[(String, EntityKind)],
     ) -> anyhow::Result<Vec<SnowflakeId>> {
-        self.resolve_batch_with_trusted(
-            &ids.iter()
-                .map(|(id, kind)| (id.clone(), *kind, None))
-                .collect::<Vec<_>>(),
-        )
-        .await
-    }
-
-    /// Allocate identities for a trusted ingress.  This is intentionally a
-    /// separate client method from `resolve_batch`: only the small number of
-    /// ingress adapters should call it.  The Registry server still enforces
-    /// whether allocation is enabled.
-    pub async fn allocate_batch(
-        &self,
-        ids: &[(String, EntityKind)],
-    ) -> anyhow::Result<Vec<SnowflakeId>> {
+        if ids.is_empty() {
+            return Ok(Vec::new());
+        }
         let request = ids
             .iter()
             .map(|(id, kind)| (id.clone(), *kind, None))
             .collect::<Vec<_>>();
-        self.allocate_batch_with_trusted(&request).await
+        let deadline = Instant::now() + ID_REGISTRY_REQUEST_TIMEOUT;
+        let started = Instant::now();
+        let method = if self.grpc.is_some() {
+            "resolve_grpc"
+        } else {
+            "resolve_http"
+        };
+        let rows = if let Some(grpc) = &self.grpc {
+            match grpc.resolve_batch(&request, remaining(deadline)?).await {
+                Ok(rows) => rows,
+                Err(error) => {
+                    self.calls.record(
+                        "id_registry",
+                        method,
+                        registry_error_label(&error, "mapping_miss"),
+                        started,
+                    );
+                    return Err(error);
+                }
+            }
+        } else {
+            let http = self.http.as_ref().ok_or_else(|| {
+                anyhow::anyhow!("ID Registry HTTP compatibility transport is not configured")
+            })?;
+            match http.resolve_batch(&request, remaining(deadline)?).await {
+                Ok(rows) => rows,
+                Err(error) => {
+                    self.calls.record(
+                        "id_registry",
+                        method,
+                        registry_error_label(&error, "mapping_miss"),
+                        started,
+                    );
+                    return Err(error);
+                }
+            }
+        };
+        let result = validate_resolve_rows(rows, &request);
+        self.calls.record(
+            "id_registry",
+            method,
+            if result.is_ok() { "ok" } else { "rejected" },
+            started,
+        );
+        result
     }
 
-    pub async fn allocate_batch_with_trusted(
+    /// Allocate identities for an ingress adapter. Items carrying a
+    /// caller-provided Snowflake are registered with that exact value;
+    /// items without one receive a freshly allocated id. The Registry
+    /// server still enforces whether allocation is enabled.
+    pub async fn allocate_batch(
         &self,
         request: &[(String, EntityKind, Option<SnowflakeId>)],
     ) -> anyhow::Result<Vec<SnowflakeId>> {
@@ -624,97 +666,6 @@ impl RegistryClient {
             self.calls
                 .record("id_registry", method, "rejected", started);
         }
-        result
-    }
-
-    /// Resolve IDs while optionally preserving an existing native Snowflake.
-    /// With no trusted IDs this is read-only. When a trusted ID is present,
-    /// the request is routed through AllocateBatch for compatibility with
-    /// migration tooling; callers that need the intent to be explicit should
-    /// prefer [`Self::allocate_batch_with_trusted`].
-    pub async fn resolve_batch_with_trusted(
-        &self,
-        ids: &[(String, EntityKind, Option<SnowflakeId>)],
-    ) -> anyhow::Result<Vec<SnowflakeId>> {
-        if ids.is_empty() {
-            return Ok(Vec::new());
-        }
-        let allocate = ids.iter().any(|(_, _, trusted)| trusted.is_some());
-        let deadline = Instant::now() + ID_REGISTRY_REQUEST_TIMEOUT;
-        if let Some(grpc) = &self.grpc {
-            let started = std::time::Instant::now();
-            let result = if allocate {
-                grpc.allocate_batch(ids, remaining(deadline)?).await
-            } else {
-                grpc.resolve_batch(ids, remaining(deadline)?).await
-            };
-            match result {
-                Ok(rows) => {
-                    let result = validate_resolve_rows(rows, ids);
-                    self.calls.record(
-                        "id_registry",
-                        if allocate {
-                            "allocate_grpc"
-                        } else {
-                            "resolve_grpc"
-                        },
-                        if result.is_ok() { "ok" } else { "rejected" },
-                        started,
-                    );
-                    return result;
-                }
-                Err(error) => {
-                    self.calls.record(
-                        "id_registry",
-                        if allocate {
-                            "allocate_grpc"
-                        } else {
-                            "resolve_grpc"
-                        },
-                        registry_error_label(&error, "mapping_miss"),
-                        started,
-                    );
-                    return Err(error);
-                }
-            }
-        }
-
-        let http = self.http.as_ref().ok_or_else(|| {
-            anyhow::anyhow!("ID Registry HTTP compatibility transport is not configured")
-        })?;
-        let started = std::time::Instant::now();
-        let result = if allocate {
-            http.allocate_batch(ids, remaining(deadline)?).await
-        } else {
-            http.resolve_batch(ids, remaining(deadline)?).await
-        };
-        let rows = match result {
-            Ok(rows) => rows,
-            Err(error) => {
-                self.calls.record(
-                    "id_registry",
-                    if allocate {
-                        "allocate_http"
-                    } else {
-                        "resolve_http"
-                    },
-                    registry_error_label(&error, "mapping_miss"),
-                    started,
-                );
-                return Err(error);
-            }
-        };
-        let result = validate_resolve_rows(rows, ids);
-        self.calls.record(
-            "id_registry",
-            if allocate {
-                "allocate_http"
-            } else {
-                "resolve_http"
-            },
-            if result.is_ok() { "ok" } else { "rejected" },
-            started,
-        );
         result
     }
 
@@ -877,7 +828,7 @@ mod tests {
         let ids = [("65f1a2b3c4d5e6f708091011".to_string(), EntityKind::User)];
 
         let resolved = client
-            .resolve_batch_with_trusted(&[(
+            .allocate_batch(&[(
                 ids[0].0.clone(),
                 ids[0].1,
                 Some(SnowflakeId::new(4242).unwrap()),
@@ -1028,7 +979,7 @@ mod tests {
             .with_calls(metrics.client_calls());
 
         let error = client
-            .allocate_batch(&[("65f1a2b3c4d5e6f708091011".into(), EntityKind::User)])
+            .allocate_batch(&[("65f1a2b3c4d5e6f708091011".into(), EntityKind::User, None)])
             .await
             .unwrap_err();
         assert!(error.to_string().contains("mapping_version"));
