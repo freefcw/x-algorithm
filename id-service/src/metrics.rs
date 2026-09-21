@@ -55,7 +55,7 @@ impl Metrics {
         let requests = IntCounterVec::new(
             Opts::new(
                 "id_service_requests_total",
-                "HTTP requests by matched route and response status",
+                "HTTP and gRPC requests by route/method and status code",
             ),
             &["route", "status"],
         )

@@ -9,6 +9,7 @@ use serde::{Deserialize, Deserializer, Serialize};
 use std::fmt;
 use std::time::{SystemTime, UNIX_EPOCH};
 
+pub mod grpc;
 pub mod http;
 pub mod logging;
 pub mod metrics;

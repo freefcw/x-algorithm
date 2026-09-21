@@ -961,7 +961,9 @@ dependencies = [
  "serde",
  "serde_json",
  "tokio",
+ "tonic",
  "tower 0.4.13",
+ "x-algorithm-proto",
 ]
 
 [[package]]
