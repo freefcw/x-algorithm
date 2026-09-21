@@ -74,7 +74,7 @@ Redis-backed registry 只保留有上限的进程内热点缓存：
 - 推荐请求应在入口批量解析，不能让下游模块自行查表；
 - batch 语义：整批先按 `(entity_kind, object_id)` 去重，再把能预见的冲突全部查清（已有映射和传入的可信 ID 对不上、可信 ID 已被别的对象占用、批内自相矛盾、关闭分配时存在未知 ID），任何一项冲突就整批拒绝（409；未知 ID 为 404 且消息列出数量和前 5 个 id；关闭 trusted 导入时带 `trusted_snowflake_id` 为 403），一个映射都不写，调用方可以放心修数据后重试。只有并发窗口（别的副本恰好在这批检查和写入之间抢先写了同一批对象）可能留下部分写入，此时重读获胜映射并返回，重试依然安全。单条 `resolve` 内部走同一条批量路径，两者语义一致。
 - 往返次数（Single 模式，每一轮是一个 pipeline，与 id 数量无关）：正向批查 1 轮；反查 2 轮（反向 GET + 正向校验 GET）；批量写 = 正向查 1 轮 + trusted 预检 1 轮（有 trusted 项时）+ 序列 `INCRBY` 1 轮（有分配项时）+ 写入 3 轮（反向 reserve、正向 reserve、冲突补偿删除，后两轮只含需要的项）+ 序列下限 1 轮（trusted 项落在本 worker 时）；分配撞车时每次重抽再加 1 轮重读 + 1 轮序列 + 3 轮写。Cluster 模式下每一轮按 slot 分组成多个 pipeline 并发执行，往返次数与 Single 模式相同，只是并发扇出。Lua 用 `EVALSHA` 预加载脚本；遇到 `NOSCRIPT`（脚本被 flush 或新节点）会重新 `SCRIPT LOAD` 并重试一次。
-- 超时预算：`ID_REGISTRY_REDIS_REQUEST_TIMEOUT_MS`（默认 500）约束的是**单个 Redis pipeline**，一次批量写最多要串行经过约 5～8 轮；Home Mixer `RegistryClient` 与 Phoenix `IdentityRegistryClient` 的 500 ms 是**整次 HTTP 请求**的上限。在线只读/分配少量 id 的请求通常一两轮即可，但迁移批量导入应使用更大的客户端超时或更小的批（`--max-batch-size` 默认 10000 只是硬上限），并且服务端单次 Redis 超时不应大于客户端预算的一小部分，否则客户端会先超时而服务端仍在写入。
+- 超时预算：`ID_REGISTRY_REDIS_REQUEST_TIMEOUT_MS`（默认 500）约束的是**单个 Redis pipeline**，一次批量写最多要串行经过约 5～8 轮；Home Mixer Registry gRPC 调用和 Phoenix `IdentityRegistryClient` 都有客户端 deadline，Home Mixer gRPC 失败不会再发 HTTP 请求。在线只读/分配少量 id 的请求通常一两轮即可，但迁移批量导入应使用更大的客户端超时或更小的批（`--max-batch-size` 默认 10000 只是硬上限），并且服务端单次 Redis 超时不应大于客户端预算的一小部分，否则客户端会先超时而服务端仍在写入。
 
 内存预算按每条本地缓存约 100～250 bytes 粗估。默认容量约占 20～50 MB 加 Rust 进程基础开销；千万级全量映射不会等比例复制到每个 Registry 副本。Redis 本身按两个独立索引 key 约 250～600 bytes / mapping 预估，千万级数据应先按约 3～6 GB 数据、8～16 GB Redis 实例做压测起点，并保留 AOF、复制和碎片余量。分片后单 key 只承载一条映射，resharding、RDB/AOF rewrite 和 `--bigkeys` 不再被一个超大 Hash 拖住；总吞吐仍需按分片和节点数压测。
 
@@ -129,22 +129,27 @@ Redis-backed registry 只保留有上限的进程内热点缓存：
 - `ID_REGISTRY_CACHE_CAPACITY` / `--cache-capacity`：每个方向的本地缓存上限，默认 `100000`；
 - `ID_REGISTRY_REDIS_CONNECT_TIMEOUT_MS`：Redis 连接超时，默认 `2000`（单节点与 Cluster 路径都生效）；
 - `ID_REGISTRY_REDIS_REQUEST_TIMEOUT_MS`：单个 Redis pipeline 的超时，默认 `500`（见上文超时预算）；
-- `ID_REGISTRY_LISTEN` / `--listen`：HTTP 监听地址，默认 `127.0.0.1:50070`；
+- `ID_REGISTRY_GRPC_LISTEN` / `--grpc-listen`：gRPC 主监听地址，生产清单使用 `0.0.0.0:50072`（本地默认值由二进制提供）；
+- `ID_REGISTRY_HTTP_LISTEN` / `--http-listen`：HTTP 兼容监听地址，生产清单保留 `0.0.0.0:50070` 供旧客户端使用；
+- 旧 `ID_REGISTRY_LISTEN` / `--listen` 在新二进制中作为隐藏的 HTTP 监听别名保留（优先于 `--http-listen`），并打印弃用告警。升级时先部署同时开放 50070 HTTP 与 50072 gRPC 的实例，再把客户端切换到 `ID_REGISTRY_GRPC_ADDR`；旧 HTTP 客户端可继续使用 50070，完成迁移后再下线兼容入口；
 - `ID_REGISTRY_WORKER_ID` / `--worker-id`：Snowflake worker 标识（0..=1023），默认 `0`。序列 counter 在 Redis，多副本共享同一 worker id 也安全；使用不同 worker id 只是为了让分配结果可追溯到副本；
 - `ID_REGISTRY_ALLOW_ALLOCATION` / `--allow-allocation`：默认关闭。关闭时只接受已有 mapping 或 trusted 导入，未知 ObjectId 返回 404 并一次列出全部未知 id 的数量和前 5 个。生产环境如果要对齐 main、Thunder 或 Phoenix index，应保持关闭并先导入 trusted mapping；
 - `ID_REGISTRY_ALLOW_TRUSTED_IMPORT` / `--allow-trusted-import`：默认关闭。关闭时任何带 `trusted_snowflake_id` 的请求（单条或批量任一项）在读写之前整批返回 403，防止普通调用方绕过分配权威直接指定 Snowflake。只在迁移导入专用副本上开启，在线只读副本与 k8s 清单都不开；
 - `ID_REGISTRY_MAX_BATCH_SIZE` / `--max-batch-size`：单次批量请求的 id 数上限，默认 `10000`，超限返回 413；
+- gRPC 请求与响应消息上限固定为 `4 MiB`；批量数量和 protobuf 消息大小同时受限，避免超大字符串或批次占满服务端内存；
 - `RUST_LOG`：日志过滤（`env_logger` 语法，如 `info` 或 `id_service=debug`）；`ID_REGISTRY_LOG_FORMAT`：`text`（默认）或 `json`，与 Home Mixer 的 `HOME_MIXER_LOG_FORMAT` 同一格式；
-- `ID_REGISTRY_URL`：Phoenix adapter 访问统一 Registry 的地址，默认 `http://127.0.0.1:50070`。
-- `HOME_MIXER_ID_REGISTRY_URL`：Home Mixer Registry client 地址，默认 `http://127.0.0.1:50070`。
+- `ID_REGISTRY_GRPC_ADDR`：Phoenix adapter 访问 Registry 的 gRPC 主地址，生产清单为 `127.0.0.1:50072`；
+- `ID_REGISTRY_URL`：旧 Phoenix / 迁移工具访问 Registry 的 HTTP 兼容地址，生产清单为 `http://127.0.0.1:50070`；默认 Phoenix adapter 使用 gRPC，gRPC 失败不会再切换到 HTTP。
+- `HOME_MIXER_ID_REGISTRY_GRPC_ADDR`：Home Mixer Registry gRPC 地址，生产清单为 `http://id-registry:50072`；Home Mixer gRPC 失败即返回错误，不执行 HTTP 重试。
 
-Home Mixer 启动会校验 Registry URL；实际 Registry 不可用时，首次需要解析身份的请求 fail-closed。Home Mixer 只使用 Registry Client，不直接打开或写入映射文件。
+Home Mixer 启动会校验 Registry gRPC 地址；实际 Registry 不可用时，首次需要解析身份的请求 fail-closed。Home Mixer 只使用 Registry Client，不直接打开或写入映射文件。
 
 ### 运行状态、日志与停机
 
+- `/healthz`、`/readyz` 与 `/metrics` 只在 HTTP 兼容端口提供；gRPC 主端口只承载 Registry RPC。
 - `/healthz` 只表示进程存活。
 - `/readyz` 只读地 `GET` `mapping_version` 与 `storage_schema` 两个元数据 key 并比对常量；Redis 不可用、元数据缺失或不匹配都返回 503，供负载均衡器摘除当前副本。探测不会写 Redis，也不会重建元数据（元数据只在启动时用 `SETNX` 写入一次）。
-- `/metrics` 与业务接口同一监听端口，Prometheus 文本格式：`id_service_requests_total{route,status}`、`id_service_conflicts_total{kind="mapping"|"snowflake_taken"|"entity_kind"}`、`id_service_trusted_imports_total`、`id_service_allocations_total`、`id_service_redis_errors_total`、`id_service_orphan_reverse_mappings_total`、`id_service_cache_entries{direction="object"|"snowflake"}`、`id_service_build_info{version}`。
+- `/metrics` 与业务接口同一监听端口，Prometheus 文本格式：`id_service_requests_total{route,status}`、`id_service_conflicts_total{kind="mapping"|"snowflake_taken"|"entity_kind"}`、`id_service_trusted_imports_total`、`id_service_allocations_total`、`id_service_redis_errors_total`、`id_service_orphan_reverse_mappings_total`、`id_service_cache_entries{direction="object"|"snowflake"}`、`id_service_build_info{version}`；Home Mixer 额外通过 `home_mixer_client_calls_total{client="id_registry",method="resolve_grpc|reverse_grpc",result="ok|error"}` 观测主链路。
 - 日志：启动打印配置摘要（Redis URL 中的用户名/密码已脱敏为 `***@`）、ready 地址、每次 trusted 导入（info）、每次冲突（warn）、每个 Redis 错误（error，带操作名如 `insert reverse`）、orphan 反向记录（warn）、收到信号与停止（info）。
 - 优雅停机：收到 SIGTERM 或 Ctrl-C 后停止接受新连接，等待在途请求完成再退出（退出码 0）。
 
@@ -169,4 +174,4 @@ HTTP 状态码按错误变体映射，不做消息子串匹配：
 5. xrex checkpoint、retrieval index 和 Registry 使用同一版本；
 6. 对外响应仍能通过反向索引恢复原始 ObjectId。
 
-当前状态：Registry crate 的 JSONL 遗留实现已删除，Redis 版本拆为 `MappingStore` 存储端口、分片独立 key Redis adapter 和应用服务；服务入口支持单 Redis endpoint 与原生 Redis Cluster（连接与响应超时均显式配置），批量读写每轮一个 pipeline（Cluster 按 slot 分组并发），并使用有上限的双向本地缓存。全局 Snowflake 唯一性、两阶段写入、trusted 导入门禁、分配序列对已存在 Snowflake 的感知与有界重抽、mapping version 与 storage schema 元数据校验、只读 readiness、fail-closed 反查、批量写前整体校验（确定性冲突下整批不提交）、日志 / `/metrics` / 优雅停机、HTTP 层与应用层回归测试已补齐。开发阶段暂不处理旧 v1 Hash schema 兼容、反向 orphan 的离线修复工具和 Redis 故障切换后的历史数据恢复；上线前必须单独完成这三类验收。Home Mixer 领域模型以及 Thunder、VM Ranker、Phoenix/xrex 在线协议均使用数值 ID，ObjectId 只保留在公开 RPC、Redis、mrpyq 和事件边界。开发阶段先用 Redis 观察千万级映射的实际内存、命中率和吞吐，再决定是否引入 MongoDB 作为大规模冷数据主库。
+当前状态：Registry crate 的 JSONL 遗留实现已删除；gRPC 是内部主协议，HTTP 仅作为旧客户端兼容与运维入口；Redis 版本拆为 `MappingStore` 存储端口、分片独立 key Redis adapter 和应用服务；服务入口支持单 Redis endpoint 与原生 Redis Cluster（连接与响应超时均显式配置），批量读写每轮一个 pipeline（Cluster 按 slot 分组并发），并使用有上限的双向本地缓存。全局 Snowflake 唯一性、两阶段写入、trusted 导入门禁、分配序列对已存在 Snowflake 的感知与有界重抽、mapping version 与 storage schema 元数据校验、只读 readiness、fail-closed 反查、批量写前整体校验（确定性冲突下整批不提交）、日志 / `/metrics` / 优雅停机、HTTP 层与应用层回归测试已补齐。开发阶段暂不处理旧 v1 Hash schema 兼容、反向 orphan 的离线修复工具和 Redis 故障切换后的历史数据恢复；上线前必须单独完成这三类验收。Home Mixer 领域模型以及 Thunder、VM Ranker、Phoenix/xrex 在线协议均使用数值 ID，ObjectId 只保留在公开 RPC、Redis、mrpyq 和事件边界。开发阶段先用 Redis 观察千万级映射的实际内存、命中率和吞吐，再决定是否引入 MongoDB 作为大规模冷数据主库。
