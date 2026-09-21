@@ -5,7 +5,8 @@
 //! * [`RedisIdRegistry`] holds the identity rules (trusted imports, Snowflake
 //!   allocation, conflict handling) and knows nothing about Redis keys.
 //! * `RedisMappingStore` maps the port onto sharded Redis keys with a bounded
-//!   local cache; [`MemoryMappingStore`] is the in-process fixture.
+//!   local cache; [`MemoryMappingStore`] is the in-process development backend
+//!   and test fixture.
 
 use async_trait::async_trait;
 use futures::future::try_join_all;
@@ -239,6 +240,10 @@ pub trait MappingStore: Send + Sync {
 
 #[derive(Clone, Debug)]
 pub struct RedisIdRegistryConfig {
+    /// Whether to use Redis as the durable primary store. When disabled, the
+    /// registry uses an in-process [`MemoryMappingStore`] only. This is useful
+    /// for local development and does not provide cross-process persistence.
+    pub redis_enabled: bool,
     pub single_url: Option<String>,
     pub cluster_urls: Option<Vec<String>>,
     pub key_prefix: String,
@@ -298,17 +303,28 @@ impl RedisIdRegistry {
         if config.worker_id > MAX_WORKER_ID {
             return Err(IdError::InvalidWorkerId(config.worker_id));
         }
-        let store = RedisMappingStore::connect(
-            config.single_url.as_deref(),
-            config.cluster_urls.as_deref(),
-            config.key_prefix,
-            config.cache_capacity,
-            config.connect_timeout,
-            config.request_timeout,
-        )
-        .await?;
+        if config.cache_capacity == 0 {
+            return Err(IdError::Redis(
+                "cache capacity must be positive".to_string(),
+            ));
+        }
+        let store: Arc<dyn MappingStore> = if config.redis_enabled {
+            Arc::new(
+                RedisMappingStore::connect(
+                    config.single_url.as_deref(),
+                    config.cluster_urls.as_deref(),
+                    config.key_prefix,
+                    config.cache_capacity,
+                    config.connect_timeout,
+                    config.request_timeout,
+                )
+                .await?,
+            )
+        } else {
+            Arc::new(MemoryMappingStore::new())
+        };
         Self::with_store(
-            Arc::new(store),
+            store,
             config.worker_id,
             config.allow_allocation,
             config.allow_trusted_import,
@@ -1835,8 +1851,10 @@ fn bump(counter: &AtomicU64) {
     counter.fetch_add(1, Ordering::Relaxed);
 }
 
-/// In-memory `MappingStore` for unit tests and local fixtures; inject it via
-/// `RedisIdRegistry::with_store` when no Redis instance should be involved.
+/// In-memory `MappingStore` for unit tests and local development; inject it
+/// via `RedisIdRegistry::with_store` or select it through
+/// `RedisIdRegistryConfig::redis_enabled = false` when no Redis instance
+/// should be involved.
 /// It mirrors the Redis adapter's semantics: two independent indexes written
 /// reverse-first, reverse lookups validated against the forward entry, and
 /// `(worker, second)` sequence counters.
@@ -2010,7 +2028,10 @@ impl MappingStore for MemoryMappingStore {
     }
 
     fn cache_sizes(&self) -> (usize, usize) {
-        (0, 0)
+        (
+            lock_ignoring_poison(&self.by_object).len(),
+            lock_ignoring_poison(&self.by_snowflake).len(),
+        )
     }
 
     async fn find_by_object(
@@ -2073,6 +2094,54 @@ mod tests {
 
     fn object_id_at(second: u64, suffix: u32) -> String {
         format!("{second:08x}{suffix:016x}")
+    }
+
+    #[tokio::test]
+    async fn connect_without_redis_uses_process_local_memory_store() {
+        let registry = RedisIdRegistry::connect(RedisIdRegistryConfig {
+            redis_enabled: false,
+            single_url: None,
+            cluster_urls: None,
+            key_prefix: "id-registry:memory-test".to_string(),
+            cache_capacity: 4,
+            worker_id: 0,
+            allow_allocation: true,
+            allow_trusted_import: true,
+            connect_timeout: Duration::from_secs(1),
+            request_timeout: Duration::from_secs(1),
+        })
+        .await
+        .unwrap();
+
+        let id = registry.resolve_one(POST, EntityKind::Post).await.unwrap();
+        let mapping = registry.reverse_one(id, EntityKind::Post).await.unwrap();
+        assert_eq!(mapping.object_id, POST);
+        assert_eq!(registry.cache_sizes(), (1, 1));
+        registry.check_ready().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn connect_with_redis_enabled_requires_a_redis_endpoint() {
+        let result = RedisIdRegistry::connect(RedisIdRegistryConfig {
+            redis_enabled: true,
+            single_url: None,
+            cluster_urls: None,
+            key_prefix: "id-registry:redis-test".to_string(),
+            cache_capacity: 4,
+            worker_id: 0,
+            allow_allocation: true,
+            allow_trusted_import: true,
+            connect_timeout: Duration::from_secs(1),
+            request_timeout: Duration::from_secs(1),
+        })
+        .await;
+        let Err(error) = result else {
+            panic!("Redis mode must reject a missing endpoint");
+        };
+        assert!(matches!(
+            error,
+            IdError::Redis(message) if message == "no Redis endpoint configured"
+        ));
     }
 
     fn loads(counter: &AtomicU64) -> u64 {
@@ -2727,6 +2796,7 @@ mod tests {
 
     fn redis_config(url: &str, prefix: &str) -> RedisIdRegistryConfig {
         RedisIdRegistryConfig {
+            redis_enabled: true,
             single_url: Some(url.to_string()),
             cluster_urls: None,
             key_prefix: prefix.to_string(),

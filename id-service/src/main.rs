@@ -32,6 +32,15 @@ struct Args {
     redis_url: Option<String>,
     #[arg(long, env = "ID_REGISTRY_REDIS_CLUSTER_URLS", value_delimiter = ',')]
     redis_cluster_urls: Option<Vec<String>>,
+    /// Select Redis as the durable primary store. Set to false for local
+    /// development; the registry then uses only an in-process memory store.
+    #[arg(
+        long,
+        env = "ID_REGISTRY_REDIS_ENABLED",
+        default_value_t = true,
+        action = clap::ArgAction::Set
+    )]
+    redis_enabled: bool,
     #[arg(
         long,
         env = "ID_REGISTRY_REDIS_KEY_PREFIX",
@@ -52,9 +61,9 @@ struct Args {
         default_value_t = 500
     )]
     redis_request_timeout_ms: u64,
-    /// Snowflake worker id (0..=1023) embedded in allocated ids. Sequence
-    /// counters live in Redis, so replicas may share a worker id; distinct
-    /// ids only make allocations attributable to a replica.
+    /// Snowflake worker id (0..=1023) embedded in allocated ids. In Redis
+    /// mode sequence counters are shared; in memory mode they are process
+    /// local and therefore must not be used for multi-replica allocation.
     #[arg(long, env = "ID_REGISTRY_WORKER_ID", default_value_t = 0)]
     worker_id: u64,
     /// Allow first-seen ObjectIDs to receive newly allocated Snowflakes.
@@ -86,6 +95,11 @@ async fn main() -> anyhow::Result<()> {
             "--listen/ID_REGISTRY_LISTEN is deprecated; use --http-listen/ID_REGISTRY_HTTP_LISTEN"
         );
     }
+    if !args.redis_enabled {
+        log::warn!(
+            "ID Registry Redis is disabled; using process-local memory storage. Mappings and Snowflake sequence counters are not shared across processes or restarts"
+        );
+    }
     anyhow::ensure!(
         args.cache_capacity > 0,
         "ID registry cache capacity must be positive"
@@ -101,7 +115,7 @@ async fn main() -> anyhow::Result<()> {
     log::info!(
         "id-service starting: grpc_listen={} http_listen={} worker_id={} allow_allocation={} allow_trusted_import={} \
          max_batch_size={} key_prefix={} cache_capacity={} redis_connect_timeout_ms={} \
-         redis_request_timeout_ms={} mapping_version={MAPPING_VERSION} redis={}",
+         redis_request_timeout_ms={} mapping_version={MAPPING_VERSION} redis_enabled={} redis={}",
         args.grpc_listen,
         http_listen,
         args.worker_id,
@@ -112,10 +126,12 @@ async fn main() -> anyhow::Result<()> {
         args.cache_capacity,
         args.redis_connect_timeout_ms,
         args.redis_request_timeout_ms,
+        args.redis_enabled,
         redis_endpoint_summary(&args),
     );
 
     let registry = RedisIdRegistry::connect(RedisIdRegistryConfig {
+        redis_enabled: args.redis_enabled,
         single_url: args.redis_url,
         cluster_urls: args.redis_cluster_urls,
         key_prefix: args.redis_key_prefix,
@@ -175,6 +191,9 @@ async fn main() -> anyhow::Result<()> {
 
 /// Redis endpoints for the startup log, with credentials redacted.
 fn redis_endpoint_summary(args: &Args) -> String {
+    if !args.redis_enabled {
+        return "disabled".to_string();
+    }
     match (&args.redis_url, &args.redis_cluster_urls) {
         (Some(url), _) => logging::redact_url(url),
         (None, Some(urls)) => format!(

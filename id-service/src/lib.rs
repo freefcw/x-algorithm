@@ -2,8 +2,9 @@
 //!
 //! The service deliberately keeps the mapping independent from Home Mixer and
 //! xrex. External ObjectIds are resolved at an ingress boundary; internal
-//! callers exchange the resulting Snowflake value. Redis is the production
-//! source of truth; local MappingStore implementations are only test fixtures.
+//! callers exchange the resulting Snowflake value. Redis is the default
+//! durable source of truth and includes a bounded process-local cache; local
+//! development can explicitly select the in-process `MemoryMappingStore`.
 
 use serde::{Deserialize, Deserializer, Serialize};
 use std::fmt;
