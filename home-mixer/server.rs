@@ -51,7 +51,10 @@ impl HomeMixerServer {
                 "HOME_MIXER_MODE=degraded: caller identity, Gizmoduck, Phoenix metadata, and served persist contracts are still incomplete"
             );
         }
-        let id_registry = Arc::new(crate::id::RegistryClient::new(&config.id_registry_url)?);
+        let id_registry = Arc::new(
+            crate::id::RegistryClient::new_with_grpc(&config.id_registry_grpc_addr)?
+                .with_calls(metrics.client_calls()),
+        );
         let identity: crate::id::SharedIdentityResolver = id_registry.clone();
         let query_builder = QueryBuilder::with_identity(config.features, Arc::clone(&identity));
         // Stage summaries, side-effect outcomes and exposure-event publishes

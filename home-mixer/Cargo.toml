@@ -55,6 +55,7 @@ x-algorithm-proto = { path = "../proto" }
 [dev-dependencies]
 # `ServiceExt::oneshot` drives the admin router in tests without a socket.
 tower = { version = "0.4", features = ["util"] }
+tokio-stream = { version = "0.1", features = ["net"] }
 
 [features]
 # Kafka consumption in `uas-worker` and the served-candidates Kafka sink.

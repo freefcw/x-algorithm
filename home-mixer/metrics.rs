@@ -335,7 +335,7 @@ pub struct ClientCallRecorder {
 
 impl ClientCallRecorder {
     /// Record one finished upstream call. `result` is a small fixed label
-    /// (`"ok"`, `"error"`, `"rejected"`); `started` bounds the latency.
+    /// (`"ok"`, `"error"`, or `"rejected"`); `started` bounds the latency.
     pub fn record(
         &self,
         client: &'static str,

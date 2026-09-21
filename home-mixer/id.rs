@@ -5,7 +5,12 @@
 
 pub use id_service::{EntityKind, IdError, SnowflakeId};
 use serde::Deserialize;
-use std::time::Duration;
+use std::time::{Duration, Instant};
+use tokio::sync::OnceCell;
+use tonic::transport::{Channel, Endpoint};
+use x_algorithm_proto::id_registry as registry_pb;
+
+const ID_REGISTRY_REQUEST_TIMEOUT: Duration = Duration::from_millis(500);
 
 /// Internal identity used by the recommendation path after ingress
 /// normalization.
@@ -13,8 +18,9 @@ pub type InternalId = SnowflakeId;
 
 #[derive(Clone)]
 pub struct RegistryClient {
-    client: reqwest::Client,
-    endpoint: reqwest::Url,
+    grpc: Option<GrpcRegistryTransport>,
+    http: Option<HttpRegistryTransport>,
+    calls: crate::metrics::ClientCallRecorder,
 }
 
 pub type SharedRegistryClient = std::sync::Arc<RegistryClient>;
@@ -118,20 +124,317 @@ struct ReversedId {
     mapping_version: u32,
 }
 
-impl RegistryClient {
-    pub fn new(endpoint: &str) -> anyhow::Result<Self> {
+#[derive(Clone)]
+struct HttpRegistryTransport {
+    client: reqwest::Client,
+    endpoint: reqwest::Url,
+}
+
+#[derive(Clone)]
+struct GrpcRegistryTransport {
+    endpoint: Endpoint,
+    channel: std::sync::Arc<OnceCell<Channel>>,
+}
+
+#[tonic::async_trait]
+trait RegistryTransport: Send + Sync {
+    async fn resolve_batch(
+        &self,
+        ids: &[(String, EntityKind, Option<SnowflakeId>)],
+        timeout: Duration,
+    ) -> anyhow::Result<Vec<ResolvedId>>;
+
+    async fn reverse_batch(
+        &self,
+        ids: &[(SnowflakeId, EntityKind)],
+        timeout: Duration,
+    ) -> anyhow::Result<Vec<ReversedId>>;
+}
+
+fn http_client() -> anyhow::Result<reqwest::Client> {
+    Ok(reqwest::Client::builder()
+        .connect_timeout(ID_REGISTRY_REQUEST_TIMEOUT)
+        .redirect(reqwest::redirect::Policy::none())
+        .build()?)
+}
+
+fn remaining(deadline: Instant) -> anyhow::Result<Duration> {
+    deadline
+        .checked_duration_since(Instant::now())
+        .ok_or_else(|| anyhow::anyhow!("ID Registry request deadline exceeded"))
+}
+
+impl HttpRegistryTransport {
+    fn new(endpoint: &str) -> anyhow::Result<Self> {
         let endpoint = reqwest::Url::parse(endpoint)?;
         anyhow::ensure!(
             matches!(endpoint.scheme(), "http" | "https"),
             "ID_REGISTRY_URL must use HTTP or HTTPS"
         );
         Ok(Self {
-            client: reqwest::Client::builder()
-                .timeout(Duration::from_millis(500))
-                .redirect(reqwest::redirect::Policy::none())
-                .build()?,
+            client: http_client()?,
             endpoint,
         })
+    }
+}
+
+#[tonic::async_trait]
+impl RegistryTransport for HttpRegistryTransport {
+    async fn resolve_batch(
+        &self,
+        ids: &[(String, EntityKind, Option<SnowflakeId>)],
+        timeout: Duration,
+    ) -> anyhow::Result<Vec<ResolvedId>> {
+        let payload = ids
+            .iter()
+            .map(|(id, kind, trusted)| {
+                let mut value = serde_json::json!({
+                    "object_id": id,
+                    "entity_kind": kind,
+                });
+                if let Some(trusted) = trusted {
+                    value["trusted_snowflake_id"] = serde_json::json!(trusted.get());
+                }
+                value
+            })
+            .collect::<Vec<_>>();
+        Ok(self
+            .client
+            .post(self.endpoint.join("/v1/resolve:batch")?)
+            .json(&serde_json::json!({"ids": payload}))
+            .timeout(timeout)
+            .send()
+            .await?
+            .error_for_status()?
+            .json()
+            .await?)
+    }
+
+    async fn reverse_batch(
+        &self,
+        ids: &[(SnowflakeId, EntityKind)],
+        timeout: Duration,
+    ) -> anyhow::Result<Vec<ReversedId>> {
+        let payload = serde_json::json!({
+            "ids": ids
+                .iter()
+                .map(|(id, kind)| {
+                    serde_json::json!({"snowflake_id": id.get(), "entity_kind": kind})
+                })
+                .collect::<Vec<_>>()
+        });
+        Ok(self
+            .client
+            .post(self.endpoint.join("/v1/reverse:batch")?)
+            .json(&payload)
+            .timeout(timeout)
+            .send()
+            .await?
+            .error_for_status()?
+            .json()
+            .await?)
+    }
+}
+
+impl GrpcRegistryTransport {
+    fn new(endpoint: &str) -> anyhow::Result<Self> {
+        Ok(Self {
+            endpoint: Endpoint::from_shared(endpoint.to_string())?
+                .connect_timeout(ID_REGISTRY_REQUEST_TIMEOUT)
+                .timeout(ID_REGISTRY_REQUEST_TIMEOUT),
+            channel: std::sync::Arc::new(OnceCell::new()),
+        })
+    }
+
+    async fn channel(&self) -> Channel {
+        self.channel
+            .get_or_init(|| async { self.endpoint.connect_lazy() })
+            .await
+            .clone()
+    }
+}
+
+#[tonic::async_trait]
+impl RegistryTransport for GrpcRegistryTransport {
+    async fn resolve_batch(
+        &self,
+        ids: &[(String, EntityKind, Option<SnowflakeId>)],
+        timeout: Duration,
+    ) -> anyhow::Result<Vec<ResolvedId>> {
+        let request = registry_pb::ResolveBatchRequest {
+            ids: ids
+                .iter()
+                .map(|(object_id, kind, trusted)| registry_pb::ResolveRequest {
+                    object_id: object_id.clone(),
+                    entity_kind: proto_kind(*kind),
+                    trusted_snowflake_id: trusted.map(SnowflakeId::get),
+                })
+                .collect(),
+        };
+        let mut request = tonic::Request::new(request);
+        request.set_timeout(timeout);
+        let response =
+            registry_pb::identity_registry_service_client::IdentityRegistryServiceClient::new(
+                self.channel().await,
+            )
+            .resolve_batch(request)
+            .await?
+            .into_inner();
+        response
+            .rows
+            .into_iter()
+            .map(|row| {
+                Ok(ResolvedId {
+                    object_id: row.object_id,
+                    entity_kind: entity_kind(row.entity_kind)?,
+                    snowflake_id: row.snowflake_id,
+                    mapping_version: row.mapping_version,
+                })
+            })
+            .collect()
+    }
+
+    async fn reverse_batch(
+        &self,
+        ids: &[(SnowflakeId, EntityKind)],
+        timeout: Duration,
+    ) -> anyhow::Result<Vec<ReversedId>> {
+        let request = registry_pb::ReverseBatchRequest {
+            ids: ids
+                .iter()
+                .map(|(id, kind)| registry_pb::ReverseRequest {
+                    snowflake_id: id.get(),
+                    entity_kind: proto_kind(*kind),
+                })
+                .collect(),
+        };
+        let mut request = tonic::Request::new(request);
+        request.set_timeout(timeout);
+        let response =
+            registry_pb::identity_registry_service_client::IdentityRegistryServiceClient::new(
+                self.channel().await,
+            )
+            .reverse_batch(request)
+            .await?
+            .into_inner();
+        response
+            .rows
+            .into_iter()
+            .map(|row| {
+                Ok(ReversedId {
+                    snowflake_id: row.snowflake_id,
+                    object_id: row.object_id,
+                    entity_kind: entity_kind(row.entity_kind)?,
+                    mapping_version: row.mapping_version,
+                })
+            })
+            .collect()
+    }
+}
+
+fn proto_kind(kind: EntityKind) -> i32 {
+    match kind {
+        EntityKind::User => registry_pb::EntityKind::User as i32,
+        EntityKind::Post => registry_pb::EntityKind::Post as i32,
+    }
+}
+
+fn entity_kind(value: i32) -> anyhow::Result<EntityKind> {
+    match registry_pb::EntityKind::try_from(value).unwrap_or(registry_pb::EntityKind::Unspecified) {
+        registry_pb::EntityKind::User => Ok(EntityKind::User),
+        registry_pb::EntityKind::Post => Ok(EntityKind::Post),
+        registry_pb::EntityKind::Unspecified => Err(anyhow::anyhow!(
+            "ID Registry returned an unspecified entity kind"
+        )),
+    }
+}
+
+fn validate_resolve_rows(
+    rows: Vec<ResolvedId>,
+    ids: &[(String, EntityKind, Option<SnowflakeId>)],
+) -> anyhow::Result<Vec<SnowflakeId>> {
+    anyhow::ensure!(
+        rows.len() == ids.len(),
+        "ID Registry response count mismatch"
+    );
+    rows.into_iter()
+        .zip(ids)
+        .map(|(row, (id, kind, trusted))| {
+            anyhow::ensure!(
+                row.object_id == *id && row.entity_kind == *kind,
+                "ID Registry response identity mismatch"
+            );
+            anyhow::ensure!(
+                row.mapping_version == id_service::MAPPING_VERSION,
+                "ID Registry returned unsupported mapping_version {}",
+                row.mapping_version
+            );
+            let resolved = SnowflakeId::new(row.snowflake_id)?;
+            if let Some(trusted) = trusted {
+                anyhow::ensure!(
+                    resolved == *trusted,
+                    "ID Registry returned a mismatched trusted Snowflake"
+                );
+            }
+            Ok(resolved)
+        })
+        .collect()
+}
+
+fn validate_reverse_rows(
+    rows: Vec<ReversedId>,
+    ids: &[(SnowflakeId, EntityKind)],
+) -> anyhow::Result<Vec<String>> {
+    anyhow::ensure!(
+        rows.len() == ids.len(),
+        "ID Registry response count mismatch"
+    );
+    rows.into_iter()
+        .zip(ids)
+        .map(|(row, (id, kind))| {
+            anyhow::ensure!(
+                row.snowflake_id == id.get() && row.entity_kind == *kind,
+                "ID Registry response identity mismatch"
+            );
+            anyhow::ensure!(
+                row.mapping_version == id_service::MAPPING_VERSION,
+                "ID Registry returned unsupported mapping_version {}",
+                row.mapping_version
+            );
+            let object_id = crate::models::ObjectId::parse(&row.object_id)
+                .map_err(|error| anyhow::anyhow!("ID Registry returned {error}"))?;
+            anyhow::ensure!(!object_id.is_nil(), "ID Registry returned nil ObjectId");
+            Ok(row.object_id)
+        })
+        .collect()
+}
+
+impl RegistryClient {
+    /// Construct the legacy HTTP-only client. Production Home Mixer code uses
+    /// [`Self::new_with_grpc`] so an RPC failure is returned directly.
+    pub fn new(endpoint: &str) -> anyhow::Result<Self> {
+        Ok(Self {
+            grpc: None,
+            http: Some(HttpRegistryTransport::new(endpoint)?),
+            calls: crate::metrics::ClientCallRecorder::default(),
+        })
+    }
+
+    /// Build the production client. Home Mixer uses gRPC as its only Registry
+    /// transport; the HTTP constructor above is reserved for legacy callers
+    /// and compatibility tests.
+    pub fn new_with_grpc(grpc_endpoint: &str) -> anyhow::Result<Self> {
+        Ok(Self {
+            grpc: Some(GrpcRegistryTransport::new(grpc_endpoint)?),
+            http: None,
+            calls: crate::metrics::ClientCallRecorder::default(),
+        })
+    }
+
+    /// Attach process metrics without changing the transport behavior.
+    pub fn with_calls(mut self, calls: crate::metrics::ClientCallRecorder) -> Self {
+        self.calls = calls;
+        self
     }
 
     pub async fn resolve_batch(
@@ -157,53 +460,32 @@ impl RegistryClient {
         if ids.is_empty() {
             return Ok(Vec::new());
         }
-        let payload = ids
-            .iter()
-            .map(|(id, kind, trusted)| {
-                let mut value = serde_json::json!({
-                    "object_id": id, "entity_kind": kind,
-                });
-                if let Some(trusted) = trusted {
-                    value["trusted_snowflake_id"] = serde_json::json!(trusted.get());
+        let deadline = Instant::now() + ID_REGISTRY_REQUEST_TIMEOUT;
+        if let Some(grpc) = &self.grpc {
+            let started = std::time::Instant::now();
+            match grpc.resolve_batch(ids, remaining(deadline)?).await {
+                Ok(rows) => {
+                    self.calls
+                        .record("id_registry", "resolve_grpc", "ok", started);
+                    return validate_resolve_rows(rows, ids);
                 }
-                value
-            })
-            .collect::<Vec<_>>();
-        let rows: Vec<ResolvedId> = self
-            .client
-            .post(self.endpoint.join("/v1/resolve:batch")?)
-            .json(&serde_json::json!({"ids": payload}))
-            .send()
-            .await?
-            .error_for_status()?
-            .json()
-            .await?;
-        anyhow::ensure!(
-            rows.len() == ids.len(),
-            "ID Registry response count mismatch"
-        );
-        rows.into_iter()
-            .zip(ids)
-            .map(|(row, (id, kind, trusted))| {
-                anyhow::ensure!(
-                    row.object_id == *id && row.entity_kind == *kind,
-                    "ID Registry response identity mismatch"
-                );
-                anyhow::ensure!(
-                    row.mapping_version == id_service::MAPPING_VERSION,
-                    "ID Registry returned unsupported mapping_version {}",
-                    row.mapping_version
-                );
-                let resolved = SnowflakeId::new(row.snowflake_id)?;
-                if let Some(trusted) = trusted {
-                    anyhow::ensure!(
-                        resolved == *trusted,
-                        "ID Registry returned a mismatched trusted Snowflake"
-                    );
+                Err(error) => {
+                    self.calls
+                        .record("id_registry", "resolve_grpc", "error", started);
+                    return Err(error);
                 }
-                Ok(resolved)
-            })
-            .collect()
+            }
+        }
+
+        let http = self.http.as_ref().ok_or_else(|| {
+            anyhow::anyhow!("ID Registry HTTP compatibility transport is not configured")
+        })?;
+        let started = std::time::Instant::now();
+        let result = http.resolve_batch(ids, remaining(deadline)?).await;
+        self.calls
+            .record("id_registry", "resolve_http", "ok", started);
+        let rows = result?;
+        validate_resolve_rows(rows, ids)
     }
 
     pub async fn resolve_one(
@@ -225,42 +507,31 @@ impl RegistryClient {
         if ids.is_empty() {
             return Ok(Vec::new());
         }
-        let payload = serde_json::json!({
-            "ids": ids.iter().map(|(id, kind)| {
-                serde_json::json!({"snowflake_id": id.get(), "entity_kind": kind})
-            }).collect::<Vec<_>>()
-        });
-        let rows: Vec<ReversedId> = self
-            .client
-            .post(self.endpoint.join("/v1/reverse:batch")?)
-            .json(&payload)
-            .send()
-            .await?
-            .error_for_status()?
-            .json()
-            .await?;
-        anyhow::ensure!(
-            rows.len() == ids.len(),
-            "ID Registry response count mismatch"
-        );
-        rows.into_iter()
-            .zip(ids)
-            .map(|(row, (id, kind))| {
-                anyhow::ensure!(
-                    row.snowflake_id == id.get() && row.entity_kind == *kind,
-                    "ID Registry response identity mismatch"
-                );
-                anyhow::ensure!(
-                    row.mapping_version == id_service::MAPPING_VERSION,
-                    "ID Registry returned unsupported mapping_version {}",
-                    row.mapping_version
-                );
-                let object_id = crate::models::ObjectId::parse(&row.object_id)
-                    .map_err(|error| anyhow::anyhow!("ID Registry returned {error}"))?;
-                anyhow::ensure!(!object_id.is_nil(), "ID Registry returned nil ObjectId");
-                Ok(row.object_id)
-            })
-            .collect()
+        let deadline = Instant::now() + ID_REGISTRY_REQUEST_TIMEOUT;
+        if let Some(grpc) = &self.grpc {
+            let started = std::time::Instant::now();
+            match grpc.reverse_batch(ids, remaining(deadline)?).await {
+                Ok(rows) => {
+                    self.calls
+                        .record("id_registry", "reverse_grpc", "ok", started);
+                    return validate_reverse_rows(rows, ids);
+                }
+                Err(error) => {
+                    self.calls
+                        .record("id_registry", "reverse_grpc", "error", started);
+                    return Err(error);
+                }
+            }
+        }
+        let http = self.http.as_ref().ok_or_else(|| {
+            anyhow::anyhow!("ID Registry HTTP compatibility transport is not configured")
+        })?;
+        let started = std::time::Instant::now();
+        let result = http.reverse_batch(ids, remaining(deadline)?).await;
+        self.calls
+            .record("id_registry", "reverse_http", "ok", started);
+        let rows = result?;
+        validate_reverse_rows(rows, ids)
     }
 }
 
@@ -268,13 +539,143 @@ impl RegistryClient {
 mod tests {
     use super::*;
     use axum::{routing::post, Json, Router};
+    use id_service::{
+        grpc::{GrpcIdRegistryService, IdentityRegistryServiceServer},
+        MemoryMappingStore, RedisIdRegistry,
+    };
     use serde_json::{json, Value};
+    use std::sync::Arc;
+    use tokio_stream::wrappers::TcpListenerStream;
+    use tonic::transport::Server;
 
     async fn serve(app: Router) -> (String, tokio::task::JoinHandle<()>) {
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = listener.local_addr().unwrap();
         let server = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
         (format!("http://{addr}"), server)
+    }
+
+    async fn serve_grpc(
+        registry: Arc<RedisIdRegistry>,
+        max_batch_size: usize,
+    ) -> (String, tokio::task::JoinHandle<()>) {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let incoming = TcpListenerStream::new(listener);
+        let service = GrpcIdRegistryService::new(registry, max_batch_size);
+        let server = tokio::spawn(async move {
+            Server::builder()
+                .add_service(IdentityRegistryServiceServer::new(service))
+                .serve_with_incoming(incoming)
+                .await
+                .unwrap();
+        });
+        (format!("http://{addr}"), server)
+    }
+
+    fn unused_endpoint() -> String {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+        drop(listener);
+        format!("http://{addr}")
+    }
+
+    async fn serve_blackhole() -> (String, tokio::task::JoinHandle<()>) {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            let mut connections = Vec::new();
+            loop {
+                let (connection, _) = listener.accept().await.unwrap();
+                // Keep the connection open without speaking HTTP/2. The client
+                // must terminate the RPC using its configured request deadline.
+                connections.push(connection);
+            }
+        });
+        (format!("http://{addr}"), server)
+    }
+
+    #[tokio::test]
+    async fn production_client_uses_the_real_grpc_server() {
+        let store = Arc::new(MemoryMappingStore::new());
+        let registry = Arc::new(RedisIdRegistry::with_store(store, 0, true, true).unwrap());
+        let (grpc_endpoint, server) = serve_grpc(registry, 10).await;
+        let client = RegistryClient::new_with_grpc(&grpc_endpoint).unwrap();
+        let ids = [("65f1a2b3c4d5e6f708091011".to_string(), EntityKind::User)];
+
+        let resolved = client
+            .resolve_batch_with_trusted(&[(
+                ids[0].0.clone(),
+                ids[0].1,
+                Some(SnowflakeId::new(4242).unwrap()),
+            )])
+            .await
+            .unwrap();
+        assert_eq!(resolved, vec![SnowflakeId::new(4242).unwrap()]);
+        assert_eq!(
+            client
+                .reverse_batch(&[(resolved[0], EntityKind::User)])
+                .await
+                .unwrap(),
+            vec![ids[0].0.clone()]
+        );
+        server.abort();
+    }
+
+    #[tokio::test]
+    async fn production_client_returns_grpc_error_without_http_fallback() {
+        let metrics = crate::metrics::Metrics::new();
+        let client = RegistryClient::new_with_grpc(&unused_endpoint())
+            .unwrap()
+            .with_calls(metrics.client_calls());
+
+        let error = client
+            .resolve_batch(&[("65f1a2b3c4d5e6f708091011".into(), EntityKind::User)])
+            .await
+            .unwrap_err();
+        assert_eq!(
+            error
+                .downcast_ref::<tonic::Status>()
+                .expect("transport errors preserve gRPC status")
+                .code(),
+            tonic::Code::Unavailable
+        );
+        let metrics_text = metrics.encode().unwrap();
+        assert!(metrics_text.contains(
+            "home_mixer_client_calls_total{client=\"id_registry\",method=\"resolve_grpc\",result=\"error\"} 1"
+        ));
+    }
+
+    #[tokio::test]
+    async fn production_client_respects_one_total_deadline_when_grpc_times_out() {
+        let (grpc_endpoint, grpc_server) = serve_blackhole().await;
+        let client = RegistryClient::new_with_grpc(&grpc_endpoint).unwrap();
+        let started = std::time::Instant::now();
+
+        let error = client
+            .resolve_batch(&[("65f1a2b3c4d5e6f708091011".into(), EntityKind::User)])
+            .await
+            .unwrap_err();
+
+        assert!(error.downcast_ref::<tonic::Status>().is_some());
+        assert!(started.elapsed() >= ID_REGISTRY_REQUEST_TIMEOUT);
+        assert!(started.elapsed() < Duration::from_secs(1));
+        grpc_server.abort();
+    }
+
+    #[tokio::test]
+    async fn business_errors_from_grpc_are_returned_directly() {
+        let store = Arc::new(MemoryMappingStore::new());
+        let registry = Arc::new(RedisIdRegistry::with_store(store, 0, false, false).unwrap());
+        let (grpc_endpoint, grpc_server) = serve_grpc(registry, 10).await;
+        let client = RegistryClient::new_with_grpc(&grpc_endpoint).unwrap();
+
+        let error = client
+            .resolve_batch(&[("65f1a2b3c4d5e6f708091011".into(), EntityKind::User)])
+            .await
+            .unwrap_err();
+        assert!(error.to_string().contains("allocation is disabled"));
+        grpc_server.abort();
     }
 
     #[tokio::test]

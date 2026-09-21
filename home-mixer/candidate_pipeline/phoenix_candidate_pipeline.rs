@@ -654,14 +654,16 @@ impl PhoenixCandidatePipeline {
     }
 }
 
-/// Registry identity for the assembly paths that own no `HomeMixerConfig`:
-/// `HOME_MIXER_ID_REGISTRY_URL`, defaulting to the local registry.
+/// Registry identity for assembly paths that own no `HomeMixerConfig`.
+/// Home Mixer production paths use gRPC only.
 fn registry_identity_from_env() -> anyhow::Result<SharedIdentityResolver> {
-    let url = std::env::var("HOME_MIXER_ID_REGISTRY_URL")
+    let grpc_addr = std::env::var("HOME_MIXER_ID_REGISTRY_GRPC_ADDR")
         .ok()
         .filter(|value| !value.trim().is_empty())
-        .unwrap_or_else(|| "http://127.0.0.1:50070".to_string());
-    Ok(Arc::new(crate::id::RegistryClient::new(&url)?))
+        .unwrap_or_else(|| "http://127.0.0.1:50072".to_string());
+    Ok(Arc::new(crate::id::RegistryClient::new_with_grpc(
+        &grpc_addr,
+    )?))
 }
 
 /// Give every side effect its shutdown hook with the same remaining budget.

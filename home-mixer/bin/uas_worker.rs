@@ -569,12 +569,13 @@ async fn run(
     metrics: Arc<WorkerMetrics>,
     client_calls: home_mixer::metrics::ClientCallRecorder,
 ) -> anyhow::Result<()> {
-    let registry_url = env::var("HOME_MIXER_ID_REGISTRY_URL")
+    let registry_grpc_addr = env::var("HOME_MIXER_ID_REGISTRY_GRPC_ADDR")
         .ok()
         .filter(|value| !value.trim().is_empty())
-        .unwrap_or_else(|| "http://127.0.0.1:50070".to_string());
-    let identity = home_mixer::id::RegistryClient::new(&registry_url)
-        .map_err(|error| anyhow::anyhow!("invalid HOME_MIXER_ID_REGISTRY_URL: {error}"))?;
+        .unwrap_or_else(|| "http://127.0.0.1:50072".to_string());
+    let identity = home_mixer::id::RegistryClient::new_with_grpc(&registry_grpc_addr)
+        .map_err(|error| anyhow::anyhow!("invalid ID Registry endpoints: {error}"))?
+        .with_calls(client_calls.clone());
     let store =
         RedisUserActionSequenceStore::new_with_identity(config, std::sync::Arc::new(identity))
             .await

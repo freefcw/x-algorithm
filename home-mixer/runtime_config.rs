@@ -259,7 +259,8 @@ pub struct HomeMixerConfig {
     /// Server-side budget for one RPC after query construction; see
     /// `params::REQUEST_TIMEOUT_MS`. A shorter client `grpc-timeout` wins.
     pub request_timeout: Duration,
-    pub id_registry_url: String,
+    /// Primary low-latency Registry gRPC endpoint.
+    pub id_registry_grpc_addr: String,
 }
 
 impl Default for HomeMixerConfig {
@@ -271,7 +272,7 @@ impl Default for HomeMixerConfig {
             feed_state: FeedStateConfig::default(),
             uas: UasConfig::default(),
             request_timeout: Duration::from_millis(crate::params::REQUEST_TIMEOUT_MS),
-            id_registry_url: "http://127.0.0.1:50070".to_string(),
+            id_registry_grpc_addr: "http://127.0.0.1:50072".to_string(),
         }
     }
 }
@@ -306,10 +307,10 @@ impl HomeMixerConfig {
             feed_state: FeedStateConfig::from_env(mode)?,
             uas: UasConfig::from_env(mode)?,
             request_timeout: request_timeout_from_lookup(|name| std::env::var(name).ok())?,
-            id_registry_url: std::env::var("HOME_MIXER_ID_REGISTRY_URL")
+            id_registry_grpc_addr: std::env::var("HOME_MIXER_ID_REGISTRY_GRPC_ADDR")
                 .ok()
                 .filter(|value| !value.trim().is_empty())
-                .unwrap_or_else(|| "http://127.0.0.1:50070".to_string()),
+                .unwrap_or_else(|| "http://127.0.0.1:50072".to_string()),
         };
         config.validate()?;
         Ok(config)
@@ -326,8 +327,8 @@ impl HomeMixerConfig {
         if self.request_timeout.is_zero() {
             anyhow::bail!("the request timeout must be positive");
         }
-        crate::id::RegistryClient::new(&self.id_registry_url)
-            .map_err(|error| anyhow::anyhow!("invalid HOME_MIXER_ID_REGISTRY_URL: {error}"))?;
+        crate::id::RegistryClient::new_with_grpc(&self.id_registry_grpc_addr)
+            .map_err(|error| anyhow::anyhow!("invalid ID Registry endpoints: {error}"))?;
         if self.features.vf_failure_policy == VfFailurePolicy::AllowAll {
             log::warn!(
                 "HOME_MIXER_VF_FAILURE_POLICY=allow_all serves candidates whose visibility could not be established; this is an explicit opt-out of the fail-closed default"
