@@ -288,7 +288,7 @@ def test_registry_client_allocate_batch_uses_grpc_allocate_rpc(monkeypatch: pyte
 
         def ResolveBatch(self, request, timeout=None):
             calls.append("ResolveBatch")
-            raise AssertionError("trusted imports must not use ResolveBatch")
+            raise AssertionError("provided ids must not use ResolveBatch")
 
         def AllocateBatch(self, request, timeout=None):
             calls.append("AllocateBatch")
@@ -297,7 +297,7 @@ def test_registry_client_allocate_batch_uses_grpc_allocate_rpc(monkeypatch: pyte
                     id_registry_pb2.ResolveResponse(
                         object_id=request.ids[0].object_id,
                         entity_kind=id_registry_pb2.POST,
-                        snowflake_id=request.ids[0].trusted_snowflake_id,
+                        snowflake_id=request.ids[0].snowflake_id,
                         mapping_version=IDENTITY_MAPPING_VERSION,
                     )
                 ]
@@ -307,12 +307,12 @@ def test_registry_client_allocate_batch_uses_grpc_allocate_rpc(monkeypatch: pyte
     monkeypatch.setattr("services.id_registry_client.grpc.insecure_channel", lambda endpoint: endpoint)
     client = IdentityRegistryClient(grpc_endpoint="registry.test:50072")
 
-    client.allocate_batch_with_trusted([(oid(1), "Post", 42)])
+    client.allocate_batch([(oid(1), "Post", 42)])
 
     assert calls == ["AllocateBatch"]
 
 
-def test_legacy_registry_client_import_and_trusted_method_use_allocate(
+def test_legacy_registry_client_import_uses_allocate(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     assert LegacyIdentityRegistryClient is IdentityRegistryClient
@@ -328,7 +328,7 @@ def test_legacy_registry_client_import_and_trusted_method_use_allocate(
     _patch_urlopen(monkeypatch, rows, captured)
     client = LegacyIdentityRegistryClient("http://registry.test")
 
-    client.resolve_batch_with_trusted([(oid(1), "Post", 42)])
+    client.allocate_batch([(oid(1), "Post", 42)])
 
     assert captured[0].full_url == "http://registry.test/v1/allocate:batch"
 
@@ -457,7 +457,7 @@ def test_registry_client_rejects_invalid_registry_inputs(monkeypatch: pytest.Mon
         client.reverse_batch([(0, "Post")])
 
 
-def test_registry_client_allocate_batch_preserves_trusted_snowflake(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_registry_client_allocate_batch_preserves_provided_snowflake(monkeypatch: pytest.MonkeyPatch) -> None:
     captured = []
     rows = [
         {
@@ -470,7 +470,7 @@ def test_registry_client_allocate_batch_preserves_trusted_snowflake(monkeypatch:
     _patch_urlopen(monkeypatch, rows, captured)
     client = IdentityRegistryClient("http://registry.test")
 
-    client.allocate_batch_with_trusted([(oid(1), "Post", 42)])
+    client.allocate_batch([(oid(1), "Post", 42)])
 
     assert captured[0].full_url == "http://registry.test/v1/allocate:batch"
     request_body = json.loads(captured[0].data)
@@ -479,13 +479,13 @@ def test_registry_client_allocate_batch_preserves_trusted_snowflake(monkeypatch:
             {
                 "object_id": oid(1),
                 "entity_kind": "Post",
-                "trusted_snowflake_id": 42,
+                "snowflake_id": 42,
             }
         ]
     }
 
 
-def test_registry_client_rechecks_cached_value_for_trusted_import(
+def test_registry_client_rechecks_cached_value_for_provided_import(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     payloads = iter(
@@ -514,10 +514,10 @@ def test_registry_client_rechecks_cached_value_for_trusted_import(
     client = IdentityRegistryClient("http://registry.test")
 
     client.resolve_batch([(oid(1), "Post")])
-    client.allocate_batch_with_trusted([(oid(1), "Post", 42)])
+    client.allocate_batch([(oid(1), "Post", 42)])
 
     assert len(calls) == 2
-    assert calls[1]["ids"][0]["trusted_snowflake_id"] == 42
+    assert calls[1]["ids"][0]["snowflake_id"] == 42
 
 
 def test_registry_client_resolve_batch_checks_mapping_version(monkeypatch: pytest.MonkeyPatch) -> None:

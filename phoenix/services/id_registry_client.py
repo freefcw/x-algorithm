@@ -73,17 +73,17 @@ class IdentityRegistryClient:
         if self._grpc_stub is None:
             raise RuntimeError("ID Registry gRPC is not configured")
         request_ids = []
-        for object_id, entity_kind, trusted in ids:
+        for object_id, entity_kind, provided in ids:
             _validate_object_id(object_id)
             request_ids.append(
                 id_registry_pb2.ResolveRequest(
                     object_id=object_id,
                     entity_kind=self._entity_kind_value(entity_kind, id_registry_pb2),
-                    **({"trusted_snowflake_id": trusted} if trusted is not None else {}),
+                    **({"snowflake_id": provided} if provided is not None else {}),
                 )
             )
         request = id_registry_pb2.ResolveBatchRequest(ids=request_ids)
-        # ResolveBatch is read-only on the server; trusted imports and new
+        # ResolveBatch is read-only on the server; provided ids and new
         # mappings must go through AllocateBatch.
         rpc = self._grpc_stub.AllocateBatch if allocate else self._grpc_stub.ResolveBatch
         response = rpc(
@@ -93,7 +93,7 @@ class IdentityRegistryClient:
         if len(response.rows) != len(ids):
             raise RuntimeError("ID Registry returned a mismatched gRPC batch size")
         rows: list[tuple[str, str, int]] = []
-        for row, (object_id, entity_kind, trusted) in zip(response.rows, ids, strict=True):
+        for row, (object_id, entity_kind, provided) in zip(response.rows, ids, strict=True):
             returned_kind = _entity_kind_name(row.entity_kind, id_registry_pb2)
             if row.object_id != object_id or returned_kind != entity_kind:
                 raise RuntimeError("ID Registry returned a mismatched gRPC identity")
@@ -102,8 +102,8 @@ class IdentityRegistryClient:
             value = row.snowflake_id
             if value <= 0 or value > 0x7FFF_FFFF_FFFF_FFFF:
                 raise RuntimeError("ID Registry returned an invalid SnowflakeId")
-            if trusted is not None and value != trusted:
-                raise RuntimeError("ID Registry returned a mismatched trusted SnowflakeId")
+            if provided is not None and value != provided:
+                raise RuntimeError("ID Registry returned a mismatched provided SnowflakeId")
             rows.append((row.object_id, returned_kind, value))
         return rows
 
@@ -122,29 +122,18 @@ class IdentityRegistryClient:
             allocate=False,
         )
 
-    def allocate_batch_with_trusted(
+    def allocate_batch(
         self,
         ids: list[tuple[str, str, int | None]],
     ) -> None:
-        """Allocate mappings, optionally importing an existing native Snowflake.
+        """Allocate mappings, registering any caller-provided Snowflake as-is.
 
-        The Registry server rejects trusted imports on the read-only Resolve
-        RPCs, so this always goes through Allocate/AllocateBatch and requires
-        a replica with allocation (and trusted import) enabled.
+        Items with a provided snowflake id keep that exact value; items
+        without one receive a freshly allocated id. This always goes through
+        Allocate/AllocateBatch and requires a replica with allocation
+        enabled.
         """
         self._resolve_or_allocate_batch(ids, allocate=True)
-
-    def resolve_batch_with_trusted(
-        self,
-        ids: list[tuple[str, str, int | None]],
-    ) -> None:
-        """Compatibility alias for trusted migration imports.
-
-        Older migration callers used this name when trusted imports shared the
-        Resolve endpoint. Trusted requests now belong to Allocate, so preserve
-        the method while routing it through the write-side RPC.
-        """
-        self.allocate_batch_with_trusted(ids)
 
     def _resolve_or_allocate_batch(
         self,
@@ -153,17 +142,17 @@ class IdentityRegistryClient:
         allocate: bool,
     ) -> None:
         deadline = time.monotonic() + self._timeout_seconds
-        for object_id, entity_kind, trusted in ids:
+        for object_id, entity_kind, provided in ids:
             _validate_object_id(object_id)
             _validate_entity_kind(entity_kind)
-            if trusted is not None:
-                _validate_snowflake_id(trusted)
+            if provided is not None:
+                _validate_snowflake_id(provided)
         unique = list(dict.fromkeys(ids))
         missing = []
         for item in unique:
             cached = self._cache.get((item[0], item[1]))
-            # A trusted import must still be checked against the registry when
-            # a stale or previously non-trusted cache entry exists.
+            # A provided id must still be checked against the registry when
+            # a stale or previously uncached entry exists.
             if cached is None or (item[2] is not None and cached != item[2]):
                 missing.append(item)
         if not missing:
@@ -185,9 +174,9 @@ class IdentityRegistryClient:
                 {
                     "object_id": object_id,
                     "entity_kind": entity_kind,
-                    **({"trusted_snowflake_id": trusted} if trusted is not None else {}),
+                    **({"snowflake_id": provided} if provided is not None else {}),
                 }
-                for object_id, entity_kind, trusted in missing
+                for object_id, entity_kind, provided in missing
             ]
         }
         request = urllib.request.Request(
@@ -203,7 +192,7 @@ class IdentityRegistryClient:
             raise RuntimeError(f"ID Registry is unavailable: {exc}") from exc
         if not isinstance(rows, list) or len(rows) != len(missing):
             raise RuntimeError("ID Registry returned a mismatched batch size")
-        for row, (object_id, entity_kind, trusted) in zip(rows, missing, strict=True):
+        for row, (object_id, entity_kind, provided) in zip(rows, missing, strict=True):
             if not isinstance(row, dict):
                 raise RuntimeError("ID Registry returned a malformed row")
             row = cast(dict[str, Any], row)
@@ -219,8 +208,8 @@ class IdentityRegistryClient:
                 or value > 0x7FFF_FFFF_FFFF_FFFF
             ):
                 raise RuntimeError("ID Registry returned an invalid SnowflakeId")
-            if trusted is not None and value != trusted:
-                raise RuntimeError("ID Registry returned a mismatched trusted SnowflakeId")
+            if provided is not None and value != provided:
+                raise RuntimeError("ID Registry returned a mismatched provided SnowflakeId")
             self._cache[(entity_kind, object_id)] = value
 
     def _reverse_batch_grpc(
