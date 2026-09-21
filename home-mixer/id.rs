@@ -871,7 +871,7 @@ mod tests {
     #[tokio::test]
     async fn production_client_uses_the_real_grpc_server() {
         let store = Arc::new(MemoryMappingStore::new());
-        let registry = Arc::new(RedisIdRegistry::with_store(store, 0, true, true).unwrap());
+        let registry = Arc::new(RedisIdRegistry::with_store(store, 0, true).unwrap());
         let (grpc_endpoint, server) = serve_grpc(registry, 10).await;
         let client = RegistryClient::new_with_grpc(&grpc_endpoint).unwrap();
         let ids = [("65f1a2b3c4d5e6f708091011".to_string(), EntityKind::User)];
@@ -945,7 +945,7 @@ mod tests {
     #[tokio::test]
     async fn business_errors_from_grpc_are_returned_directly() {
         let store = Arc::new(MemoryMappingStore::new());
-        let registry = Arc::new(RedisIdRegistry::with_store(store, 0, false, false).unwrap());
+        let registry = Arc::new(RedisIdRegistry::with_store(store, 0, false).unwrap());
         let (grpc_endpoint, grpc_server) = serve_grpc(registry, 10).await;
         let client = RegistryClient::new_with_grpc(&grpc_endpoint).unwrap();
 

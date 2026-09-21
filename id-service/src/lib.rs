@@ -45,16 +45,13 @@ pub enum IdError {
     /// A read-only resolve requested ObjectIds that have no existing mapping.
     /// The payload is a human-readable summary (count plus the first few ids).
     UnknownObjectIds(String),
-    /// The request carried `trusted_snowflake_id` for this ObjectId but the
-    /// service was started without `--allow-trusted-import`.
-    TrustedImportDisabled(String),
     BeforeSnowflakeEpoch(u64),
     SecondExhausted(u64),
     UnsupportedSnowflake(u64),
     /// No mapping exists for this Snowflake (reverse lookup miss).
     UnknownSnowflake(u64),
     /// The object is already bound to a Snowflake different from
-    /// `snowflake_id` (the trusted value, or the id this write attempted).
+    /// `snowflake_id` (the caller-provided value, or the id this write attempted).
     MappingConflict {
         object_id: String,
         entity_kind: EntityKind,
@@ -101,10 +98,6 @@ impl fmt::Display for IdError {
             Self::UnknownObjectIds(summary) => {
                 write!(f, "no ObjectId mapping exists for {summary}")
             }
-            Self::TrustedImportDisabled(id) => write!(
-                f,
-                "trusted Snowflake import is disabled on this service; ObjectId {id} carried trusted_snowflake_id"
-            ),
             Self::BeforeSnowflakeEpoch(ms) => write!(f, "timestamp {ms} predates Snowflake epoch"),
             Self::SecondExhausted(ms) => {
                 write!(f, "Snowflake allocation exhausted for second {ms}")

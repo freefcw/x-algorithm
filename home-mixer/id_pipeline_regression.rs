@@ -25,7 +25,7 @@ impl IdentityReader for RegistryIdentityResolver {
         &self,
         ids: &[(String, EntityKind)],
     ) -> anyhow::Result<Vec<SnowflakeId>> {
-        Ok(self.0.resolve_batch(ids).await?)
+        Ok(self.0.resolve_existing_batch(ids).await?)
     }
     async fn reverse_batch(
         &self,
@@ -47,17 +47,21 @@ impl IdentityAllocator for RegistryIdentityResolver {
         &self,
         ids: &[(String, EntityKind)],
     ) -> anyhow::Result<Vec<SnowflakeId>> {
-        Ok(self.0.resolve_batch(ids).await?)
+        let request = ids
+            .iter()
+            .map(|(id, kind)| (id.clone(), *kind, None))
+            .collect::<Vec<_>>();
+        Ok(self.0.allocate_batch(&request).await?)
     }
 }
 
 async fn fixture() -> Arc<RegistryIdentityResolver> {
-    // The fixture imports trusted mappings, so trusted import is enabled;
-    // allocation stays off like an online replica.
-    let registry = RedisIdRegistry::with_store(Arc::new(MemoryMappingStore::new()), 0, false, true)
+    // The fixture registers provided mappings; allocation stays off like an
+    // online replica.
+    let registry = RedisIdRegistry::with_store(Arc::new(MemoryMappingStore::new()), 0, false)
         .expect("build in-memory registry");
     registry
-        .resolve_one_with_trusted(
+        .allocate_one(
             VIEWER_OID,
             EntityKind::User,
             Some(SnowflakeId::new(VIEWER_SNOWFLAKE).unwrap()),
@@ -65,7 +69,7 @@ async fn fixture() -> Arc<RegistryIdentityResolver> {
         .await
         .expect("import viewer mapping");
     registry
-        .resolve_one_with_trusted(
+        .allocate_one(
             POST_OID,
             EntityKind::Post,
             Some(SnowflakeId::new(POST_SNOWFLAKE).unwrap()),
@@ -73,7 +77,7 @@ async fn fixture() -> Arc<RegistryIdentityResolver> {
         .await
         .expect("import post mapping");
     registry
-        .resolve_one_with_trusted(
+        .allocate_one(
             AUTHOR_OID,
             EntityKind::User,
             Some(SnowflakeId::new(AUTHOR_SNOWFLAKE).unwrap()),

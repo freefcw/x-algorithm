@@ -2,8 +2,8 @@
 //!
 //! * [`MappingStore`] is the persistence port. Every operation is batch-first
 //!   so the service can plan a whole request before touching the store.
-//! * [`RedisIdRegistry`] holds the identity rules (trusted imports, Snowflake
-//!   allocation, conflict handling) and knows nothing about Redis keys.
+//! * [`RedisIdRegistry`] holds the identity rules (caller-provided ids,
+//!   Snowflake allocation, conflict handling) and knows nothing about Redis keys.
 //! * `RedisMappingStore` maps the port onto sharded Redis keys with a bounded
 //!   local cache; [`MemoryMappingStore`] is the in-process development backend
 //!   and test fixture.
@@ -37,7 +37,7 @@ pub const STORAGE_SCHEMA: &str = "sharded-256";
 
 /// Upper bound on write attempts for one allocated mapping. Each attempt
 /// draws a fresh sequence value after the previous Snowflake turned out to be
-/// bound already (imported by a trusted caller, or an orphan reverse entry).
+/// bound already (registered by another caller, or an orphan reverse entry).
 pub const MAX_ALLOCATION_ATTEMPTS: usize = 16;
 
 /// `SET NX` with idempotent replays: 1 created, 0 identical value already
@@ -252,7 +252,6 @@ pub struct RedisIdRegistryConfig {
     pub cache_capacity: usize,
     pub worker_id: u64,
     pub allow_allocation: bool,
-    pub allow_trusted_import: bool,
     pub connect_timeout: Duration,
     pub request_timeout: Duration,
 }
@@ -262,15 +261,14 @@ pub struct RedisIdRegistry {
     store: Arc<dyn MappingStore>,
     worker_id: u64,
     allow_allocation: bool,
-    allow_trusted_import: bool,
 }
 
 /// One distinct `(entity_kind, object_id)` of a request after
-/// de-duplication, with the trusted Snowflake merged from its duplicates.
+/// de-duplication, with the provided Snowflake merged from its duplicates.
 struct RequestItem {
     object_id: String,
     entity_kind: EntityKind,
-    trusted: Option<SnowflakeId>,
+    provided: Option<SnowflakeId>,
 }
 
 impl RequestItem {
@@ -286,8 +284,8 @@ struct PendingWrite<'a> {
 }
 
 impl PendingWrite<'_> {
-    fn is_trusted(&self) -> bool {
-        self.item.trusted.is_some()
+    fn is_provided(&self) -> bool {
+        self.item.provided.is_some()
     }
 
     fn mapping(&self) -> Mapping {
@@ -325,19 +323,13 @@ impl RedisIdRegistry {
         } else {
             Arc::new(MemoryMappingStore::new())
         };
-        Self::with_store(
-            store,
-            config.worker_id,
-            config.allow_allocation,
-            config.allow_trusted_import,
-        )
+        Self::with_store(store, config.worker_id, config.allow_allocation)
     }
 
     pub fn with_store(
         store: Arc<dyn MappingStore>,
         worker_id: u64,
         allow_allocation: bool,
-        allow_trusted_import: bool,
     ) -> Result<Self, IdError> {
         if worker_id > MAX_WORKER_ID {
             return Err(IdError::InvalidWorkerId(worker_id));
@@ -346,48 +338,27 @@ impl RedisIdRegistry {
             store,
             worker_id,
             allow_allocation,
-            allow_trusted_import,
         })
     }
 
-    pub async fn resolve_one(
+    /// Single-item allocation shares the batch path so both behave the same
+    /// on conflicts, orphans and provided ids.
+    pub async fn allocate_one(
         &self,
         object_id: &str,
         entity_kind: EntityKind,
-    ) -> Result<SnowflakeId, IdError> {
-        self.resolve_one_with_trusted(object_id, entity_kind, None)
-            .await
-    }
-
-    /// Single-item resolution shares the batch path so both behave the same
-    /// on conflicts, orphans and trusted imports.
-    pub async fn resolve_one_with_trusted(
-        &self,
-        object_id: &str,
-        entity_kind: EntityKind,
-        trusted_snowflake_id: Option<SnowflakeId>,
+        provided_snowflake_id: Option<SnowflakeId>,
     ) -> Result<SnowflakeId, IdError> {
         let mut resolved = self
-            .resolve_batch_with_trusted(&[(
+            .allocate_batch(&[(
                 object_id.to_string(),
                 entity_kind,
-                trusted_snowflake_id,
+                provided_snowflake_id,
             )])
             .await?;
         resolved
             .pop()
             .ok_or_else(|| IdError::Redis("resolution returned no result".to_string()))
-    }
-
-    pub async fn resolve_batch(
-        &self,
-        ids: &[(String, EntityKind)],
-    ) -> Result<Vec<SnowflakeId>, IdError> {
-        let trusted = ids
-            .iter()
-            .map(|(object_id, entity_kind)| (object_id.clone(), *entity_kind, None))
-            .collect::<Vec<_>>();
-        self.resolve_batch_with_trusted(&trusted).await
     }
 
     /// Read-only resolution. Unlike `resolve_batch`, this method never writes
@@ -452,15 +423,17 @@ impl RedisIdRegistry {
         })
     }
 
-    /// Resolve a batch, allocating or importing what is missing.
+    /// Allocate a batch: provided ids are registered as-is, missing ids are
+    /// drawn from the sequence.
     ///
     /// The batch is planned before the first write: existing mappings that
-    /// contradict a trusted id, trusted ids already bound elsewhere, in-batch
-    /// contradictions, and disabled allocation all reject the whole batch
-    /// with nothing written. Only a concurrent writer racing between the
-    /// reads and the writes can leave a partial batch; those items converge
-    /// on the winning mapping through the outcome handling in `commit`.
-    pub async fn resolve_batch_with_trusted(
+    /// contradict a provided id, provided ids already bound elsewhere,
+    /// in-batch contradictions, and disabled allocation all reject the whole
+    /// batch with nothing written. Only a concurrent writer racing between
+    /// the reads and the writes can leave a partial batch; those items
+    /// converge on the winning mapping through the outcome handling in
+    /// `commit`.
+    pub async fn allocate_batch(
         &self,
         ids: &[(String, EntityKind, Option<SnowflakeId>)],
     ) -> Result<Vec<SnowflakeId>, IdError> {
@@ -479,11 +452,6 @@ impl RedisIdRegistry {
         for (object_id, _, _) in ids {
             crate::validate_object_id(object_id)?;
         }
-        if !self.allow_trusted_import {
-            if let Some((object_id, _, _)) = ids.iter().find(|(_, _, trusted)| trusted.is_some()) {
-                return Err(IdError::TrustedImportDisabled(object_id.clone()));
-            }
-        }
 
         let items = dedupe_requests(ids)?;
         let lookup = items
@@ -497,7 +465,7 @@ impl RedisIdRegistry {
         for (item, current) in items.iter().zip(existing) {
             match current {
                 Some(mapping) => {
-                    resolved.insert(item.key(), accept_existing(&mapping, item.trusted)?);
+                    resolved.insert(item.key(), accept_existing(&mapping, item.provided)?);
                 }
                 None => missing.push(item),
             }
@@ -523,10 +491,10 @@ impl RedisIdRegistry {
         missing: &[&'a RequestItem],
         resolved: &mut HashMap<ObjectKey, SnowflakeId>,
     ) -> Result<(), IdError> {
-        let (trusted, unassigned): (Vec<&'a RequestItem>, Vec<&'a RequestItem>) = missing
+        let (provided, unassigned): (Vec<&'a RequestItem>, Vec<&'a RequestItem>) = missing
             .iter()
             .copied()
-            .partition(|item| item.trusted.is_some());
+            .partition(|item| item.provided.is_some());
         if !unassigned.is_empty() {
             if !self.allow_allocation {
                 return Err(allocation_disabled(&unassigned));
@@ -535,12 +503,12 @@ impl RedisIdRegistry {
                 allocation_timestamp_ms(&item.object_id)?;
             }
         }
-        self.check_trusted_available(&trusted).await?;
+        self.check_provided_available(&provided).await?;
 
-        let mut pending = trusted
+        let mut pending = provided
             .iter()
             .filter_map(|&item| {
-                item.trusted
+                item.provided
                     .map(|snowflake_id| PendingWrite { item, snowflake_id })
             })
             .collect::<Vec<_>>();
@@ -548,18 +516,18 @@ impl RedisIdRegistry {
         self.commit(pending, resolved).await
     }
 
-    /// A trusted Snowflake may only be imported while it is unbound or
+    /// A provided Snowflake may only be registered while it is unbound or
     /// already bound to the same object (orphan repair).
-    async fn check_trusted_available(&self, trusted: &[&RequestItem]) -> Result<(), IdError> {
-        if trusted.is_empty() {
+    async fn check_provided_available(&self, provided: &[&RequestItem]) -> Result<(), IdError> {
+        if provided.is_empty() {
             return Ok(());
         }
-        let ids = trusted
+        let ids = provided
             .iter()
-            .filter_map(|item| item.trusted)
+            .filter_map(|item| item.provided)
             .collect::<Vec<_>>();
         let holders = self.store.find_by_snowflake_batch(&ids).await?;
-        for (item, holder) in trusted.iter().zip(holders) {
+        for (item, holder) in provided.iter().zip(holders) {
             if let Some(holder) = holder {
                 if holder.object_id != item.object_id || holder.entity_kind != item.entity_kind {
                     return Err(snowflake_taken(item, holder.snowflake_id, Some(holder)));
@@ -605,7 +573,7 @@ impl RedisIdRegistry {
                         resolved.insert(write.item.key(), write.snowflake_id);
                     }
                     InsertOutcome::ObjectConflict => lost_object.push(write),
-                    InsertOutcome::SnowflakeConflict if write.is_trusted() => {
+                    InsertOutcome::SnowflakeConflict if write.is_provided() => {
                         return Err(self.snowflake_taken_now(write).await);
                     }
                     InsertOutcome::SnowflakeConflict => {
@@ -661,7 +629,7 @@ impl RedisIdRegistry {
 
     /// An object conflict means a concurrent writer bound the object between
     /// our read and our write; re-read and accept its mapping (or reject a
-    /// trusted import that contradicts it).
+    /// provided id that contradicts it).
     async fn adopt_concurrent_winners(
         &self,
         lost: &[&PendingWrite<'_>],
@@ -680,7 +648,7 @@ impl RedisIdRegistry {
                 Some(mapping) => {
                     resolved.insert(
                         write.item.key(),
-                        accept_existing(&mapping, write.item.trusted)?,
+                        accept_existing(&mapping, write.item.provided)?,
                     );
                 }
                 None => {
@@ -696,10 +664,10 @@ impl RedisIdRegistry {
     }
 
     fn record_insert(&self, write: &PendingWrite<'_>, floors: &mut Vec<SequenceFloor>) {
-        if write.is_trusted() {
-            metrics().record_trusted_import();
+        if write.is_provided() {
+            metrics().record_provided_import();
             log::info!(
-                "trusted import: {:?} {} -> {}",
+                "provided import: {:?} {} -> {}",
                 write.item.entity_kind,
                 write.item.object_id,
                 write.snowflake_id
@@ -824,27 +792,27 @@ impl RedisIdRegistry {
 }
 
 /// Collapse duplicates of the same `(entity_kind, object_id)` and reject
-/// in-batch contradictions: one object with two trusted ids, or one trusted
-/// id for two objects.
+/// in-batch contradictions: one object with two provided ids, or one
+/// provided id for two objects.
 fn dedupe_requests(
     ids: &[(String, EntityKind, Option<SnowflakeId>)],
 ) -> Result<Vec<RequestItem>, IdError> {
     let mut items: Vec<RequestItem> = Vec::with_capacity(ids.len());
     let mut index_by_key: HashMap<ObjectKey, usize> = HashMap::with_capacity(ids.len());
-    let mut index_by_trusted: HashMap<u64, usize> = HashMap::new();
-    for (object_id, entity_kind, trusted) in ids {
+    let mut index_by_provided: HashMap<u64, usize> = HashMap::new();
+    for (object_id, entity_kind, provided) in ids {
         let key = (*entity_kind, object_id.clone());
         let index = match index_by_key.get(&key) {
             Some(&index) => {
-                if let Some(trusted) = trusted {
-                    let current = items[index].trusted;
+                if let Some(provided) = provided {
+                    let current = items[index].provided;
                     match current {
-                        None => items[index].trusted = Some(*trusted),
-                        Some(existing) if existing != *trusted => {
+                        None => items[index].provided = Some(*provided),
+                        Some(existing) if existing != *provided => {
                             return Err(IdError::MappingConflict {
                                 object_id: object_id.clone(),
                                 entity_kind: *entity_kind,
-                                snowflake_id: *trusted,
+                                snowflake_id: *provided,
                             })
                         }
                         Some(_) => {}
@@ -856,24 +824,24 @@ fn dedupe_requests(
                 items.push(RequestItem {
                     object_id: object_id.clone(),
                     entity_kind: *entity_kind,
-                    trusted: *trusted,
+                    provided: *provided,
                 });
                 index_by_key.insert(key, items.len() - 1);
                 items.len() - 1
             }
         };
-        if let Some(trusted) = trusted {
-            match index_by_trusted.get(&trusted.get()) {
+        if let Some(provided) = provided {
+            match index_by_provided.get(&provided.get()) {
                 Some(&other) if other != index => {
                     return Err(IdError::SnowflakeTaken {
-                        snowflake_id: *trusted,
+                        snowflake_id: *provided,
                         object_id: object_id.clone(),
                         entity_kind: *entity_kind,
                         holder: Some((items[other].entity_kind, items[other].object_id.clone())),
                     })
                 }
                 _ => {
-                    index_by_trusted.insert(trusted.get(), index);
+                    index_by_provided.insert(provided.get(), index);
                 }
             }
         }
@@ -881,19 +849,19 @@ fn dedupe_requests(
     Ok(items)
 }
 
-/// An existing mapping is accepted unless the caller insists on a different
-/// trusted Snowflake. The lookup that produced `existing` was keyed by the
+/// An existing mapping is accepted unless the caller provided a different
+/// Snowflake. The lookup that produced `existing` was keyed by the
 /// request's own `(entity_kind, object_id)`, so those never differ here.
 fn accept_existing(
     existing: &Mapping,
-    trusted: Option<SnowflakeId>,
+    provided: Option<SnowflakeId>,
 ) -> Result<SnowflakeId, IdError> {
-    if let Some(trusted) = trusted {
-        if trusted != existing.snowflake_id {
+    if let Some(provided) = provided {
+        if provided != existing.snowflake_id {
             return Err(IdError::MappingConflict {
                 object_id: existing.object_id.clone(),
                 entity_kind: existing.entity_kind,
-                snowflake_id: trusted,
+                snowflake_id: provided,
             });
         }
     }
@@ -2201,7 +2169,7 @@ mod tests {
     }
 
     fn registry(store: &Arc<MemoryStore>, allow_allocation: bool) -> RedisIdRegistry {
-        RedisIdRegistry::with_store(store.clone(), 0, allow_allocation, true).unwrap()
+        RedisIdRegistry::with_store(store.clone(), 0, allow_allocation).unwrap()
     }
 
     fn snowflake(value: u64) -> SnowflakeId {
@@ -2233,14 +2201,13 @@ mod tests {
             cache_capacity: 4,
             worker_id: 0,
             allow_allocation: true,
-            allow_trusted_import: true,
             connect_timeout: Duration::from_secs(1),
             request_timeout: Duration::from_secs(1),
         })
         .await
         .unwrap();
 
-        let id = registry.resolve_one(POST, EntityKind::Post).await.unwrap();
+        let id = registry.allocate_one(POST, EntityKind::Post, None).await.unwrap();
         let mapping = registry.reverse_one(id, EntityKind::Post).await.unwrap();
         assert_eq!(mapping.object_id, POST);
         assert_eq!(registry.cache_sizes(), (1, 1));
@@ -2257,7 +2224,6 @@ mod tests {
             cache_capacity: 4,
             worker_id: 0,
             allow_allocation: true,
-            allow_trusted_import: true,
             connect_timeout: Duration::from_secs(1),
             request_timeout: Duration::from_secs(1),
         })
@@ -2279,19 +2245,19 @@ mod tests {
     async fn rejects_a_snowflake_reused_across_entity_kinds() {
         let store = Arc::new(MemoryStore::new());
         let registry = registry(&store, false);
-        let trusted = snowflake(42);
+        let provided = snowflake(42);
         registry
-            .resolve_one_with_trusted(USER, EntityKind::User, Some(trusted))
+            .allocate_one(USER, EntityKind::User, Some(provided))
             .await
             .unwrap();
         let error = registry
-            .resolve_one_with_trusted(POST, EntityKind::Post, Some(trusted))
+            .allocate_one(POST, EntityKind::Post, Some(provided))
             .await
             .unwrap_err();
         assert_eq!(
             error,
             IdError::SnowflakeTaken {
-                snowflake_id: trusted,
+                snowflake_id: provided,
                 object_id: POST.to_string(),
                 entity_kind: EntityKind::Post,
                 holder: Some((EntityKind::User, USER.to_string())),
@@ -2307,7 +2273,7 @@ mod tests {
             (USER.to_string(), EntityKind::User, Some(snowflake(101))),
             (POST.to_string(), EntityKind::Post, Some(snowflake(202))),
         ];
-        let ids = registry.resolve_batch_with_trusted(&input).await.unwrap();
+        let ids = registry.allocate_batch(&input).await.unwrap();
         assert_eq!(ids, vec![snowflake(101), snowflake(202)]);
         let mappings = registry
             .reverse_batch(&[(ids[1], EntityKind::Post), (ids[0], EntityKind::User)])
@@ -2319,17 +2285,17 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn trusted_conflict_in_batch_does_not_commit_earlier_items() {
+    async fn provided_conflict_in_batch_does_not_commit_earlier_items() {
         let store = Arc::new(MemoryStore::new());
         let registry = registry(&store, true);
-        let trusted = snowflake(123);
+        let provided = snowflake(123);
         registry
-            .resolve_one_with_trusted(USER, EntityKind::User, Some(trusted))
+            .allocate_one(USER, EntityKind::User, Some(provided))
             .await
             .unwrap();
 
         let error = registry
-            .resolve_batch_with_trusted(&[
+            .allocate_batch(&[
                 (POST.to_string(), EntityKind::Post, None),
                 (USER.to_string(), EntityKind::User, Some(snowflake(124))),
             ])
@@ -2342,7 +2308,7 @@ mod tests {
                 .by_object(EntityKind::User, USER)
                 .unwrap()
                 .snowflake_id,
-            trusted
+            provided
         );
         // The conflict is found while examining existing mappings, before
         // any sequence value is drawn for the allocated item.
@@ -2350,18 +2316,18 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn batch_rejects_trusted_snowflake_bound_to_another_object_before_writing() {
+    async fn batch_rejects_provided_snowflake_bound_to_another_object_before_writing() {
         let store = Arc::new(MemoryStore::new());
         let registry = registry(&store, false);
         registry
-            .resolve_one_with_trusted(USER, EntityKind::User, Some(snowflake(42)))
+            .allocate_one(USER, EntityKind::User, Some(snowflake(42)))
             .await
             .unwrap();
 
         // The post is missing, so only the reverse pre-check can catch that
-        // its trusted snowflake is already bound to the user.
+        // its provided snowflake is already bound to the user.
         let error = registry
-            .resolve_batch_with_trusted(&[
+            .allocate_batch(&[
                 (POST.to_string(), EntityKind::Post, Some(snowflake(42))),
                 (
                     OTHER_POST.to_string(),
@@ -2383,9 +2349,9 @@ mod tests {
         let store = Arc::new(MemoryStore::new());
         let registry = registry(&store, false);
 
-        // Same object twice with different trusted ids.
+        // Same object twice with different provided ids.
         let error = registry
-            .resolve_batch_with_trusted(&[
+            .allocate_batch(&[
                 (USER.to_string(), EntityKind::User, Some(snowflake(7))),
                 (USER.to_string(), EntityKind::User, Some(snowflake(8))),
             ])
@@ -2393,9 +2359,9 @@ mod tests {
             .unwrap_err();
         assert!(matches!(error, IdError::MappingConflict { .. }));
 
-        // Different objects sharing one trusted snowflake.
+        // Different objects sharing one provided snowflake.
         let error = registry
-            .resolve_batch_with_trusted(&[
+            .allocate_batch(&[
                 (USER.to_string(), EntityKind::User, Some(snowflake(9))),
                 (POST.to_string(), EntityKind::Post, Some(snowflake(9))),
             ])
@@ -2423,31 +2389,31 @@ mod tests {
     async fn batch_resolves_in_batch_duplicates_to_a_single_mapping() {
         let store = Arc::new(MemoryStore::new());
         let registry = registry(&store, true);
-        let trusted = snowflake(31);
+        let provided = snowflake(31);
         let ids = registry
-            .resolve_batch_with_trusted(&[
-                (USER.to_string(), EntityKind::User, Some(trusted)),
-                (USER.to_string(), EntityKind::User, Some(trusted)),
-                // A duplicate without the trusted id merges into the same item.
+            .allocate_batch(&[
+                (USER.to_string(), EntityKind::User, Some(provided)),
+                (USER.to_string(), EntityKind::User, Some(provided)),
+                // A duplicate without the provided id merges into the same item.
                 (USER.to_string(), EntityKind::User, None),
             ])
             .await
             .unwrap();
-        assert_eq!(ids, vec![trusted, trusted, trusted]);
+        assert_eq!(ids, vec![provided, provided, provided]);
         assert_eq!(
             store
                 .by_object(EntityKind::User, USER)
                 .unwrap()
                 .snowflake_id,
-            trusted
+            provided
         );
 
-        // Non-trusted duplicates share one allocation instead of burning a
+        // Non-provided duplicates share one allocation instead of burning a
         // second sequence number for the same object.
         let allocated = registry
-            .resolve_batch(&[
-                (POST.to_string(), EntityKind::Post),
-                (POST.to_string(), EntityKind::Post),
+            .allocate_batch(&[
+                (POST.to_string(), EntityKind::Post, None),
+                (POST.to_string(), EntityKind::Post, None),
             ])
             .await
             .unwrap();
@@ -2464,41 +2430,14 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn trusted_import_requires_the_flag() {
-        let store = Arc::new(MemoryStore::new());
-        let registry = RedisIdRegistry::with_store(store.clone(), 0, true, false).unwrap();
-
-        let error = registry
-            .resolve_one_with_trusted(USER, EntityKind::User, Some(snowflake(5)))
-            .await
-            .unwrap_err();
-        assert_eq!(error, IdError::TrustedImportDisabled(USER.to_string()));
-
-        // Any trusted item rejects the whole batch before the store is read.
-        let error = registry
-            .resolve_batch_with_trusted(&[
-                (POST.to_string(), EntityKind::Post, None),
-                (USER.to_string(), EntityKind::User, Some(snowflake(5))),
-            ])
-            .await
-            .unwrap_err();
-        assert_eq!(error, IdError::TrustedImportDisabled(USER.to_string()));
-        assert_eq!(loads(&store.calls.find_by_object_batch), 0);
-        assert!(store.by_object(EntityKind::Post, POST).is_none());
-
-        // Plain allocation still works.
-        registry.resolve_one(POST, EntityKind::Post).await.unwrap();
-    }
-
-    #[tokio::test]
-    async fn allocation_skips_sequence_values_held_by_trusted_imports() {
+    async fn allocation_skips_sequence_values_held_by_provided_imports() {
         let store = Arc::new(MemoryStore::new());
         let registry = registry(&store, true);
         let second = crate::object_id_timestamp_secs(USER).unwrap();
 
-        // A trusted import carrying our worker id occupies (second, seq 0).
+        // A provided import carrying our worker id occupies (second, seq 0).
         registry
-            .resolve_one_with_trusted(USER, EntityKind::User, Some(snowflake_at(second, 0, 0)))
+            .allocate_one(USER, EntityKind::User, Some(snowflake_at(second, 0, 0)))
             .await
             .unwrap();
         assert_eq!(store.sequence(0, second), 1);
@@ -2506,7 +2445,7 @@ mod tests {
 
         // The next allocation in the same second gets seq 1 on the first try.
         let post = object_id_at(second, 1);
-        let allocated = registry.resolve_one(&post, EntityKind::Post).await.unwrap();
+        let allocated = registry.allocate_one(&post, EntityKind::Post, None).await.unwrap();
         assert_eq!(allocated, snowflake_at(second, 0, 1));
         assert_eq!(loads(&store.calls.insert_if_absent_batch), 2);
 
@@ -2515,7 +2454,7 @@ mod tests {
         store.reset_sequences();
         let another = object_id_at(second, 2);
         let allocated = registry
-            .resolve_one(&another, EntityKind::Post)
+            .allocate_one(&another, EntityKind::Post, None)
             .await
             .unwrap();
         assert_eq!(allocated, snowflake_at(second, 0, 2));
@@ -2530,12 +2469,12 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn trusted_import_from_another_worker_leaves_our_sequence_alone() {
+    async fn provided_import_from_another_worker_leaves_our_sequence_alone() {
         let store = Arc::new(MemoryStore::new());
         let registry = registry(&store, true);
         let second = crate::object_id_timestamp_secs(USER).unwrap();
         registry
-            .resolve_one_with_trusted(USER, EntityKind::User, Some(snowflake_at(second, 7, 0)))
+            .allocate_one(USER, EntityKind::User, Some(snowflake_at(second, 7, 0)))
             .await
             .unwrap();
         assert_eq!(store.sequence(0, second), 0);
@@ -2550,7 +2489,7 @@ mod tests {
         let second = crate::object_id_timestamp_secs(USER).unwrap();
         for sequence in 0..MAX_ALLOCATION_ATTEMPTS as u64 {
             registry
-                .resolve_one_with_trusted(
+                .allocate_one(
                     &object_id_at(second, 100 + sequence as u32),
                     EntityKind::User,
                     Some(snowflake_at(second, 0, sequence)),
@@ -2562,7 +2501,7 @@ mod tests {
         let writes_before = loads(&store.calls.insert_if_absent_batch);
 
         let error = registry
-            .resolve_one(&object_id_at(second, 1), EntityKind::Post)
+            .allocate_one(&object_id_at(second, 1), EntityKind::Post, None)
             .await
             .unwrap_err();
         assert!(
@@ -2583,7 +2522,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn batch_of_trusted_misses_touches_the_store_once_per_operation() {
+    async fn batch_of_provided_misses_touches_the_store_once_per_operation() {
         let store = Arc::new(MemoryStore::new());
         let registry = registry(&store, true);
         let input = (0..50u32)
@@ -2595,7 +2534,7 @@ mod tests {
                 )
             })
             .collect::<Vec<_>>();
-        let ids = registry.resolve_batch_with_trusted(&input).await.unwrap();
+        let ids = registry.allocate_batch(&input).await.unwrap();
         assert_eq!(ids.len(), 50);
         assert_eq!(loads(&store.calls.find_by_object_batch), 1);
         assert_eq!(loads(&store.calls.find_by_snowflake_batch), 1);
@@ -2612,10 +2551,11 @@ mod tests {
                 (
                     object_id_at(0x66f1_a2b3 + u64::from(index % 4), index),
                     EntityKind::Post,
+                    None,
                 )
             })
             .collect::<Vec<_>>();
-        let ids = registry.resolve_batch(&input).await.unwrap();
+        let ids = registry.allocate_batch(&input).await.unwrap();
         assert_eq!(
             ids.iter().collect::<std::collections::HashSet<_>>().len(),
             40
@@ -2633,21 +2573,21 @@ mod tests {
         let store = Arc::new(MemoryStore::new());
         let registry = registry(&store, false);
         let unknown = (0..7u32)
-            .map(|index| (object_id_at(0x65f1_a2b3, index), EntityKind::Post))
+            .map(|index| (object_id_at(0x65f1_a2b3, index), EntityKind::Post, None))
             .collect::<Vec<_>>();
-        let error = registry.resolve_batch(&unknown).await.unwrap_err();
+        let error = registry.allocate_batch(&unknown).await.unwrap_err();
         let IdError::AllocationDisabled(summary) = &error else {
             panic!("unexpected error {error}");
         };
         assert!(summary.starts_with("7 ids, first 5: "), "{summary}");
-        for (object_id, _) in &unknown[..5] {
+        for (object_id, _, _) in &unknown[..5] {
             assert!(summary.contains(object_id), "{summary}");
         }
         assert!(!summary.contains(&unknown[5].0), "{summary}");
         assert_eq!(loads(&store.calls.insert_if_absent_batch), 0);
 
         let error = registry
-            .resolve_one(POST, EntityKind::Post)
+            .allocate_one(POST, EntityKind::Post, None)
             .await
             .unwrap_err();
         assert_eq!(
@@ -2676,7 +2616,7 @@ mod tests {
     #[tokio::test]
     async fn read_only_resolution_rejects_misaligned_store_results() {
         let registry =
-            RedisIdRegistry::with_store(Arc::new(ShortObjectBatchStore), 0, true, true).unwrap();
+            RedisIdRegistry::with_store(Arc::new(ShortObjectBatchStore), 0, true).unwrap();
         let error = registry
             .resolve_existing_one(POST, EntityKind::Post)
             .await
@@ -2709,11 +2649,11 @@ mod tests {
             .await
             .is_err());
 
-        // A trusted import of the same object completes the mapping through
+        // A provided import of the same object completes the mapping through
         // the single path...
         assert_eq!(
             registry
-                .resolve_one_with_trusted(POST, EntityKind::Post, Some(orphan))
+                .allocate_one(POST, EntityKind::Post, Some(orphan))
                 .await
                 .unwrap(),
             orphan
@@ -2738,7 +2678,7 @@ mod tests {
         let batch_orphan = snowflake(555_000_112);
         store.insert_reverse_only(&mapping_of(OTHER_POST, EntityKind::Post, batch_orphan));
         let ids = registry
-            .resolve_batch_with_trusted(&[
+            .allocate_batch(&[
                 (OTHER_POST.to_string(), EntityKind::Post, Some(batch_orphan)),
                 (USER.to_string(), EntityKind::User, Some(snowflake(9))),
             ])
@@ -2753,11 +2693,11 @@ mod tests {
             batch_orphan
         );
 
-        // An orphan of a different object still blocks a trusted import...
+        // An orphan of a different object still blocks a provided import...
         let foreign = snowflake(555_000_113);
         store.insert_reverse_only(&mapping_of(USER, EntityKind::User, foreign));
         let error = registry
-            .resolve_one_with_trusted(
+            .allocate_one(
                 &object_id_at(0x65f1_a2b3, 77),
                 EntityKind::User,
                 Some(foreign),
@@ -2780,7 +2720,7 @@ mod tests {
             EntityKind::User,
             snowflake_at(second, 0, 0),
         ));
-        let allocated = registry.resolve_one(POST, EntityKind::Post).await.unwrap();
+        let allocated = registry.allocate_one(POST, EntityKind::Post, None).await.unwrap();
         assert_eq!(allocated, snowflake_at(second, 0, 1));
         assert_eq!(loads(&store.calls.insert_if_absent_batch), 2);
     }
@@ -2797,7 +2737,7 @@ mod tests {
             IdError::UnknownSnowflake(404)
         );
         registry
-            .resolve_one_with_trusted(USER, EntityKind::User, Some(snowflake(1)))
+            .allocate_one(USER, EntityKind::User, Some(snowflake(1)))
             .await
             .unwrap();
         assert_eq!(
@@ -2963,7 +2903,6 @@ mod tests {
             cache_capacity: 4,
             worker_id: 0,
             allow_allocation: true,
-            allow_trusted_import: true,
             connect_timeout: Duration::from_secs(2),
             request_timeout: Duration::from_secs(1),
         }
@@ -2987,11 +2926,11 @@ mod tests {
             .unwrap();
         let id = snowflake(9001);
         registry
-            .resolve_one_with_trusted(USER, EntityKind::User, Some(id))
+            .allocate_one(USER, EntityKind::User, Some(id))
             .await
             .unwrap();
         assert_eq!(
-            registry.resolve_one(USER, EntityKind::User).await.unwrap(),
+            registry.allocate_one(USER, EntityKind::User, None).await.unwrap(),
             id
         );
         assert_eq!(
@@ -3013,7 +2952,7 @@ mod tests {
             .await
             .unwrap();
         registry
-            .resolve_one_with_trusted(POST, EntityKind::Post, Some(snowflake(9002)))
+            .allocate_one(POST, EntityKind::Post, Some(snowflake(9002)))
             .await
             .unwrap();
 
@@ -3104,7 +3043,7 @@ mod tests {
         // Importing the same object completes the mapping (single and batch).
         assert_eq!(
             registry
-                .resolve_batch_with_trusted(&[(POST.to_string(), EntityKind::Post, Some(orphan))])
+                .allocate_batch(&[(POST.to_string(), EntityKind::Post, Some(orphan))])
                 .await
                 .unwrap(),
             vec![orphan]
@@ -3121,11 +3060,11 @@ mod tests {
         // An allocation whose fresh id collides with an imported one redraws.
         let second = crate::object_id_timestamp_secs(USER).unwrap();
         registry
-            .resolve_one_with_trusted(USER, EntityKind::User, Some(snowflake_at(second, 0, 0)))
+            .allocate_one(USER, EntityKind::User, Some(snowflake_at(second, 0, 0)))
             .await
             .unwrap();
         let allocated = registry
-            .resolve_one(&object_id_at(second, 1), EntityKind::Post)
+            .allocate_one(&object_id_at(second, 1), EntityKind::Post, None)
             .await
             .unwrap();
         assert_eq!(allocated, snowflake_at(second, 0, 1));

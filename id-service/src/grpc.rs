@@ -75,7 +75,6 @@ fn status_for(error: IdError) -> Status {
         | IdError::UnsupportedSnowflake(_)
         | IdError::BeforeSnowflakeEpoch(_)
         | IdError::InvalidWorkerId(_) => Code::InvalidArgument,
-        IdError::TrustedImportDisabled(_) => Code::PermissionDenied,
         IdError::AllocationDisabled(_)
         | IdError::UnknownObjectIds(_)
         | IdError::UnknownSnowflake(_) => Code::NotFound,
@@ -123,11 +122,11 @@ impl IdentityRegistryService for GrpcIdRegistryService {
             let request = request.into_inner();
             crate::validate_object_id(&request.object_id).map_err(status_for)?;
             let kind = entity_kind(request.entity_kind)?;
-            let trusted = request.snowflake_id.map(snowflake).transpose()?;
-            if trusted.is_some() {
-                return Err(status_for(IdError::TrustedImportDisabled(
-                    request.object_id.clone(),
-                )));
+            let provided = request.snowflake_id.map(snowflake).transpose()?;
+            if provided.is_some() {
+                return Err(Status::permission_denied(
+                    "resolve is read-only; use Allocate to register a provided snowflake_id",
+                ));
             }
             let resolved = self
                 .registry
@@ -152,16 +151,12 @@ impl IdentityRegistryService for GrpcIdRegistryService {
         let result = async {
             let request = request.into_inner();
             self.check_batch_size(request.ids.len())?;
-            // Match the HTTP contract: trusted imports are rejected with 403
-            // before any per-item validation.
-            if request
-                .ids
-                .iter()
-                .any(|item| item.snowflake_id.is_some())
-            {
-                return Err(status_for(IdError::TrustedImportDisabled(
-                    "resolve does not accept trusted imports".to_string(),
-                )));
+            // Match the HTTP contract: provided ids are rejected before any
+            // per-item validation.
+            if request.ids.iter().any(|item| item.snowflake_id.is_some()) {
+                return Err(Status::permission_denied(
+                    "resolve is read-only; use Allocate to register a provided snowflake_id",
+                ));
             }
             let ids = request
                 .ids
@@ -198,10 +193,10 @@ impl IdentityRegistryService for GrpcIdRegistryService {
             let request = request.into_inner();
             crate::validate_object_id(&request.object_id).map_err(status_for)?;
             let kind = entity_kind(request.entity_kind)?;
-            let trusted = request.snowflake_id.map(snowflake).transpose()?;
+            let provided = request.snowflake_id.map(snowflake).transpose()?;
             let resolved = self
                 .registry
-                .resolve_one_with_trusted(&request.object_id, kind, trusted)
+                .allocate_one(&request.object_id, kind, provided)
                 .await
                 .map_err(status_for)?;
             Ok(Response::new(resolve_response(
@@ -236,7 +231,7 @@ impl IdentityRegistryService for GrpcIdRegistryService {
                 .collect::<Result<Vec<_>, Status>>()?;
             let resolved = self
                 .registry
-                .resolve_batch_with_trusted(&ids)
+                .allocate_batch(&ids)
                 .await
                 .map_err(status_for)?;
             let rows = request
@@ -312,7 +307,7 @@ mod tests {
     #[tokio::test]
     async fn resolves_batches_through_the_grpc_contract() {
         let store = Arc::new(MemoryMappingStore::new());
-        let registry = Arc::new(RedisIdRegistry::with_store(store, 0, true, true).unwrap());
+        let registry = Arc::new(RedisIdRegistry::with_store(store, 0, true).unwrap());
         let service = GrpcIdRegistryService::new(registry, 10);
         let response = service
             .allocate_batch(Request::new(pb::ResolveBatchRequest {
@@ -356,10 +351,6 @@ mod tests {
         assert_eq!(
             status_for(IdError::Redis("timeout".into())).code(),
             Code::Unavailable
-        );
-        assert_eq!(
-            status_for(IdError::TrustedImportDisabled("x".into())).code(),
-            Code::PermissionDenied
         );
     }
 }

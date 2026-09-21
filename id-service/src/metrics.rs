@@ -2,7 +2,7 @@
 //!
 //! One process-wide registry, reached through [`metrics`]: the HTTP layer
 //! records per-route outcomes, the application service records conflicts,
-//! trusted imports and allocations, and the Redis adapter records failed
+//! provided-id imports and allocations, and the Redis adapter records failed
 //! commands and orphan reverse entries. Local cache entry counts are gauges
 //! refreshed at scrape time from [`crate::RedisIdRegistry::cache_sizes`];
 //! cache lookups (hit/miss/expired) and capacity evictions are counters
@@ -24,7 +24,7 @@ pub struct Metrics {
     registry: Registry,
     requests: IntCounterVec,
     conflicts: IntCounterVec,
-    trusted_imports: IntCounter,
+    provided_imports: IntCounter,
     allocations: IntCounter,
     redis_errors: IntCounter,
     orphan_reverse_mappings: IntCounter,
@@ -72,11 +72,11 @@ impl Metrics {
             &["kind"],
         )
         .expect("valid conflicts opts");
-        let trusted_imports = IntCounter::new(
-            "id_service_trusted_imports_total",
-            "Mappings created from a caller-supplied trusted Snowflake",
+        let provided_imports = IntCounter::new(
+            "id_service_provided_imports_total",
+            "Mappings created from a caller-provided Snowflake",
         )
-        .expect("valid trusted imports opts");
+        .expect("valid provided imports opts");
         let allocations = IntCounter::new(
             "id_service_allocations_total",
             "Mappings created with a newly allocated Snowflake",
@@ -121,7 +121,7 @@ impl Metrics {
             Box::new(build_info) as Box<dyn prometheus::core::Collector>,
             Box::new(requests.clone()),
             Box::new(conflicts.clone()),
-            Box::new(trusted_imports.clone()),
+            Box::new(provided_imports.clone()),
             Box::new(allocations.clone()),
             Box::new(redis_errors.clone()),
             Box::new(orphan_reverse_mappings.clone()),
@@ -136,7 +136,7 @@ impl Metrics {
             registry,
             requests,
             conflicts,
-            trusted_imports,
+            provided_imports,
             allocations,
             redis_errors,
             orphan_reverse_mappings,
@@ -156,8 +156,8 @@ impl Metrics {
         self.conflicts.with_label_values(&[kind]).inc();
     }
 
-    pub fn record_trusted_import(&self) {
-        self.trusted_imports.inc();
+    pub fn record_provided_import(&self) {
+        self.provided_imports.inc();
     }
 
     pub fn record_allocation(&self) {
@@ -216,7 +216,7 @@ mod tests {
         let metrics = Metrics::new();
         metrics.record_request("/v1/resolve", 200);
         metrics.record_conflict("mapping");
-        metrics.record_trusted_import();
+        metrics.record_provided_import();
         metrics.record_allocation();
         metrics.record_redis_error();
         metrics.record_orphan_reverse_mapping();
@@ -233,7 +233,7 @@ mod tests {
             ),
             "id_service_requests_total{route=\"/v1/resolve\",status=\"200\"} 1",
             "id_service_conflicts_total{kind=\"mapping\"} 1",
-            "id_service_trusted_imports_total 1",
+            "id_service_provided_imports_total 1",
             "id_service_allocations_total 1",
             "id_service_redis_errors_total 1",
             "id_service_orphan_reverse_mappings_total 1",

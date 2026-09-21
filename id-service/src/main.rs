@@ -68,18 +68,9 @@ struct Args {
     worker_id: u64,
     /// Allow first-seen ObjectIDs to receive newly allocated Snowflakes.
     /// Keep disabled when the registry must preserve IDs from main, Thunder,
-    /// or published Phoenix indexes; import trusted mappings instead.
+    /// or published Phoenix indexes.
     #[arg(long, env = "ID_REGISTRY_ALLOW_ALLOCATION", default_value_t = false)]
     allow_allocation: bool,
-    /// Accept `trusted_snowflake_id` in resolve requests. Only migration
-    /// tooling should talk to a replica with this enabled; online replicas
-    /// reject such requests with 403.
-    #[arg(
-        long,
-        env = "ID_REGISTRY_ALLOW_TRUSTED_IMPORT",
-        default_value_t = false
-    )]
-    allow_trusted_import: bool,
     /// Maximum number of ids in one batch request; larger batches get 413.
     #[arg(long, env = "ID_REGISTRY_MAX_BATCH_SIZE", default_value_t = 10_000)]
     max_batch_size: usize,
@@ -113,14 +104,13 @@ async fn main() -> anyhow::Result<()> {
         "ID registry gRPC and HTTP listeners must use different addresses"
     );
     log::info!(
-        "id-service starting: grpc_listen={} http_listen={} worker_id={} allow_allocation={} allow_trusted_import={} \
+        "id-service starting: grpc_listen={} http_listen={} worker_id={} allow_allocation={} \
          max_batch_size={} key_prefix={} cache_capacity={} redis_connect_timeout_ms={} \
          redis_request_timeout_ms={} mapping_version={MAPPING_VERSION} redis_enabled={} redis={}",
         args.grpc_listen,
         http_listen,
         args.worker_id,
         args.allow_allocation,
-        args.allow_trusted_import,
         args.max_batch_size,
         args.redis_key_prefix,
         args.cache_capacity,
@@ -138,7 +128,6 @@ async fn main() -> anyhow::Result<()> {
         cache_capacity: args.cache_capacity,
         worker_id: args.worker_id,
         allow_allocation: args.allow_allocation,
-        allow_trusted_import: args.allow_trusted_import,
         connect_timeout: Duration::from_millis(args.redis_connect_timeout_ms),
         request_timeout: Duration::from_millis(args.redis_request_timeout_ms),
     })
