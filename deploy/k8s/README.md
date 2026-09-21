@@ -9,7 +9,7 @@
 |---|---|---|
 | `home-mixer.yaml` | 推荐服务 Deployment + gRPC Service | 50051 (gRPC)、9090 (admin) |
 | `uas-worker.yaml` | 行为序列投影 job Deployment | 9091 (admin) |
-| `id-registry.yaml` | ObjectId ↔ Snowflake 身份映射 Deployment + gRPC 主 Service / HTTP 兼容 Service；依赖 Redis（`ID_REGISTRY_REDIS_URL` / `ID_REGISTRY_REDIS_CLUSTER_URLS`），默认不开 `--allow-allocation`（未知 ID 404）和 `--allow-trusted-import`（带 trusted 的请求 403）；探针与 `/metrics` 走保留的 HTTP 端口 | 50072 (gRPC), 50070 (HTTP) |
+| `id-registry.yaml` | ObjectId ↔ Snowflake 身份映射 Deployment + gRPC 主 Service / HTTP 兼容 Service；默认启用 Redis（`ID_REGISTRY_REDIS_ENABLED=true`，使用 `ID_REGISTRY_REDIS_URL` / `ID_REGISTRY_REDIS_CLUSTER_URLS`），进程内缓存作为二级存储；开发环境可关闭 Redis 使用纯内存模式；默认不开 `--allow-allocation`（未知 ID 404）和 `--allow-trusted-import`（带 trusted 的请求 403）；探针与 `/metrics` 走保留的 HTTP 端口 | 50072 (gRPC), 50070 (HTTP) |
 
 `thunder` 按主干计划不部署（整数 proto 无法承载真实 ObjectId），清单未提供。
 

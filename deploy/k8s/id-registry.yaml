@@ -1,5 +1,7 @@
 # ID Registry：ObjectId ↔ Snowflake 全局身份映射服务。
-# 映射持久化在 Redis（ID_REGISTRY_REDIS_URL 或 ID_REGISTRY_REDIS_CLUSTER_URLS），
+# 默认使用 Redis 持久化映射（ID_REGISTRY_REDIS_URL 或
+# ID_REGISTRY_REDIS_CLUSTER_URLS），并在进程内保留有界二级缓存；本地开发可将
+# ID_REGISTRY_REDIS_ENABLED=false 切换到纯内存模式。生产部署保持 Redis 开启，
 # 进程本身无状态，因此用 Deployment 而不是 StatefulSet/PVC。
 # 生产 cutover 先走 trusted import：不传 --allow-allocation，未知 ID fail closed；
 # trusted 导入只在迁移任务/迁移副本上开启，在线副本不要打开。
@@ -48,6 +50,7 @@ spec:
           command: ["/usr/local/bin/id-service"]
           # 所有 flag 都有同名环境变量（ID_REGISTRY_GRPC_LISTEN、
           # ID_REGISTRY_HTTP_LISTEN、ID_REGISTRY_WORKER_ID、
+          # ID_REGISTRY_REDIS_ENABLED、
           # ID_REGISTRY_ALLOW_ALLOCATION、ID_REGISTRY_ALLOW_TRUSTED_IMPORT、
           # ID_REGISTRY_MAX_BATCH_SIZE）；旧 ID_REGISTRY_LISTEN/--listen 仍可用于
           # 迁移期间指定 HTTP 端口。这里保留 args 形式便于阅读。
@@ -61,6 +64,8 @@ spec:
             # --allow-trusted-import（带 trusted_snowflake_id 返回 403）。
             # 迁移导入副本另起 Deployment，只对迁移任务开放。
           env:
+            - name: ID_REGISTRY_REDIS_ENABLED
+              value: "true"
             # 单 Redis / 代理 / Sentinel 入口。原生 Redis Cluster 改用
             # ID_REGISTRY_REDIS_CLUSTER_URLS（逗号分隔 seed URL），两者互斥。
             # URL 里的用户名/密码不会出现在启动日志中。
