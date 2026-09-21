@@ -350,11 +350,7 @@ impl RedisIdRegistry {
         provided_snowflake_id: Option<SnowflakeId>,
     ) -> Result<SnowflakeId, IdError> {
         let mut resolved = self
-            .allocate_batch(&[(
-                object_id.to_string(),
-                entity_kind,
-                provided_snowflake_id,
-            )])
+            .allocate_batch(&[(object_id.to_string(), entity_kind, provided_snowflake_id)])
             .await?;
         resolved
             .pop()
@@ -2207,7 +2203,10 @@ mod tests {
         .await
         .unwrap();
 
-        let id = registry.allocate_one(POST, EntityKind::Post, None).await.unwrap();
+        let id = registry
+            .allocate_one(POST, EntityKind::Post, None)
+            .await
+            .unwrap();
         let mapping = registry.reverse_one(id, EntityKind::Post).await.unwrap();
         assert_eq!(mapping.object_id, POST);
         assert_eq!(registry.cache_sizes(), (1, 1));
@@ -2445,7 +2444,10 @@ mod tests {
 
         // The next allocation in the same second gets seq 1 on the first try.
         let post = object_id_at(second, 1);
-        let allocated = registry.allocate_one(&post, EntityKind::Post, None).await.unwrap();
+        let allocated = registry
+            .allocate_one(&post, EntityKind::Post, None)
+            .await
+            .unwrap();
         assert_eq!(allocated, snowflake_at(second, 0, 1));
         assert_eq!(loads(&store.calls.insert_if_absent_batch), 2);
 
@@ -2720,7 +2722,10 @@ mod tests {
             EntityKind::User,
             snowflake_at(second, 0, 0),
         ));
-        let allocated = registry.allocate_one(POST, EntityKind::Post, None).await.unwrap();
+        let allocated = registry
+            .allocate_one(POST, EntityKind::Post, None)
+            .await
+            .unwrap();
         assert_eq!(allocated, snowflake_at(second, 0, 1));
         assert_eq!(loads(&store.calls.insert_if_absent_batch), 2);
     }
@@ -2930,7 +2935,10 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(
-            registry.allocate_one(USER, EntityKind::User, None).await.unwrap(),
+            registry
+                .allocate_one(USER, EntityKind::User, None)
+                .await
+                .unwrap(),
             id
         );
         assert_eq!(
