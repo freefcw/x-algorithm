@@ -123,7 +123,7 @@ impl IdentityRegistryService for GrpcIdRegistryService {
             let request = request.into_inner();
             crate::validate_object_id(&request.object_id).map_err(status_for)?;
             let kind = entity_kind(request.entity_kind)?;
-            let trusted = request.trusted_snowflake_id.map(snowflake).transpose()?;
+            let trusted = request.snowflake_id.map(snowflake).transpose()?;
             if trusted.is_some() {
                 return Err(status_for(IdError::TrustedImportDisabled(
                     request.object_id.clone(),
@@ -157,7 +157,7 @@ impl IdentityRegistryService for GrpcIdRegistryService {
             if request
                 .ids
                 .iter()
-                .any(|item| item.trusted_snowflake_id.is_some())
+                .any(|item| item.snowflake_id.is_some())
             {
                 return Err(status_for(IdError::TrustedImportDisabled(
                     "resolve does not accept trusted imports".to_string(),
@@ -198,7 +198,7 @@ impl IdentityRegistryService for GrpcIdRegistryService {
             let request = request.into_inner();
             crate::validate_object_id(&request.object_id).map_err(status_for)?;
             let kind = entity_kind(request.entity_kind)?;
-            let trusted = request.trusted_snowflake_id.map(snowflake).transpose()?;
+            let trusted = request.snowflake_id.map(snowflake).transpose()?;
             let resolved = self
                 .registry
                 .resolve_one_with_trusted(&request.object_id, kind, trusted)
@@ -230,7 +230,7 @@ impl IdentityRegistryService for GrpcIdRegistryService {
                     Ok((
                         item.object_id.clone(),
                         entity_kind(item.entity_kind)?,
-                        item.trusted_snowflake_id.map(snowflake).transpose()?,
+                        item.snowflake_id.map(snowflake).transpose()?,
                     ))
                 })
                 .collect::<Result<Vec<_>, Status>>()?;
@@ -319,7 +319,7 @@ mod tests {
                 ids: vec![pb::ResolveRequest {
                     object_id: "65f1a2b3c4d5e6f708091011".into(),
                     entity_kind: pb::EntityKind::User as i32,
-                    trusted_snowflake_id: Some(4242),
+                    snowflake_id: Some(4242),
                 }],
             }))
             .await

@@ -337,7 +337,7 @@ impl RegistryTransport for GrpcRegistryTransport {
                 .map(|(object_id, kind, trusted)| registry_pb::ResolveRequest {
                     object_id: object_id.clone(),
                     entity_kind: proto_kind(*kind),
-                    trusted_snowflake_id: trusted.map(SnowflakeId::get),
+                    snowflake_id: trusted.map(SnowflakeId::get),
                 })
                 .collect(),
         };
@@ -412,7 +412,7 @@ impl RegistryTransport for GrpcRegistryTransport {
                 .map(|(object_id, kind, trusted)| registry_pb::ResolveRequest {
                     object_id: object_id.clone(),
                     entity_kind: proto_kind(*kind),
-                    trusted_snowflake_id: trusted.map(SnowflakeId::get),
+                    snowflake_id: trusted.map(SnowflakeId::get),
                 })
                 .collect(),
         };
