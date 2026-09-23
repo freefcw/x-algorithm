@@ -2,7 +2,7 @@ use crate::candidate_pipeline::phoenix_candidate_pipeline::PhoenixCandidatePipel
 use crate::clients::served_persistence::{FeedStateServedPersistence, ServedPersistence};
 use crate::debug_access::{DebugAccessError, DebugAccessPolicy};
 use crate::feed_state::{FeedStateStore, InMemoryFeedStateStore};
-use crate::id::{EntityKind, SharedIdentityReader, SnowflakeId};
+use crate::id::{EntityKind, IdentityReader, SnowflakeId};
 use crate::models::candidate::{CandidateHelpers, PostCandidate};
 use crate::models::query::ScoredPostsQuery;
 use crate::query_builder::QueryBuilder;
@@ -25,7 +25,6 @@ pub struct ScoredPostsOutput {
 pub struct ScoredPostsServer {
     pipeline: Arc<PhoenixCandidatePipeline>,
     query_builder: QueryBuilder,
-    identity: SharedIdentityReader,
     debug_access: DebugAccessPolicy,
     rpc_policy: RpcPolicy,
     feed_state: Arc<dyn FeedStateStore>,
@@ -55,11 +54,9 @@ impl ScoredPostsServer {
                 stage.components.join(", ")
             );
         }
-        let identity = query_builder.identity();
         Self {
             pipeline,
             query_builder,
-            identity,
             debug_access: DebugAccessPolicy::default(),
             rpc_policy: RpcPolicy::default(),
             served_persist: Arc::new(FeedStateServedPersistence::new(Arc::clone(&state_store))),
@@ -127,21 +124,24 @@ impl ScoredPostsServer {
         user_id: crate::models::UserId,
         ids: &[crate::models::PostId],
         request_time_ms: i64,
+        identity: Arc<crate::id::IdentityContext>,
     ) -> Result<(), String> {
         self.served_persist
-            .persist(user_id, ids, request_time_ms)
+            .persist_with_identity(user_id, ids, request_time_ms, identity)
             .await
     }
 
     pub async fn score(&self, query: ScoredPostsQuery) -> Result<ScoredPostsOutput, String> {
-        self.score_with_debug(query).await.map(|(output, _)| output)
+        self.score_in_request_with_debug(query.start_request(), false)
+            .await
+            .map(|(output, _)| output)
     }
 
     pub(crate) async fn score_with_debug(
         &self,
         query: ScoredPostsQuery,
     ) -> Result<(ScoredPostsOutput, pb::PipelineDebugInfo), String> {
-        self.score_in_request_with_debug(query.start_request())
+        self.score_in_request_with_debug(query.start_request(), true)
             .await
     }
 
@@ -151,7 +151,7 @@ impl ScoredPostsServer {
         &self,
         query: ScoredPostsQuery,
     ) -> Result<ScoredPostsOutput, String> {
-        self.score_in_request_with_debug(query)
+        self.score_in_request_with_debug(query, false)
             .await
             .map(|(output, _)| output)
     }
@@ -159,18 +159,23 @@ impl ScoredPostsServer {
     async fn score_in_request_with_debug(
         &self,
         query: ScoredPostsQuery,
+        include_debug: bool,
     ) -> Result<(ScoredPostsOutput, pb::PipelineDebugInfo), String> {
         let start = Instant::now();
         let pipeline_result = self.pipeline.execute(query).await;
         let request_id = pipeline_result.query.request_id.clone();
-        let external = self.external_ids(&pipeline_result).await?;
-        let debug = pipeline_debug_info(
-            request_id.clone(),
-            &pipeline_result.retrieved_candidates,
-            &pipeline_result.filtered_candidates,
-            &pipeline_result.selected_candidates,
-            &external,
-        )?;
+        let external = self.external_ids(&pipeline_result, include_debug).await?;
+        let debug = if include_debug {
+            pipeline_debug_info(
+                request_id.clone(),
+                &pipeline_result.retrieved_candidates,
+                &pipeline_result.filtered_candidates,
+                &pipeline_result.selected_candidates,
+                &external,
+            )?
+        } else {
+            pb::PipelineDebugInfo::default()
+        };
         let selected_ids = pipeline_result
             .selected_candidates
             .iter()
@@ -207,21 +212,37 @@ impl ScoredPostsServer {
             ScoredPostsQuery,
             PostCandidate,
         >,
+        include_debug: bool,
     ) -> Result<ExternalIds, String> {
         let mut post_ids = HashSet::new();
         let mut user_ids = HashSet::new();
-        for candidate in result
-            .retrieved_candidates
-            .iter()
-            .chain(&result.filtered_candidates)
-            .chain(&result.selected_candidates)
-        {
+        let candidates = if include_debug {
+            result
+                .retrieved_candidates
+                .iter()
+                .chain(&result.filtered_candidates)
+                .chain(&result.selected_candidates)
+                .collect::<Vec<_>>()
+        } else {
+            result.selected_candidates.iter().collect::<Vec<_>>()
+        };
+        for candidate in candidates {
             collect_post_ids(candidate, &mut post_ids);
             collect_user_ids(candidate, &mut user_ids);
         }
         Ok(ExternalIds {
-            posts: reverse_kind(&self.identity, EntityKind::Post, post_ids).await?,
-            users: reverse_kind(&self.identity, EntityKind::User, user_ids).await?,
+            posts: reverse_kind(
+                &*result.query.identity_context(),
+                EntityKind::Post,
+                post_ids,
+            )
+            .await?,
+            users: reverse_kind(
+                &*result.query.identity_context(),
+                EntityKind::User,
+                user_ids,
+            )
+            .await?,
         })
     }
 }
@@ -254,7 +275,7 @@ fn collect_user_ids(candidate: &PostCandidate, out: &mut HashSet<u64>) {
 /// One batch of registry reversals at a single entity kind, keyed by the
 /// internal numeric ID for response assembly.
 async fn reverse_kind(
-    identity: &SharedIdentityReader,
+    identity: &dyn IdentityReader,
     kind: EntityKind,
     ids: HashSet<u64>,
 ) -> Result<HashMap<u64, String>, String> {

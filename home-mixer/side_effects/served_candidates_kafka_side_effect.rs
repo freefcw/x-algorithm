@@ -13,7 +13,7 @@
 //!
 //! 事件契约见 `docs/implementation/served-candidates-event-contract.md`。
 
-use crate::id::{EntityKind, SharedIdentityReader, SnowflakeId};
+use crate::id::{EntityKind, SnowflakeId};
 use crate::models::candidate::PostCandidate;
 use crate::models::query::ScoredPostsQuery;
 use serde::{Deserialize, Serialize};
@@ -135,21 +135,13 @@ pub trait ServedCandidatesSink: Send + Sync {
 
 pub struct ServedCandidatesKafkaSideEffect {
     sink: Arc<dyn ServedCandidatesSink>,
-    identity: SharedIdentityReader,
 }
 
 impl ServedCandidatesKafkaSideEffect {
-    /// `new` keeps service-free tests working through the padded resolver;
-    /// production assembly uses `with_identity` with the shared registry.
+    /// Creates the exposure-event side effect. Identity resolution always
+    /// comes from the request-local context carried by `ScoredPostsQuery`.
     pub fn new(sink: Arc<dyn ServedCandidatesSink>) -> Self {
-        Self::with_identity(sink, Arc::new(crate::id::PaddedIdentityResolver))
-    }
-
-    pub fn with_identity(
-        sink: Arc<dyn ServedCandidatesSink>,
-        identity: SharedIdentityReader,
-    ) -> Self {
-        Self { sink, identity }
+        Self { sink }
     }
 
     async fn external_ids(
@@ -172,18 +164,41 @@ impl ServedCandidatesKafkaSideEffect {
                 user_ids.insert(candidate.author_id);
             }
         }
-        let posts = reverse_kind(&self.identity, EntityKind::Post, post_ids).await?;
-        let users = reverse_kind(&self.identity, EntityKind::User, user_ids).await?;
+        // Served events are detached from the response path. Keep the same
+        // request-local cache and identity bill, but give this side effect its
+        // own absolute budget instead of inheriting an already-expired RPC
+        // deadline.
+        let identity = query
+            .identity_context()
+            .for_side_effect(std::time::Duration::from_millis(
+                crate::params::SIDE_EFFECT_TIMEOUT_MS,
+            ));
+        let posts = reverse_kind(&identity, EntityKind::Post, post_ids).await?;
+        let users = reverse_kind(&identity, EntityKind::User, user_ids).await?;
         let viewer_id = users
             .get(&query.user_id)
             .cloned()
             .ok_or_else(|| "ID Registry returned no viewer mapping".to_string())?;
         Ok((viewer_id, posts, users))
     }
+
+    fn log_identity_snapshot(query: &ScoredPostsQuery) {
+        let stats = query.identity_context().stats();
+        log::debug!(
+            "request_id={} side_effect_identity_registry_snapshot allocate_batches={} allocate_ids={} resolve_batches={} resolve_ids={} reverse_batches={} reverse_ids={}",
+            query.request_id,
+            stats.allocate_batches,
+            stats.allocate_ids,
+            stats.resolve_batches,
+            stats.resolve_ids,
+            stats.reverse_batches,
+            stats.reverse_ids,
+        );
+    }
 }
 
 async fn reverse_kind(
-    identity: &SharedIdentityReader,
+    identity: &dyn crate::id::IdentityReader,
     kind: EntityKind,
     ids: HashSet<u64>,
 ) -> Result<HashMap<u64, String>, String> {
@@ -215,25 +230,40 @@ impl SideEffect<ScoredPostsQuery, PostCandidate> for ServedCandidatesKafkaSideEf
         input: Arc<SideEffectInput<ScoredPostsQuery, PostCandidate>>,
     ) -> Result<(), String> {
         if input.selected_candidates.is_empty() {
+            Self::log_identity_snapshot(&input.query);
             return Ok(());
         }
 
-        let (viewer_id, posts, users) = self
+        let result = match self
             .external_ids(&input.query, &input.selected_candidates)
-            .await?;
-        let Some(event) = ServedCandidatesEvent::from_served(
-            &input.query,
-            &input.selected_candidates,
-            viewer_id,
-            &posts,
-            &users,
-        ) else {
-            return Err("Served-candidates event dropped: unmapped internal ID".to_string());
-        };
-        self.sink
-            .publish(&event)
             .await
-            .map_err(|error| format!("Served-candidates publish failed: {error}"))
+        {
+            Ok((viewer_id, posts, users)) => {
+                match ServedCandidatesEvent::from_served(
+                    &input.query,
+                    &input.selected_candidates,
+                    viewer_id,
+                    &posts,
+                    &users,
+                ) {
+                    Some(event) => self
+                        .sink
+                        .publish(&event)
+                        .await
+                        .map_err(|error| format!("Served-candidates publish failed: {error}")),
+                    None => {
+                        Err("Served-candidates event dropped: unmapped internal ID".to_string())
+                    }
+                }
+            }
+            Err(error) => Err(error),
+        };
+        // This snapshot is emitted by the asynchronous side-effect task and
+        // is intentionally distinct from the main-path snapshot logged by the
+        // RPC handler. It may include work performed by other concurrent
+        // request stages that share the same request context.
+        Self::log_identity_snapshot(&input.query);
+        result
     }
 
     /// Flush the transport (Kafka producer queue) before the process exits.
@@ -245,9 +275,11 @@ impl SideEffect<ScoredPostsQuery, PostCandidate> for ServedCandidatesKafkaSideEf
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::id::{IdentityContext, IdentityRegistrationContext, PaddedIdentityResolver};
     use crate::models::ids::ObjectId;
     use crate::models::{pid, uid};
     use std::sync::Mutex;
+    use std::time::{Duration, Instant};
     use x_algorithm_proto::home_mixer as pb;
 
     fn ext(n: u64) -> String {
@@ -278,7 +310,7 @@ mod tests {
             request_time_ms: 1_700_000_000_000,
             client_app_id: 3,
             is_bottom_request: true,
-            ..Default::default()
+            ..ScoredPostsQuery::test_default()
         }
     }
 
@@ -314,7 +346,7 @@ mod tests {
             Arc::clone(&sink) as Arc<dyn ServedCandidatesSink>
         );
 
-        assert!(side_effect.enable(Arc::new(ScoredPostsQuery::default())));
+        assert!(side_effect.enable(Arc::new(ScoredPostsQuery::test_default())));
         let shadow = ScoredPostsQuery {
             is_shadow_traffic: true,
             ..query()
@@ -382,6 +414,34 @@ mod tests {
         });
         side_effect.side_effect(input).await.expect("side effect");
         assert!(sink.published.lock().expect("publish lock").is_empty());
+    }
+
+    #[tokio::test]
+    async fn served_event_uses_its_own_identity_budget_after_rpc_deadline() {
+        let sink = Arc::new(RecordingSink::default());
+        let side_effect = ServedCandidatesKafkaSideEffect::new(
+            Arc::clone(&sink) as Arc<dyn ServedCandidatesSink>
+        );
+        let resolver = Arc::new(PaddedIdentityResolver::new());
+        let identity = Arc::new(IdentityContext::new_with_deadline(
+            resolver.clone() as _,
+            Some(Instant::now() - Duration::from_millis(1)),
+        ));
+        let registration = Arc::new(IdentityRegistrationContext::new(
+            Arc::clone(&identity),
+            resolver,
+        ));
+        let query = query().with_request_identity(identity, registration);
+
+        side_effect
+            .side_effect(Arc::new(SideEffectInput {
+                query: Arc::new(query),
+                selected_candidates: candidates(),
+                non_selected_candidates: Vec::new(),
+            }))
+            .await
+            .expect("side effect keeps its own identity budget");
+        assert_eq!(sink.published.lock().expect("publish lock").len(), 1);
     }
 
     #[test]

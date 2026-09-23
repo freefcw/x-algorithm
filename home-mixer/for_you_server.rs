@@ -2,6 +2,7 @@ use crate::candidate_pipeline::for_you_candidate_pipeline::ForYouCandidatePipeli
 use crate::clients::served_persistence::{FeedStateServedPersistence, ServedPersistence};
 use crate::feed_state::FeedStateStore;
 use crate::feed_stats::{FeedStatsSink, LoggingFeedStats};
+use crate::id::IdentityReader;
 use crate::models::feed_item::FeedItem;
 use crate::models::query::ScoredPostsQuery;
 use crate::query_builder::QueryBuilder;
@@ -20,6 +21,7 @@ pub struct ForYouFeedOutput {
     pub items: Vec<FeedItem>,
     pub request_id: String,
     pub persist_error: Option<String>,
+    pub(crate) identity_context: Arc<crate::id::IdentityContext>,
 }
 
 pub struct ForYouFeedServer {
@@ -133,6 +135,7 @@ impl ForYouFeedServer {
     pub(crate) async fn external_user_ids(
         &self,
         items: &[FeedItem],
+        identity: Arc<crate::id::IdentityContext>,
     ) -> Result<std::collections::HashMap<crate::models::UserId, String>, String> {
         use crate::id::{EntityKind, SnowflakeId};
         let mut ids = std::collections::HashSet::new();
@@ -156,9 +159,7 @@ impl ForYouFeedServer {
                     .map_err(|error| error.to_string())
             })
             .collect::<Result<Vec<_>, _>>()?;
-        let reversed = self
-            .query_builder
-            .identity()
+        let reversed = identity
             .reverse_batch(&pairs)
             .await
             .map_err(|error| error.to_string())?;
@@ -176,10 +177,11 @@ impl ForYouFeedServer {
                 .filter_map(FeedItem::served_post_id)
                 .collect::<Vec<_>>();
             persist
-                .persist(
+                .persist_with_identity(
                     result.query.user_id,
                     &served_post_ids,
                     result.query.request_time_ms,
+                    result.query.identity_context(),
                 )
                 .await
                 .err()
@@ -196,6 +198,7 @@ impl ForYouFeedServer {
             items: result.selected_candidates,
             request_id,
             persist_error,
+            identity_context: result.query.identity_context(),
         }
     }
 }

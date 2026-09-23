@@ -87,14 +87,14 @@ mod tests {
             Arc::clone(&publisher) as Arc<dyn SeenIdsPublisher>
         );
 
-        let empty_query = Arc::new(ScoredPostsQuery::default());
+        let empty_query = Arc::new(ScoredPostsQuery::test_default());
         assert!(!side_effect.enable(Arc::clone(&empty_query)));
 
         let query = ScoredPostsQuery {
             user_id: 42,
             request_time_ms: 1_700_000_000_000,
             seen_ids: vec![1, 2],
-            ..Default::default()
+            ..ScoredPostsQuery::test_default()
         };
         assert!(side_effect.enable(Arc::new(query.clone())));
 

@@ -86,6 +86,7 @@ mod tests {
         async fn get_user_features(
             &self,
             _user_id: crate::models::UserId,
+            _identity: Arc<crate::id::IdentityRegistrationContext>,
         ) -> Result<Vec<u8>, anyhow::Error> {
             Ok(Vec::new())
         }
@@ -107,7 +108,7 @@ mod tests {
         let input = Arc::new(SideEffectInput {
             query: Arc::new(ScoredPostsQuery {
                 user_id: 42,
-                ..Default::default()
+                ..ScoredPostsQuery::test_default()
             }),
             selected_candidates: vec![PostCandidate {
                 tweet_id: 100,
