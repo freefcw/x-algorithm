@@ -103,6 +103,14 @@ async fn main() -> anyhow::Result<()> {
         args.grpc_listen != http_listen,
         "ID registry gRPC and HTTP listeners must use different addresses"
     );
+    anyhow::ensure!(
+        args.redis_connect_timeout_ms > 0,
+        "ID registry Redis connect timeout must be positive"
+    );
+    anyhow::ensure!(
+        args.redis_request_timeout_ms > 0,
+        "ID registry Redis request timeout must be positive"
+    );
     log::info!(
         "id-service starting: grpc_listen={} http_listen={} worker_id={} allow_allocation={} \
          max_batch_size={} key_prefix={} cache_capacity={} redis_connect_timeout_ms={} \
