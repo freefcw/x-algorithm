@@ -1,4 +1,4 @@
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
 use half::f16;
@@ -36,8 +36,26 @@ fn random_unit_embedding(dim: usize) -> Arc<Vec<f16>> {
     Arc::new(emb)
 }
 
-fn build_dpp_inputs(req: &RankRequest, ctx: &DppContext) -> Vec<DppInput> {
-    let dim = ctx.store.dim();
+#[derive(Default)]
+struct EmbeddingMemo(HashMap<SnowflakeId, (Arc<Vec<f16>>, bool)>);
+
+impl EmbeddingMemo {
+    fn resolve(&mut self, embedding_id: SnowflakeId, ctx: &DppContext) -> (Arc<Vec<f16>>, bool) {
+        let (embedding, missing) = self.0.entry(embedding_id).or_insert_with(|| {
+            match ctx.store.client.get(embedding_id) {
+                Some(embedding) => (embedding, false),
+                None => (random_unit_embedding(ctx.store.dim()), true),
+            }
+        });
+        (Arc::clone(embedding), *missing)
+    }
+}
+
+fn build_dpp_inputs(
+    req: &RankRequest,
+    ctx: &DppContext,
+    memo: &mut EmbeddingMemo,
+) -> Vec<DppInput> {
     let max_rank = ctx.config.max_selected_rank;
 
     let mut scored: Vec<(usize, &RankCandidate, f64)> = req
@@ -64,14 +82,11 @@ fn build_dpp_inputs(req: &RankRequest, ctx: &DppContext) -> Vec<DppInput> {
             };
             let embedding_id = SnowflakeId::new(embedding_id)
                 .expect("RankRequest IDs are validated at the service boundary");
-            let fetched = ctx.store.client.get(embedding_id);
-            let embedding_missing = fetched.is_none();
-            let (embedding, norm) = match fetched {
-                Some(arc) => {
-                    let n = l2_norm(&arc);
-                    (arc, n)
-                }
-                None => (random_unit_embedding(dim), 1.0),
+            let (embedding, embedding_missing) = memo.resolve(embedding_id, ctx);
+            let norm = if embedding_missing {
+                1.0
+            } else {
+                l2_norm(&embedding)
             };
             DppInput {
                 id: SnowflakeId::new(c.tweet_id)
@@ -86,7 +101,7 @@ fn build_dpp_inputs(req: &RankRequest, ctx: &DppContext) -> Vec<DppInput> {
 }
 
 pub fn rank(req: &RankRequest, ctx: &DppContext) -> Vec<RankedCandidate> {
-    let inputs = build_dpp_inputs(req, ctx);
+    let inputs = build_dpp_inputs(req, ctx, &mut EmbeddingMemo::default());
     let viewer_id = SnowflakeId::new(req.viewer_id)
         .expect("RankRequest viewer ID is validated at the service boundary");
     let results = dpp::rescore(&inputs, None, &ctx.config, viewer_id);
@@ -158,4 +173,86 @@ pub fn rank(req: &RankRequest, ctx: &DppContext) -> Vec<RankedCandidate> {
             },
         })
         .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    use super::*;
+    use crate::dpp::DppConfig;
+    use crate::embedding_store::{init_store_with, MmEmbeddingsLookup};
+
+    #[derive(Default)]
+    struct CountingMissingLookup {
+        calls: AtomicUsize,
+    }
+
+    impl MmEmbeddingsLookup for CountingMissingLookup {
+        fn get(&self, _id: SnowflakeId) -> Option<Arc<Vec<f16>>> {
+            self.calls.fetch_add(1, Ordering::Relaxed);
+            None
+        }
+    }
+
+    fn context(lookup: Arc<CountingMissingLookup>) -> DppContext {
+        let (store, _) = init_store_with(4, lookup).expect("test store must initialize");
+        DppContext {
+            store,
+            config: DppConfig {
+                top_k: 4,
+                theta: 0.5,
+                max_selected_rank: 4,
+                debug_viewer_id: None,
+            },
+        }
+    }
+
+    fn candidate(tweet_id: u64, retweeted_tweet_id: u64, score: f64) -> RankCandidate {
+        RankCandidate {
+            tweet_id,
+            retweeted_tweet_id,
+            score: Some(score),
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn missing_original_embedding_is_shared_by_original_and_retweets() {
+        let lookup = Arc::new(CountingMissingLookup::default());
+        let ctx = context(Arc::clone(&lookup));
+        let req = RankRequest {
+            candidates: vec![
+                candidate(900, 0, 3.0),
+                candidate(901, 900, 2.0),
+                candidate(902, 900, 1.0),
+            ],
+            ..Default::default()
+        };
+
+        let inputs = build_dpp_inputs(&req, &ctx, &mut EmbeddingMemo::default());
+
+        assert_eq!(inputs.len(), 3);
+        assert!(inputs.iter().all(|input| input.embedding_missing));
+        assert!(Arc::ptr_eq(&inputs[0].embedding, &inputs[1].embedding));
+        assert!(Arc::ptr_eq(&inputs[0].embedding, &inputs[2].embedding));
+        assert_eq!(*inputs[0].embedding, *inputs[1].embedding);
+        assert_eq!(lookup.calls.load(Ordering::Relaxed), 1);
+    }
+
+    #[test]
+    fn distinct_missing_embedding_ids_do_not_share_fallbacks() {
+        let lookup = Arc::new(CountingMissingLookup::default());
+        let ctx = context(Arc::clone(&lookup));
+        let req = RankRequest {
+            candidates: vec![candidate(900, 0, 2.0), candidate(901, 0, 1.0)],
+            ..Default::default()
+        };
+
+        let inputs = build_dpp_inputs(&req, &ctx, &mut EmbeddingMemo::default());
+
+        assert_eq!(inputs.len(), 2);
+        assert!(!Arc::ptr_eq(&inputs[0].embedding, &inputs[1].embedding));
+        assert_eq!(lookup.calls.load(Ordering::Relaxed), 2);
+    }
 }
