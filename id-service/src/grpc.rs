@@ -19,13 +19,40 @@ pub use pb::identity_registry_service_server::IdentityRegistryServiceServer;
 pub struct GrpcIdRegistryService {
     registry: Arc<RedisIdRegistry>,
     max_batch_size: usize,
+    allocation_token: Option<Arc<str>>,
 }
 
 impl GrpcIdRegistryService {
     pub fn new(registry: Arc<RedisIdRegistry>, max_batch_size: usize) -> Self {
+        Self::with_allocation_token(registry, max_batch_size, None)
+    }
+
+    pub fn with_allocation_token(
+        registry: Arc<RedisIdRegistry>,
+        max_batch_size: usize,
+        allocation_token: Option<String>,
+    ) -> Self {
         Self {
             registry,
             max_batch_size,
+            allocation_token: allocation_token.map(Arc::<str>::from),
+        }
+    }
+
+    fn authorize_allocation<T>(&self, request: &Request<T>) -> Result<(), Status> {
+        let Some(expected) = self.allocation_token.as_deref() else {
+            return Ok(());
+        };
+        let provided = request
+            .metadata()
+            .get("x-id-registry-allocation-token")
+            .and_then(|value| value.to_str().ok());
+        if provided == Some(expected) {
+            Ok(())
+        } else {
+            Err(Status::unauthenticated(
+                "Allocate requires x-id-registry-allocation-token",
+            ))
         }
     }
 
@@ -242,6 +269,7 @@ impl IdentityRegistryService for GrpcIdRegistryService {
         request: Request<pb::ResolveRequest>,
     ) -> Result<Response<pb::ResolveResponse>, Status> {
         let result = async {
+            self.authorize_allocation(&request)?;
             let request = request.into_inner();
             crate::validate_object_id(&request.object_id).map_err(status_for)?;
             let kind = entity_kind(request.entity_kind)?;
@@ -267,6 +295,7 @@ impl IdentityRegistryService for GrpcIdRegistryService {
         request: Request<pb::ResolveBatchRequest>,
     ) -> Result<Response<pb::ResolveBatchResponse>, Status> {
         let result = async {
+            self.authorize_allocation(&request)?;
             let request = request.into_inner();
             self.check_batch_size(request.ids.len())?;
             let ids = request

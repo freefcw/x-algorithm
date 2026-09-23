@@ -9,7 +9,7 @@ use crate::metrics::metrics;
 use crate::{EntityKind, IdError, RedisIdRegistry, SnowflakeId, MAPPING_VERSION};
 use axum::{
     extract::{MatchedPath, Request, State},
-    http::{header, StatusCode},
+    http::{header, HeaderMap, StatusCode},
     middleware::{self, Next},
     response::{IntoResponse, Response},
     routing::{get, post},
@@ -22,6 +22,7 @@ use std::sync::Arc;
 struct AppState {
     registry: Arc<RedisIdRegistry>,
     max_batch_size: usize,
+    allocation_token: Option<Arc<str>>,
 }
 
 #[derive(Deserialize)]
@@ -118,9 +119,18 @@ pub fn status_for(error: &IdError) -> StatusCode {
 /// Build the service router. `max_batch_size` bounds the `ids` array of the
 /// batch routes; larger requests are rejected with 413.
 pub fn router(registry: Arc<RedisIdRegistry>, max_batch_size: usize) -> Router {
+    router_with_allocation_token(registry, max_batch_size, None)
+}
+
+pub fn router_with_allocation_token(
+    registry: Arc<RedisIdRegistry>,
+    max_batch_size: usize,
+    allocation_token: Option<String>,
+) -> Router {
     let state = AppState {
         registry,
         max_batch_size,
+        allocation_token: allocation_token.map(Arc::<str>::from),
     };
     Router::new()
         .route("/healthz", get(|| async { "ok" }))
@@ -172,6 +182,23 @@ async fn metrics_page(State(state): State<AppState>) -> Result<Response, ApiErro
         body,
     )
         .into_response())
+}
+
+fn authorize_allocation(state: &AppState, headers: &HeaderMap) -> Result<(), ApiError> {
+    let Some(expected) = state.allocation_token.as_deref() else {
+        return Ok(());
+    };
+    let provided = headers
+        .get("x-id-registry-allocation-token")
+        .and_then(|value| value.to_str().ok());
+    if provided == Some(expected) {
+        Ok(())
+    } else {
+        Err(ApiError(
+            StatusCode::UNAUTHORIZED,
+            "Allocate requires x-id-registry-allocation-token".into(),
+        ))
+    }
 }
 
 fn check_batch_size(len: usize, max: usize) -> Result<(), ApiError> {
@@ -276,8 +303,10 @@ async fn resolve_batch_partial(
 
 async fn allocate_batch(
     State(state): State<AppState>,
+    headers: HeaderMap,
     Json(request): Json<ResolveBatchRequest>,
 ) -> Result<Json<Vec<ResolveResponse>>, ApiError> {
+    authorize_allocation(&state, &headers)?;
     check_batch_size(request.ids.len(), state.max_batch_size)?;
     let ids = request
         .ids
@@ -308,8 +337,10 @@ async fn allocate_batch(
 
 async fn allocate(
     State(state): State<AppState>,
+    headers: HeaderMap,
     Json(request): Json<ResolveRequest>,
 ) -> Result<Json<ResolveResponse>, ApiError> {
+    authorize_allocation(&state, &headers)?;
     let provided = request.snowflake_id.map(parse_snowflake).transpose()?;
     let id = state
         .registry

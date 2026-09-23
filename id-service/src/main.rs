@@ -71,6 +71,9 @@ struct Args {
     /// or published Phoenix indexes.
     #[arg(long, env = "ID_REGISTRY_ALLOW_ALLOCATION", default_value_t = false)]
     allow_allocation: bool,
+    /// Shared token required for Allocate RPCs and HTTP routes when set.
+    #[arg(long, env = "ID_REGISTRY_ALLOCATION_TOKEN", hide = true)]
+    allocation_token: Option<String>,
     /// Maximum number of ids in one batch request; larger batches get 413.
     #[arg(long, env = "ID_REGISTRY_MAX_BATCH_SIZE", default_value_t = 10_000)]
     max_batch_size: usize,
@@ -111,6 +114,14 @@ async fn main() -> anyhow::Result<()> {
         args.redis_request_timeout_ms > 0,
         "ID registry Redis request timeout must be positive"
     );
+    anyhow::ensure!(
+        !args.allow_allocation
+            || args
+                .allocation_token
+                .as_deref()
+                .is_some_and(|token| !token.is_empty()),
+        "ID_REGISTRY_ALLOCATION_TOKEN is required when allocation is enabled"
+    );
     log::info!(
         "id-service starting: grpc_listen={} http_listen={} worker_id={} allow_allocation={} \
          max_batch_size={} key_prefix={} cache_capacity={} redis_connect_timeout_ms={} \
@@ -146,8 +157,13 @@ async fn main() -> anyhow::Result<()> {
     let http_listener = tokio::net::TcpListener::bind(http_listen).await?;
     let http_addr = http_listener.local_addr()?;
     let grpc_addr = args.grpc_listen;
-    let grpc_service = GrpcIdRegistryService::new(Arc::clone(&registry), args.max_batch_size);
-    let http_app = http::router(registry, args.max_batch_size);
+    let grpc_service = GrpcIdRegistryService::with_allocation_token(
+        Arc::clone(&registry),
+        args.max_batch_size,
+        args.allocation_token.clone(),
+    );
+    let http_app =
+        http::router_with_allocation_token(registry, args.max_batch_size, args.allocation_token);
     log::info!("id-service gRPC ready on {grpc_addr}; HTTP compatibility ready on {http_addr}");
 
     let (shutdown_tx, _) = tokio::sync::broadcast::channel::<()>(1);
