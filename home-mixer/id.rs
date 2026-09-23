@@ -958,12 +958,14 @@ struct ReversedId {
 struct HttpRegistryTransport {
     client: reqwest::Client,
     endpoint: reqwest::Url,
+    allocation_token: Option<String>,
 }
 
 #[derive(Clone)]
 struct GrpcRegistryTransport {
     endpoint: Endpoint,
     channel: std::sync::Arc<OnceCell<Channel>>,
+    allocation_token: Option<tonic::metadata::MetadataValue<tonic::metadata::Ascii>>,
 }
 
 #[tonic::async_trait]
@@ -1038,6 +1040,9 @@ impl HttpRegistryTransport {
         Ok(Self {
             client: http_client()?,
             endpoint,
+            allocation_token: std::env::var("HOME_MIXER_ID_REGISTRY_ALLOCATION_TOKEN")
+                .ok()
+                .filter(|token| !token.is_empty()),
         })
     }
 }
@@ -1151,10 +1156,14 @@ impl RegistryTransport for HttpRegistryTransport {
                 value
             })
             .collect::<Vec<_>>();
-        Ok(self
+        let mut request = self
             .client
             .post(self.endpoint.join("/v1/allocate:batch")?)
-            .json(&serde_json::json!({"ids": payload}))
+            .json(&serde_json::json!({"ids": payload}));
+        if let Some(token) = &self.allocation_token {
+            request = request.header("x-id-registry-allocation-token", token);
+        }
+        Ok(request
             .timeout(timeout)
             .send()
             .await?
@@ -1171,6 +1180,14 @@ impl GrpcRegistryTransport {
                 .connect_timeout(ID_REGISTRY_REQUEST_TIMEOUT)
                 .timeout(ID_REGISTRY_REQUEST_TIMEOUT),
             channel: std::sync::Arc::new(OnceCell::new()),
+            allocation_token: std::env::var("HOME_MIXER_ID_REGISTRY_ALLOCATION_TOKEN")
+                .ok()
+                .filter(|token| !token.is_empty())
+                .map(|token| token.parse())
+                .transpose()
+                .map_err(|error| {
+                    anyhow::anyhow!("invalid ID Registry allocation token: {error}")
+                })?,
         })
     }
 
@@ -1330,6 +1347,11 @@ impl RegistryTransport for GrpcRegistryTransport {
         };
         let mut request = tonic::Request::new(request);
         request.set_timeout(timeout);
+        if let Some(token) = &self.allocation_token {
+            request
+                .metadata_mut()
+                .insert("x-id-registry-allocation-token", token.clone());
+        }
         let response =
             registry_pb::identity_registry_service_client::IdentityRegistryServiceClient::new(
                 self.channel().await,
