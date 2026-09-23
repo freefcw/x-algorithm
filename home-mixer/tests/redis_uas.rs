@@ -14,6 +14,7 @@ use home_mixer::clients::uas_fetcher::{
     UserActionSequenceOps, ValidatedUserAction,
 };
 use home_mixer::id::IdentityContext;
+use home_mixer::models::ids::ObjectId;
 use home_mixer::models::query::ScoredPostsQuery;
 use home_mixer::models::{pid, uid, PostId, UserId};
 use home_mixer::query_hydrators::user_action_seq_query_hydrator::UserActionSeqQueryHydrator;
@@ -33,9 +34,9 @@ fn now_ms() -> i64 {
 
 fn action(user: UserId, post: u64, action_time_ms: i64, action_type: i32) -> ValidatedUserAction {
     UserActionEvent {
-        user_id: user.to_string(),
-        tweet_id: pid(post).to_string(),
-        author_id: uid(post + 100).to_string(),
+        user_id: ObjectId::from_u64_be_padded(user).to_string(),
+        tweet_id: ObjectId::from_u64_be_padded(pid(post)).to_string(),
+        author_id: ObjectId::from_u64_be_padded(uid(post + 100)).to_string(),
         action_time_ms,
         action_type,
         product_surface: 0,
