@@ -55,7 +55,8 @@ impl UserFeaturesQueryHydrator {
             .get_or_init(|| async {
                 let result = tokio::time::timeout(
                     self.fetch_timeout,
-                    self.strato_client.get_user_features(query.user_id),
+                    self.strato_client
+                        .get_user_features(query.user_id, query.registration_context()),
                 )
                 .await
                 .map_err(|_| {
@@ -91,7 +92,7 @@ impl QueryHydrator<ScoredPostsQuery> for UserFeaturesQueryHydrator {
     async fn hydrate(&self, query: &ScoredPostsQuery) -> Result<ScoredPostsQuery, String> {
         Ok(ScoredPostsQuery {
             user_features: self.hydrate_features(query).await?,
-            ..Default::default()
+            ..ScoredPostsQuery::test_default()
         })
     }
 
@@ -119,6 +120,7 @@ mod tests {
         async fn get_user_features(
             &self,
             _user_id: crate::models::UserId,
+            _identity: Arc<crate::id::IdentityRegistrationContext>,
         ) -> Result<Vec<u8>, anyhow::Error> {
             self.calls.fetch_add(1, Ordering::Relaxed);
             Ok(Vec::new())
@@ -140,6 +142,7 @@ mod tests {
         async fn get_user_features(
             &self,
             _user_id: crate::models::UserId,
+            _identity: Arc<crate::id::IdentityRegistrationContext>,
         ) -> Result<Vec<u8>, anyhow::Error> {
             tokio::time::sleep(Duration::from_millis(20)).await;
             Ok(Vec::new())
@@ -162,7 +165,7 @@ mod tests {
             user_id: 42,
             request_id: "slow-features".to_string(),
             prediction_id: 7,
-            ..Default::default()
+            ..ScoredPostsQuery::test_default()
         };
 
         let error = provider
@@ -183,7 +186,7 @@ mod tests {
             user_id: 42,
             request_id: "request-1".to_string(),
             prediction_id: 7,
-            ..Default::default()
+            ..ScoredPostsQuery::test_default()
         };
 
         let (blocked, followed) = tokio::join!(
@@ -206,13 +209,13 @@ mod tests {
             user_id: 42,
             request_id: "same-request-label".to_string(),
             prediction_id: 7,
-            ..Default::default()
+            ..ScoredPostsQuery::test_default()
         };
         let second = ScoredPostsQuery {
             user_id: 43,
             request_id: first.request_id.clone(),
             prediction_id: first.prediction_id,
-            ..Default::default()
+            ..ScoredPostsQuery::test_default()
         };
 
         let (first_result, second_result) = tokio::join!(

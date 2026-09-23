@@ -50,7 +50,7 @@ use crate::filters::topic_ids_filter::TopicIdsFilter;
 use crate::filters::vf_filter::VFFilter;
 use crate::filters::video_filter::VideoFilter;
 use crate::filters::viewer_muted_keyword_filter::ViewerMutedKeywordFilter;
-use crate::id::{SharedIdentityIngress, SharedIdentityReader};
+use crate::id::SharedIdentityIngress;
 use crate::metrics::Metrics;
 use crate::models::candidate::PostCandidate;
 use crate::models::query::ScoredPostsQuery;
@@ -152,9 +152,6 @@ pub struct PhoenixDependencies {
     /// effect unassembled; see `clients/served_candidates_sink.rs`.
     pub served_candidates_sink: Option<Arc<dyn ServedCandidatesSink>>,
     pub features: HomeMixerFeatures,
-    /// Shared ObjectId ↔ Snowflake boundary used by the adapters and side
-    /// effects that cross external identity contracts.
-    pub identity: SharedIdentityReader,
 }
 
 impl PhoenixCandidatePipeline {
@@ -252,7 +249,6 @@ impl PhoenixCandidatePipeline {
             fallback_client,
             served_candidates_sink,
             features,
-            identity,
         } = dependencies;
         // Query Hydrators
         let sequence_provider = Arc::new(UserActionSeqQueryHydrator::new(uas_fetcher));
@@ -412,9 +408,7 @@ impl PhoenixCandidatePipeline {
         // SE-11: the served exposure log is assembled only when a sink is
         // configured; once assembled it records every request.
         if let Some(sink) = served_candidates_sink {
-            side_effects.push(Box::new(ServedCandidatesKafkaSideEffect::with_identity(
-                sink, identity,
-            )));
+            side_effects.push(Box::new(ServedCandidatesKafkaSideEffect::new(sink)));
         }
         let side_effects = Arc::new(side_effects);
 
@@ -534,12 +528,8 @@ impl PhoenixCandidatePipeline {
             .as_ref()
             .map(|metrics| metrics.client_calls())
             .unwrap_or_default();
-        let mrpyq_adapters = pipeline_adapters_from_env_with_calls(
-            false,
-            client_calls.clone(),
-            Arc::clone(&identity),
-        )
-        .context("failed to create mrpyq recommendation data adapters")?;
+        let mrpyq_adapters = pipeline_adapters_from_env_with_calls(false, client_calls.clone())
+            .context("failed to create mrpyq recommendation data adapters")?;
         if mrpyq_adapters.is_none() {
             anyhow::bail!(
                 "MRPYQ_RECOMMENDATION_DATA_ADDR is required for TES, viewer relations, and fallback data"
@@ -647,7 +637,6 @@ impl PhoenixCandidatePipeline {
                 fallback_client,
                 served_candidates_sink,
                 features,
-                identity,
             })
             .await,
         )

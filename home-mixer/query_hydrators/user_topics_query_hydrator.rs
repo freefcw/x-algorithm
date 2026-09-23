@@ -31,7 +31,7 @@ impl QueryHydrator<ScoredPostsQuery> for UserTopicsQueryHydrator {
 
         Ok(ScoredPostsQuery {
             supplemental_topic_ids,
-            ..Default::default()
+            ..ScoredPostsQuery::test_default()
         })
     }
 
@@ -138,7 +138,7 @@ mod tests {
 
     #[test]
     fn adapter_selected_topics_are_used_without_home_mixer_policy() {
-        let hydrated = hydrate(vec![10, 20], ScoredPostsQuery::default()).expect("topics");
+        let hydrated = hydrate(vec![10, 20], ScoredPostsQuery::test_default()).expect("topics");
 
         assert_eq!(hydrated.supplemental_topic_ids, vec![10, 20]);
     }
@@ -149,7 +149,7 @@ mod tests {
             vec![10, 10, 20],
             ScoredPostsQuery {
                 excluded_topic_ids: vec![20],
-                ..Default::default()
+                ..ScoredPostsQuery::test_default()
             },
         )
         .expect("topics");
@@ -167,15 +167,15 @@ mod tests {
 
         assert!(!hydrator.enable(&ScoredPostsQuery {
             topic_ids: vec![10],
-            ..Default::default()
+            ..ScoredPostsQuery::test_default()
         }));
         assert!(!hydrator.enable(&ScoredPostsQuery {
             new_user_topic_ids: vec![20],
-            ..Default::default()
+            ..ScoredPostsQuery::test_default()
         }));
         assert!(!hydrator.enable(&ScoredPostsQuery {
             supplemental_topic_ids: vec![30],
-            ..Default::default()
+            ..ScoredPostsQuery::test_default()
         }));
     }
 
@@ -191,7 +191,7 @@ mod tests {
             .build()
             .expect("test runtime");
 
-        let result = runtime.block_on(hydrator.hydrate(&ScoredPostsQuery::default()));
+        let result = runtime.block_on(hydrator.hydrate(&ScoredPostsQuery::test_default()));
 
         assert!(result.is_err());
     }

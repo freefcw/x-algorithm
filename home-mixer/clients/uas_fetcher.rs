@@ -56,6 +56,7 @@ pub trait UserActionSequenceOps: Send + Sync {
     async fn get_by_user_id(
         &self,
         user_id: UserId,
+        identity: std::sync::Arc<crate::id::IdentityContext>,
     ) -> Result<uas_compat::UserActionSequence, anyhow::Error>;
 }
 
@@ -555,9 +556,21 @@ impl UserActionSequenceOps for RedisUserActionSequenceStore {
     async fn get_by_user_id(
         &self,
         user_id: UserId,
+        identity: std::sync::Arc<crate::id::IdentityContext>,
+    ) -> Result<uas_compat::UserActionSequence, anyhow::Error> {
+        self.get_by_user_id_with_reader(user_id, identity.as_ref())
+            .await
+    }
+}
+
+impl RedisUserActionSequenceStore {
+    async fn get_by_user_id_with_reader(
+        &self,
+        user_id: UserId,
+        identity: &dyn crate::id::IdentityReader,
     ) -> Result<uas_compat::UserActionSequence, anyhow::Error> {
         let started = Instant::now();
-        let result = self.get_by_user_id_inner(user_id).await;
+        let result = self.get_by_user_id_inner(user_id, identity).await;
         self.calls.record(
             "redis_uas",
             "read",
@@ -566,19 +579,16 @@ impl UserActionSequenceOps for RedisUserActionSequenceStore {
         );
         result
     }
-}
-
-impl RedisUserActionSequenceStore {
     async fn get_by_user_id_inner(
         &self,
         user_id: UserId,
+        identity: &dyn crate::id::IdentityReader,
     ) -> Result<uas_compat::UserActionSequence, anyhow::Error> {
         let now = current_time_ms();
         let cutoff = now.saturating_sub(duration_ms(self.window));
         // The stored key space is external ObjectIds; reverse the internal
         // viewer identity before addressing Redis.
-        let external_user = self
-            .identity
+        let external_user = identity
             .reverse_batch(&[(
                 crate::id::SnowflakeId::new(user_id)
                     .map_err(|error| anyhow::anyhow!("invalid internal user id: {error}"))?,
@@ -640,8 +650,7 @@ impl RedisUserActionSequenceStore {
                 ]
             })
             .collect::<Vec<_>>();
-        let resolved = self
-            .identity
+        let resolved = identity
             .resolve_batch(&external_ids)
             .await
             .map_err(|error| anyhow::anyhow!("resolve UAS identities: {error}"))?;
@@ -718,6 +727,7 @@ impl UserActionSequenceOps for DisabledUserActionSequenceFetcher {
     async fn get_by_user_id(
         &self,
         _user_id: UserId,
+        _identity: std::sync::Arc<crate::id::IdentityContext>,
     ) -> Result<uas_compat::UserActionSequence, anyhow::Error> {
         // Stub: 返回空的行为序列
         // 这意味着 Phoenix 模型将无法使用个性化行为特征，

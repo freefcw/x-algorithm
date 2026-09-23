@@ -183,7 +183,7 @@ async fn disabled_advertisement_source_never_emits_candidates() {
     let source = AdvertisementSource::disabled();
 
     let candidates = source
-        .source(&ScoredPostsQuery::default())
+        .source(&ScoredPostsQuery::test_default())
         .await
         .expect("disabled source");
 
@@ -738,10 +738,7 @@ async fn supplemental_sources_are_injected_without_changing_the_scored_posts_por
     );
 
     let output = server
-        .get_for_you_feed(ScoredPostsQuery {
-            request_id: "request-with-prompt".to_string(),
-            ..Default::default()
-        })
+        .get_for_you_feed(ScoredPostsQuery::test_default().with_request_id("request-with-prompt"))
         .await;
 
     assert_eq!(
@@ -860,10 +857,7 @@ async fn stats_failure_does_not_change_the_feed_response() {
     );
 
     let output = server
-        .get_for_you_feed(ScoredPostsQuery {
-            request_id: "stats-failure".to_string(),
-            ..Default::default()
-        })
+        .get_for_you_feed(ScoredPostsQuery::test_default().with_request_id("stats-failure"))
         .await;
 
     assert_eq!(
@@ -892,19 +886,19 @@ async fn local_state_hydrates_the_next_request_and_records_feed_stats() {
     );
 
     let first = server
-        .get_for_you_feed(ScoredPostsQuery {
-            user_id: uid(42),
-            request_id: "state-1".to_string(),
-            ..Default::default()
-        })
+        .get_for_you_feed(
+            ScoredPostsQuery::test_default()
+                .with_user_id(uid(42))
+                .with_request_id("state-1"),
+        )
         .await;
     stats.wait_for_records(1).await;
     let second = server
-        .get_for_you_feed(ScoredPostsQuery {
-            user_id: uid(42),
-            request_id: "state-2".to_string(),
-            ..Default::default()
-        })
+        .get_for_you_feed(
+            ScoredPostsQuery::test_default()
+                .with_user_id(uid(42))
+                .with_request_id("state-2"),
+        )
         .await;
 
     assert_eq!(
@@ -939,10 +933,7 @@ async fn final_feed_server_bridges_scored_posts_without_changing_order() {
         seen_requests: Mutex::new(Vec::new()),
     });
     let server = ForYouFeedServer::with_provider(provider.clone(), BlenderConfig::default());
-    let query = ScoredPostsQuery {
-        request_id: "request-42".to_string(),
-        ..Default::default()
-    };
+    let query = ScoredPostsQuery::test_default().with_request_id("request-42");
 
     let output = server.get_for_you_feed(query).await;
 

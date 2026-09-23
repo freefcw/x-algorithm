@@ -19,9 +19,11 @@
 // （HOME_MIXER_VF_FAILURE_POLICY：全放行或仅网内）决定，不解释为审核通过。
 
 use super::models::FilteredReason;
+use crate::id::IdentityRegistrationContext;
 use crate::models::ids::{PostId, UserId};
 use std::collections::HashMap;
 use std::path::PathBuf;
+use std::sync::Arc;
 use tonic::async_trait;
 
 /// 安全级别枚举
@@ -93,6 +95,7 @@ pub trait VisibilityFilteringClient: Send + Sync {
         safety_level: SafetyLevel,
         for_user_id: UserId,
         context: Option<TwitterContextViewer>,
+        identity: Arc<IdentityRegistrationContext>,
     ) -> Result<HashMap<PostId, Option<FilteredReason>>, anyhow::Error>;
 }
 
@@ -128,6 +131,7 @@ impl VisibilityFilteringClient for DisabledVisibilityFilteringClient {
         _safety_level: SafetyLevel,
         _for_user_id: UserId,
         _context: Option<TwitterContextViewer>,
+        _identity: Arc<IdentityRegistrationContext>,
     ) -> Result<HashMap<PostId, Option<FilteredReason>>, anyhow::Error> {
         let _ = tweet_ids;
         anyhow::bail!("production visibility adapter is not configured")

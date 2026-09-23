@@ -273,7 +273,7 @@ mod tests {
         let query = ScoredPostsQuery {
             prediction_id: 123,
             scoring_sequence: Some(Default::default()),
-            ..Default::default()
+            ..ScoredPostsQuery::test_default()
         };
         let scored = scorer()
             .score(
@@ -299,7 +299,7 @@ mod tests {
         let query = ScoredPostsQuery {
             prediction_id: 123,
             scoring_sequence: Some(Default::default()),
-            ..Default::default()
+            ..ScoredPostsQuery::test_default()
         };
         let scorer = PhoenixScorer {
             phoenix_client: Arc::new(FailingPhoenixClient),

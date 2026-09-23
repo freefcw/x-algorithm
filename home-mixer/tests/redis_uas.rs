@@ -13,6 +13,7 @@ use home_mixer::clients::uas_fetcher::{
     RecordOutcome, RedisUserActionSequenceStore, SkipReason, UserActionEvent, UserActionEventSink,
     UserActionSequenceOps, ValidatedUserAction,
 };
+use home_mixer::id::IdentityContext;
 use home_mixer::models::query::ScoredPostsQuery;
 use home_mixer::models::{pid, uid, PostId, UserId};
 use home_mixer::query_hydrators::user_action_seq_query_hydrator::UserActionSeqQueryHydrator;
@@ -44,8 +45,9 @@ fn action(user: UserId, post: u64, action_time_ms: i64, action_type: i32) -> Val
 }
 
 async fn read_post_ids(store: &RedisUserActionSequenceStore, user: UserId) -> Vec<PostId> {
+    let identity = std::sync::Arc::new(IdentityContext::default());
     let sequence = store
-        .get_by_user_id(user)
+        .get_by_user_id(user, identity)
         .await
         .expect("read projected sequence");
     let actions = sequence.user_actions.expect("action list");
@@ -151,8 +153,9 @@ async fn redelivering_an_event_does_not_duplicate_members() {
         .expect("second action type");
 
     assert_eq!(zcard(&redis, prefix, user), 2);
+    let identity = std::sync::Arc::new(IdentityContext::default());
     let actions = store
-        .get_by_user_id(user)
+        .get_by_user_id(user, identity)
         .await
         .expect("read")
         .user_actions
@@ -327,13 +330,13 @@ async fn the_sequence_hydrator_consumes_the_projected_actions() {
 
     let hydrator = UserActionSeqQueryHydrator::new(Arc::new(store));
     let sequence = hydrator
-        .hydrate_sequence(&ScoredPostsQuery {
-            user_id: user,
-            request_id: "redis-uas".to_string(),
-            prediction_id: 1,
-            request_time_ms: now,
-            ..Default::default()
-        })
+        .hydrate_sequence(
+            &ScoredPostsQuery::test_default()
+                .with_user_id(user)
+                .with_request_id("redis-uas")
+                .with_prediction_id(1)
+                .with_request_time_ms(now),
+        )
         .await
         .expect("aggregated sequence");
     let metadata = sequence.metadata.expect("metadata");

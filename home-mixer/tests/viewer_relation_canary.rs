@@ -66,7 +66,15 @@ async fn seeded_block_relation_survives_the_account_id_field_position() {
         viewer_relation_client_from_config(&config).expect("viewer relation client builds"),
     );
 
-    let payload = strato.get_user_features(viewer).await.expect(
+    let resolver = std::sync::Arc::new(home_mixer::id::PaddedIdentityResolver::new());
+    let reader = std::sync::Arc::new(home_mixer::id::IdentityContext::new(
+        resolver.clone() as home_mixer::id::SharedIdentityReader
+    ));
+    let identity = std::sync::Arc::new(home_mixer::id::IdentityRegistrationContext::new(
+        reader,
+        resolver as home_mixer::id::SharedIdentityIngress,
+    ));
+    let payload = strato.get_user_features(viewer, identity).await.expect(
         "GetViewerRelations 调用失败。这是 fail-closed（准入过滤器会清空候选、\
              feed 变空），不是本测试要抓的静默 fail-open；先排查端点可达性与 \
              rec-bff 状态，再重跑本测试",

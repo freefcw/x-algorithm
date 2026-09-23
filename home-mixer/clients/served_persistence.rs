@@ -16,6 +16,17 @@ pub trait ServedPersistence: Send + Sync {
         served_post_ids: &[PostId],
         request_time_ms: i64,
     ) -> Result<(), String>;
+
+    async fn persist_with_identity(
+        &self,
+        viewer_id: UserId,
+        served_post_ids: &[PostId],
+        request_time_ms: i64,
+        _identity: Arc<crate::id::IdentityContext>,
+    ) -> Result<(), String> {
+        self.persist(viewer_id, served_post_ids, request_time_ms)
+            .await
+    }
 }
 
 /// Persistence adapter backed by a [`FeedStateStore`]. The same type works
@@ -40,6 +51,23 @@ impl ServedPersistence for FeedStateServedPersistence {
     ) -> Result<(), String> {
         self.store
             .record(viewer_id, served_post_ids.to_vec(), request_time_ms)
+            .await
+    }
+
+    async fn persist_with_identity(
+        &self,
+        viewer_id: UserId,
+        served_post_ids: &[PostId],
+        request_time_ms: i64,
+        identity: Arc<crate::id::IdentityContext>,
+    ) -> Result<(), String> {
+        self.store
+            .record_with_identity(
+                viewer_id,
+                served_post_ids.to_vec(),
+                request_time_ms,
+                identity,
+            )
             .await
     }
 }

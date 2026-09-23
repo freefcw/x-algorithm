@@ -81,7 +81,8 @@ impl UserActionSeqQueryHydrator {
             .get_or_init(|| async {
                 let uas_thrift = tokio::time::timeout(
                     self.fetch_timeout,
-                    self.uas_fetcher.get_by_user_id(query.user_id),
+                    self.uas_fetcher
+                        .get_by_user_id(query.user_id, query.identity_context()),
                 )
                 .await
                 .map_err(|_| {
@@ -118,7 +119,7 @@ impl QueryHydrator<ScoredPostsQuery> for UserActionSeqQueryHydrator {
             user_action_sequence: Some(aggregated_uas_proto.clone()),
             retrieval_sequence: Some(aggregated_uas_proto.clone()),
             scoring_sequence: Some(aggregated_uas_proto),
-            ..Default::default()
+            ..ScoredPostsQuery::test_default()
         })
     }
 
@@ -273,6 +274,31 @@ fn convert_to_proto_sequence(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::atomic::{AtomicBool, Ordering};
+
+    struct ContextCapturingFetcher {
+        expected_context: Arc<crate::id::IdentityContext>,
+        saw_request_context: Arc<AtomicBool>,
+    }
+
+    #[async_trait]
+    impl UserActionSequenceOps for ContextCapturingFetcher {
+        async fn get_by_user_id(
+            &self,
+            _user_id: crate::models::UserId,
+            identity: Arc<crate::id::IdentityContext>,
+        ) -> Result<ThriftUserActionSequence, anyhow::Error> {
+            self.saw_request_context.store(
+                Arc::ptr_eq(&identity, &self.expected_context),
+                Ordering::SeqCst,
+            );
+            Ok(ThriftUserActionSequence {
+                metadata: None,
+                user_actions: Some(vec![raw_action(1, 10, 1)]),
+            })
+        }
+    }
+
     struct SlowFetcher;
 
     #[async_trait]
@@ -280,6 +306,7 @@ mod tests {
         async fn get_by_user_id(
             &self,
             _user_id: crate::models::UserId,
+            _identity: Arc<crate::id::IdentityContext>,
         ) -> Result<ThriftUserActionSequence, anyhow::Error> {
             tokio::time::sleep(Duration::from_millis(20)).await;
             Ok(ThriftUserActionSequence {
@@ -298,6 +325,7 @@ mod tests {
         async fn get_by_user_id(
             &self,
             _user_id: crate::models::UserId,
+            _identity: Arc<crate::id::IdentityContext>,
         ) -> Result<ThriftUserActionSequence, anyhow::Error> {
             Ok(ThriftUserActionSequence {
                 metadata: None,
@@ -336,6 +364,32 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn uas_fetch_receives_the_request_identity_context() {
+        let saw_request_context = Arc::new(AtomicBool::new(false));
+        let query = ScoredPostsQuery {
+            user_id: crate::models::uid(7),
+            request_id: "uas-request-identity".to_string(),
+            prediction_id: 1,
+            request_time_ms: 10,
+            ..ScoredPostsQuery::test_default()
+        };
+        let provider = UserActionSeqQueryHydrator::new(Arc::new(ContextCapturingFetcher {
+            expected_context: query.identity_context(),
+            saw_request_context: Arc::clone(&saw_request_context),
+        }));
+
+        provider
+            .hydrate_sequence(&query)
+            .await
+            .expect("sequence should hydrate");
+
+        assert!(
+            saw_request_context.load(Ordering::SeqCst),
+            "UAS online reads must receive the request-local identity context"
+        );
+    }
+
+    #[tokio::test]
     async fn slow_uas_fetch_is_bounded() {
         let provider = UserActionSeqQueryHydrator::new(Arc::new(SlowFetcher))
             .with_fetch_timeout(Duration::from_millis(1));
@@ -343,7 +397,7 @@ mod tests {
             user_id: 42,
             request_id: "slow-uas".to_string(),
             prediction_id: 7,
-            ..Default::default()
+            ..ScoredPostsQuery::test_default()
         };
 
         let error = provider
@@ -372,7 +426,7 @@ mod tests {
             request_id: "window-anchor".to_string(),
             prediction_id: 1,
             request_time_ms: reference_time_ms,
-            ..Default::default()
+            ..ScoredPostsQuery::test_default()
         };
 
         let sequence = provider.hydrate_sequence(&query).await.expect("sequence");
@@ -405,7 +459,7 @@ mod tests {
             request_id: "truncate".to_string(),
             prediction_id: 1,
             request_time_ms: reference_time_ms,
-            ..Default::default()
+            ..ScoredPostsQuery::test_default()
         };
 
         let sequence = provider.hydrate_sequence(&query).await.expect("sequence");
@@ -432,7 +486,7 @@ mod tests {
             request_id: "bad-time".to_string(),
             prediction_id: 1,
             request_time_ms: 0,
-            ..Default::default()
+            ..ScoredPostsQuery::test_default()
         };
 
         let error = provider

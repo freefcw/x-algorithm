@@ -531,7 +531,7 @@ mod tests {
         };
 
         let w = weights();
-        let query = ScoredPostsQuery::default();
+        let query = ScoredPostsQuery::test_default();
         let liked_score = RankingScorer::compute_weighted_score(&w, &query, &liked);
         let reported_score = RankingScorer::compute_weighted_score(&w, &query, &reported);
 
@@ -568,7 +568,7 @@ mod tests {
         };
 
         let w = weights();
-        let query = ScoredPostsQuery::default();
+        let query = ScoredPostsQuery::test_default();
         let score = RankingScorer::compute_weighted_score(&w, &query, &with_quoted_video);
         assert_eq!(score, NEGATIVE_SCORES_OFFSET);
     }
@@ -585,7 +585,7 @@ mod tests {
         };
 
         let w = weights();
-        let query = ScoredPostsQuery::default();
+        let query = ScoredPostsQuery::test_default();
         let score = RankingScorer::compute_weighted_score(&w, &query, &candidate);
         let expected = p::VIDEO_OPEN_WEIGHT + p::OPEN_LINK_WEIGHT + NEGATIVE_SCORES_OFFSET;
         assert!((score - expected).abs() < 1e-9);
@@ -603,7 +603,7 @@ mod tests {
         };
 
         let w = weights();
-        let query = ScoredPostsQuery::default();
+        let query = ScoredPostsQuery::test_default();
         let neutral_score = RankingScorer::compute_weighted_score(&w, &query, &neutral);
         let not_dwelled_score = RankingScorer::compute_weighted_score(&w, &query, &not_dwelled);
 
@@ -635,7 +635,7 @@ mod tests {
         };
 
         let w = weights();
-        let query = ScoredPostsQuery::default();
+        let query = ScoredPostsQuery::test_default();
         let boosted = RankingScorer::compute_weighted_score(&w, &query, &mutual_original);
         let reply_not_boosted = RankingScorer::compute_weighted_score(&w, &query, &mutual_reply);
         let default_weighted =
@@ -650,7 +650,7 @@ mod tests {
 
     #[test]
     fn applies_author_diversity_decay_in_score_order() {
-        let query = ScoredPostsQuery::default();
+        let query = ScoredPostsQuery::test_default();
         let candidates = vec![
             PostCandidate {
                 tweet_id: 1,
@@ -689,7 +689,7 @@ mod tests {
 
     #[test]
     fn applies_oon_discount_to_out_of_network() {
-        let query = ScoredPostsQuery::default();
+        let query = ScoredPostsQuery::test_default();
         let candidates = vec![
             PostCandidate {
                 tweet_id: 1,
@@ -727,7 +727,7 @@ mod tests {
     fn in_network_replies_and_retweets_also_get_oon_rescore() {
         // 上游 47c1bcd 行为：EnableOonRescoreForInNetworkRepliesRetweets 默认开，
         // 网内的回复/转发同样乘 OON 因子；网内原创帖不受影响。
-        let query = ScoredPostsQuery::default();
+        let query = ScoredPostsQuery::test_default();
         let candidates = vec![
             PostCandidate {
                 tweet_id: 1,
@@ -786,10 +786,10 @@ mod tests {
             }]
         };
 
-        let default_scored = score_all(&ScoredPostsQuery::default(), &make_candidates());
+        let default_scored = score_all(&ScoredPostsQuery::test_default(), &make_candidates());
         let topic_query = ScoredPostsQuery {
             topic_ids: vec![10],
-            ..Default::default()
+            ..ScoredPostsQuery::test_default()
         };
         let topic_scored = score_all(&topic_query, &make_candidates());
 
@@ -808,7 +808,7 @@ mod tests {
     fn supplemental_topics_keep_generic_oon_factor() {
         let query = ScoredPostsQuery {
             supplemental_topic_ids: vec![10],
-            ..Default::default()
+            ..ScoredPostsQuery::test_default()
         };
         let candidates = vec![PostCandidate {
             tweet_id: 1,

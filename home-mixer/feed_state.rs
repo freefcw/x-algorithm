@@ -5,6 +5,7 @@
 //! `clients`.
 
 use std::collections::{HashMap, VecDeque};
+use std::sync::Arc;
 use std::sync::Mutex;
 
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
@@ -22,6 +23,29 @@ pub trait FeedStateStore: Send + Sync {
         served_post_ids: Vec<crate::models::PostId>,
         request_timestamp_ms: i64,
     ) -> Result<(), String>;
+
+    /// Request-aware read hook. Stateless implementations can keep the
+    /// legacy behavior; external-key adapters use the context to avoid a
+    /// second Registry lookup in the same request.
+    async fn load_with_identity(
+        &self,
+        user_id: crate::models::UserId,
+        _identity: Arc<crate::id::IdentityContext>,
+    ) -> Result<FeedStateSnapshot, String> {
+        self.load(user_id).await
+    }
+
+    /// Request-aware write hook with the same compatibility default.
+    async fn record_with_identity(
+        &self,
+        user_id: crate::models::UserId,
+        served_post_ids: Vec<crate::models::PostId>,
+        request_timestamp_ms: i64,
+        _identity: Arc<crate::id::IdentityContext>,
+    ) -> Result<(), String> {
+        self.record(user_id, served_post_ids, request_timestamp_ms)
+            .await
+    }
 }
 
 #[derive(Default)]

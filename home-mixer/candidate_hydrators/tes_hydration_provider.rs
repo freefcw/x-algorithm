@@ -63,7 +63,12 @@ impl TesHydrationProvider {
         // every field owner joins this request-scoped batch before fast adapters finish.
         tokio::task::yield_now().await;
         let result = cell
-            .get_or_init(|| async { Arc::new(self.load_core_candidates(tweet_ids).await) })
+            .get_or_init(|| async {
+                Arc::new(
+                    self.load_core_candidates(tweet_ids, query.registration_context())
+                        .await,
+                )
+            })
             .await
             .clone();
 
@@ -109,7 +114,8 @@ impl TesHydrationProvider {
             .get_or_init(|| async {
                 tokio::time::timeout(
                     self.request_timeout,
-                    self.tes_client.get_tweet_media_entities(lookup_ids),
+                    self.tes_client
+                        .get_tweet_media_entities(lookup_ids, query.registration_context()),
                 )
                 .await
                 .map_err(|_| {
@@ -136,10 +142,15 @@ impl TesHydrationProvider {
         result
     }
 
-    async fn load_core_candidates(&self, tweet_ids: Vec<PostId>) -> CoreBatch {
+    async fn load_core_candidates(
+        &self,
+        tweet_ids: Vec<PostId>,
+        identity: Arc<crate::id::IdentityRegistrationContext>,
+    ) -> CoreBatch {
         let core_by_tweet = match tokio::time::timeout(
             self.request_timeout,
-            self.tes_client.get_tweet_core_datas(tweet_ids.clone()),
+            self.tes_client
+                .get_tweet_core_datas(tweet_ids.clone(), Arc::clone(&identity)),
         )
         .await
         {
@@ -166,7 +177,7 @@ impl TesHydrationProvider {
             match tokio::time::timeout(
                 self.request_timeout,
                 self.tes_client
-                    .get_tweet_core_datas(quoted_ids.into_iter().collect()),
+                    .get_tweet_core_datas(quoted_ids.into_iter().collect(), identity),
             )
             .await
             {
@@ -248,6 +259,7 @@ mod tests {
         async fn get_tweet_core_datas(
             &self,
             tweet_ids: Vec<crate::models::PostId>,
+            _identity: Arc<crate::id::IdentityRegistrationContext>,
         ) -> Result<HashMap<crate::models::PostId, Option<PureCoreData>>, anyhow::Error> {
             self.core_calls.fetch_add(1, Ordering::Relaxed);
             Ok(tweet_ids
@@ -268,6 +280,7 @@ mod tests {
         async fn get_tweet_media_entities(
             &self,
             tweet_ids: Vec<crate::models::PostId>,
+            _identity: Arc<crate::id::IdentityRegistrationContext>,
         ) -> Result<HashMap<crate::models::PostId, Option<MediaEntities>>, anyhow::Error> {
             self.media_calls.fetch_add(1, Ordering::Relaxed);
             Ok(tweet_ids.into_iter().map(|id| (id, Some(vec![]))).collect())
@@ -289,6 +302,7 @@ mod tests {
         async fn get_tweet_core_datas(
             &self,
             _tweet_ids: Vec<crate::models::PostId>,
+            _identity: Arc<crate::id::IdentityRegistrationContext>,
         ) -> Result<HashMap<crate::models::PostId, Option<PureCoreData>>, anyhow::Error> {
             tokio::time::sleep(Duration::from_millis(20)).await;
             Ok(HashMap::new())
@@ -297,6 +311,7 @@ mod tests {
         async fn get_tweet_media_entities(
             &self,
             _tweet_ids: Vec<crate::models::PostId>,
+            _identity: Arc<crate::id::IdentityRegistrationContext>,
         ) -> Result<HashMap<crate::models::PostId, Option<MediaEntities>>, anyhow::Error> {
             tokio::time::sleep(Duration::from_millis(20)).await;
             Ok(HashMap::new())
@@ -318,7 +333,7 @@ mod tests {
         let query = ScoredPostsQuery {
             request_id: "slow-tes".to_string(),
             prediction_id: 7,
-            ..Default::default()
+            ..ScoredPostsQuery::test_default()
         };
         let candidates = [PostCandidate {
             tweet_id: 100,
@@ -348,7 +363,7 @@ mod tests {
         let query = ScoredPostsQuery {
             request_id: "request-1".to_string(),
             prediction_id: 7,
-            ..Default::default()
+            ..ScoredPostsQuery::test_default()
         };
         let candidates = [PostCandidate {
             tweet_id: 100,
@@ -383,13 +398,13 @@ mod tests {
             user_id: 42,
             request_id: "request-1".to_string(),
             prediction_id: 7,
-            ..Default::default()
+            ..ScoredPostsQuery::test_default()
         };
         let second = ScoredPostsQuery {
             user_id: 42,
             request_id: "request-2".to_string(),
             prediction_id: 8,
-            ..Default::default()
+            ..ScoredPostsQuery::test_default()
         };
         let candidates = [PostCandidate {
             tweet_id: 100,

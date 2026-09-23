@@ -1,3 +1,4 @@
+use crate::id::IdentityRegistrationContext;
 use crate::models::candidate::PostCandidate;
 use crate::models::query::ScoredPostsQuery;
 use crate::params;
@@ -28,6 +29,7 @@ impl VFCandidateHydrator {
         safety_level: SafetyLevel,
         for_user_id: crate::models::UserId,
         context: Option<TwitterContextViewer>,
+        identity: Arc<IdentityRegistrationContext>,
     ) -> Result<HashMap<crate::models::PostId, Option<FilteredReason>>, String> {
         if tweet_ids.is_empty() {
             return Ok(HashMap::new());
@@ -35,7 +37,7 @@ impl VFCandidateHydrator {
 
         tokio::time::timeout(
             Duration::from_millis(params::VF_REQUEST_TIMEOUT_MS),
-            client.get_result(tweet_ids, safety_level, for_user_id, context),
+            client.get_result(tweet_ids, safety_level, for_user_id, context, identity),
         )
         .await
         .map_err(|_| {
@@ -58,6 +60,7 @@ impl Hydrator<ScoredPostsQuery, PostCandidate> for VFCandidateHydrator {
         let context = query.get_viewer();
         let user_id = query.user_id;
         let client = &self.vf_client;
+        let identity = query.registration_context();
 
         let mut in_network_ids = Vec::new();
         let mut oon_ids = Vec::new();
@@ -75,6 +78,7 @@ impl Hydrator<ScoredPostsQuery, PostCandidate> for VFCandidateHydrator {
             TimelineHome,
             user_id,
             context.clone(),
+            identity.clone(),
         );
 
         let oon_future = Self::fetch_vf_results(
@@ -83,6 +87,7 @@ impl Hydrator<ScoredPostsQuery, PostCandidate> for VFCandidateHydrator {
             TimelineHomeRecommendations,
             user_id,
             context,
+            identity.clone(),
         );
 
         let ancillary_ids = candidates
@@ -98,6 +103,7 @@ impl Hydrator<ScoredPostsQuery, PostCandidate> for VFCandidateHydrator {
             TimelineHomeRecommendations,
             user_id,
             query.get_viewer(),
+            identity,
         );
 
         let (in_network_result, oon_result, ancillary_result) =
@@ -206,6 +212,7 @@ mod tests {
             _safety_level: SafetyLevel,
             _for_user_id: crate::models::UserId,
             _context: Option<TwitterContextViewer>,
+            _identity: Arc<crate::id::IdentityRegistrationContext>,
         ) -> Result<HashMap<crate::models::PostId, Option<FilteredReason>>, anyhow::Error> {
             Ok(tweet_ids
                 .into_iter()
@@ -229,7 +236,7 @@ mod tests {
             .expect("test runtime");
 
         let hydrated = runtime.block_on(hydrator.hydrate(
-            &ScoredPostsQuery::default(),
+            &ScoredPostsQuery::test_default(),
             &[PostCandidate {
                 tweet_id: 1,
                 quoted_tweet_id: Some(2),
@@ -270,6 +277,7 @@ mod tests {
             _safety_level: SafetyLevel,
             _for_user_id: crate::models::UserId,
             _context: Option<TwitterContextViewer>,
+            _identity: Arc<crate::id::IdentityRegistrationContext>,
         ) -> Result<HashMap<crate::models::PostId, Option<FilteredReason>>, anyhow::Error> {
             anyhow::bail!("vf unavailable")
         }
@@ -282,7 +290,7 @@ mod tests {
         };
         let hydrated = hydrator
             .hydrate(
-                &ScoredPostsQuery::default(),
+                &ScoredPostsQuery::test_default(),
                 &[PostCandidate {
                     tweet_id: 1,
                     in_network: Some(false),

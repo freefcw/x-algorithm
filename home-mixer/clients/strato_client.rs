@@ -18,7 +18,9 @@
 // 当前为 stub 实现。
 // TODO: 替换为你平台的用户数据服务
 
+use crate::id::IdentityRegistrationContext;
 use crate::models::ids::{PostId, UserId};
+use std::sync::Arc;
 use tonic::async_trait;
 
 // =============================================================================
@@ -92,7 +94,11 @@ pub trait StratoClient: Send + Sync {
     ///
     /// # Returns
     /// 序列化的用户特征数据（原始字节）
-    async fn get_user_features(&self, user_id: UserId) -> Result<Vec<u8>, anyhow::Error>;
+    async fn get_user_features(
+        &self,
+        user_id: UserId,
+        identity: Arc<IdentityRegistrationContext>,
+    ) -> Result<Vec<u8>, anyhow::Error>;
 
     /// 存储请求信息（已投递帖子缓存）
     ///
@@ -122,7 +128,11 @@ impl DisabledStratoClient {
 
 #[async_trait]
 impl StratoClient for DisabledStratoClient {
-    async fn get_user_features(&self, _user_id: UserId) -> Result<Vec<u8>, anyhow::Error> {
+    async fn get_user_features(
+        &self,
+        _user_id: UserId,
+        _identity: Arc<IdentityRegistrationContext>,
+    ) -> Result<Vec<u8>, anyhow::Error> {
         // Stub: 返回空的用户特征 JSON
         let empty_features = serde_json::json!({
             "mutedKeywords": [],

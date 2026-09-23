@@ -192,11 +192,14 @@ impl RedisFeedStateStore {
 
     /// Reverse the internal viewer Snowflake to the ObjectId the Redis key
     /// space is written in.
-    async fn external_user(&self, user_id: UserId) -> Result<ObjectId, String> {
+    async fn external_user(
+        &self,
+        user_id: UserId,
+        identity: &dyn crate::id::IdentityReader,
+    ) -> Result<ObjectId, String> {
         let snowflake = SnowflakeId::new(user_id)
             .map_err(|error| format!("invalid internal user id: {error}"))?;
-        let object_id = self
-            .identity
+        let object_id = identity
             .reverse_batch(&[(snowflake, EntityKind::User)])
             .await
             .map_err(|error| format!("reverse feed-state user id: {error}"))?
@@ -212,6 +215,22 @@ impl FeedStateStore for RedisFeedStateStore {
     async fn load(&self, user_id: UserId) -> Result<FeedStateSnapshot, String> {
         let started = Instant::now();
         let result = self.load_inner(user_id).await;
+        self.calls.record(
+            "redis_feed_state",
+            "load",
+            if result.is_ok() { "ok" } else { "error" },
+            started,
+        );
+        result
+    }
+
+    async fn load_with_identity(
+        &self,
+        user_id: UserId,
+        identity: std::sync::Arc<crate::id::IdentityContext>,
+    ) -> Result<FeedStateSnapshot, String> {
+        let started = Instant::now();
+        let result = self.load_inner_with_identity(user_id, &*identity).await;
         self.calls.record(
             "redis_feed_state",
             "load",
@@ -239,11 +258,40 @@ impl FeedStateStore for RedisFeedStateStore {
         );
         result
     }
+
+    async fn record_with_identity(
+        &self,
+        user_id: UserId,
+        served_post_ids: Vec<PostId>,
+        request_timestamp_ms: i64,
+        identity: std::sync::Arc<crate::id::IdentityContext>,
+    ) -> Result<(), String> {
+        let started = Instant::now();
+        let result = self
+            .record_inner_with_identity(user_id, served_post_ids, request_timestamp_ms, &*identity)
+            .await;
+        self.calls.record(
+            "redis_feed_state",
+            "record",
+            if result.is_ok() { "ok" } else { "error" },
+            started,
+        );
+        result
+    }
 }
 
 impl RedisFeedStateStore {
     async fn load_inner(&self, user_id: UserId) -> Result<FeedStateSnapshot, String> {
-        let external_user = self.external_user(user_id).await?;
+        self.load_inner_with_identity(user_id, &*self.identity)
+            .await
+    }
+
+    async fn load_inner_with_identity(
+        &self,
+        user_id: UserId,
+        identity: &dyn crate::id::IdentityReader,
+    ) -> Result<FeedStateSnapshot, String> {
+        let external_user = self.external_user(user_id, identity).await?;
         let served_key = self.key(&external_user, "served");
         let timestamps_key = self.key(&external_user, "timestamps");
         let mut pipeline = redis::pipe();
@@ -276,8 +324,7 @@ impl RedisFeedStateStore {
                     .map_err(|error| format!("invalid served post id in Redis: {error}"))
             })
             .collect::<Result<Vec<_>, _>>()?;
-        let served_post_ids = self
-            .identity
+        let served_post_ids = identity
             .resolve_batch(&external_ids)
             .await
             .map_err(|error| format!("resolve feed-state served ids: {error}"))?
@@ -296,7 +343,23 @@ impl RedisFeedStateStore {
         served_post_ids: Vec<PostId>,
         request_timestamp_ms: i64,
     ) -> Result<(), String> {
-        let external_user = self.external_user(user_id).await?;
+        self.record_inner_with_identity(
+            user_id,
+            served_post_ids,
+            request_timestamp_ms,
+            &*self.identity,
+        )
+        .await
+    }
+
+    async fn record_inner_with_identity(
+        &self,
+        user_id: UserId,
+        served_post_ids: Vec<PostId>,
+        request_timestamp_ms: i64,
+        identity: &dyn crate::id::IdentityReader,
+    ) -> Result<(), String> {
+        let external_user = self.external_user(user_id, identity).await?;
         // Members are stored as external ObjectIds; reverse the internal
         // Snowflake IDs before writing.
         let internal_ids = served_post_ids
@@ -307,8 +370,7 @@ impl RedisFeedStateStore {
                     .map_err(|error| format!("invalid served post id: {error}"))
             })
             .collect::<Result<Vec<_>, _>>()?;
-        let external_post_ids = self
-            .identity
+        let external_post_ids = identity
             .reverse_batch(&internal_ids)
             .await
             .map_err(|error| format!("reverse feed-state served ids: {error}"))?;

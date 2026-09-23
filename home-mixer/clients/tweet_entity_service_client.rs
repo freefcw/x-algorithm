@@ -16,9 +16,11 @@
 // 替换建议：对接你平台的帖子/内容微服务 API
 // 当前为 stub 实现。
 
+use crate::id::IdentityRegistrationContext;
 use crate::models::candidate_features::{MediaEntities, PureCoreData};
 use crate::models::ids::{PostId, UserId};
 use std::collections::HashMap;
+use std::sync::Arc;
 use tonic::async_trait;
 
 /// TES 客户端 trait
@@ -40,6 +42,7 @@ pub trait TESClient: Send + Sync {
     async fn get_tweet_core_datas(
         &self,
         tweet_ids: Vec<PostId>,
+        identity: Arc<IdentityRegistrationContext>,
     ) -> Result<HashMap<PostId, Option<PureCoreData>>, anyhow::Error>;
 
     /// 批量获取帖子媒体实体
@@ -55,6 +58,7 @@ pub trait TESClient: Send + Sync {
     async fn get_tweet_media_entities(
         &self,
         tweet_ids: Vec<PostId>,
+        identity: Arc<IdentityRegistrationContext>,
     ) -> Result<HashMap<PostId, Option<MediaEntities>>, anyhow::Error>;
 
     /// 批量获取帖子的付费订阅作者 ID
@@ -89,6 +93,7 @@ impl TESClient for DisabledTESClient {
     async fn get_tweet_core_datas(
         &self,
         tweet_ids: Vec<PostId>,
+        _identity: Arc<IdentityRegistrationContext>,
     ) -> Result<HashMap<PostId, Option<PureCoreData>>, anyhow::Error> {
         Ok(tweet_ids.into_iter().map(|id| (id, None)).collect())
     }
@@ -96,6 +101,7 @@ impl TESClient for DisabledTESClient {
     async fn get_tweet_media_entities(
         &self,
         tweet_ids: Vec<PostId>,
+        _identity: Arc<IdentityRegistrationContext>,
     ) -> Result<HashMap<PostId, Option<MediaEntities>>, anyhow::Error> {
         Ok(tweet_ids.into_iter().map(|id| (id, None)).collect())
     }
