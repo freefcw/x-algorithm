@@ -46,7 +46,7 @@ sequenceDiagram
 4. 生成 request ID、prediction ID 和 request time
 5. 在请求预算内调用对应内层或外层 pipeline 并落 served 历史
 
-每个 RPC 入口都包在 `RpcPolicy`（`rpc_policy.rs`）里：先按 `HOME_MIXER_REQUEST_TIMEOUT_MS` 与客户端 `grpc-timeout` 取更短者作为预算，pipeline 执行 + served 落库超过预算即整体取消并返回 `DeadlineExceeded`（不返回半截结果，因为半程流水线没有走完安全过滤）；无论成功、失败还是超时，终态状态码与耗时都记入 `home_mixer_rpc_*` 指标。`QueryBuilder` 本身没有 I/O，不计入预算。
+每个 RPC 入口都包在 `RpcPolicy`（`rpc_policy.rs`）里：先按 `HOME_MIXER_REQUEST_TIMEOUT_MS` 与客户端 `grpc-timeout` 取更短者作为预算，pipeline 执行 + served 落库超过预算即整体取消并返回 `DeadlineExceeded`（不返回半截结果，因为半程流水线没有走完安全过滤）；无论成功、失败还是超时，终态状态码与耗时都记入 `home_mixer_rpc_*` 指标。`QueryBuilder` 会在入口通过 ID Registry 批量 Resolve 查询输入；已知 mapping 进入 request-local IdentityContext，未知历史/过滤 hint 在 all-or-none 批查失败后通过一次 `ResolveBatchPartial` 批量过滤，Registry 传输错误仍会终止请求；viewer mapping 缺失返回 `NotFound`，不会按服务不可用处理。IdentityContext 使用同一个请求剩余预算调用 Registry，不会额外占用一段固定的 500 ms。
 
 `DebugScoredPosts` 与普通 ScoredPosts 共享一次 pipeline 执行，但默认返回 `Unavailable`；只有显式启用并通过 `x-home-mixer-debug-token` 校验才会执行和返回过滤前/后的 ID。`GetForYouFeedV2` 只增加 `ForYouFeedQuery` wrapper，原 RPC 保持不变。
 
@@ -180,8 +180,9 @@ flowchart TD
 这里有两个要点：
 
 1. 返回的是 pipeline 最终保留下来的 `selected_candidates`，不是召回原始结果。
-2. 只有 `Restricted` 且候选最终仍保留时才映射 `visibility_reason`；`Unchecked/Unavailable`（含成功响应缺帖）由 `VFFilter` 按 `HOME_MIXER_VF_FAILURE_POLICY` 处理，默认 `fail_closed` 删除，即便配置 `allow_all` 保留也不会伪造审核原因。
-3. 响应之前等待异步 `ServedPersistence::persist` 记录本次下发的帖子；写失败返回 gRPC `Unavailable`。业务模式使用 Redis，Demo 默认内存。
+2. 普通 Scored Posts 只为 `selected_candidates` 做身份反查；只有 Debug Scored Posts 才反查 retrieved / filtered / selected 全量候选。
+3. 只有 `Restricted` 且候选最终仍保留时才映射 `visibility_reason`；`Unchecked/Unavailable`（含成功响应缺帖）由 `VFFilter` 按 `HOME_MIXER_VF_FAILURE_POLICY` 处理，默认 `fail_closed` 删除，即便配置 `allow_all` 保留也不会伪造审核原因。
+4. 响应之前等待异步 `ServedPersistence::persist` 记录本次下发的帖子；写失败返回 gRPC `Unavailable`。业务模式使用 Redis，Demo 默认内存。
 
 ## 7. 一个容易忽略的事实
 
@@ -192,4 +193,4 @@ flowchart TD
 - 召回、过滤、排序都在响应关键路径上
 - 缓存回写不在响应关键路径上
 
-这符合 Feed 服务的典型设计：优先保证首页返回，不阻塞在写回动作上。
+这符合 Feed 服务的典型设计：优先保证首页返回，不阻塞在写回动作上。served-candidates side effect 虽然复用同一份 request-local 身份缓存和统计，但不继承已结束的主 RPC deadline，而是在 `SIDE_EFFECT_TIMEOUT_MS` 内独立完成 ObjectId 反查与发布；因此主路径账单和异步账单必须分开看。
