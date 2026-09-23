@@ -2,9 +2,9 @@
 
 > Status: current-code / design rule
 > Upstream common base: `aaa167b3de8a674587c53545a43c90eaad360010`
-> Absorbed upstream anchor: `c279172` (P3 inventories [`49815da-capability-inventory.md`](./49815da-capability-inventory.md), [`75d93d9-capability-inventory.md`](./75d93d9-capability-inventory.md), [`fee1d0f-capability-inventory.md`](./fee1d0f-capability-inventory.md), [`6bb4594-capability-inventory.md`](./6bb4594-capability-inventory.md), [`2d4a03c-capability-inventory.md`](./2d4a03c-capability-inventory.md), [`20260918-capability-inventory.md`](./20260918-capability-inventory.md); portable/default code absorbed, external contracts remain U3)
-> Tracked upstream head: `c279172`
-> Upstream head: `c279172`
+> Absorbed upstream anchor: `1b3fec2` (P3 inventories [`49815da-capability-inventory.md`](./49815da-capability-inventory.md), [`75d93d9-capability-inventory.md`](./75d93d9-capability-inventory.md), [`fee1d0f-capability-inventory.md`](./fee1d0f-capability-inventory.md), [`6bb4594-capability-inventory.md`](./6bb4594-capability-inventory.md), [`2d4a03c-capability-inventory.md`](./2d4a03c-capability-inventory.md), [`20260918-capability-inventory.md`](./20260918-capability-inventory.md), [`20260924-capability-inventory.md`](./20260924-capability-inventory.md); portable/default code absorbed, external contracts remain U3)
+> Tracked upstream head: `1b3fec2`
+> Upstream head: `1b3fec2`
 >
 > Previous anchors: `9b0dc319691b76088266d0d2b48faf22d2b8a82a` (2026-09-04, [`../update/20260904.md`](../update/20260904.md), inventory [`9b0dc31-capability-inventory.md`](./9b0dc31-capability-inventory.md); its `experiment_overrides` U3 rationale is superseded — see [`902a06f-capability-inventory.md`](./902a06f-capability-inventory.md) section 4); `85ac72a1bba41f21615e3f0bca56da75970a6633` (2026-09-02, [`../update/20260903.md`](../update/20260903.md), inventory [`85ac72a-capability-inventory.md`](./85ac72a-capability-inventory.md)); `6384ca7d2c8570fbc645c20c3291730739ac00ce` (2026-09-01, [`../update/20260901.md`](../update/20260901.md)); `24c60942c5c5fdad3a6addffb4c6e6d2f228f04f` (2026-08-28, [`../update/20260828.md`](../update/20260828.md)); `45b48ba6baa40e212f6dcbaf8fe9fdc8d9da722e` (2026-08-26, [`../update/20260826.md`](../update/20260826.md)); `28e414f535e4b5a50ca12ee87674e7649e50c7ad` (2026-08-21, [`../update/20260823.md`](../update/20260823.md)); `d0cef2f943084ee0d4310378031c9c2c37d67f12` (2026-08-20, [`../update/20260820.md`](../update/20260820.md)); `aad7179773944e17eb8798bbbf0231d6cd6c1ffc` (2026-08-19, [`../update/20260819.md`](../update/20260819.md)); `11a71f87d6a7fc4c1e8159dad8f3c5ff90a0f7ed` (2026-08-18, no portable deltas, [`../update/20260818.md`](../update/20260818.md)); `b089ce64891f9c50fab73aa00dbe65acb82f198f` (2026-08-17, [`../update/20260817.md`](../update/20260817.md))
 >
@@ -112,7 +112,7 @@ For each later upstream snapshot, compare upstream changes before comparing fina
 
 ```bash
 # What upstream changed after the currently anchored snapshot.
-git diff --find-renames 2d4a03c..<new-upstream> -- <module>
+git diff --find-renames 1b3fec2..<new-upstream> -- <module>
 
 # How the local implementation intentionally differs from the new anchor.
 git diff --find-renames <new-upstream> -- <module>
