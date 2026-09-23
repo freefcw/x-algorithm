@@ -29,7 +29,7 @@ mod tests {
     fn removes_video_candidates_when_request_excludes_video() {
         let query = ScoredPostsQuery {
             exclude_videos: true,
-            ..Default::default()
+            ..ScoredPostsQuery::test_default()
         };
         let candidates = vec![
             PostCandidate {

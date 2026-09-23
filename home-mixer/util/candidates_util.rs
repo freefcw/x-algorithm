@@ -102,7 +102,7 @@ mod tests {
 
     #[test]
     fn vqv_weight_requires_duration_above_threshold() {
-        let query = ScoredPostsQuery::default();
+        let query = ScoredPostsQuery::test_default();
         let short_video = PostCandidate {
             video_duration_ms: Some(9_999),
             ..Default::default()
@@ -123,7 +123,7 @@ mod tests {
                 follower_count: Some(MAX_FOLLOWERS_THRESHOLD),
                 ..Default::default()
             },
-            ..Default::default()
+            ..ScoredPostsQuery::test_default()
         };
         let long_video = PostCandidate {
             video_duration_ms: Some(60_000),

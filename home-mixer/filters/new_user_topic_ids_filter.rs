@@ -38,7 +38,7 @@ mod tests {
     fn keeps_in_network_or_matching_candidates_for_new_users() {
         let query = ScoredPostsQuery {
             new_user_topic_ids: vec![10],
-            ..Default::default()
+            ..ScoredPostsQuery::test_default()
         };
         let candidates = vec![
             PostCandidate {

@@ -21,7 +21,7 @@ impl QueryHydrator<ScoredPostsQuery> for ScoringSequenceQueryHydrator {
         Ok(ScoredPostsQuery {
             user_action_sequence: Some(sequence.clone()),
             scoring_sequence: Some(sequence),
-            ..Default::default()
+            ..ScoredPostsQuery::test_default()
         })
     }
 

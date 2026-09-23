@@ -116,7 +116,7 @@ mod tests {
         let query = ScoredPostsQuery {
             enable_phoenix_moe: true,
             retrieval_sequence: Some(recsys::UserActionSequence::default()),
-            ..Default::default()
+            ..ScoredPostsQuery::test_default()
         };
         let runtime = tokio::runtime::Builder::new_current_thread()
             .enable_time()
@@ -143,7 +143,7 @@ mod tests {
         let query = ScoredPostsQuery {
             enable_phoenix_moe: true,
             new_user_topic_ids: vec![10],
-            ..Default::default()
+            ..ScoredPostsQuery::test_default()
         };
 
         assert!(!source.enable(&query));

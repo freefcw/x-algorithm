@@ -168,7 +168,7 @@ mod tests {
         };
         let query = ScoredPostsQuery {
             retrieval_sequence: Some(recsys::UserActionSequence::default()),
-            ..Default::default()
+            ..ScoredPostsQuery::test_default()
         };
 
         let candidates = source.source(&query).await.expect("retrieval succeeds");
@@ -197,7 +197,7 @@ mod tests {
     fn supplemental_topics_keep_standard_retrieval_enabled() {
         let query = ScoredPostsQuery {
             supplemental_topic_ids: vec![10],
-            ..Default::default()
+            ..ScoredPostsQuery::test_default()
         };
 
         assert!(source().enable(&query));
@@ -207,7 +207,7 @@ mod tests {
     fn new_user_topics_disable_standard_retrieval() {
         let query = ScoredPostsQuery {
             new_user_topic_ids: vec![10],
-            ..Default::default()
+            ..ScoredPostsQuery::test_default()
         };
 
         assert!(!source().enable(&query));
@@ -217,7 +217,7 @@ mod tests {
     fn requested_topic_page_disables_standard_retrieval() {
         let query = ScoredPostsQuery {
             topic_ids: vec![10],
-            ..Default::default()
+            ..ScoredPostsQuery::test_default()
         };
 
         assert!(!source().enable(&query));

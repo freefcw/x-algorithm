@@ -29,7 +29,7 @@ mod tests {
     #[test]
     fn drops_explicit_false_and_keeps_none_or_true() {
         let result = FirstStageEligibleFilter.filter(
-            &ScoredPostsQuery::default(),
+            &ScoredPostsQuery::test_default(),
             vec![
                 PostCandidate {
                     tweet_id: pid(1),

@@ -75,7 +75,7 @@ mod tests {
     #[test]
     fn allow_all_policy_keeps_unavailable_in_network_and_out_of_network() {
         let result = VFFilter::new(VfFailurePolicy::AllowAll).filter(
-            &ScoredPostsQuery::default(),
+            &ScoredPostsQuery::test_default(),
             vec![
                 candidate(
                     1,
@@ -100,7 +100,7 @@ mod tests {
     #[test]
     fn allow_all_policy_keeps_unchecked_out_of_network() {
         let result = VFFilter::new(VfFailurePolicy::AllowAll).filter(
-            &ScoredPostsQuery::default(),
+            &ScoredPostsQuery::test_default(),
             vec![candidate(2, Some(false), VisibilityDecision::Unchecked)],
         );
 
@@ -111,7 +111,7 @@ mod tests {
     #[test]
     fn default_policy_drops_every_unverified_candidate() {
         let result = VFFilter::default().filter(
-            &ScoredPostsQuery::default(),
+            &ScoredPostsQuery::test_default(),
             vec![
                 candidate(1, Some(true), VisibilityDecision::Unchecked),
                 candidate(
@@ -150,7 +150,7 @@ mod tests {
             ..Default::default()
         };
 
-        let result = VFFilter::default().filter(&ScoredPostsQuery::default(), vec![candidate]);
+        let result = VFFilter::default().filter(&ScoredPostsQuery::test_default(), vec![candidate]);
         assert_eq!(result.kept.len(), 1);
         assert!(result.removed.is_empty());
     }
@@ -158,7 +158,7 @@ mod tests {
     #[test]
     fn in_network_only_policy_drops_unverified_out_of_network_and_unknown() {
         let result = VFFilter::new(VfFailurePolicy::InNetworkOnly).filter(
-            &ScoredPostsQuery::default(),
+            &ScoredPostsQuery::test_default(),
             vec![
                 candidate(
                     1,
@@ -198,7 +198,7 @@ mod tests {
         };
 
         let result = VFFilter::new(VfFailurePolicy::InNetworkOnly)
-            .filter(&ScoredPostsQuery::default(), vec![candidate]);
+            .filter(&ScoredPostsQuery::test_default(), vec![candidate]);
         assert!(result.kept.is_empty());
         assert_eq!(result.removed.len(), 1);
     }

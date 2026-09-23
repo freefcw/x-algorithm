@@ -172,7 +172,7 @@ mod tests {
         let query = ScoredPostsQuery {
             topic_ids: vec![10, 20],
             excluded_topic_ids: vec![99],
-            ..Default::default()
+            ..ScoredPostsQuery::test_default()
         };
         let candidates = vec![
             PostCandidate {
@@ -209,7 +209,7 @@ mod tests {
         let query = ScoredPostsQuery {
             supplemental_topic_ids: vec![10],
             excluded_topic_ids: vec![99],
-            ..Default::default()
+            ..ScoredPostsQuery::test_default()
         };
         let candidates = vec![
             PostCandidate {
@@ -246,7 +246,7 @@ mod tests {
     fn new_user_topics_are_owned_by_the_dedicated_filter() {
         let query = ScoredPostsQuery {
             new_user_topic_ids: vec![10],
-            ..Default::default()
+            ..ScoredPostsQuery::test_default()
         };
 
         assert!(!TopicIdsFilter.enable(&query));

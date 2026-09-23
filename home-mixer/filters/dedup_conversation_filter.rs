@@ -74,7 +74,7 @@ mod tests {
         };
 
         let result =
-            DedupConversationFilter.filter(&ScoredPostsQuery::default(), vec![retweet, reply]);
+            DedupConversationFilter.filter(&ScoredPostsQuery::test_default(), vec![retweet, reply]);
 
         assert_eq!(result.kept.len(), 1);
         assert_eq!(result.kept[0].tweet_id, crate::models::pid(11));
@@ -85,7 +85,7 @@ mod tests {
     #[test]
     fn unrelated_originals_are_kept_separately() {
         let result = DedupConversationFilter.filter(
-            &ScoredPostsQuery::default(),
+            &ScoredPostsQuery::test_default(),
             vec![candidate(1, 0.1), candidate(2, 0.2)],
         );
 

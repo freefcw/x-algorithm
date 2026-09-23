@@ -28,7 +28,7 @@ impl QueryHydrator<ScoredPostsQuery> for ServedHistoryQueryHydrator {
         );
         Ok(ScoredPostsQuery {
             served_ids,
-            ..Default::default()
+            ..ScoredPostsQuery::test_default()
         })
     }
 

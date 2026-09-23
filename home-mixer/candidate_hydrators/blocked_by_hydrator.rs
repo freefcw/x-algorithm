@@ -157,7 +157,7 @@ mod tests {
         };
         let query = ScoredPostsQuery {
             user_id: 42,
-            ..Default::default()
+            ..ScoredPostsQuery::test_default()
         };
 
         let mut candidates = candidates();
@@ -175,7 +175,7 @@ mod tests {
         let hydrator = BlockedByHydrator {
             socialgraph_client: Arc::new(fake_social_graph),
         };
-        let query = ScoredPostsQuery::default();
+        let query = ScoredPostsQuery::test_default();
 
         let mut candidates = candidates();
         let hydrated = hydrator.hydrate(&query, &candidates).await;
@@ -195,7 +195,7 @@ mod tests {
         };
         let query = ScoredPostsQuery {
             has_cached_posts: true,
-            ..Default::default()
+            ..ScoredPostsQuery::test_default()
         };
         assert!(!hydrator.enable(&query));
     }
@@ -211,7 +211,7 @@ mod tests {
         };
         let query = ScoredPostsQuery {
             user_id: 42,
-            ..Default::default()
+            ..ScoredPostsQuery::test_default()
         };
         let candidates = vec![
             PostCandidate {

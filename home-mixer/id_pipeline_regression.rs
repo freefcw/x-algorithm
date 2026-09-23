@@ -8,6 +8,7 @@ use crate::feature_policy::HomeMixerFeatures;
 use crate::id::{EntityKind, IdentityAllocator, IdentityReader, SnowflakeId};
 use crate::query_builder::QueryBuilder;
 use id_service::{MemoryMappingStore, RedisIdRegistry};
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 
 const VIEWER_OID: &str = "65f1a2b3c4d5e6f708091011";
@@ -17,7 +18,12 @@ const VIEWER_SNOWFLAKE: u64 = 101;
 const POST_SNOWFLAKE: u64 = 202;
 const AUTHOR_SNOWFLAKE: u64 = 303;
 
-struct RegistryIdentityResolver(Arc<RedisIdRegistry>);
+struct RegistryIdentityResolver {
+    registry: Arc<RedisIdRegistry>,
+    resolve_calls: AtomicUsize,
+    reverse_calls: AtomicUsize,
+    allocate_calls: AtomicUsize,
+}
 
 #[tonic::async_trait]
 impl IdentityReader for RegistryIdentityResolver {
@@ -25,14 +31,16 @@ impl IdentityReader for RegistryIdentityResolver {
         &self,
         ids: &[(String, EntityKind)],
     ) -> anyhow::Result<Vec<SnowflakeId>> {
-        Ok(self.0.resolve_existing_batch(ids).await?)
+        self.resolve_calls.fetch_add(1, Ordering::Relaxed);
+        Ok(self.registry.resolve_existing_batch(ids).await?)
     }
     async fn reverse_batch(
         &self,
         ids: &[(SnowflakeId, EntityKind)],
     ) -> anyhow::Result<Vec<String>> {
+        self.reverse_calls.fetch_add(1, Ordering::Relaxed);
         Ok(self
-            .0
+            .registry
             .reverse_batch(ids)
             .await?
             .into_iter()
@@ -47,11 +55,12 @@ impl IdentityAllocator for RegistryIdentityResolver {
         &self,
         ids: &[(String, EntityKind)],
     ) -> anyhow::Result<Vec<SnowflakeId>> {
+        self.allocate_calls.fetch_add(1, Ordering::Relaxed);
         let request = ids
             .iter()
             .map(|(id, kind)| (id.clone(), *kind, None))
             .collect::<Vec<_>>();
-        Ok(self.0.allocate_batch(&request).await?)
+        Ok(self.registry.allocate_batch(&request).await?)
     }
 }
 
@@ -84,7 +93,12 @@ async fn fixture() -> Arc<RegistryIdentityResolver> {
         )
         .await
         .expect("import author mapping");
-    Arc::new(RegistryIdentityResolver(Arc::new(registry)))
+    Arc::new(RegistryIdentityResolver {
+        registry: Arc::new(registry),
+        resolve_calls: AtomicUsize::new(0),
+        reverse_calls: AtomicUsize::new(0),
+        allocate_calls: AtomicUsize::new(0),
+    })
 }
 
 #[tokio::test]
@@ -135,4 +149,44 @@ async fn numeric_ids_round_trip_across_thunder_vm_and_egress() {
         .await
         .expect("egress reverse resolves original ObjectIds");
     assert_eq!(external, vec![POST_OID.to_string(), AUTHOR_OID.to_string()]);
+}
+
+#[tokio::test]
+async fn one_request_context_reuses_ingress_and_egress_identity_facts() {
+    let resolver = fixture().await;
+    let query = QueryBuilder::with_identity(
+        HomeMixerFeatures::default(),
+        Arc::clone(&resolver) as crate::id::SharedIdentityIngress,
+    )
+    .build(x_algorithm_proto::home_mixer::ScoredPostsQuery {
+        viewer_id: VIEWER_OID.to_string(),
+        seen_ids: vec![POST_OID.to_string()],
+        ..Default::default()
+    })
+    .await
+    .expect("query should resolve existing mappings")
+    .query;
+
+    let context = query.identity_context();
+    let pairs = vec![
+        (SnowflakeId::new(POST_SNOWFLAKE).unwrap(), EntityKind::Post),
+        (
+            SnowflakeId::new(AUTHOR_SNOWFLAKE).unwrap(),
+            EntityKind::User,
+        ),
+    ];
+    context
+        .reverse_batch(&pairs)
+        .await
+        .expect("first egress batch");
+    context
+        .reverse_batch(&pairs)
+        .await
+        .expect("second egress batch");
+
+    assert_eq!(resolver.resolve_calls.load(Ordering::Relaxed), 1);
+    assert_eq!(resolver.reverse_calls.load(Ordering::Relaxed), 1);
+    assert_eq!(resolver.allocate_calls.load(Ordering::Relaxed), 0);
+    assert_eq!(context.stats().resolve_batches, 1);
+    assert_eq!(context.stats().reverse_batches, 1);
 }

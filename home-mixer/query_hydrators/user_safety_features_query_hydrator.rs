@@ -26,7 +26,7 @@ impl QueryHydrator<ScoredPostsQuery> for UserSafetyFeaturesQueryHydrator {
                 blocked_by_user_ids: features.blocked_by_user_ids,
                 ..Default::default()
             },
-            ..Default::default()
+            ..ScoredPostsQuery::test_default()
         })
     }
 

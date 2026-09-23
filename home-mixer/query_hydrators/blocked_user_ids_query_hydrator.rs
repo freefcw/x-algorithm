@@ -27,7 +27,7 @@ impl QueryHydrator<ScoredPostsQuery> for BlockedUserIdsQueryHydrator {
                     .blocked_user_ids,
                 ..Default::default()
             },
-            ..Default::default()
+            ..ScoredPostsQuery::test_default()
         })
     }
 

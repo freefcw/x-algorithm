@@ -200,7 +200,7 @@ mod tests {
         candidates: &mut [PostCandidate],
     ) -> Vec<Result<PostCandidate, String>> {
         let hydrated = hydrator
-            .hydrate(&ScoredPostsQuery::default(), candidates)
+            .hydrate(&ScoredPostsQuery::test_default(), candidates)
             .await;
         hydrator.update_all(candidates, hydrated.clone());
         hydrated
@@ -217,7 +217,7 @@ mod tests {
         }];
 
         let result = hydrator
-            .hydrate(&ScoredPostsQuery::default(), &candidates)
+            .hydrate(&ScoredPostsQuery::test_default(), &candidates)
             .await;
 
         assert!(result[0]
@@ -328,7 +328,7 @@ mod tests {
         }];
 
         let hydrated = hydrator
-            .hydrate(&ScoredPostsQuery::default(), &candidates)
+            .hydrate(&ScoredPostsQuery::test_default(), &candidates)
             .await;
         candidates[0].author_id = crate::models::uid(2);
         hydrator.update_all(&mut candidates, hydrated);

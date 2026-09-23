@@ -34,7 +34,7 @@ mod tests {
     fn uses_impressions_when_primary_seen_ids_are_unavailable() {
         let query = ScoredPostsQuery {
             impressed_post_ids: vec![2],
-            ..Default::default()
+            ..ScoredPostsQuery::test_default()
         };
         let candidates = vec![
             PostCandidate {
@@ -56,7 +56,7 @@ mod tests {
     fn impressed_original_also_removes_its_retweet_and_reply() {
         let query = ScoredPostsQuery {
             impressed_post_ids: vec![100],
-            ..Default::default()
+            ..ScoredPostsQuery::test_default()
         };
         let candidates = vec![
             PostCandidate {

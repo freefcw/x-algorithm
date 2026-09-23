@@ -89,7 +89,7 @@ mod tests {
                 muted_user_ids: vec![300],
                 ..Default::default()
             },
-            ..Default::default()
+            ..ScoredPostsQuery::test_default()
         };
 
         let candidates = vec![
@@ -131,7 +131,7 @@ mod tests {
                 blocked_user_ids: vec![900],
                 ..Default::default()
             },
-            ..Default::default()
+            ..ScoredPostsQuery::test_default()
         };
 
         let candidates = vec![
@@ -180,7 +180,7 @@ mod tests {
 
     #[test]
     fn missing_relation_hydration_drops_every_candidate() {
-        let query = ScoredPostsQuery::default();
+        let query = ScoredPostsQuery::test_default();
         let candidates = vec![
             PostCandidate {
                 author_id: 100,

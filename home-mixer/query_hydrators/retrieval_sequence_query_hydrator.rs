@@ -19,7 +19,7 @@ impl QueryHydrator<ScoredPostsQuery> for RetrievalSequenceQueryHydrator {
     async fn hydrate(&self, query: &ScoredPostsQuery) -> Result<ScoredPostsQuery, String> {
         Ok(ScoredPostsQuery {
             retrieval_sequence: Some(self.provider.hydrate_sequence(query).await?),
-            ..Default::default()
+            ..ScoredPostsQuery::test_default()
         })
     }
 

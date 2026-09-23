@@ -53,8 +53,8 @@ mod tests {
         };
         assert!(!source.enable(&ScoredPostsQuery {
             in_network_only: true,
-            ..Default::default()
+            ..ScoredPostsQuery::test_default()
         }));
-        assert!(source.enable(&ScoredPostsQuery::default()));
+        assert!(source.enable(&ScoredPostsQuery::test_default()));
     }
 }

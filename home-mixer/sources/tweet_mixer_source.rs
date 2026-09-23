@@ -127,13 +127,13 @@ mod tests {
         };
         assert!(!source.enable(&ScoredPostsQuery {
             in_network_only: true,
-            ..Default::default()
+            ..ScoredPostsQuery::test_default()
         }));
         assert!(!source.enable(&ScoredPostsQuery {
             has_cached_posts: true,
-            ..Default::default()
+            ..ScoredPostsQuery::test_default()
         }));
-        assert!(source.enable(&ScoredPostsQuery::default()));
+        assert!(source.enable(&ScoredPostsQuery::test_default()));
     }
 
     #[tokio::test]
@@ -164,7 +164,7 @@ mod tests {
             user_agent: "agent".to_string(),
             country_code: String::new(),
             seen_ids: vec![11, 12],
-            ..Default::default()
+            ..ScoredPostsQuery::test_default()
         };
         let candidates = source.source(&query).await.expect("source");
 

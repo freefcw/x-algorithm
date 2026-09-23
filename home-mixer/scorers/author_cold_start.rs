@@ -421,7 +421,7 @@ mod tests {
         ];
 
         let scored = scorer
-            .score(&ScoredPostsQuery::default(), &candidates)
+            .score(&ScoredPostsQuery::test_default(), &candidates)
             .await;
 
         assert_eq!(scored[0].as_ref().unwrap().score, Some(100.0));

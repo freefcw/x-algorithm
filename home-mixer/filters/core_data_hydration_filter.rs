@@ -45,7 +45,7 @@ mod tests {
     #[test]
     fn keeps_text_posts_and_media_only_posts_with_an_author() {
         let result = CoreDataHydrationFilter.filter(
-            &ScoredPostsQuery::default(),
+            &ScoredPostsQuery::test_default(),
             vec![
                 candidate(1, uid(10), "caption", None),
                 candidate(2, uid(11), "   ", Some(true)),
@@ -61,7 +61,7 @@ mod tests {
     #[test]
     fn drops_authorless_or_empty_posts_without_confirmed_media() {
         let result = CoreDataHydrationFilter.filter(
-            &ScoredPostsQuery::default(),
+            &ScoredPostsQuery::test_default(),
             vec![
                 candidate(1, 0, "caption", Some(true)),
                 candidate(2, uid(11), "   ", None),

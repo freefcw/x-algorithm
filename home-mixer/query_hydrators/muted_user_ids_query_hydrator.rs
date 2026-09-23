@@ -23,7 +23,7 @@ impl QueryHydrator<ScoredPostsQuery> for MutedUserIdsQueryHydrator {
                 muted_user_ids: self.provider.hydrate_features(query).await?.muted_user_ids,
                 ..Default::default()
             },
-            ..Default::default()
+            ..ScoredPostsQuery::test_default()
         })
     }
 

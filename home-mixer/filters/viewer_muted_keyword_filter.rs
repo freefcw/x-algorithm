@@ -91,7 +91,7 @@ mod tests {
                 muted_keywords,
                 ..Default::default()
             },
-            ..Default::default()
+            ..ScoredPostsQuery::test_default()
         }
     }
 
@@ -103,7 +103,7 @@ mod tests {
     fn removes_candidate_when_quoted_text_matches_muted_keyword() {
         let mut query = ScoredPostsQuery {
             viewer_relations_hydrated: true,
-            ..Default::default()
+            ..ScoredPostsQuery::test_default()
         };
         query.user_features.muted_keywords = vec!["spoiler".to_string()];
         let candidates = vec![
@@ -367,7 +367,7 @@ mod tests {
     #[test]
     fn missing_relation_hydration_drops_every_candidate() {
         let result = ViewerMutedKeywordFilter::new().filter(
-            &ScoredPostsQuery::default(),
+            &ScoredPostsQuery::test_default(),
             vec![
                 create_test_candidate(1, "safe content"),
                 create_test_candidate(2, "also safe"),

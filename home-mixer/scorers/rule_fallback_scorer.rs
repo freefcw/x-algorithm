@@ -122,7 +122,7 @@ mod tests {
             ..Default::default()
         }];
         let scored = scorer
-            .score(&ScoredPostsQuery::default(), &candidates)
+            .score(&ScoredPostsQuery::test_default(), &candidates)
             .await;
         let mut candidate = candidates[0].clone();
         scorer.update(&mut candidate, scored[0].as_ref().unwrap().clone());
@@ -136,7 +136,7 @@ mod tests {
         let now = 1_700_000_000_000_i64;
         let query = ScoredPostsQuery {
             request_time_ms: now,
-            ..Default::default()
+            ..ScoredPostsQuery::test_default()
         };
         let candidates = vec![
             PostCandidate {
@@ -168,7 +168,7 @@ mod tests {
         let scorer = RuleFallbackScorer;
         let query = ScoredPostsQuery {
             request_time_ms: 1_700_000_000_000,
-            ..Default::default()
+            ..ScoredPostsQuery::test_default()
         };
         let candidates = vec![
             PostCandidate {

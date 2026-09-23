@@ -85,7 +85,7 @@ mod tests {
         };
 
         let result = filter.filter(
-            &ScoredPostsQuery::default(),
+            &ScoredPostsQuery::test_default(),
             vec![recent, old, missing, from_parts],
         );
         let kept: Vec<_> = result.kept.iter().map(|c| c.tweet_id).collect();

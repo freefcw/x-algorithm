@@ -157,7 +157,7 @@ mod tests {
 
         let mut candidates = candidates();
         let scored = scorer
-            .score(&ScoredPostsQuery::default(), &candidates)
+            .score(&ScoredPostsQuery::test_default(), &candidates)
             .await;
         assert_eq!(scored.len(), 2);
         scorer.update_all(&mut candidates, scored);
@@ -175,7 +175,7 @@ mod tests {
             ..Default::default()
         }));
         let scored = cold_start
-            .score(&ScoredPostsQuery::default(), &candidates)
+            .score(&ScoredPostsQuery::test_default(), &candidates)
             .await;
         cold_start.update_all(&mut candidates, scored);
 
@@ -194,7 +194,7 @@ mod tests {
 
         let mut candidates = candidates();
         let scored = scorer
-            .score(&ScoredPostsQuery::default(), &candidates)
+            .score(&ScoredPostsQuery::test_default(), &candidates)
             .await;
         assert_eq!(scored.len(), 2);
         assert!(scored.iter().all(Result::is_err));

@@ -59,7 +59,7 @@ mod tests {
                 followed_user_ids: vec![0, 10],
                 ..Default::default()
             },
-            ..Default::default()
+            ..ScoredPostsQuery::test_default()
         };
         let hydrated = InNetworkCandidateHydrator
             .hydrate(
@@ -95,7 +95,7 @@ mod tests {
                 followed_user_ids: vec![crate::models::uid(2)],
                 ..Default::default()
             },
-            ..Default::default()
+            ..ScoredPostsQuery::test_default()
         };
         let hydrated = InNetworkCandidateHydrator
             .hydrate(

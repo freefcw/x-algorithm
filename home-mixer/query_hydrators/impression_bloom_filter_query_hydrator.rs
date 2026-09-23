@@ -21,7 +21,7 @@ impl QueryHydrator<ScoredPostsQuery> for ImpressionBloomFilterQueryHydrator {
 
         Ok(ScoredPostsQuery {
             bloom_filter_entries,
-            ..Default::default()
+            ..ScoredPostsQuery::test_default()
         })
     }
 
@@ -63,7 +63,7 @@ mod tests {
         };
         let mut query = ScoredPostsQuery {
             user_id: 42,
-            ..Default::default()
+            ..ScoredPostsQuery::test_default()
         };
 
         let hydrated = hydrator.hydrate(&query).await.expect("hydrate");

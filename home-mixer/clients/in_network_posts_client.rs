@@ -193,7 +193,7 @@ mod disabled_client_tests {
             .get_in_network_posts(
                 &ScoredPostsQuery {
                     user_id: uid(1),
-                    ..Default::default()
+                    ..ScoredPostsQuery::test_default()
                 },
                 10,
             )
@@ -258,7 +258,7 @@ mod tests {
                 ..Default::default()
             },
             seen_ids: vec![crate::models::pid(9)],
-            ..Default::default()
+            ..ScoredPostsQuery::test_default()
         }
     }
 

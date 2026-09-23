@@ -28,7 +28,7 @@ impl QueryHydrator<ScoredPostsQuery> for PastRequestTimestampsQueryHydrator {
         );
         Ok(ScoredPostsQuery {
             past_request_timestamps_ms,
-            ..Default::default()
+            ..ScoredPostsQuery::test_default()
         })
     }
 

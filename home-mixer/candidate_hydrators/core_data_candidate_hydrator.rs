@@ -74,6 +74,7 @@ mod tests {
         async fn get_tweet_core_datas(
             &self,
             tweet_ids: Vec<crate::models::PostId>,
+            _identity: Arc<crate::id::IdentityRegistrationContext>,
         ) -> Result<HashMap<crate::models::PostId, Option<PureCoreData>>, anyhow::Error> {
             Ok(tweet_ids
                 .into_iter()
@@ -105,6 +106,7 @@ mod tests {
         async fn get_tweet_media_entities(
             &self,
             _tweet_ids: Vec<crate::models::PostId>,
+            _identity: Arc<crate::id::IdentityRegistrationContext>,
         ) -> Result<HashMap<crate::models::PostId, Option<MediaEntities>>, anyhow::Error> {
             Ok(HashMap::new())
         }
@@ -124,7 +126,7 @@ mod tests {
         let hydrator = CoreDataCandidateHydrator::new(provider);
         let query = ScoredPostsQuery {
             request_id: "request-1".to_string(),
-            ..Default::default()
+            ..ScoredPostsQuery::test_default()
         };
         let candidates = [PostCandidate {
             tweet_id: 100,

@@ -81,6 +81,7 @@ mod tests {
         async fn get_tweet_core_datas(
             &self,
             _tweet_ids: Vec<crate::models::PostId>,
+            _identity: Arc<crate::id::IdentityRegistrationContext>,
         ) -> Result<HashMap<crate::models::PostId, Option<PureCoreData>>, anyhow::Error> {
             Ok(HashMap::new())
         }
@@ -88,6 +89,7 @@ mod tests {
         async fn get_tweet_media_entities(
             &self,
             tweet_ids: Vec<crate::models::PostId>,
+            _identity: Arc<crate::id::IdentityRegistrationContext>,
         ) -> Result<HashMap<crate::models::PostId, Option<MediaEntities>>, anyhow::Error> {
             Ok(tweet_ids
                 .into_iter()
@@ -119,7 +121,7 @@ mod tests {
         let hydrator = VideoDurationCandidateHydrator::new(provider);
         let query = ScoredPostsQuery {
             request_id: "request-1".to_string(),
-            ..Default::default()
+            ..ScoredPostsQuery::test_default()
         };
         let candidate = PostCandidate {
             tweet_id: 100,

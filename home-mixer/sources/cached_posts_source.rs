@@ -34,7 +34,7 @@ mod tests {
                     ..Default::default()
                 },
             ],
-            ..Default::default()
+            ..ScoredPostsQuery::test_default()
         };
         let runtime = tokio::runtime::Builder::new_current_thread()
             .build()

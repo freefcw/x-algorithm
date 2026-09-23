@@ -32,7 +32,7 @@ impl QueryHydrator<ScoredPostsQuery> for FollowedUserIdsQueryHydrator {
                     .followed_user_ids,
                 ..Default::default()
             },
-            ..Default::default()
+            ..ScoredPostsQuery::test_default()
         })
     }
 

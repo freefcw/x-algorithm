@@ -21,7 +21,7 @@ impl QueryHydrator<ScoredPostsQuery> for ImpressedPostsQueryHydrator {
 
         Ok(ScoredPostsQuery {
             impressed_post_ids,
-            ..Default::default()
+            ..ScoredPostsQuery::test_default()
         })
     }
 
@@ -58,7 +58,7 @@ mod tests {
         let mut query = ScoredPostsQuery {
             user_id: 42,
             impressed_post_ids: vec![1],
-            ..Default::default()
+            ..ScoredPostsQuery::test_default()
         };
 
         let hydrated = hydrator.hydrate(&query).await.expect("hydrate");
