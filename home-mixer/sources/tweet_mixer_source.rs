@@ -6,7 +6,7 @@
 //! 交由标准 Hydrator 补全。
 
 use crate::clients::tweet_mixer_client::{TweetMixerClient, TweetMixerRequest};
-use crate::models::candidate::PostCandidate;
+use crate::models::candidate::{PostCandidate, RetrievalSource};
 use crate::models::query::ScoredPostsQuery;
 use crate::params::{MAX_POST_AGE, TWEET_MIXER_MAX_RESULTS};
 use std::sync::Arc;
@@ -77,6 +77,9 @@ impl Source<ScoredPostsQuery, PostCandidate> for TweetMixerSource {
                     in_reply_to_tweet_id: candidate.in_reply_to_tweet_id,
                     retweeted_tweet_id: None,
                     served_type: Some(pb::ServedType::ForYouTweetMixer),
+                    retrieval_sources: vec![RetrievalSource::from_served_type(
+                        pb::ServedType::ForYouTweetMixer,
+                    )],
                     ..Default::default()
                 })
             })

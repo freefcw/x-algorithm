@@ -1,5 +1,5 @@
 use crate::clients::in_network_posts_client::{InNetworkPost, InNetworkPostsClient};
-use crate::models::candidate::PostCandidate;
+use crate::models::candidate::{PostCandidate, RetrievalSource};
 use crate::models::query::ScoredPostsQuery;
 use crate::params as p;
 use std::sync::Arc;
@@ -21,6 +21,9 @@ fn candidate_from_post(post: InNetworkPost) -> PostCandidate {
         retweeted_user_id: post.retweeted_user_id,
         ancestors: post.ancestors,
         served_type: Some(pb::ServedType::ForYouPhoenixRetrieval),
+        retrieval_sources: vec![RetrievalSource::from_served_type(
+            pb::ServedType::ForYouPhoenixRetrieval,
+        )],
         in_network: Some(false),
         ..Default::default()
     }

@@ -56,6 +56,7 @@ Home Mixer ScoredPosts 请求 ──最终下发列表──▶ ServedCandidates
 | `author_id` | string | 作者 `creator_member_id`（皮） |
 | `retweeted_post_id` | string \| null | 转帖时的原帖 ID。精排对转帖打的是原帖，模型侧关联用它 |
 | `served_type` | string \| null | proto `ServedType` 枚举名：`FOR_YOU_IN_NETWORK` / `FOR_YOU_PHOENIX_RETRIEVAL` / `FOR_YOU_PHOENIX_TOPICS` / `FOR_YOU_CACHED_POST` 等。注意兜底召回目前也标 `FOR_YOU_PHOENIX_RETRIEVAL`（`FallbackSource` 复用该枚举，见 trunk-review R9） |
+| `retrieval_sources` | array | 该候选命中的召回来源；多路返回同一帖子时保留各路成员。每项包含 `served_type`（枚举名）、`dataset_type`（uint32 \| null）、`source_idx`（int32 \| null）、`score`（float \| null，召回分数）和 `position`（uint32 \| null，该来源内从 1 开始的位置）。未知元数据为 null；没有来源元数据时为空数组。旧版 v1 事件缺少此字段时，消费者按空数组读取 |
 | `in_network` | bool \| null | 是否网内候选 |
 | `score` | double \| null | 参与选择的最终分 |
 | `weighted_score` | double \| null | 多目标加权分（多样性 / 网外降权之前）；规则兜底时为 null |
@@ -63,11 +64,12 @@ Home Mixer ScoredPosts 请求 ──最终下发列表──▶ ServedCandidates
 | `created_at_ms` | uint64 \| null | 帖子发布时间 |
 
 可选字段统一以 `null` 出现，不省略，消费方只需处理一种形状。
+`retrieval_sources` 是附加的诊断字段；现有 `phoenix/scripts/build_training_inputs.py` 仍只使用下发身份、位置与时间，不将召回分数当作训练标签或最终排序分。
 
 ### 2.4 示例
 
 ```json
-{"schema_version":1,"request_id":"1789552148488-66f1a2b3c4d5e6f708192a3b","prediction_request_id":4242,"viewer_id":"66f1a2b3c4d5e6f708192a3b","request_time_ms":1789552148488,"is_shadow_traffic":false,"in_network_only":false,"is_bottom_request":false,"client_app_id":9,"candidates":[{"position":0,"post_id":"66f1a2b3c4d5e6f708192a3c","author_id":"66f1a2b3c4d5e6f708192a3d","retweeted_post_id":null,"served_type":"FOR_YOU_PHOENIX_RETRIEVAL","in_network":false,"score":0.7312,"weighted_score":0.9021,"degraded_reason":null,"created_at_ms":1789540000000}]}
+{"schema_version":1,"request_id":"1789552148488-66f1a2b3c4d5e6f708192a3b","prediction_request_id":4242,"viewer_id":"66f1a2b3c4d5e6f708192a3b","request_time_ms":1789552148488,"is_shadow_traffic":false,"in_network_only":false,"is_bottom_request":false,"client_app_id":9,"candidates":[{"position":0,"post_id":"66f1a2b3c4d5e6f708192a3c","author_id":"66f1a2b3c4d5e6f708192a3d","retweeted_post_id":null,"served_type":"FOR_YOU_PHOENIX_RETRIEVAL","retrieval_sources":[{"served_type":"FOR_YOU_PHOENIX_RETRIEVAL","dataset_type":1,"source_idx":0,"score":0.42,"position":3}],"in_network":false,"score":0.7312,"weighted_score":0.9021,"degraded_reason":null,"created_at_ms":1789540000000}]}
 ```
 
 ---

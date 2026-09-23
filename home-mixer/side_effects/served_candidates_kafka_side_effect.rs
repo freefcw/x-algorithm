@@ -58,6 +58,9 @@ pub struct ServedCandidateRecord {
     pub retweeted_post_id: Option<String>,
     /// proto `ServedType` 枚举名，例如 `FOR_YOU_PHOENIX_RETRIEVAL`。
     pub served_type: Option<String>,
+    /// 召回来源成员。旧版 v1 事件没有此字段时按空列表读取。
+    #[serde(default)]
+    pub retrieval_sources: Vec<ServedRetrievalSourceRecord>,
     pub in_network: Option<bool>,
     /// 参与选择的最终分。
     pub score: Option<f64>,
@@ -66,6 +69,19 @@ pub struct ServedCandidateRecord {
     /// 非空表示这条候选不是模型排序的结果（整批规则兜底等）。
     pub degraded_reason: Option<String>,
     pub created_at_ms: Option<u64>,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq)]
+pub struct ServedRetrievalSourceRecord {
+    /// 来源对应的 proto `ServedType` 枚举名。
+    pub served_type: String,
+    /// Phoenix 原始召回数据集与 source 索引；其他来源及旧协议为 null。
+    pub dataset_type: Option<u32>,
+    pub source_idx: Option<i32>,
+    /// 召回模型分数，不是最终排序分。
+    pub score: Option<f32>,
+    /// 来源内 1-based 位置，不是最终下发位置。
+    pub position: Option<u32>,
 }
 
 impl ServedCandidatesEvent {
@@ -110,6 +126,17 @@ impl ServedCandidatesEvent {
                         served_type: candidate
                             .served_type
                             .map(|served_type| served_type.as_str_name().to_string()),
+                        retrieval_sources: candidate
+                            .retrieval_sources
+                            .iter()
+                            .map(|source| ServedRetrievalSourceRecord {
+                                served_type: source.served_type.as_str_name().to_string(),
+                                dataset_type: source.dataset_type,
+                                source_idx: source.source_idx,
+                                score: source.score,
+                                position: source.position,
+                            })
+                            .collect(),
                         in_network: candidate.in_network,
                         score: candidate.score,
                         weighted_score: candidate.weighted_score,
@@ -276,6 +303,7 @@ impl SideEffect<ScoredPostsQuery, PostCandidate> for ServedCandidatesKafkaSideEf
 mod tests {
     use super::*;
     use crate::id::{IdentityContext, IdentityRegistrationContext, PaddedIdentityResolver};
+    use crate::models::candidate::RetrievalSource;
     use crate::models::ids::ObjectId;
     use crate::models::{pid, uid};
     use std::sync::Mutex;
@@ -320,6 +348,13 @@ mod tests {
                 tweet_id: pid(9),
                 author_id: uid(8),
                 served_type: Some(pb::ServedType::ForYouPhoenixRetrieval),
+                retrieval_sources: vec![RetrievalSource {
+                    served_type: pb::ServedType::ForYouPhoenixRetrieval,
+                    dataset_type: Some(2),
+                    source_idx: Some(0),
+                    score: Some(0.25),
+                    position: Some(3),
+                }],
                 in_network: Some(false),
                 score: Some(0.75),
                 weighted_score: Some(0.9),
@@ -379,6 +414,13 @@ mod tests {
                     author_id: ext(8),
                     retweeted_post_id: None,
                     served_type: Some("FOR_YOU_PHOENIX_RETRIEVAL".to_string()),
+                    retrieval_sources: vec![ServedRetrievalSourceRecord {
+                        served_type: "FOR_YOU_PHOENIX_RETRIEVAL".to_string(),
+                        dataset_type: Some(2),
+                        source_idx: Some(0),
+                        score: Some(0.25),
+                        position: Some(3),
+                    }],
                     in_network: Some(false),
                     score: Some(0.75),
                     weighted_score: Some(0.9),
@@ -391,6 +433,7 @@ mod tests {
                     author_id: ext(11),
                     retweeted_post_id: Some(ext(5)),
                     served_type: Some("FOR_YOU_IN_NETWORK".to_string()),
+                    retrieval_sources: Vec::new(),
                     in_network: Some(true),
                     score: Some(0.5),
                     weighted_score: None,
@@ -465,11 +508,37 @@ mod tests {
         assert_eq!(first["position"], 0);
         assert_eq!(first["post_id"], ext(9));
         assert_eq!(first["served_type"], "FOR_YOU_PHOENIX_RETRIEVAL");
+        assert_eq!(first["retrieval_sources"][0]["dataset_type"], 2);
+        assert_eq!(first["retrieval_sources"][0]["source_idx"], 0);
+        assert_eq!(first["retrieval_sources"][0]["score"], 0.25);
+        assert_eq!(first["retrieval_sources"][0]["position"], 3);
         // Optional fields stay present as null so consumers see one shape.
         assert!(first["degraded_reason"].is_null());
         assert!(first["retweeted_post_id"].is_null());
 
         let decoded: ServedCandidatesEvent = serde_json::from_value(json).expect("round trip");
         assert_eq!(decoded, event);
+    }
+
+    #[test]
+    fn old_v1_event_without_retrieval_sources_still_decodes() {
+        let posts = HashMap::from([(9, ext(9))]);
+        let users = HashMap::from([(8, ext(8))]);
+        let event = ServedCandidatesEvent::from_served(
+            &query(),
+            &candidates()[..1],
+            ext(42),
+            &posts,
+            &users,
+        )
+        .expect("mapped event");
+        let mut json = serde_json::to_value(event).expect("serialize");
+        json["candidates"][0]
+            .as_object_mut()
+            .expect("candidate object")
+            .remove("retrieval_sources");
+
+        let decoded: ServedCandidatesEvent = serde_json::from_value(json).expect("old event");
+        assert!(decoded.candidates[0].retrieval_sources.is_empty());
     }
 }

@@ -2,7 +2,7 @@ use crate::clients::phoenix_retrieval_client::{retrieve_with_timeout, PhoenixRet
 use crate::models::candidate::PostCandidate;
 use crate::models::query::{ScoredPostsQuery, TopicRecallMode};
 use crate::params;
-use crate::sources::phoenix_source::parse_tweet_info;
+use crate::sources::phoenix_source::candidates_from_retrieval_response;
 use std::sync::Arc;
 use std::time::Duration;
 use tonic::async_trait;
@@ -35,46 +35,17 @@ impl Source<ScoredPostsQuery, PostCandidate> for PhoenixMoeSource {
             self.phoenix_retrieval_client.as_ref(),
             query.user_id,
             sequence.clone(),
-            params::PHOENIX_MAX_RESULTS,
+            params::PHOENIX_MOE_MAX_RESULTS,
             Duration::from_millis(params::PHOENIX_RETRIEVAL_TIMEOUT_MS),
         )
         .await
         .map_err(|error| format!("PhoenixMoeSource: {error}"))?;
 
-        let mut unparsable_ids = 0usize;
-        let mut unparsable_example: Option<String> = None;
-        let candidates: Vec<PostCandidate> = response
-            .top_k_candidates
-            .into_iter()
-            .flat_map(|group| group.candidates)
-            .filter_map(|candidate| candidate.candidate)
-            .filter_map(|tweet| {
-                let parsed = parse_tweet_info(&tweet);
-                if parsed.is_none() {
-                    unparsable_ids += 1;
-                    unparsable_example.get_or_insert_with(|| tweet.tweet_id.to_string());
-                }
-                parsed
-            })
-            .map(
-                |(tweet_id, author_id, in_reply_to_tweet_id)| PostCandidate {
-                    tweet_id,
-                    author_id,
-                    in_reply_to_tweet_id,
-                    served_type: Some(pb::ServedType::ForYouPhoenixRetrievalMoe),
-                    ..Default::default()
-                },
-            )
-            .collect();
-        if unparsable_ids > 0 {
-            log::warn!(
-                "PhoenixMoeSource: dropped {} retrieved candidate(s) whose ids are not 24-hex ObjectIds (e.g. {:?})",
-                unparsable_ids,
-                unparsable_example.unwrap_or_default()
-            );
-        }
-
-        Ok(candidates)
+        Ok(candidates_from_retrieval_response(
+            response,
+            pb::ServedType::ForYouPhoenixRetrievalMoe,
+            "PhoenixMoeSource",
+        ))
     }
 }
 
@@ -91,8 +62,9 @@ mod tests {
             &self,
             _user_id: crate::models::UserId,
             _sequence: recsys::UserActionSequence,
-            _max_results: u32,
+            max_results: u32,
         ) -> Result<recsys::RetrieveResponse, anyhow::Error> {
+            assert_eq!(max_results, params::PHOENIX_MOE_MAX_RESULTS);
             Ok(recsys::RetrieveResponse {
                 top_k_candidates: vec![recsys::ScoredCandidates {
                     candidates: vec![recsys::ScoredCandidate {
@@ -102,6 +74,8 @@ mod tests {
                             ..Default::default()
                         }),
                         score: 0.9,
+                        source_idx: Some(0),
+                        dataset_type: Some(1),
                     }],
                 }],
             })
@@ -133,6 +107,8 @@ mod tests {
             candidates[0].served_type,
             Some(pb::ServedType::ForYouPhoenixRetrievalMoe)
         );
+        assert_eq!(candidates[0].retrieval_sources[0].score, Some(0.9));
+        assert_eq!(candidates[0].retrieval_sources[0].source_idx, Some(0));
     }
 
     #[test]

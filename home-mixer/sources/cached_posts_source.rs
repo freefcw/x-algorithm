@@ -1,4 +1,4 @@
-use crate::models::candidate::PostCandidate;
+use crate::models::candidate::{PostCandidate, RetrievalSource};
 use crate::models::query::ScoredPostsQuery;
 use tonic::async_trait;
 use xai_candidate_pipeline::source::Source;
@@ -12,7 +12,21 @@ impl Source<ScoredPostsQuery, PostCandidate> for CachedPostsSource {
     }
 
     async fn source(&self, query: &ScoredPostsQuery) -> Result<Vec<PostCandidate>, String> {
-        Ok(query.cached_posts.clone())
+        Ok(query
+            .cached_posts
+            .iter()
+            .cloned()
+            .map(|mut candidate| {
+                if candidate.retrieval_sources.is_empty() {
+                    let served_type = candidate
+                        .served_type
+                        .unwrap_or(x_algorithm_proto::home_mixer::ServedType::ForYouCachedPost);
+                    candidate.retrieval_sources =
+                        vec![RetrievalSource::from_served_type(served_type)];
+                }
+                candidate
+            })
+            .collect())
     }
 }
 

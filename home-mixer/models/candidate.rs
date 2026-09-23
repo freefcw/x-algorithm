@@ -37,6 +37,9 @@ pub struct PostCandidate {
     pub weighted_score: Option<f64>,
     pub score: Option<f64>,
     pub served_type: Option<pb::ServedType>,
+    /// Request-local recall provenance. Retrieval scores remain diagnostic and
+    /// must not be treated as the final ranking score in `score`.
+    pub retrieval_sources: Vec<RetrievalSource>,
     pub in_network: Option<bool>,
     pub ancestors: Vec<PostId>,
     pub video_duration_ms: Option<i32>,
@@ -78,6 +81,31 @@ pub struct PostCandidate {
     pub is_mutual_follow_author: Option<bool>,
     pub brand_safety_verdict: Option<BrandSafetyVerdict>,
     pub safety_labels: Vec<SafetyLabelInfo>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct RetrievalSource {
+    pub served_type: pb::ServedType,
+    /// xrex retrieval dataset; `None` means the source does not expose it.
+    pub dataset_type: Option<u32>,
+    /// xrex retrieval head/source index; `Some(0)` is distinct from unknown.
+    pub source_idx: Option<i32>,
+    pub score: Option<f32>,
+    /// 1-based position within the same served type, dataset and source index.
+    /// For sources without scores this is their returned order, not a score rank.
+    pub position: Option<u32>,
+}
+
+impl RetrievalSource {
+    pub fn from_served_type(served_type: pb::ServedType) -> Self {
+        Self {
+            served_type,
+            dataset_type: None,
+            source_idx: None,
+            score: None,
+            position: None,
+        }
+    }
 }
 
 #[derive(Clone, Debug, Default, PartialEq)]

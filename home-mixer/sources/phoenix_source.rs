@@ -1,7 +1,8 @@
 use crate::clients::phoenix_retrieval_client::{retrieve_with_timeout, PhoenixRetrievalClient};
-use crate::models::candidate::PostCandidate;
+use crate::models::candidate::{PostCandidate, RetrievalSource};
 use crate::models::query::{ScoredPostsQuery, TopicRecallMode};
 use crate::params as p;
+use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
 use tonic::async_trait;
@@ -42,41 +43,84 @@ impl Source<ScoredPostsQuery, PostCandidate> for PhoenixSource {
         .await
         .map_err(|e| format!("PhoenixSource: {e}"))?;
 
-        let mut invalid_ids = 0usize;
-        let mut invalid_example: Option<u64> = None;
-        let candidates: Vec<PostCandidate> = response
-            .top_k_candidates
-            .into_iter()
-            .flat_map(|scored_candidates| scored_candidates.candidates)
-            .filter_map(|scored_candidate| scored_candidate.candidate)
-            .filter_map(|tweet_info| {
-                let parsed = parse_tweet_info(&tweet_info);
-                if parsed.is_none() {
-                    invalid_ids += 1;
-                    invalid_example = Some(tweet_info.tweet_id);
-                }
-                parsed
-            })
-            .map(
-                |(tweet_id, author_id, in_reply_to_tweet_id)| PostCandidate {
-                    tweet_id,
-                    author_id,
-                    in_reply_to_tweet_id,
-                    served_type: Some(pb::ServedType::ForYouPhoenixRetrieval),
-                    ..Default::default()
-                },
-            )
-            .collect();
-        if invalid_ids > 0 {
-            log::warn!(
-                "PhoenixSource: dropped {} retrieved candidate(s) with out-of-range Snowflake IDs (e.g. {:?})",
-                invalid_ids,
-                invalid_example.unwrap_or_default()
-            );
-        }
-
-        Ok(candidates)
+        Ok(candidates_from_retrieval_response(
+            response,
+            pb::ServedType::ForYouPhoenixRetrieval,
+            "PhoenixSource",
+        ))
     }
+}
+
+pub(crate) fn candidates_from_retrieval_response(
+    response: x_algorithm_proto::recsys::RetrieveResponse,
+    served_type: pb::ServedType,
+    source_name: &str,
+) -> Vec<PostCandidate> {
+    let mut invalid_ids = 0usize;
+    let mut invalid_example: Option<u64> = None;
+    let scored: Vec<_> = response
+        .top_k_candidates
+        .into_iter()
+        .flat_map(|group| group.candidates)
+        .filter_map(|scored| {
+            let tweet = scored.candidate?;
+            let parsed = parse_tweet_info(&tweet);
+            if parsed.is_none() {
+                invalid_ids += 1;
+                invalid_example = Some(tweet.tweet_id);
+            }
+            parsed.map(|identity| {
+                (
+                    identity,
+                    scored.score,
+                    scored.dataset_type,
+                    scored.source_idx,
+                )
+            })
+        })
+        .collect();
+
+    if invalid_ids > 0 {
+        log::warn!(
+            "{source_name}: dropped {invalid_ids} retrieved candidate(s) with out-of-range Snowflake IDs (e.g. {:?})",
+            invalid_example.unwrap_or_default()
+        );
+    }
+
+    let mut score_order: Vec<usize> = (0..scored.len()).collect();
+    score_order.sort_by(|left, right| scored[*right].1.total_cmp(&scored[*left].1));
+    let mut positions = vec![0; scored.len()];
+    let mut next_position = HashMap::new();
+    for scored_index in score_order {
+        let provenance_group = (scored[scored_index].2, scored[scored_index].3);
+        let position = next_position.entry(provenance_group).or_insert(0);
+        *position += 1;
+        positions[scored_index] = *position;
+    }
+
+    scored
+        .into_iter()
+        .zip(positions)
+        .map(
+            |(
+                ((tweet_id, author_id, in_reply_to_tweet_id), score, dataset_type, source_idx),
+                position,
+            )| PostCandidate {
+                tweet_id,
+                author_id,
+                in_reply_to_tweet_id,
+                served_type: Some(served_type),
+                retrieval_sources: vec![RetrievalSource {
+                    served_type,
+                    dataset_type,
+                    source_idx,
+                    score: Some(score),
+                    position: Some(position),
+                }],
+                ..Default::default()
+            },
+        )
+        .collect()
 }
 
 /// Validate Phoenix `TweetInfo` numeric identity fields. `0`
@@ -144,6 +188,8 @@ mod tests {
                     ..Default::default()
                 }),
                 score: 0.5,
+                dataset_type: Some(1),
+                source_idx: Some(0),
             };
             Ok(recsys::RetrieveResponse {
                 top_k_candidates: vec![recsys::ScoredCandidates {
@@ -191,6 +237,52 @@ mod tests {
         assert!(candidates
             .iter()
             .all(|c| c.served_type == Some(pb::ServedType::ForYouPhoenixRetrieval)));
+        assert!(candidates.iter().all(|candidate| {
+            candidate.retrieval_sources[0].dataset_type == Some(1)
+                && candidate.retrieval_sources[0].source_idx == Some(0)
+        }));
+    }
+
+    #[test]
+    fn provenance_keeps_service_metadata_and_score_positions_separate_from_ranking_score() {
+        let scored = |tweet_id, score, dataset_type, source_idx| recsys::ScoredCandidate {
+            candidate: Some(recsys::TweetInfo {
+                tweet_id,
+                author_id: 200,
+                ..Default::default()
+            }),
+            score,
+            dataset_type,
+            source_idx,
+        };
+        let response = recsys::RetrieveResponse {
+            top_k_candidates: vec![recsys::ScoredCandidates {
+                candidates: vec![
+                    scored(100, 0.25, Some(1), Some(0)),
+                    scored(101, 0.75, Some(1), Some(0)),
+                    scored(102, 0.50, Some(8), Some(3)),
+                    scored(103, 0.10, Some(8), Some(3)),
+                    scored(104, 0.20, None, None),
+                ],
+            }],
+        };
+
+        let candidates = candidates_from_retrieval_response(
+            response,
+            pb::ServedType::ForYouPhoenixRetrieval,
+            "test",
+        );
+
+        assert_eq!(candidates[0].score, None);
+        assert_eq!(candidates[0].retrieval_sources[0].position, Some(2));
+        assert_eq!(candidates[0].retrieval_sources[0].source_idx, Some(0));
+        assert_eq!(candidates[1].retrieval_sources[0].position, Some(1));
+        assert_eq!(candidates[1].retrieval_sources[0].dataset_type, Some(1));
+        assert_eq!(candidates[2].retrieval_sources[0].position, Some(1));
+        assert_eq!(candidates[2].retrieval_sources[0].source_idx, Some(3));
+        assert_eq!(candidates[3].retrieval_sources[0].position, Some(2));
+        assert_eq!(candidates[4].retrieval_sources[0].position, Some(1));
+        assert_eq!(candidates[4].retrieval_sources[0].source_idx, None);
     }
 
     #[test]

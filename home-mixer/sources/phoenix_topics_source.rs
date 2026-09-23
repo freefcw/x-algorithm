@@ -1,5 +1,5 @@
 use crate::clients::topic_retrieval_client::TopicRetrievalClient;
-use crate::models::candidate::PostCandidate;
+use crate::models::candidate::{PostCandidate, RetrievalSource};
 use crate::models::query::{ScoredPostsQuery, TopicRecallMode};
 use crate::params;
 use std::sync::Arc;
@@ -32,11 +32,16 @@ impl Source<ScoredPostsQuery, PostCandidate> for PhoenixTopicsSource {
 
         Ok(posts
             .into_iter()
-            .map(|post| PostCandidate {
+            .enumerate()
+            .map(|(index, post)| PostCandidate {
                 tweet_id: post.tweet_id,
                 author_id: post.author_id,
                 retrieval_topic_ids: post.matched_topic_ids,
                 served_type: Some(pb::ServedType::ForYouPhoenixTopics),
+                retrieval_sources: vec![RetrievalSource {
+                    position: Some(index as u32 + 1),
+                    ..RetrievalSource::from_served_type(pb::ServedType::ForYouPhoenixTopics)
+                }],
                 ..Default::default()
             })
             .collect())
