@@ -62,8 +62,8 @@ struct Args {
     )]
     redis_request_timeout_ms: u64,
     /// Snowflake worker id (0..=1023) embedded in allocated ids. In Redis
-    /// mode sequence counters are shared; in memory mode they are process
-    /// local and therefore must not be used for multi-replica allocation.
+    /// Deprecated compatibility setting; ObjectId-derived allocations take
+    /// worker bits from the ObjectId random/process field.
     #[arg(long, env = "ID_REGISTRY_WORKER_ID", default_value_t = 0)]
     worker_id: u64,
     /// Allow first-seen ObjectIDs to receive newly allocated Snowflakes.
@@ -91,7 +91,7 @@ async fn main() -> anyhow::Result<()> {
     }
     if !args.redis_enabled {
         log::warn!(
-            "ID Registry Redis is disabled; using process-local memory storage. Mappings and Snowflake sequence counters are not shared across processes or restarts"
+            "ID Registry Redis is disabled; using process-local memory storage. Mappings are not shared across processes or restarts"
         );
     }
     anyhow::ensure!(
@@ -123,7 +123,7 @@ async fn main() -> anyhow::Result<()> {
         "ID_REGISTRY_ALLOCATION_TOKEN is required when allocation is enabled"
     );
     log::info!(
-        "id-service starting: grpc_listen={} http_listen={} worker_id={} allow_allocation={} \
+        "id-service starting: grpc_listen={} http_listen={} worker_id={} (compatibility only) allow_allocation={} \
          max_batch_size={} key_prefix={} cache_capacity={} redis_connect_timeout_ms={} \
          redis_request_timeout_ms={} mapping_version={MAPPING_VERSION} redis_enabled={} redis={}",
         args.grpc_listen,

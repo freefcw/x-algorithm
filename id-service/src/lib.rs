@@ -17,8 +17,7 @@ pub mod metrics;
 mod redis_registry;
 pub use redis_registry::{
     InsertOutcome, MappingStore, MemoryMappingStore, MemoryStoreCalls, RedisIdRegistry,
-    RedisIdRegistryConfig, SequenceFloor, SequenceReservation, MAX_ALLOCATION_ATTEMPTS,
-    STORAGE_SCHEMA,
+    RedisIdRegistryConfig, MAX_HISTORICAL_PROBES, STORAGE_SCHEMA,
 };
 
 pub const SNOWFLAKE_EPOCH_MS: u64 = 1_288_834_974_657;
@@ -210,10 +209,6 @@ pub(crate) fn object_id_timestamp_secs(value: &str) -> Result<u64, IdError> {
     u32::from_str_radix(&value[..8], 16)
         .map(u64::from)
         .map_err(|_| IdError::InvalidObjectId(value.to_string()))
-}
-
-pub(crate) fn object_id_timestamp_ms(value: &str) -> Result<u64, IdError> {
-    object_id_timestamp_secs(value).map(|seconds| seconds.saturating_mul(1_000))
 }
 
 pub(crate) fn now_secs() -> u64 {

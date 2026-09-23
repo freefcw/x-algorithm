@@ -13,7 +13,7 @@ use futures::future::try_join_all;
 use redis::aio::{ConnectionManager, ConnectionManagerConfig};
 use redis::cluster::ClusterClientBuilder;
 use redis::{ErrorKind, FromRedisValue};
-use std::collections::{BTreeMap, HashMap, VecDeque};
+use std::collections::{HashMap, VecDeque};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, LazyLock, Mutex, MutexGuard};
 use std::time::Duration;
@@ -25,11 +25,8 @@ use crate::{
     WORKER_BITS,
 };
 
-const SEQUENCE_TTL_SECS: i64 = 2 * 24 * 60 * 60;
 const MAPPING_SHARD_COUNT: u16 = 256;
-/// Sequence values available per `(worker, second)`: 1000 milliseconds times
-/// 4096 sequence numbers.
-const SEQUENCES_PER_SECOND: u64 = 1_000 * (MAX_SEQUENCE + 1);
+const HISTORICAL_SLOTS_PER_SECOND: u64 = 1_000 * (MAX_SEQUENCE + 1);
 
 /// Identifier of the key layout, persisted next to the mapping version so a
 /// prefix written by another layout is rejected instead of silently read.
@@ -38,7 +35,7 @@ pub const STORAGE_SCHEMA: &str = "sharded-256";
 /// Upper bound on write attempts for one allocated mapping. Each attempt
 /// draws a fresh sequence value after the previous Snowflake turned out to be
 /// bound already (registered by another caller, or an orphan reverse entry).
-pub const MAX_ALLOCATION_ATTEMPTS: usize = 16;
+pub const MAX_HISTORICAL_PROBES: usize = 16;
 
 /// `SET NX` with idempotent replays: 1 created, 0 identical value already
 /// present, -1 a different value is present.
@@ -70,40 +67,8 @@ return 1
     )
 });
 
-/// Reserve `ARGV[1]` consecutive sequence values and refresh the TTL.
-static SEQUENCE_SCRIPT: LazyLock<redis::Script> = LazyLock::new(|| {
-    redis::Script::new(
-        r#"
-local value = redis.call('INCRBY', KEYS[1], ARGV[1])
-redis.call('EXPIRE', KEYS[1], ARGV[2])
-return value
-"#,
-    )
-});
-
-/// Raise a sequence counter to at least `ARGV[1]`; never lowers it.
-static SEQUENCE_FLOOR_SCRIPT: LazyLock<redis::Script> = LazyLock::new(|| {
-    redis::Script::new(
-        r#"
-local current = tonumber(redis.call('GET', KEYS[1]) or '0')
-local floor = tonumber(ARGV[1])
-if current < floor then
-  redis.call('SET', KEYS[1], ARGV[1])
-  redis.call('EXPIRE', KEYS[1], ARGV[2])
-  return 1
-end
-return 0
-"#,
-    )
-});
-
-fn all_scripts() -> [&'static redis::Script; 4] {
-    [
-        &RESERVE_SCRIPT,
-        &DELETE_IF_VALUE_SCRIPT,
-        &SEQUENCE_SCRIPT,
-        &SEQUENCE_FLOOR_SCRIPT,
-    ]
+fn all_scripts() -> [&'static redis::Script; 2] {
+    [&RESERVE_SCRIPT, &DELETE_IF_VALUE_SCRIPT]
 }
 
 type ObjectKey = (EntityKind, String);
@@ -120,24 +85,6 @@ pub enum InsertOutcome {
     ObjectConflict,
     /// The Snowflake is already bound to a different object; nothing changed.
     SnowflakeConflict,
-}
-
-/// Reservation of `count` consecutive values from the `(worker, second)`
-/// counter that `object_timestamp_ms` falls into.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub struct SequenceReservation {
-    pub worker_id: u64,
-    pub object_timestamp_ms: u64,
-    pub count: u64,
-}
-
-/// Lower bound for a `(worker, second)` counter, derived from an imported
-/// Snowflake so later allocations skip the values it already occupies.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub struct SequenceFloor {
-    pub worker_id: u64,
-    pub second: u64,
-    pub min_next: u64,
 }
 
 /// Persistence port for the identity registry application service.
@@ -166,15 +113,6 @@ pub trait MappingStore: Send + Sync {
         &self,
         mappings: &[Mapping],
     ) -> Result<Vec<InsertOutcome>, IdError>;
-
-    /// Returns the counter value after each reservation; the reserved values
-    /// are `[value - count + 1, value]`.
-    async fn next_sequence_batch(
-        &self,
-        reservations: &[SequenceReservation],
-    ) -> Result<Vec<u64>, IdError>;
-
-    async fn observe_sequence_batch(&self, floors: &[SequenceFloor]) -> Result<(), IdError>;
 
     async fn check_ready(&self) -> Result<(), IdError>;
 
@@ -207,37 +145,6 @@ pub trait MappingStore: Send + Sync {
             .pop()
             .ok_or_else(|| IdError::Redis("mapping write returned no outcome".to_string()))
     }
-
-    async fn next_sequence(
-        &self,
-        worker_id: u64,
-        object_timestamp_ms: u64,
-    ) -> Result<u64, IdError> {
-        let mut values = self
-            .next_sequence_batch(&[SequenceReservation {
-                worker_id,
-                object_timestamp_ms,
-                count: 1,
-            }])
-            .await?;
-        values
-            .pop()
-            .ok_or_else(|| IdError::Redis("sequence reservation returned no value".to_string()))
-    }
-
-    async fn observe_sequence(
-        &self,
-        worker_id: u64,
-        second: u64,
-        min_next: u64,
-    ) -> Result<(), IdError> {
-        self.observe_sequence_batch(&[SequenceFloor {
-            worker_id,
-            second,
-            min_next,
-        }])
-        .await
-    }
 }
 
 #[derive(Clone, Debug)]
@@ -259,7 +166,6 @@ pub struct RedisIdRegistryConfig {
 /// Application service containing identity rules but no Redis-specific logic.
 pub struct RedisIdRegistry {
     store: Arc<dyn MappingStore>,
-    worker_id: u64,
     allow_allocation: bool,
 }
 
@@ -334,9 +240,9 @@ impl RedisIdRegistry {
         if worker_id > MAX_WORKER_ID {
             return Err(IdError::InvalidWorkerId(worker_id));
         }
+        let _ = worker_id;
         Ok(Self {
             store,
-            worker_id,
             allow_allocation,
         })
     }
@@ -530,13 +436,8 @@ impl RedisIdRegistry {
             .iter()
             .copied()
             .partition(|item| item.provided.is_some());
-        if !unassigned.is_empty() {
-            if !self.allow_allocation {
-                return Err(allocation_disabled(&unassigned));
-            }
-            for item in &unassigned {
-                allocation_timestamp_ms(&item.object_id)?;
-            }
+        if !unassigned.is_empty() && !self.allow_allocation {
+            return Err(allocation_disabled(&unassigned));
         }
         self.check_provided_available(&provided).await?;
 
@@ -547,8 +448,8 @@ impl RedisIdRegistry {
                     .map(|snowflake_id| PendingWrite { item, snowflake_id })
             })
             .collect::<Vec<_>>();
-        pending.extend(self.allocate(&unassigned).await?);
-        self.commit(pending, resolved).await
+        pending.extend(self.allocate(&unassigned, &HashMap::new()).await?);
+        self.commit(pending, resolved, HashMap::new()).await
     }
 
     /// A provided Snowflake may only be registered while it is unbound or
@@ -574,11 +475,12 @@ impl RedisIdRegistry {
 
     /// Write the pending mappings and settle every outcome. Allocated ids
     /// that turn out to be bound already are re-drawn up to
-    /// [`MAX_ALLOCATION_ATTEMPTS`] times.
+    /// [`MAX_HISTORICAL_PROBES`] times.
     async fn commit<'a>(
         &self,
         mut pending: Vec<PendingWrite<'a>>,
         resolved: &mut HashMap<ObjectKey, SnowflakeId>,
+        mut probes: HashMap<ObjectKey, u64>,
     ) -> Result<(), IdError> {
         let mut attempts = 0;
         loop {
@@ -597,12 +499,11 @@ impl RedisIdRegistry {
             let mut lost_object: Vec<&PendingWrite<'a>> = Vec::new();
             let mut collided: Vec<&'a RequestItem> = Vec::new();
             let mut last_collision: Option<&PendingWrite<'a>> = None;
-            let mut floors: Vec<SequenceFloor> = Vec::new();
             for (write, outcome) in pending.iter().zip(outcomes) {
                 match outcome {
                     InsertOutcome::Inserted => {
                         resolved.insert(write.item.key(), write.snowflake_id);
-                        self.record_insert(write, &mut floors);
+                        self.record_insert(write);
                     }
                     InsertOutcome::AlreadyPresent => {
                         resolved.insert(write.item.key(), write.snowflake_id);
@@ -617,22 +518,17 @@ impl RedisIdRegistry {
                     }
                 }
             }
-            if !floors.is_empty() {
-                self.store
-                    .observe_sequence_batch(&merge_floors(floors))
-                    .await?;
-            }
             self.adopt_concurrent_winners(&lost_object, resolved)
                 .await?;
 
             let Some(last_collision) = last_collision else {
                 return Ok(());
             };
-            if attempts >= MAX_ALLOCATION_ATTEMPTS {
+            if attempts >= MAX_HISTORICAL_PROBES {
                 return Err(self.snowflake_taken_now(last_collision).await);
             }
             log::warn!(
-                "allocated Snowflake {} for {:?} {} is already bound; redrawing ({} of {MAX_ALLOCATION_ATTEMPTS} attempts used)",
+                "allocated Snowflake {} for {:?} {} is already bound; probing ({} of {MAX_HISTORICAL_PROBES} probes used)",
                 last_collision.snowflake_id,
                 last_collision.item.entity_kind,
                 last_collision.item.object_id,
@@ -658,7 +554,10 @@ impl RedisIdRegistry {
             if still_missing.is_empty() {
                 return Ok(());
             }
-            pending = self.allocate(&still_missing).await?;
+            for item in &still_missing {
+                *probes.entry(item.key()).or_default() += 1;
+            }
+            pending = self.allocate(&still_missing, &probes).await?;
         }
     }
 
@@ -698,7 +597,7 @@ impl RedisIdRegistry {
         Ok(())
     }
 
-    fn record_insert(&self, write: &PendingWrite<'_>, floors: &mut Vec<SequenceFloor>) {
+    fn record_insert(&self, write: &PendingWrite<'_>) {
         if write.is_provided() {
             metrics().record_provided_import();
             log::info!(
@@ -707,9 +606,6 @@ impl RedisIdRegistry {
                 write.item.object_id,
                 write.snowflake_id
             );
-            if let Some(floor) = sequence_floor(write.snowflake_id, self.worker_id) {
-                floors.push(floor);
-            }
         } else {
             metrics().record_allocation();
         }
@@ -725,69 +621,22 @@ impl RedisIdRegistry {
         snowflake_taken(write.item, write.snowflake_id, holder)
     }
 
-    /// Reserve sequence values per `(worker, second)` and turn them into
-    /// Snowflakes for the given items.
+    /// Generate a deterministic historical-time candidate from ObjectId bits.
     async fn allocate<'a>(
         &self,
         items: &[&'a RequestItem],
+        probes: &HashMap<ObjectKey, u64>,
     ) -> Result<Vec<PendingWrite<'a>>, IdError> {
-        if items.is_empty() {
-            return Ok(Vec::new());
-        }
-        let mut groups: BTreeMap<u64, Vec<&'a RequestItem>> = BTreeMap::new();
-        for &item in items {
-            groups
-                .entry(allocation_timestamp_ms(&item.object_id)?)
-                .or_default()
-                .push(item);
-        }
-        let reservations = groups
+        items
             .iter()
-            .map(|(timestamp_ms, group)| SequenceReservation {
-                worker_id: self.worker_id,
-                object_timestamp_ms: *timestamp_ms,
-                count: group.len() as u64,
-            })
-            .collect::<Vec<_>>();
-        let uppers = self.store.next_sequence_batch(&reservations).await?;
-        if uppers.len() != reservations.len() {
-            return Err(IdError::Redis(
-                "sequence reservation returned a mismatched count".to_string(),
-            ));
-        }
-
-        let mut writes = Vec::with_capacity(items.len());
-        for ((timestamp_ms, group), upper) in groups.into_iter().zip(uppers) {
-            let count = group.len() as u64;
-            if upper < count || upper > SEQUENCES_PER_SECOND {
-                return Err(IdError::SecondExhausted(timestamp_ms));
-            }
-            let first = upper - count + 1;
-            for (offset, item) in group.into_iter().enumerate() {
-                writes.push(PendingWrite {
+            .map(|item| {
+                let probe = probes.get(&item.key()).copied().unwrap_or_default();
+                Ok(PendingWrite {
                     item,
-                    snowflake_id: self.snowflake_for(timestamp_ms, first + offset as u64)?,
-                });
-            }
-        }
-        Ok(writes)
-    }
-
-    /// Sequence value `sequence` (1-based) within the second of
-    /// `object_timestamp_ms`: the first 4096 values share the first
-    /// millisecond, the next 4096 the second one, and so on.
-    fn snowflake_for(
-        &self,
-        object_timestamp_ms: u64,
-        sequence: u64,
-    ) -> Result<SnowflakeId, IdError> {
-        let offset = sequence - 1;
-        let millis = object_timestamp_ms + offset / (MAX_SEQUENCE + 1);
-        SnowflakeId::new(
-            ((millis - SNOWFLAKE_EPOCH_MS) << (WORKER_BITS + SEQUENCE_BITS))
-                | (self.worker_id << SEQUENCE_BITS)
-                | (offset & MAX_SEQUENCE),
-        )
+                    snowflake_id: snowflake_candidate(&item.object_id, probe)?,
+                })
+            })
+            .collect()
     }
 
     pub async fn reverse_one(
@@ -960,48 +809,29 @@ fn unknown_ids_summary<'a>(items: impl Iterator<Item = (EntityKind, &'a str)>) -
     summary
 }
 
-fn allocation_timestamp_ms(object_id: &str) -> Result<u64, IdError> {
-    let timestamp_ms = crate::object_id_timestamp_ms(object_id)?;
+fn snowflake_candidate(object_id: &str, probe: u64) -> Result<SnowflakeId, IdError> {
+    crate::validate_object_id(object_id)?;
+    let second = crate::object_id_timestamp_secs(object_id)?;
+    let timestamp_ms = second.saturating_mul(1_000);
     if timestamp_ms < SNOWFLAKE_EPOCH_MS {
         return Err(IdError::BeforeSnowflakeEpoch(timestamp_ms));
     }
-    Ok(timestamp_ms)
-}
-
-/// The `(worker, second)` counter position occupied by an imported
-/// Snowflake, when it carries this service's worker id. The second is the
-/// Snowflake's own millisecond timestamp divided by 1000, the same unit
-/// `next_sequence` derives from an ObjectId's creation second.
-fn sequence_floor(snowflake_id: SnowflakeId, worker_id: u64) -> Option<SequenceFloor> {
-    let raw = snowflake_id.get();
-    if (raw >> SEQUENCE_BITS) & MAX_WORKER_ID != worker_id {
-        return None;
+    let random = u64::from_str_radix(&object_id[8..18], 16)
+        .map_err(|_| IdError::InvalidObjectId(object_id.to_string()))?;
+    let counter = u64::from_str_radix(&object_id[18..], 16)
+        .map_err(|_| IdError::InvalidObjectId(object_id.to_string()))?;
+    let slot = (counter & MAX_SEQUENCE)
+        .checked_add(probe)
+        .ok_or(IdError::SecondExhausted(timestamp_ms))?;
+    if slot >= HISTORICAL_SLOTS_PER_SECOND {
+        return Err(IdError::SecondExhausted(timestamp_ms));
     }
-    let millis = (raw >> (WORKER_BITS + SEQUENCE_BITS)) + SNOWFLAKE_EPOCH_MS;
-    let second = millis / 1_000;
-    let offset = (millis - second * 1_000) * (MAX_SEQUENCE + 1) + (raw & MAX_SEQUENCE);
-    Some(SequenceFloor {
-        worker_id,
-        second,
-        min_next: offset + 1,
-    })
-}
-
-/// One floor per `(worker, second)`: the highest requested value wins.
-fn merge_floors(floors: Vec<SequenceFloor>) -> Vec<SequenceFloor> {
-    let mut merged: BTreeMap<(u64, u64), u64> = BTreeMap::new();
-    for floor in floors {
-        let entry = merged.entry((floor.worker_id, floor.second)).or_default();
-        *entry = (*entry).max(floor.min_next);
-    }
-    merged
-        .into_iter()
-        .map(|((worker_id, second), min_next)| SequenceFloor {
-            worker_id,
-            second,
-            min_next,
-        })
-        .collect()
+    let millis = timestamp_ms + slot / (MAX_SEQUENCE + 1);
+    SnowflakeId::new(
+        ((millis - SNOWFLAKE_EPOCH_MS) << (WORKER_BITS + SEQUENCE_BITS))
+            | ((random & MAX_WORKER_ID) << SEQUENCE_BITS)
+            | (slot & MAX_SEQUENCE),
+    )
 }
 
 /// Conflicts are expected outcomes, but each one is worth a warning and a
@@ -1417,10 +1247,6 @@ impl RedisMappingStore {
         )
     }
 
-    fn sequence_key(&self, worker_id: u64, second: u64) -> String {
-        format!("{}:sequence:{worker_id}:{second}", self.key_prefix)
-    }
-
     fn cache_mapping(&self, mapping: &Mapping) {
         let expires = match mapping.entity_kind {
             EntityKind::User => None,
@@ -1639,51 +1465,6 @@ impl MappingStore for RedisMappingStore {
         }
         let _: Vec<i64> = self.run_keyed("delete reverse mapping", rollback).await?;
         Ok(outcomes)
-    }
-
-    async fn next_sequence_batch(
-        &self,
-        reservations: &[SequenceReservation],
-    ) -> Result<Vec<u64>, IdError> {
-        let ttl = SEQUENCE_TTL_SECS.to_string();
-        let commands = reservations
-            .iter()
-            .map(|reservation| {
-                script_command(
-                    &SEQUENCE_SCRIPT,
-                    &self.sequence_key(
-                        reservation.worker_id,
-                        reservation.object_timestamp_ms / 1_000,
-                    ),
-                    &[reservation.count.to_string().as_str(), ttl.as_str()],
-                )
-            })
-            .collect();
-        let values: Vec<i64> = self.run_keyed("INCRBY sequence", commands).await?;
-        values
-            .into_iter()
-            .map(|value| {
-                u64::try_from(value).map_err(|_| {
-                    IdError::Redis("Redis allocation returned a negative sequence".to_string())
-                })
-            })
-            .collect()
-    }
-
-    async fn observe_sequence_batch(&self, floors: &[SequenceFloor]) -> Result<(), IdError> {
-        let ttl = SEQUENCE_TTL_SECS.to_string();
-        let commands = floors
-            .iter()
-            .map(|floor| {
-                script_command(
-                    &SEQUENCE_FLOOR_SCRIPT,
-                    &self.sequence_key(floor.worker_id, floor.second),
-                    &[floor.min_next.to_string().as_str(), ttl.as_str()],
-                )
-            })
-            .collect();
-        let _: Vec<i64> = self.run_keyed("raise sequence floor", commands).await?;
-        Ok(())
     }
 
     /// Read-only: readiness must not recreate metadata that went missing.
@@ -1928,8 +1709,6 @@ pub struct MemoryStoreCalls {
     pub find_by_snowflake_batch: AtomicU64,
     pub insert_if_absent: AtomicU64,
     pub insert_if_absent_batch: AtomicU64,
-    pub next_sequence_batch: AtomicU64,
-    pub observe_sequence_batch: AtomicU64,
 }
 
 fn bump(counter: &AtomicU64) {
@@ -1941,12 +1720,10 @@ fn bump(counter: &AtomicU64) {
 /// `RedisIdRegistryConfig::redis_enabled = false` when no Redis instance
 /// should be involved.
 /// It mirrors the Redis adapter's semantics: two independent indexes written
-/// reverse-first, reverse lookups validated against the forward entry, and
-/// `(worker, second)` sequence counters.
+/// reverse-first and reverse lookups validated against the forward entry.
 pub struct MemoryMappingStore {
     by_object: Mutex<HashMap<ObjectKey, Mapping>>,
     by_snowflake: Mutex<HashMap<u64, Mapping>>,
-    sequences: Mutex<HashMap<(u64, u64), u64>>,
     pub calls: MemoryStoreCalls,
 }
 
@@ -1955,7 +1732,6 @@ impl MemoryMappingStore {
         Self {
             by_object: Mutex::new(HashMap::new()),
             by_snowflake: Mutex::new(HashMap::new()),
-            sequences: Mutex::new(HashMap::new()),
             calls: MemoryStoreCalls::default(),
         }
     }
@@ -1980,19 +1756,6 @@ impl MemoryMappingStore {
     pub fn insert_reverse_only(&self, mapping: &Mapping) {
         lock_ignoring_poison(&self.by_snowflake)
             .insert(mapping.snowflake_id.get(), mapping.clone());
-    }
-
-    /// Current value of the `(worker, second)` counter, 0 when absent.
-    pub fn sequence(&self, worker_id: u64, second: u64) -> u64 {
-        lock_ignoring_poison(&self.sequences)
-            .get(&(worker_id, second))
-            .copied()
-            .unwrap_or(0)
-    }
-
-    /// Drop every counter, reproducing Redis TTL expiry.
-    pub fn reset_sequences(&self) {
-        lock_ignoring_poison(&self.sequences).clear();
     }
 }
 
@@ -2075,39 +1838,6 @@ impl MappingStore for MemoryMappingStore {
         Ok(outcomes)
     }
 
-    async fn next_sequence_batch(
-        &self,
-        reservations: &[SequenceReservation],
-    ) -> Result<Vec<u64>, IdError> {
-        bump(&self.calls.next_sequence_batch);
-        let mut sequences = lock_ignoring_poison(&self.sequences);
-        Ok(reservations
-            .iter()
-            .map(|reservation| {
-                let counter = sequences
-                    .entry((
-                        reservation.worker_id,
-                        reservation.object_timestamp_ms / 1_000,
-                    ))
-                    .or_default();
-                *counter += reservation.count;
-                *counter
-            })
-            .collect())
-    }
-
-    async fn observe_sequence_batch(&self, floors: &[SequenceFloor]) -> Result<(), IdError> {
-        bump(&self.calls.observe_sequence_batch);
-        let mut sequences = lock_ignoring_poison(&self.sequences);
-        for floor in floors {
-            let counter = sequences
-                .entry((floor.worker_id, floor.second))
-                .or_default();
-            *counter = (*counter).max(floor.min_next);
-        }
-        Ok(())
-    }
-
     async fn check_ready(&self) -> Result<(), IdError> {
         Ok(())
     }
@@ -2183,17 +1913,6 @@ mod tests {
             Ok(vec![InsertOutcome::Inserted; mappings.len()])
         }
 
-        async fn next_sequence_batch(
-            &self,
-            reservations: &[SequenceReservation],
-        ) -> Result<Vec<u64>, IdError> {
-            Ok(vec![1; reservations.len()])
-        }
-
-        async fn observe_sequence_batch(&self, _floors: &[SequenceFloor]) -> Result<(), IdError> {
-            Ok(())
-        }
-
         async fn check_ready(&self) -> Result<(), IdError> {
             Ok(())
         }
@@ -2209,17 +1928,6 @@ mod tests {
 
     fn snowflake(value: u64) -> SnowflakeId {
         SnowflakeId::new(value).unwrap()
-    }
-
-    /// Snowflake `(second, worker, sequence)` with the sequence in the
-    /// second's first millisecond, exactly what the allocator produces for
-    /// the first 4096 ids of a second.
-    fn snowflake_at(second: u64, worker_id: u64, sequence: u64) -> SnowflakeId {
-        snowflake(
-            ((second * 1_000 - SNOWFLAKE_EPOCH_MS) << (WORKER_BITS + SEQUENCE_BITS))
-                | (worker_id << SEQUENCE_BITS)
-                | sequence,
-        )
     }
 
     fn object_id_at(second: u64, suffix: u32) -> String {
@@ -2350,7 +2058,7 @@ mod tests {
         );
         // The conflict is found while examining existing mappings, before
         // any sequence value is drawn for the allocated item.
-        assert_eq!(loads(&store.calls.next_sequence_batch), 0);
+        assert_eq!(loads(&store.calls.insert_if_absent_batch), 1);
     }
 
     #[tokio::test]
@@ -2463,103 +2171,50 @@ mod tests {
                 .snowflake_id,
             allocated[0]
         );
-        let second = crate::object_id_timestamp_secs(POST).unwrap();
-        assert_eq!(store.sequence(0, second), 1);
+        assert_eq!(loads(&store.calls.insert_if_absent_batch), 2);
     }
 
     #[tokio::test]
-    async fn allocation_skips_sequence_values_held_by_provided_imports() {
+    async fn provided_import_does_not_create_sequence_state() {
         let store = Arc::new(MemoryStore::new());
         let registry = registry(&store, true);
-        let second = crate::object_id_timestamp_secs(USER).unwrap();
-
-        // A provided import carrying our worker id occupies (second, seq 0).
         registry
-            .allocate_one(USER, EntityKind::User, Some(snowflake_at(second, 0, 0)))
+            .allocate_one(USER, EntityKind::User, Some(snowflake(42)))
             .await
             .unwrap();
-        assert_eq!(store.sequence(0, second), 1);
-        assert_eq!(loads(&store.calls.observe_sequence_batch), 1);
-
-        // The next allocation in the same second gets seq 1 on the first try.
-        let post = object_id_at(second, 1);
+        let post = object_id_at(crate::object_id_timestamp_secs(USER).unwrap(), 1);
         let allocated = registry
             .allocate_one(&post, EntityKind::Post, None)
             .await
             .unwrap();
-        assert_eq!(allocated, snowflake_at(second, 0, 1));
-        assert_eq!(loads(&store.calls.insert_if_absent_batch), 2);
-
-        // After the counter expired (TTL), the allocator collides with both
-        // existing ids and redraws until it finds a free value.
-        store.reset_sequences();
-        let another = object_id_at(second, 2);
-        let allocated = registry
-            .allocate_one(&another, EntityKind::Post, None)
-            .await
-            .unwrap();
-        assert_eq!(allocated, snowflake_at(second, 0, 2));
-        assert_eq!(
-            registry
-                .reverse_one(allocated, EntityKind::Post)
-                .await
-                .unwrap()
-                .object_id,
-            another
-        );
+        assert_eq!(allocated, snowflake_candidate(&post, 0).unwrap());
     }
 
     #[tokio::test]
-    async fn provided_import_from_another_worker_leaves_our_sequence_alone() {
+    async fn provided_import_from_another_worker_does_not_affect_allocation() {
         let store = Arc::new(MemoryStore::new());
         let registry = registry(&store, true);
-        let second = crate::object_id_timestamp_secs(USER).unwrap();
         registry
-            .allocate_one(USER, EntityKind::User, Some(snowflake_at(second, 7, 0)))
+            .allocate_one(USER, EntityKind::User, Some(snowflake(42)))
             .await
             .unwrap();
-        assert_eq!(store.sequence(0, second), 0);
-        assert_eq!(store.sequence(7, second), 0);
-        assert_eq!(loads(&store.calls.observe_sequence_batch), 0);
+        let allocated = registry
+            .allocate_one(POST, EntityKind::Post, None)
+            .await
+            .unwrap();
+        assert_eq!(allocated, snowflake_candidate(POST, 0).unwrap());
     }
 
     #[tokio::test]
-    async fn allocation_gives_up_after_max_attempts() {
+    async fn allocation_uses_stable_candidate_without_sequence_counter() {
         let store = Arc::new(MemoryStore::new());
         let registry = registry(&store, true);
-        let second = crate::object_id_timestamp_secs(USER).unwrap();
-        for sequence in 0..MAX_ALLOCATION_ATTEMPTS as u64 {
-            registry
-                .allocate_one(
-                    &object_id_at(second, 100 + sequence as u32),
-                    EntityKind::User,
-                    Some(snowflake_at(second, 0, sequence)),
-                )
-                .await
-                .unwrap();
-        }
-        store.reset_sequences();
-        let writes_before = loads(&store.calls.insert_if_absent_batch);
-
-        let error = registry
-            .allocate_one(&object_id_at(second, 1), EntityKind::Post, None)
+        let object_id = object_id_at(crate::object_id_timestamp_secs(USER).unwrap(), 1);
+        let allocated = registry
+            .allocate_one(&object_id, EntityKind::Post, None)
             .await
-            .unwrap_err();
-        assert!(
-            matches!(
-                error,
-                IdError::SnowflakeTaken { snowflake_id, holder: Some(_), .. }
-                    if snowflake_id == snowflake_at(second, 0, MAX_ALLOCATION_ATTEMPTS as u64 - 1)
-            ),
-            "{error}"
-        );
-        assert_eq!(
-            loads(&store.calls.insert_if_absent_batch) - writes_before,
-            MAX_ALLOCATION_ATTEMPTS as u64
-        );
-        assert!(store
-            .by_object(EntityKind::Post, &object_id_at(second, 1))
-            .is_none());
+            .unwrap();
+        assert_eq!(allocated, snowflake_candidate(&object_id, 0).unwrap());
     }
 
     #[tokio::test]
@@ -2583,9 +2238,9 @@ mod tests {
         assert_eq!(loads(&store.calls.find_by_object), 0);
         assert_eq!(loads(&store.calls.find_by_snowflake), 0);
         assert_eq!(loads(&store.calls.insert_if_absent), 0);
-        assert_eq!(loads(&store.calls.next_sequence_batch), 0);
+        assert_eq!(loads(&store.calls.insert_if_absent_batch), 1);
 
-        // Allocation for many objects across several seconds is one
+        // Allocation for many objects across several seconds uses only mapping writes.
         // sequence call and one write as well.
         let input = (0..40u32)
             .map(|index| {
@@ -2601,12 +2256,8 @@ mod tests {
             ids.iter().collect::<std::collections::HashSet<_>>().len(),
             40
         );
-        assert_eq!(loads(&store.calls.next_sequence_batch), 1);
         assert_eq!(loads(&store.calls.insert_if_absent_batch), 2);
         assert_eq!(loads(&store.calls.find_by_object_batch), 2);
-        for second_offset in 0..4u64 {
-            assert_eq!(store.sequence(0, 0x66f1_a2b3 + second_offset), 10);
-        }
     }
 
     #[tokio::test]
@@ -2752,20 +2403,19 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn allocation_colliding_with_an_orphan_reverse_entry_redraws() {
+    async fn allocation_colliding_with_an_orphan_reverse_entry_probes() {
         let store = Arc::new(MemoryStore::new());
         let registry = registry(&store, true);
-        let second = crate::object_id_timestamp_secs(POST).unwrap();
         store.insert_reverse_only(&mapping_of(
             USER,
             EntityKind::User,
-            snowflake_at(second, 0, 0),
+            snowflake_candidate(POST, 0).unwrap(),
         ));
         let allocated = registry
             .allocate_one(POST, EntityKind::Post, None)
             .await
             .unwrap();
-        assert_eq!(allocated, snowflake_at(second, 0, 1));
+        assert_eq!(allocated, snowflake_candidate(POST, 1).unwrap());
         assert_eq!(loads(&store.calls.insert_if_absent_batch), 2);
     }
 
@@ -2794,71 +2444,6 @@ mod tests {
                 expected: EntityKind::Post,
                 actual: EntityKind::User,
             }
-        );
-    }
-
-    #[test]
-    fn sequence_floor_decodes_second_and_offset() {
-        let second = 1_700_000_000;
-        assert_eq!(
-            sequence_floor(snowflake_at(second, 0, 0), 0),
-            Some(SequenceFloor {
-                worker_id: 0,
-                second,
-                min_next: 1
-            })
-        );
-        assert_eq!(
-            sequence_floor(snowflake_at(second, 0, 5), 0),
-            Some(SequenceFloor {
-                worker_id: 0,
-                second,
-                min_next: 6
-            })
-        );
-        // Third millisecond of the second, sequence 4: offset 2 * 4096 + 4.
-        let in_third_millisecond = snowflake(
-            ((second * 1_000 + 2 - SNOWFLAKE_EPOCH_MS) << (WORKER_BITS + SEQUENCE_BITS)) | 4,
-        );
-        assert_eq!(
-            sequence_floor(in_third_millisecond, 0),
-            Some(SequenceFloor {
-                worker_id: 0,
-                second,
-                min_next: 2 * 4096 + 5
-            })
-        );
-        assert_eq!(sequence_floor(snowflake_at(second, 3, 0), 0), None);
-        assert_eq!(
-            merge_floors(vec![
-                SequenceFloor {
-                    worker_id: 0,
-                    second,
-                    min_next: 3
-                },
-                SequenceFloor {
-                    worker_id: 0,
-                    second,
-                    min_next: 9
-                },
-                SequenceFloor {
-                    worker_id: 0,
-                    second: second + 1,
-                    min_next: 1
-                },
-            ]),
-            vec![
-                SequenceFloor {
-                    worker_id: 0,
-                    second,
-                    min_next: 9
-                },
-                SequenceFloor {
-                    worker_id: 0,
-                    second: second + 1,
-                    min_next: 1
-                },
-            ]
         );
     }
 
@@ -3058,6 +2643,63 @@ mod tests {
 
     #[tokio::test]
     #[ignore = "requires ID_REGISTRY_TEST_REDIS_URL"]
+    async fn redis_concurrent_same_candidate_probes_to_unique_mappings() {
+        let url = std::env::var("ID_REGISTRY_TEST_REDIS_URL").unwrap();
+        let prefix = test_prefix("concurrent-probe");
+        let first_registry = RedisIdRegistry::connect(redis_config(&url, &prefix))
+            .await
+            .unwrap();
+        let second_registry = RedisIdRegistry::connect(redis_config(&url, &prefix))
+            .await
+            .unwrap();
+        let second = crate::now_secs().saturating_sub(60);
+        let first_object = format!("{second:08x}0000000001000001");
+        let second_object = format!("{second:08x}1000000001000001");
+        assert_eq!(
+            snowflake_candidate(&first_object, 0).unwrap(),
+            snowflake_candidate(&second_object, 0).unwrap(),
+            "fixtures must collide on the initial ObjectId-derived candidate"
+        );
+
+        let (first, second) = tokio::join!(
+            first_registry.allocate_one(&first_object, EntityKind::Post, None),
+            second_registry.allocate_one(&second_object, EntityKind::Post, None),
+        );
+        let first = first.unwrap();
+        let second = second.unwrap();
+        assert_ne!(first, second);
+        assert_eq!(
+            first_registry
+                .reverse_one(first, EntityKind::Post)
+                .await
+                .unwrap()
+                .object_id,
+            first_object
+        );
+        assert_eq!(
+            second_registry
+                .reverse_one(second, EntityKind::Post)
+                .await
+                .unwrap()
+                .object_id,
+            second_object
+        );
+
+        let mut raw = raw_connection(&url).await;
+        let sequence_keys: Vec<String> = redis::cmd("KEYS")
+            .arg(format!("{prefix}:sequence:*"))
+            .query_async(&mut raw)
+            .await
+            .unwrap();
+        assert!(
+            sequence_keys.is_empty(),
+            "unexpected sequence keys: {sequence_keys:?}"
+        );
+        delete_prefix(&url, &prefix).await;
+    }
+
+    #[tokio::test]
+    #[ignore = "requires ID_REGISTRY_TEST_REDIS_URL"]
     async fn redis_orphan_reverse_entry_is_unknown_until_repaired() {
         let url = std::env::var("ID_REGISTRY_TEST_REDIS_URL").unwrap();
         let prefix = test_prefix("orphan");
@@ -3104,23 +2746,36 @@ mod tests {
             POST
         );
 
-        // An allocation whose fresh id collides with an imported one redraws.
+        // An allocation whose deterministic candidate collides with an
+        // imported one probes the next slot, without creating sequence state.
         let second = crate::object_id_timestamp_secs(USER).unwrap();
-        registry
-            .allocate_one(USER, EntityKind::User, Some(snowflake_at(second, 0, 0)))
-            .await
-            .unwrap();
-        let allocated = registry
-            .allocate_one(&object_id_at(second, 1), EntityKind::Post, None)
-            .await
-            .unwrap();
-        assert_eq!(allocated, snowflake_at(second, 0, 1));
-        let counter: i64 = redis::cmd("GET")
-            .arg(format!("{prefix}:sequence:0:{second}"))
+        let post = object_id_at(second, 1);
+        let first_candidate = snowflake_candidate(&post, 0).unwrap();
+        let first_key = format!(
+            "{prefix}:snowflake:{{{:03}}}:{}",
+            mapping_shard(&first_candidate.get().to_string()),
+            first_candidate.get()
+        );
+        let _: () = redis::cmd("SET")
+            .arg(first_key)
+            .arg(format!("user:{USER}"))
             .query_async(&mut raw)
             .await
             .unwrap();
-        assert_eq!(counter, 2);
+        let allocated = registry
+            .allocate_one(&post, EntityKind::Post, None)
+            .await
+            .unwrap();
+        assert_eq!(allocated, snowflake_candidate(&post, 1).unwrap());
+        let sequence_keys: Vec<String> = redis::cmd("KEYS")
+            .arg(format!("{prefix}:sequence:*"))
+            .query_async(&mut raw)
+            .await
+            .unwrap();
+        assert!(
+            sequence_keys.is_empty(),
+            "unexpected sequence keys: {sequence_keys:?}"
+        );
 
         delete_prefix(&url, &prefix).await;
     }

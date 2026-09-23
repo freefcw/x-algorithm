@@ -49,11 +49,11 @@ id-registry:v2:metadata:storage_schema    -> sharded-256  （存储布局版本 
 
 ### 分配序列
 
-Snowflake 分配序列是 Redis 中按 `(worker_id, ObjectId 秒)` 分片的 counter（`{prefix}:sequence:{worker}:{second}`，`INCRBY n` + `EXPIRE` 在一个 Lua 脚本里完成，TTL 2 天）。counter 在 Redis 而不在进程内，因此多副本共享同一个 worker id 也不会重复分配；不同 worker id 只是让分配结果可追溯到副本。序列与已存在 Snowflake 的关系：
+新 ObjectId 的 Snowflake 候选不依赖 Redis sequence counter：ObjectId 时间戳秒保留为 Snowflake 的历史时间，random/process 字段低 10 bit 映射到 worker bits，counter 字段低 12 bit 映射到初始 sequence。若 reverse mapping 已被占用，只在同一历史秒内递增 probe，跨毫秒 offset 继续尝试；最终唯一性由 Snowflake reverse key 的原子占用保证。Redis 只持久化 ObjectId ↔ Snowflake mapping，不持久化历史 sequence counter。
 
-- 自带 snowflake_id 登记成功后，若 Snowflake 解码出的 worker 等于本服务的 `worker_id`，服务会把对应 `(worker, second)` counter 推到至少 `offset + 1`（只涨不降，`offset = 毫秒内偏移 * 4096 + sequence`），使同一秒后续分配直接跳过已占用的值；
-- 分配得到的 Snowflake 若仍撞上已存在的反向 key（其他 worker 导入的值、TTL 过期后迟到的同秒 ObjectId、或 orphan），分配器先重读对象（别的写者可能已抢先绑定），否则重抽序列，最多 `MAX_ALLOCATION_ATTEMPTS = 16` 次，用尽后返回 409 `SnowflakeTaken`；
-- 被整批拒绝的请求可能浪费几个序号；序号只是分配草稿，不是已生效身份，无副作用。
+- 自带 `snowflake_id` 登记成功后不会修改任何自动分配计数器；它只通过 reverse mapping 占用该 Snowflake。后续自动分配若命中该值，会按同一历史秒内的 probe 规则继续尝试；
+- 分配得到的 Snowflake 若撞上已存在的反向 key（其他 ObjectId 导入的值或 orphan），分配器先重读对象（别的写者可能已抢先绑定），否则在该历史秒内递增 probe，最多覆盖全部可用 slot，用尽后返回 `SecondExhausted`；
+- 被整批拒绝的请求不会消耗 Redis sequence；自动候选只在 mapping 写入成功后生效。
 
 Redis 应启用 AOF、复制和定期备份。`ID_REGISTRY_REDIS_URL` 用于单 Redis、代理、Sentinel 暴露地址或托管 Redis 入口；`ID_REGISTRY_REDIS_CLUSTER_URLS` 用于原生 Redis Cluster seed URLs，两个配置不能同时设置。
 
@@ -74,7 +74,7 @@ Redis-backed registry 只保留有上限的进程内热点缓存：
 - 推荐请求应在入口批量解析，不能让下游模块自行查表；
 - 批量 allocation 语义：整批先按 `(entity_kind, object_id)` 去重，再把能预见的冲突全部查清（已有映射和传入的自带 ID 对不上、自带 ID 已被别的对象占用、批内自相矛盾、关闭分配时存在未知 ID），任何一项冲突就整批拒绝（409；allocation 关闭时为 404），一个映射都不写，调用方可以放心修数据后重试。只有并发窗口（别的副本恰好在这批检查和写入之间抢先写了同一批对象）可能留下部分写入，此时重读获胜映射并返回，重试依然安全。
 - 在线协议把读写语义分开：`Resolve/ResolveBatch` 只读取已有 mapping，未知 ObjectId 永远返回 404（请求带 `snowflake_id` 直接 403，引导改用 Allocate）；只有显式的 `Allocate/AllocateBatch` 才允许创建 mapping——调用方带了 `snowflake_id` 就按原值登记，没带就由服务分配。另提供只读的 `ResolveBatchPartial`，逐行返回 found/missing，供需要容忍陈旧 hint 的调用方一次批量过滤未知项。Home Mixer 的 QueryBuilder 只对 viewer、seen/served/impressed 这些查询输入做 Resolve；首次 all-or-none 批查遇到未知历史/过滤 hint 时改用一次 partial batch，viewer 必须存在，未知 hint 被丢弃，非 NotFound 的 Registry 错误仍会终止请求。一次请求内的 `IdentityContext` 只暴露 Resolve/Reverse，mrpyq 首次返回的新帖子/作者、关系数据通过独立的 `IdentityRegistrationContext` 注册；UAS worker 事件投影也属于显式注册边界。普通存储适配器、在线 UAS 读取和出口只能调用 Resolve/Reverse，读缓存不把 Allocate 能力带入。一次 Home Mixer 请求复用已完成的正反向映射，不把这份缓存跨请求共享。
-- 往返次数（Single 模式，每一轮是一个 pipeline，与 id 数量无关）：正向批查 1 轮；反查 2 轮（反向 GET + 正向校验 GET）；批量写 = 正向查 1 轮 + 自带 ID 预检 1 轮（有自带 ID 项时）+ 序列 `INCRBY` 1 轮（有分配项时）+ 写入 3 轮（反向 reserve、正向 reserve、冲突补偿删除，后两轮只含需要的项）+ 序列下限 1 轮（自带 ID 项落在本 worker 时）；分配撞车时每次重抽再加 1 轮重读 + 1 轮序列 + 3 轮写。Cluster 模式下每一轮按 slot 分组成多个 pipeline 并发执行，往返次数与 Single 模式相同，只是并发扇出。Lua 用 `EVALSHA` 预加载脚本；遇到 `NOSCRIPT`（脚本被 flush 或新节点）会重新 `SCRIPT LOAD` 并重试一次。
+- 往返次数（Single 模式，每一轮是一个 pipeline，与 id 数量无关）：正向批查 1 轮；反查 2 轮（反向 GET + 正向校验 GET）；批量写 = 正向查 1 轮 + 自带 ID 预检 1 轮（有自带 ID 项时）+ 写入 3 轮（反向 reserve、正向 reserve、冲突补偿删除，后两轮只含需要的项）；分配撞车时每次 probe 再加 1 轮重读 + 3 轮写。Cluster 模式下每一轮按 slot 分组成多个 pipeline 并发执行，往返次数与 Single 模式相同，只是并发扇出。Lua 用 `EVALSHA` 预加载脚本；遇到 `NOSCRIPT`（脚本被 flush 或新节点）会重新 `SCRIPT LOAD` 并重试一次。
 - 超时预算：`ID_REGISTRY_REDIS_REQUEST_TIMEOUT_MS`（默认 500）约束的是**单个 Redis pipeline**，一次批量写最多要串行经过约 5～8 轮；Home Mixer Registry gRPC 调用和 Phoenix `IdentityRegistryClient` 都有客户端 deadline，Home Mixer gRPC 失败不会再发 HTTP 请求。在线只读/分配少量 id 的请求通常一两轮即可，但迁移批量导入应使用更大的客户端超时或更小的批（`--max-batch-size` 默认 10000 只是硬上限），并且服务端单次 Redis 超时不应大于客户端预算的一小部分，否则客户端会先超时而服务端仍在写入。
 
 内存预算按每条本地缓存约 100～250 bytes 粗估。默认容量约占 20～50 MB 加 Rust 进程基础开销；千万级全量映射不会等比例复制到每个 Registry 副本。Redis 本身按两个独立索引 key 约 250～600 bytes / mapping 预估，千万级数据应先按约 3～6 GB 数据、8～16 GB Redis 实例做压测起点，并保留 AOF、复制和碎片余量。分片后单 key 只承载一条映射，resharding、RDB/AOF rewrite 和 `--bigkeys` 不再被一个超大 Hash 拖住；总吞吐仍需按分片和节点数压测。
@@ -134,7 +134,7 @@ Redis-backed registry 只保留有上限的进程内热点缓存：
 - `ID_REGISTRY_GRPC_LISTEN` / `--grpc-listen`：gRPC 主监听地址，生产清单使用 `0.0.0.0:50072`（本地默认值由二进制提供）；
 - `ID_REGISTRY_HTTP_LISTEN` / `--http-listen`：HTTP 兼容监听地址，生产清单保留 `0.0.0.0:50070` 供旧客户端使用；
 - 旧 `ID_REGISTRY_LISTEN` / `--listen` 在新二进制中作为隐藏的 HTTP 监听别名保留（优先于 `--http-listen`），并打印弃用告警。升级时先部署同时开放 50070 HTTP 与 50072 gRPC 的实例，再把客户端切换到 `ID_REGISTRY_GRPC_ADDR`；旧 HTTP 客户端可继续使用 50070，完成迁移后再下线兼容入口；
-- `ID_REGISTRY_WORKER_ID` / `--worker-id`：Snowflake worker 标识（0..=1023），默认 `0`。序列 counter 在 Redis，多副本共享同一 worker id 也安全；使用不同 worker id 只是为了让分配结果可追溯到副本；
+- `ID_REGISTRY_WORKER_ID` / `--worker-id`：旧配置兼容字段，默认 `0`。新的 ObjectId 自动分配不读取它，而是使用 ObjectId random/process 字段低 10 bit 生成 worker bits；迁移完成后可删除该配置；
 - `ID_REGISTRY_ALLOW_ALLOCATION` / `--allow-allocation`：默认关闭。该开关只控制显式 `Allocate/AllocateBatch`，不会改变 `Resolve/ResolveBatch` 的只读语义。新服务可在受控在线 Registry 开启，调用方仍必须使用 Allocate；普通查询未知 ObjectId 仍返回 404；历史数据导入通过在 Allocate 请求中携带 `snowflake_id` 完成；
 - `ID_REGISTRY_MAX_BATCH_SIZE` / `--max-batch-size`：单次批量请求的 id 数上限，默认 `10000`，超限返回 413；
 - gRPC 请求与响应消息上限固定为 `4 MiB`；批量数量和 protobuf 消息大小同时受限，避免超大字符串或批次占满服务端内存；

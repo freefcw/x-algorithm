@@ -398,10 +398,7 @@ async fn reverse_batch(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{
-        InsertOutcome, Mapping, MappingStore, MemoryMappingStore, SequenceFloor,
-        SequenceReservation,
-    };
+    use crate::{InsertOutcome, Mapping, MappingStore, MemoryMappingStore};
     use async_trait::async_trait;
     use axum::body::Body;
     use http_body_util::BodyExt;
@@ -471,15 +468,6 @@ mod tests {
             _: &[Mapping],
         ) -> Result<Vec<InsertOutcome>, IdError> {
             Err(IdError::Redis("EVALSHA timed out".into()))
-        }
-        async fn next_sequence_batch(
-            &self,
-            _: &[SequenceReservation],
-        ) -> Result<Vec<u64>, IdError> {
-            Err(IdError::Redis("INCRBY timed out".into()))
-        }
-        async fn observe_sequence_batch(&self, _: &[SequenceFloor]) -> Result<(), IdError> {
-            Err(IdError::Redis("SET timed out".into()))
         }
         async fn check_ready(&self) -> Result<(), IdError> {
             Err(IdError::Redis("mapping version metadata is missing".into()))
