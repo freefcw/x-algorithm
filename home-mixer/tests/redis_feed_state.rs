@@ -526,7 +526,9 @@ async fn cluster_routing_round_trips_feed_state_across_many_users() {
 
     // Enough users to spread over the 3 masters' slots; each record is one
     // hash-tagged MULTI, so success itself proves slot collocation.
-    for sequence in 1..=12u64 {
+    let first = 1u64;
+    let second = 12u64;
+    for sequence in first..=second {
         let user = sequence;
         let post = sequence + 100;
         store
@@ -542,11 +544,9 @@ async fn cluster_routing_round_trips_feed_state_across_many_users() {
     }
 
     // Users stay independent under cluster routing.
-    let first = 1161;
-    let second = 1168;
     assert_eq!(
         store.load(second).await.unwrap().served_post_ids,
-        vec![1175]
+        vec![second + 100]
     );
-    assert_eq!(store.load(first).await.unwrap().served_post_ids, vec![1182]);
+    assert_eq!(store.load(first).await.unwrap().served_post_ids, vec![first + 100]);
 }
