@@ -44,6 +44,11 @@ spec:
               value: http://mrpyq:9000
             - name: HOME_MIXER_ID_REGISTRY_GRPC_ADDR
               value: http://id-registry:50072
+            - name: HOME_MIXER_ID_REGISTRY_ALLOCATION_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: id-registry-allocation
+                  key: token
             # Redis：单端点写 URL；原生集群写 CLUSTER_URLS（逗号分隔种子），
             # 二选一，集群模式下 URL 可不填。
             - name: HOME_MIXER_REDIS_URL

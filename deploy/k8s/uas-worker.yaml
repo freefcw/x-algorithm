@@ -37,6 +37,11 @@ spec:
               value: redis://redis:6379/
             - name: HOME_MIXER_ID_REGISTRY_GRPC_ADDR
               value: http://id-registry:50072
+            - name: HOME_MIXER_ID_REGISTRY_ALLOCATION_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: id-registry-allocation
+                  key: token
             - name: UAS_KAFKA_BROKERS
               value: kafka:9092
             - name: UAS_KAFKA_TOPIC

@@ -62,7 +62,8 @@ spec:
             # 只是让分配结果可追溯到副本。
             - "--worker-id=0"
             # 在线副本允许显式 Allocate RPC 为真正新对象创建 mapping；
-            # Resolve RPC 保持只读，未知 ID 仍返回 404。
+            # Resolve RPC 保持只读，未知 ID 仍返回 404。Allocate 还必须携带
+            # ID_REGISTRY_ALLOCATION_TOKEN 对应的 metadata/header。
             - "--allow-allocation"
           env:
             - name: ID_REGISTRY_REDIS_ENABLED
@@ -74,6 +75,11 @@ spec:
               value: "redis://redis:6379/"
             - name: ID_REGISTRY_REDIS_KEY_PREFIX
               value: "id-registry:v2"
+            - name: ID_REGISTRY_ALLOCATION_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: id-registry-allocation
+                  key: token
             # 单个 Redis pipeline 超时，默认 500 ms；客户端整次请求超时也是 500 ms，
             # 在线副本可按需调低。
             # - name: ID_REGISTRY_REDIS_REQUEST_TIMEOUT_MS
