@@ -115,12 +115,16 @@ class IdentityRegistryClient:
         self.resolve_batch([(object_id, entity_kind)])
         return self._cache[key]
 
-    def resolve_batch(self, ids: list[tuple[str, str]]) -> None:
-        """Resolve a request's uncached identities in one read-only Registry call."""
+    def resolve_batch(self, ids: list[tuple[str, str]]) -> dict[tuple[str, str], int]:
+        """Resolve identities and return a mapping keyed by ``(kind, ObjectId)``."""
         self._resolve_or_allocate_batch(
             [(object_id, entity_kind, None) for object_id, entity_kind in ids],
             allocate=False,
         )
+        return {
+            (entity_kind, object_id): self._cache[(entity_kind, object_id)]
+            for object_id, entity_kind in ids
+        }
 
     def allocate_batch(
         self,

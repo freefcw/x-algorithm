@@ -47,17 +47,16 @@ import json
 import logging
 import os
 import sys
-import urllib.error
-import urllib.request
 from collections.abc import Iterable, Iterator, Mapping
 from pathlib import Path
-from typing import Protocol, cast
+from typing import Protocol
 
 import numpy as np
 import pandas as pd
 import pyarrow as pa
 import pyarrow.parquet as pq
 
+from services.id_registry_client import IdentityRegistryClient
 from services.model_contract import (
     ACTION_IDX_TO_ENUM,
     FEATURE_SCHEMA,
@@ -78,57 +77,6 @@ def is_object_id(value: str) -> bool:
 class IdentityResolver(Protocol):
     def resolve_batch(self, ids: list[tuple[str, str]]) -> Mapping[tuple[str, str], int]:
         ...
-
-
-class RegistryIdentityResolver:
-    """Resolve external IDs through the canonical process-independent registry."""
-
-    def __init__(self, endpoint: str, timeout_seconds: float = 0.5) -> None:
-        self.endpoint = endpoint.rstrip("/")
-        self.timeout_seconds = timeout_seconds
-
-    def resolve_batch(self, ids: list[tuple[str, str]]) -> dict[tuple[str, str], int]:
-        unique = list(dict.fromkeys(ids))
-        if not unique:
-            return {}
-        payload = {
-            "ids": [
-                {"object_id": object_id, "entity_kind": entity_kind}
-                for object_id, entity_kind in unique
-            ]
-        }
-        request = urllib.request.Request(
-            f"{self.endpoint}/v1/resolve:batch",
-            data=json.dumps(payload).encode(),
-            headers={"content-type": "application/json"},
-            method="POST",
-        )
-        try:
-            with urllib.request.urlopen(request, timeout=self.timeout_seconds) as response:
-                rows = json.loads(response.read())
-        except (OSError, urllib.error.URLError, json.JSONDecodeError) as exc:
-            raise RuntimeError(f"ID Registry is unavailable: {exc}") from exc
-        if not isinstance(rows, list) or len(rows) != len(unique):
-            raise RuntimeError("ID Registry returned a mismatched batch size")
-
-        result: dict[tuple[str, str], int] = {}
-        for row, (object_id, entity_kind) in zip(rows, unique, strict=True):
-            if not isinstance(row, dict):
-                raise RuntimeError("ID Registry returned a malformed row")
-            row = cast(dict[str, object], row)
-            if row.get("object_id") != object_id or row.get("entity_kind") != entity_kind:
-                raise RuntimeError("ID Registry returned a mismatched identity")
-            if row.get("mapping_version") != IDENTITY_MAPPING_VERSION:
-                raise RuntimeError("ID Registry returned an unsupported mapping_version")
-            value = row.get("snowflake_id")
-            if (
-                not isinstance(value, int)
-                or isinstance(value, bool)
-                or not 0 < value <= 0x7FFF_FFFF_FFFF_FFFF
-            ):
-                raise RuntimeError("ID Registry returned an invalid SnowflakeId")
-            result[(entity_kind, object_id)] = value
-        return result
 
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
@@ -528,8 +476,9 @@ def build(
     behaviors = load_behavior_events(behavior_paths)
     identity_mapping: Mapping[tuple[str, str], int] = {}
     if not exposures.empty or not behaviors.empty:
-        resolver = identity_resolver or RegistryIdentityResolver(
-            id_registry_url or os.getenv("ID_REGISTRY_URL", "http://127.0.0.1:50070")
+        resolver = identity_resolver or IdentityRegistryClient(
+            endpoint=id_registry_url
+            or os.getenv("ID_REGISTRY_URL", "http://127.0.0.1:50070")
         )
         exposures, behaviors, identity_mapping = numeric_identity_inputs(
             exposures, behaviors, resolver
