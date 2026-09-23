@@ -11,7 +11,7 @@ use log::warn;
 use std::cmp;
 use std::future::Future;
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 use tonic::metadata::MetadataMap;
 use tonic::{Code, Response, Status};
 
@@ -59,6 +59,12 @@ impl RpcPolicy {
         }
     }
 
+    /// Start one absolute deadline for the complete RPC, including query
+    /// construction, pipeline execution and response externalization.
+    pub fn deadline(&self, metadata: &MetadataMap) -> Instant {
+        Instant::now() + self.budget(metadata)
+    }
+
     /// Run one RPC handler and record its terminal status and duration under
     /// `rpc`. A handler cancelled before producing a status is recorded as
     /// `CANCELLED` by the observation's drop.
@@ -74,27 +80,31 @@ impl RpcPolicy {
     }
 }
 
-/// Bound the pipeline portion of a request.
+/// Bound work by an absolute request deadline.
 ///
-/// On expiry the work future is dropped, which stops every pending stage
-/// because the pipeline is fully asynchronous, and the client receives
-/// `DeadlineExceeded`. Partial results are never returned: a half-run
-/// pipeline has not passed its safety filters.
-pub async fn within_budget<T>(
-    budget: Duration,
+/// Unlike [`within_budget`], a later stage cannot restart the clock by passing
+/// the original budget again. This is the primitive used by the RPC entry
+/// points after query construction has already consumed part of the budget.
+pub async fn within_deadline<T>(
+    deadline: Instant,
     request_id: &str,
     work: impl Future<Output = Result<T, Status>>,
 ) -> Result<T, Status> {
-    match tokio::time::timeout(budget, work).await {
+    let remaining = deadline.saturating_duration_since(Instant::now());
+    if remaining.is_zero() {
+        warn!("request_id={request_id} deadline_exceeded budget_ms=0");
+        return Err(Status::deadline_exceeded("request deadline exceeded"));
+    }
+    match tokio::time::timeout(remaining, work).await {
         Ok(result) => result,
         Err(_) => {
             warn!(
                 "request_id={request_id} deadline_exceeded budget_ms={}",
-                budget.as_millis()
+                remaining.as_millis()
             );
             Err(Status::deadline_exceeded(format!(
-                "request exceeded its {} ms budget",
-                budget.as_millis()
+                "request exceeded its remaining {} ms budget",
+                remaining.as_millis()
             )))
         }
     }
@@ -199,24 +209,17 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn work_past_the_budget_becomes_deadline_exceeded() {
-        let slow = async {
-            tokio::time::sleep(Duration::from_millis(200)).await;
-            Ok::<_, Status>("late")
-        };
-        let error = within_budget(Duration::from_millis(10), "req-1", slow)
-            .await
-            .expect_err("slow work must be cut");
-        assert_eq!(error.code(), Code::DeadlineExceeded);
-        assert!(error.message().contains("10 ms"), "{}", error.message());
+    async fn an_absolute_deadline_cannot_be_restarted_for_a_later_stage() {
+        let deadline = std::time::Instant::now() + Duration::from_millis(10);
+        tokio::time::sleep(Duration::from_millis(20)).await;
 
-        let fast = async { Ok::<_, Status>("on time") };
-        assert_eq!(
-            within_budget(Duration::from_millis(50), "req-2", fast)
-                .await
-                .unwrap(),
-            "on time"
-        );
+        let error = within_deadline(deadline, "req-absolute", async {
+            Ok::<_, Status>("late stage")
+        })
+        .await
+        .expect_err("an expired request deadline must stop later stages");
+
+        assert_eq!(error.code(), Code::DeadlineExceeded);
     }
 
     #[tokio::test]

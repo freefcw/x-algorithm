@@ -6,11 +6,12 @@ use crate::for_you_server::ForYouFeedServer;
 use crate::metrics::Metrics;
 #[cfg(test)]
 use crate::models::query::ScoredPostsQuery;
-use crate::rpc_policy::{within_budget, RpcPolicy};
+use crate::rpc_policy::{within_deadline, RpcPolicy};
 use crate::runtime_config::FeedStateConfig;
 use crate::scored_posts_server::ScoredPostsServer;
 use log::info;
 use std::sync::Arc;
+use std::time::Instant;
 use tonic::codec::CompressionEncoding;
 use tonic::service::RoutesBuilder;
 use tonic::{Request, Response, Status};
@@ -169,11 +170,11 @@ impl pb::for_you_feed_service_server::ForYouFeedService for ForYouFeedServer {
         request: Request<pb::ScoredPostsQuery>,
     ) -> Result<Response<pb::ForYouFeedResponse>, Status> {
         let (metadata, _, proto_query) = request.into_parts();
-        let budget = self.rpc_policy().budget(&metadata);
+        let deadline = self.rpc_policy().deadline(&metadata);
         self.rpc_policy()
             .observe(
                 RPC_GET_FOR_YOU_FEED,
-                run_for_you_rpc(self, proto_query, budget),
+                run_for_you_rpc(self, proto_query, deadline),
             )
             .await
     }
@@ -183,12 +184,12 @@ impl pb::for_you_feed_service_server::ForYouFeedService for ForYouFeedServer {
         request: Request<pb::ForYouFeedQuery>,
     ) -> Result<Response<pb::ForYouFeedResponse>, Status> {
         let (metadata, _, wrapper) = request.into_parts();
-        let budget = self.rpc_policy().budget(&metadata);
+        let deadline = self.rpc_policy().deadline(&metadata);
         self.rpc_policy()
             .observe(RPC_GET_FOR_YOU_FEED_V2, async {
                 let query = for_you_query_from_wrapper(wrapper)
                     .ok_or_else(|| Status::invalid_argument("ForYouFeedQuery.query is required"))?;
-                run_for_you_rpc(self, query, budget).await
+                run_for_you_rpc(self, query, deadline).await
             })
             .await
     }
@@ -205,13 +206,16 @@ fn persist_unavailable(error: String) -> Status {
 async fn run_for_you_rpc(
     server: &ForYouFeedServer,
     proto_query: pb::ScoredPostsQuery,
-    budget: std::time::Duration,
+    deadline: Instant,
 ) -> Result<Response<pb::ForYouFeedResponse>, Status> {
-    let context = server.query_builder().build(proto_query).await?;
+    let context = server
+        .query_builder()
+        .build_with_deadline(proto_query, deadline)
+        .await?;
     let query = context.query;
     let request_id = query.request_id.clone();
     info!("For You request - request_id {request_id}");
-    let output = within_budget(budget, &request_id, async {
+    let output = within_deadline(deadline, &request_id, async {
         let output = server.get_for_you_feed(query).await;
         match output.persist_error {
             Some(error) => Err(persist_unavailable(error)),
@@ -219,10 +223,24 @@ async fn run_for_you_rpc(
         }
     })
     .await?;
-    let user_ids = server
-        .external_user_ids(&output.items)
-        .await
-        .map_err(Status::unavailable)?;
+    let user_ids = within_deadline(deadline, &request_id, async {
+        server
+            .external_user_ids(&output.items, Arc::clone(&output.identity_context))
+            .await
+            .map_err(Status::unavailable)
+    })
+    .await?;
+    let identity_stats = output.identity_context.stats();
+    log::debug!(
+        "request_id={} main_path_identity_registry_snapshot allocate_batches={} allocate_ids={} resolve_batches={} resolve_ids={} reverse_batches={} reverse_ids={}",
+        output.request_id,
+        identity_stats.allocate_batches,
+        identity_stats.allocate_ids,
+        identity_stats.resolve_batches,
+        identity_stats.resolve_ids,
+        identity_stats.reverse_batches,
+        identity_stats.reverse_ids,
+    );
     Ok(Response::new(pb::ForYouFeedResponse {
         items: output
             .items
@@ -240,20 +258,40 @@ impl pb::scored_posts_service_server::ScoredPostsService for ScoredPostsServer {
         request: Request<pb::ScoredPostsQuery>,
     ) -> Result<Response<ScoredPostsResponse>, Status> {
         let (metadata, _, proto_query) = request.into_parts();
-        let budget = self.rpc_policy().budget(&metadata);
+        let deadline = self.rpc_policy().deadline(&metadata);
         self.rpc_policy()
             .observe(RPC_GET_SCORED_POSTS, async {
-                let context = self.query_builder().build(proto_query).await?;
+                let context = self
+                    .query_builder()
+                    .build_with_deadline(proto_query, deadline)
+                    .await?;
                 let query = context.query;
                 let request_id = query.request_id.clone();
                 info!("Scored Posts request - request_id {request_id}");
                 let user_id = query.user_id;
                 let request_time_ms = query.request_time_ms;
-                let output = within_budget(budget, &request_id, async {
+                let identity_context = query.identity_context();
+                let output = within_deadline(deadline, &request_id, async {
                     let output = self.score(query).await.map_err(Status::unavailable)?;
-                    self.persist_selected(user_id, &output.selected_ids, request_time_ms)
-                        .await
-                        .map_err(persist_unavailable)?;
+                    self.persist_selected(
+                        user_id,
+                        &output.selected_ids,
+                        request_time_ms,
+                        Arc::clone(&identity_context),
+                    )
+                    .await
+                    .map_err(persist_unavailable)?;
+                    let identity_stats = identity_context.stats();
+                    log::debug!(
+                        "request_id={} main_path_identity_registry_snapshot allocate_batches={} allocate_ids={} resolve_batches={} resolve_ids={} reverse_batches={} reverse_ids={}",
+                        request_id,
+                        identity_stats.allocate_batches,
+                        identity_stats.allocate_ids,
+                        identity_stats.resolve_batches,
+                        identity_stats.resolve_ids,
+                        identity_stats.reverse_batches,
+                        identity_stats.reverse_ids,
+                    );
                     Ok(output)
                 })
                 .await?;
@@ -269,25 +307,45 @@ impl pb::scored_posts_service_server::ScoredPostsService for ScoredPostsServer {
         request: Request<pb::ScoredPostsQuery>,
     ) -> Result<Response<pb::DebugScoredPostsResponse>, Status> {
         let (metadata, _, proto_query) = request.into_parts();
-        let budget = self.rpc_policy().budget(&metadata);
+        let deadline = self.rpc_policy().deadline(&metadata);
         self.rpc_policy()
             .observe(RPC_DEBUG_SCORED_POSTS, async {
                 self.authorize_debug(&metadata)
                     .map_err(DebugAccessError::into_status)?;
-                let context = self.query_builder().build(proto_query).await?;
+                let context = self
+                    .query_builder()
+                    .build_with_deadline(proto_query, deadline)
+                    .await?;
                 let query = context.query;
                 let request_id = query.request_id.clone();
                 info!("Debug Scored Posts request - request_id {request_id}");
                 let user_id = query.user_id;
                 let request_time_ms = query.request_time_ms;
-                let (output, debug) = within_budget(budget, &request_id, async {
+                let identity_context = query.identity_context();
+                let (output, debug) = within_deadline(deadline, &request_id, async {
                     let (output, debug) = self
                         .score_with_debug(query)
                         .await
                         .map_err(Status::unavailable)?;
-                    self.persist_selected(user_id, &output.selected_ids, request_time_ms)
-                        .await
-                        .map_err(persist_unavailable)?;
+                    self.persist_selected(
+                        user_id,
+                        &output.selected_ids,
+                        request_time_ms,
+                        Arc::clone(&identity_context),
+                    )
+                    .await
+                    .map_err(persist_unavailable)?;
+                    let identity_stats = identity_context.stats();
+                    log::debug!(
+                        "request_id={} main_path_identity_registry_snapshot allocate_batches={} allocate_ids={} resolve_batches={} resolve_ids={} reverse_batches={} reverse_ids={}",
+                        request_id,
+                        identity_stats.allocate_batches,
+                        identity_stats.allocate_ids,
+                        identity_stats.resolve_batches,
+                        identity_stats.resolve_ids,
+                        identity_stats.reverse_batches,
+                        identity_stats.reverse_ids,
+                    );
                     Ok((output, debug))
                 })
                 .await?;
