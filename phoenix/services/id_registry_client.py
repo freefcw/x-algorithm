@@ -30,6 +30,7 @@ class IdentityRegistryClient:
         endpoint: str | None = None,
         timeout_seconds: float = 0.5,
         grpc_endpoint: str | None = None,
+        allocation_token: str | None = None,
     ) -> None:
         # An explicit endpoint preserves the HTTP-only compatibility constructor
         # used by migration tools. Production defaults to gRPC; an RPC failure
@@ -40,6 +41,7 @@ class IdentityRegistryClient:
             grpc_endpoint
             or os.getenv("ID_REGISTRY_GRPC_ADDR", "127.0.0.1:50072")
         ).removeprefix("http://").removeprefix("https://")
+        self._allocation_token = allocation_token or os.getenv("ID_REGISTRY_ALLOCATION_TOKEN")
         self._grpc_stub = None
         if self._grpc_endpoint:
             from xai_proto import id_registry_pb2_grpc
@@ -86,10 +88,16 @@ class IdentityRegistryClient:
         # ResolveBatch is read-only on the server; provided ids and new
         # mappings must go through AllocateBatch.
         rpc = self._grpc_stub.AllocateBatch if allocate else self._grpc_stub.ResolveBatch
-        response = rpc(
-            request,
-            timeout=self._timeout_seconds if timeout is None else timeout,
+        metadata = (
+            (("x-id-registry-allocation-token", self._allocation_token),)
+            if allocate and self._allocation_token
+            else None
         )
+        rpc_timeout = self._timeout_seconds if timeout is None else timeout
+        if metadata is None:
+            response = rpc(request, timeout=rpc_timeout)
+        else:
+            response = rpc(request, timeout=rpc_timeout, metadata=metadata)
         if len(response.rows) != len(ids):
             raise RuntimeError("ID Registry returned a mismatched gRPC batch size")
         rows: list[tuple[str, str, int]] = []
@@ -183,10 +191,13 @@ class IdentityRegistryClient:
                 for object_id, entity_kind, provided in missing
             ]
         }
+        headers = {"content-type": "application/json"}
+        if allocate and self._allocation_token:
+            headers["x-id-registry-allocation-token"] = self._allocation_token
         request = urllib.request.Request(
             f"{self._http_endpoint}/v1/{'allocate' if allocate else 'resolve'}:batch",
             data=json.dumps(payload).encode(),
-            headers={"content-type": "application/json"},
+            headers=headers,
             method="POST",
         )
         try:
