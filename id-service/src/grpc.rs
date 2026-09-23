@@ -103,6 +103,19 @@ fn resolve_response(
     }
 }
 
+fn resolve_partial_response(
+    object_id: String,
+    entity_kind: EntityKind,
+    snowflake_id: Option<SnowflakeId>,
+) -> pb::ResolvePartialResponse {
+    pb::ResolvePartialResponse {
+        object_id,
+        entity_kind: proto_entity_kind(entity_kind),
+        snowflake_id: snowflake_id.map(SnowflakeId::get),
+        mapping_version: MAPPING_VERSION,
+    }
+}
+
 fn reverse_response(mapping: crate::Mapping) -> pb::ReverseResponse {
     pb::ReverseResponse {
         snowflake_id: mapping.snowflake_id.get(),
@@ -182,6 +195,45 @@ impl IdentityRegistryService for GrpcIdRegistryService {
         }
         .await;
         record_rpc("grpc.ResolveBatch", &result);
+        result
+    }
+
+    async fn resolve_batch_partial(
+        &self,
+        request: Request<pb::ResolveBatchRequest>,
+    ) -> Result<Response<pb::ResolveBatchPartialResponse>, Status> {
+        let result = async {
+            let request = request.into_inner();
+            self.check_batch_size(request.ids.len())?;
+            if request.ids.iter().any(|item| item.snowflake_id.is_some()) {
+                return Err(Status::permission_denied(
+                    "resolve is read-only; use Allocate to register a provided snowflake_id",
+                ));
+            }
+            let ids = request
+                .ids
+                .iter()
+                .map(|item| {
+                    crate::validate_object_id(&item.object_id).map_err(status_for)?;
+                    Ok((item.object_id.clone(), entity_kind(item.entity_kind)?))
+                })
+                .collect::<Result<Vec<_>, Status>>()?;
+            let resolved = self
+                .registry
+                .resolve_existing_batch_partial(&ids)
+                .await
+                .map_err(status_for)?;
+            let rows = request
+                .ids
+                .into_iter()
+                .zip(ids.into_iter().map(|(_, kind)| kind))
+                .zip(resolved)
+                .map(|((item, kind), id)| resolve_partial_response(item.object_id, kind, id))
+                .collect();
+            Ok(Response::new(pb::ResolveBatchPartialResponse { rows }))
+        }
+        .await;
+        record_rpc("grpc.ResolveBatchPartial", &result);
         result
     }
 
@@ -323,6 +375,45 @@ mod tests {
         assert_eq!(response.rows.len(), 1);
         assert_eq!(response.rows[0].snowflake_id, 4242);
         assert_eq!(response.rows[0].mapping_version, MAPPING_VERSION);
+    }
+
+    #[tokio::test]
+    async fn partial_resolve_preserves_missing_rows() {
+        let store: Arc<dyn crate::MappingStore> = Arc::new(MemoryMappingStore::new());
+        let registry = Arc::new(RedisIdRegistry::with_store(Arc::clone(&store), 0, true).unwrap());
+        let service = GrpcIdRegistryService::new(registry, 10);
+        service
+            .allocate_batch(Request::new(pb::ResolveBatchRequest {
+                ids: vec![pb::ResolveRequest {
+                    object_id: "65f1a2b3c4d5e6f708091011".into(),
+                    entity_kind: pb::EntityKind::Post as i32,
+                    snowflake_id: Some(4242),
+                }],
+            }))
+            .await
+            .unwrap();
+
+        let response = service
+            .resolve_batch_partial(Request::new(pb::ResolveBatchRequest {
+                ids: vec![
+                    pb::ResolveRequest {
+                        object_id: "65f1a2b3c4d5e6f708091011".into(),
+                        entity_kind: pb::EntityKind::Post as i32,
+                        snowflake_id: None,
+                    },
+                    pb::ResolveRequest {
+                        object_id: "65f1a2b3c4d5e6f708091012".into(),
+                        entity_kind: pb::EntityKind::Post as i32,
+                        snowflake_id: None,
+                    },
+                ],
+            }))
+            .await
+            .unwrap()
+            .into_inner();
+        assert_eq!(response.rows.len(), 2);
+        assert_eq!(response.rows[0].snowflake_id, Some(4242));
+        assert_eq!(response.rows[1].snowflake_id, None);
     }
 
     #[test]

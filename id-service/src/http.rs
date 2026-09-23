@@ -59,6 +59,15 @@ struct ResolveResponse {
 }
 
 #[derive(Serialize)]
+struct ResolvePartialResponse {
+    object_id: String,
+    entity_kind: EntityKind,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    snowflake_id: Option<u64>,
+    mapping_version: u32,
+}
+
+#[derive(Serialize)]
 struct ReverseResponse {
     snowflake_id: u64,
     object_id: String,
@@ -119,6 +128,7 @@ pub fn router(registry: Arc<RedisIdRegistry>, max_batch_size: usize) -> Router {
         .route("/metrics", get(metrics_page))
         .route("/v1/resolve", post(resolve))
         .route("/v1/resolve:batch", post(resolve_batch))
+        .route("/v1/resolve_partial:batch", post(resolve_batch_partial))
         .route("/v1/allocate", post(allocate))
         .route("/v1/allocate:batch", post(allocate_batch))
         .route("/v1/reverse", post(reverse))
@@ -226,6 +236,38 @@ async fn resolve_batch(
                 object_id: item.object_id,
                 entity_kind: item.entity_kind,
                 snowflake_id: id.get(),
+                mapping_version: MAPPING_VERSION,
+            })
+            .collect(),
+    ))
+}
+
+async fn resolve_batch_partial(
+    State(state): State<AppState>,
+    Json(request): Json<ResolveBatchRequest>,
+) -> Result<Json<Vec<ResolvePartialResponse>>, ApiError> {
+    check_batch_size(request.ids.len(), state.max_batch_size)?;
+    if request.ids.iter().any(|item| item.snowflake_id.is_some()) {
+        return Err(ApiError(
+            StatusCode::FORBIDDEN,
+            "resolve is read-only; use allocate to register a provided snowflake_id".into(),
+        ));
+    }
+    let ids = request
+        .ids
+        .iter()
+        .map(|item| (item.object_id.clone(), item.entity_kind))
+        .collect::<Vec<_>>();
+    let snowflakes = state.registry.resolve_existing_batch_partial(&ids).await?;
+    Ok(Json(
+        request
+            .ids
+            .into_iter()
+            .zip(snowflakes)
+            .map(|(item, id)| ResolvePartialResponse {
+                object_id: item.object_id,
+                entity_kind: item.entity_kind,
+                snowflake_id: id.map(SnowflakeId::get),
                 mapping_version: MAPPING_VERSION,
             })
             .collect(),
@@ -461,6 +503,21 @@ mod tests {
                 .get(),
             4242
         );
+
+        let (status, body) = post_json(
+            &app,
+            "/v1/resolve_partial:batch",
+            json!({"ids": [
+                {"object_id": USER, "entity_kind": "User"},
+                {"object_id": "65f1a2b3c4d5e6f708091099", "entity_kind": "User"}
+            ]}),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        let rows = body.as_array().unwrap();
+        assert_eq!(rows.len(), 2);
+        assert_eq!(rows[0]["snowflake_id"], 4242);
+        assert!(rows[1].get("snowflake_id").is_none());
 
         // Allocation for a new post; the batch keeps input order and echoes each item.
         let (status, body) = post_json(

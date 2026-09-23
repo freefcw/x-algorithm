@@ -6,6 +6,9 @@ package id_registry;
 service IdentityRegistryService {
   rpc Resolve(ResolveRequest) returns (ResolveResponse);
   rpc ResolveBatch(ResolveBatchRequest) returns (ResolveBatchResponse);
+  // Read-only batch lookup that preserves per-item misses instead of failing
+  // the whole request. Existing ResolveBatch remains all-or-none.
+  rpc ResolveBatchPartial(ResolveBatchRequest) returns (ResolveBatchPartialResponse);
   // Explicit write-side registration. Resolve is read-only and never allocates.
   rpc Allocate(ResolveRequest) returns (ResolveResponse);
   rpc AllocateBatch(ResolveBatchRequest) returns (ResolveBatchResponse);
@@ -40,6 +43,17 @@ message ResolveBatchRequest {
 
 message ResolveBatchResponse {
   repeated ResolveResponse rows = 1;
+}
+
+message ResolveBatchPartialResponse {
+  repeated ResolvePartialResponse rows = 1;
+}
+
+message ResolvePartialResponse {
+  string object_id = 1;
+  EntityKind entity_kind = 2;
+  optional uint64 snowflake_id = 3;
+  uint32 mapping_version = 4;
 }
 
 message ReverseRequest {

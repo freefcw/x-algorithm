@@ -403,6 +403,45 @@ impl RedisIdRegistry {
         Ok(result)
     }
 
+    /// Read-only resolution that preserves an absent mapping as `None` for
+    /// each input position. Unlike [`Self::resolve_existing_batch`], this is
+    /// intentionally partial so stale history hints can be discarded without
+    /// issuing one Registry request per hint.
+    pub async fn resolve_existing_batch_partial(
+        &self,
+        ids: &[(String, EntityKind)],
+    ) -> Result<Vec<Option<SnowflakeId>>, IdError> {
+        for (object_id, _) in ids {
+            crate::validate_object_id(object_id)?;
+        }
+        let mappings = self.store.find_by_object_batch(ids).await?;
+        if mappings.len() != ids.len() {
+            return Err(IdError::CorruptRecord {
+                key: "mapping store batch".to_string(),
+                reason: format!(
+                    "find_by_object_batch returned {} rows for {} inputs",
+                    mappings.len(),
+                    ids.len()
+                ),
+            });
+        }
+        mappings
+            .into_iter()
+            .zip(ids.iter())
+            .map(|(mapping, (_, expected_kind))| match mapping {
+                None => Ok(None),
+                Some(mapping) if mapping.entity_kind != *expected_kind => {
+                    Err(IdError::EntityKindMismatch {
+                        snowflake_id: mapping.snowflake_id,
+                        expected: *expected_kind,
+                        actual: mapping.entity_kind,
+                    })
+                }
+                Some(mapping) => Ok(Some(mapping.snowflake_id)),
+            })
+            .collect()
+    }
+
     /// Read one existing mapping without making transport handlers interpret
     /// the cardinality of a batch result themselves.
     pub async fn resolve_existing_one(
