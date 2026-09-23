@@ -205,7 +205,14 @@ class PhoenixXrexTranslator:
                     author_id=author_id,
                     safety_label_mask=item.candidate.safetyLabelMask,
                 )
-                candidates.append(recsys_pb2.ScoredCandidate(candidate=candidate, score=item.score))
+                candidates.append(
+                    recsys_pb2.ScoredCandidate(
+                        candidate=candidate,
+                        score=item.score,
+                        source_idx=item.sourceIdx,
+                        dataset_type=item.datasetType,
+                    )
+                )
             groups.append(recsys_pb2.ScoredCandidates(candidates=candidates))
         return recsys_pb2.RetrieveResponse(top_k_candidates=groups)
 

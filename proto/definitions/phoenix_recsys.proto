@@ -197,6 +197,10 @@ message ScoredCandidate {
   TweetInfo candidate = 1;
   // 召回匹配分数
   float score = 2;
+  // xrex 召回来源索引。optional 用于区分旧服务未透传与明确的 source 0。
+  optional int32 source_idx = 3;
+  // xrex 数据集类型。optional 用于区分旧服务未透传与明确的 dataset 0。
+  optional uint32 dataset_type = 4;
 }
 
 // 一组召回候选（可能来自同一召回通道）

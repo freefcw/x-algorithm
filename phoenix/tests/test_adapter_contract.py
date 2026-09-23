@@ -173,10 +173,14 @@ def test_retrieval_response_passes_numeric_ids_without_a_registry() -> None:
                     xrex_pb2.ScoredCandidate(
                         candidate=xrex_pb2.TweetInfo(tweetId=44, authorId=55),
                         score=0.25,
+                        sourceIdx=0,
+                        datasetType=1,
                     ),
                     xrex_pb2.ScoredCandidate(
                         candidate=xrex_pb2.TweetInfo(tweetId=66, authorId=55),
                         score=0.5,
+                        sourceIdx=7,
+                        datasetType=8,
                     ),
                 ]
             )
@@ -189,7 +193,12 @@ def test_retrieval_response_passes_numeric_ids_without_a_registry() -> None:
     assert candidates[0].candidate.tweet_id == 44
     assert candidates[0].candidate.author_id == 55
     assert candidates[0].score == 0.25
+    assert candidates[0].HasField("source_idx")
+    assert candidates[0].source_idx == 0
+    assert candidates[0].dataset_type == 1
     assert candidates[1].candidate.tweet_id == 66
+    assert candidates[1].source_idx == 7
+    assert candidates[1].dataset_type == 8
 
 
 def test_retrieval_response_rejects_zero_ids_and_non_finite_scores() -> None:
