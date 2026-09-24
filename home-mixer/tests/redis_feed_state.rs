@@ -5,6 +5,7 @@ mod common;
 use common::{unix_redis_url, RedisFixture};
 use home_mixer::clients::redis_feed_state_store::{RedisFeedStateConfig, RedisFeedStateStore};
 use home_mixer::feed_state::{FeedStateSnapshot, FeedStateStore, InMemoryFeedStateStore};
+use home_mixer::id::{IdentityContext, PaddedIdentityResolver};
 use std::fs;
 use std::net::Shutdown;
 use std::os::unix::net::{UnixListener, UnixStream};
@@ -18,6 +19,12 @@ use tokio::sync::Barrier;
 fn sorted<T: Ord>(mut values: Vec<T>) -> Vec<T> {
     values.sort_unstable();
     values
+}
+
+fn test_identity() -> Arc<IdentityContext> {
+    Arc::new(IdentityContext::new(
+        Arc::new(PaddedIdentityResolver::new()),
+    ))
 }
 
 #[tokio::test]
@@ -36,26 +43,43 @@ async fn missing_users_are_empty_and_independent_adapters_share_isolated_user_st
     let post = 1021;
 
     assert_eq!(
-        first.load(alice).await.unwrap(),
+        first.load(alice, test_identity()).await.unwrap(),
         FeedStateSnapshot::default()
     );
-    first.record(alice, vec![post], -7).await.unwrap();
+    first
+        .record(alice, vec![post], -7, test_identity())
+        .await
+        .unwrap();
     assert_eq!(
-        second.load(alice).await.unwrap(),
+        second.load(alice, test_identity()).await.unwrap(),
         FeedStateSnapshot {
             served_post_ids: vec![post],
             request_timestamps_ms: vec![-7],
         }
     );
     assert_eq!(
-        second.load(bob).await.unwrap(),
+        second.load(bob, test_identity()).await.unwrap(),
         FeedStateSnapshot::default()
     );
 
-    second.record(bob, vec![], 91).await.unwrap();
-    assert_eq!(first.load(alice).await.unwrap().served_post_ids, vec![post]);
+    second
+        .record(bob, vec![], 91, test_identity())
+        .await
+        .unwrap();
     assert_eq!(
-        first.load(bob).await.unwrap().request_timestamps_ms,
+        first
+            .load(alice, test_identity())
+            .await
+            .unwrap()
+            .served_post_ids,
+        vec![post]
+    );
+    assert_eq!(
+        first
+            .load(bob, test_identity())
+            .await
+            .unwrap()
+            .request_timestamps_ms,
         vec![91]
     );
 }
@@ -81,20 +105,31 @@ async fn redis_matches_in_memory_deduplication_order_and_truncation_including_ze
     ];
 
     for (ids, timestamp) in updates {
-        local.record(user, ids.clone(), timestamp).await.unwrap();
-        remote.record(user, ids, timestamp).await.unwrap();
+        local
+            .record(user, ids.clone(), timestamp, test_identity())
+            .await
+            .unwrap();
+        remote
+            .record(user, ids, timestamp, test_identity())
+            .await
+            .unwrap();
     }
 
-    let expected = local.load(user).await.unwrap();
+    let expected = local.load(user, test_identity()).await.unwrap();
     assert_eq!(expected.served_post_ids, vec![c, b, d]);
     assert_eq!(expected.request_timestamps_ms, vec![-1, i64::MAX]);
-    assert_eq!(remote.load(user).await.unwrap(), expected);
+    assert_eq!(remote.load(user, test_identity()).await.unwrap(), expected);
 
     let zero = RedisFeedStateStore::new(redis.config("test:zero-state", 0, 0))
         .await
         .expect("create zero-limit adapter");
-    zero.record(user, vec![a, b], i64::MIN).await.unwrap();
-    assert_eq!(zero.load(user).await.unwrap(), FeedStateSnapshot::default());
+    zero.record(user, vec![a, b], i64::MIN, test_identity())
+        .await
+        .unwrap();
+    assert_eq!(
+        zero.load(user, test_identity()).await.unwrap(),
+        FeedStateSnapshot::default()
+    );
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -139,7 +174,9 @@ async fn concurrent_adapters_do_not_lose_updates_and_round_trip_full_width_value
         let barrier = barrier.clone();
         tasks.push(tokio::spawn(async move {
             barrier.wait().await;
-            store.record(user, vec![id], timestamp).await
+            store
+                .record(user, vec![id], timestamp, test_identity())
+                .await
         }));
     }
 
@@ -148,7 +185,7 @@ async fn concurrent_adapters_do_not_lose_updates_and_round_trip_full_width_value
         task.await.expect("record task did not panic").unwrap();
     }
 
-    let snapshot = first.load(user).await.unwrap();
+    let snapshot = first.load(user, test_identity()).await.unwrap();
     assert_eq!(snapshot.served_post_ids.len(), UPDATE_COUNT);
     assert_eq!(snapshot.request_timestamps_ms.len(), UPDATE_COUNT);
     assert_eq!(sorted(snapshot.served_post_ids), sorted(expected_ids));
@@ -171,18 +208,28 @@ async fn ttl_slides_expires_and_none_removes_an_existing_expiry() {
     let expiring = RedisFeedStateStore::new(expiring_config)
         .await
         .expect("create expiring adapter");
-    expiring.record(user, vec![first_post], 1).await.unwrap();
+    expiring
+        .record(user, vec![first_post], 1, test_identity())
+        .await
+        .unwrap();
     tokio::time::sleep(Duration::from_millis(650)).await;
-    expiring.record(user, vec![second_post], 2).await.unwrap();
+    expiring
+        .record(user, vec![second_post], 2, test_identity())
+        .await
+        .unwrap();
     tokio::time::sleep(Duration::from_millis(650)).await;
     assert_eq!(
-        expiring.load(user).await.unwrap().served_post_ids,
+        expiring
+            .load(user, test_identity())
+            .await
+            .unwrap()
+            .served_post_ids,
         vec![first_post, second_post],
         "the second write must refresh the one-second TTL"
     );
     tokio::time::sleep(Duration::from_millis(500)).await;
     assert_eq!(
-        expiring.load(user).await.unwrap(),
+        expiring.load(user, test_identity()).await.unwrap(),
         FeedStateSnapshot::default(),
         "both state keys must expire after the refreshed TTL elapses"
     );
@@ -191,7 +238,10 @@ async fn ttl_slides_expires_and_none_removes_an_existing_expiry() {
     let mut initial_config = redis.config(persist_prefix, 10, 10);
     initial_config.ttl_secs = Some(30);
     let initial = RedisFeedStateStore::new(initial_config).await.unwrap();
-    initial.record(user, vec![first_post], 3).await.unwrap();
+    initial
+        .record(user, vec![first_post], 3, test_identity())
+        .await
+        .unwrap();
 
     let served_key = redis.key(persist_prefix, user, "served");
     let timestamps_key = redis.key(persist_prefix, user, "timestamps");
@@ -211,7 +261,10 @@ async fn ttl_slides_expires_and_none_removes_an_existing_expiry() {
     let mut persistent_config = redis.config(persist_prefix, 10, 10);
     persistent_config.ttl_secs = None;
     let persistent = RedisFeedStateStore::new(persistent_config).await.unwrap();
-    persistent.record(user, vec![second_post], 4).await.unwrap();
+    persistent
+        .record(user, vec![second_post], 4, test_identity())
+        .await
+        .unwrap();
     let persisted_ttls = [
         redis::cmd("PTTL")
             .arg(&served_key)
@@ -235,7 +288,10 @@ async fn malformed_redis_state_is_reported_instead_of_becoming_empty_state() {
         .expect("create Redis adapter");
     let user = 1091;
     let post = 1098;
-    store.record(user, vec![post], 10).await.unwrap();
+    store
+        .record(user, vec![post], 10, test_identity())
+        .await
+        .unwrap();
 
     let served_key = redis.key(prefix, user, "served");
     let mut control = redis.connection();
@@ -250,7 +306,7 @@ async fn malformed_redis_state_is_reported_instead_of_becoming_empty_state() {
         .unwrap();
 
     let error = store
-        .load(user)
+        .load(user, test_identity())
         .await
         .expect_err("corrupt ID must fail load");
     assert!(
@@ -273,7 +329,7 @@ async fn malformed_redis_state_is_reported_instead_of_becoming_empty_state() {
         .query::<usize>(&mut control)
         .unwrap();
     assert!(
-        store.load(user).await.is_err(),
+        store.load(user, test_identity()).await.is_err(),
         "corrupt timestamp must fail load"
     );
 }
@@ -290,7 +346,10 @@ async fn paused_redis_times_out_without_blocking_tokio_and_recovers_for_later_re
         .expect("create Redis adapter");
     let user = 1105;
     let post = 1112;
-    store.record(user, vec![post], 1).await.unwrap();
+    store
+        .record(user, vec![post], 1, test_identity())
+        .await
+        .unwrap();
 
     pause_redis(&redis, 600);
     let timer_started = Instant::now();
@@ -300,7 +359,7 @@ async fn paused_redis_times_out_without_blocking_tokio_and_recovers_for_later_re
     });
     let load_started = Instant::now();
     let error = store
-        .load(user)
+        .load(user, test_identity())
         .await
         .expect_err("paused Redis read must time out");
     let load_elapsed = load_started.elapsed();
@@ -318,7 +377,7 @@ async fn paused_redis_times_out_without_blocking_tokio_and_recovers_for_later_re
     pause_redis(&redis, 600);
     let write_started = Instant::now();
     let error = store
-        .record(user, vec![post], 2)
+        .record(user, vec![post], 2, test_identity())
         .await
         .expect_err("paused Redis write must time out");
     assert!(
@@ -327,8 +386,11 @@ async fn paused_redis_times_out_without_blocking_tokio_and_recovers_for_later_re
     );
 
     tokio::time::sleep(Duration::from_millis(650)).await;
-    store.record(user, vec![post], 3).await.unwrap();
-    let recovered = store.load(user).await.unwrap();
+    store
+        .record(user, vec![post], 3, test_identity())
+        .await
+        .unwrap();
+    let recovered = store.load(user, test_identity()).await.unwrap();
     assert_eq!(recovered.served_post_ids, vec![post]);
     // A write that times out may still have reached Redis. Recovery only
     // promises that later commands work; it cannot retroactively cancel that
@@ -347,7 +409,10 @@ async fn first_read_after_a_server_side_disconnect_sees_the_served_history() {
         .expect("create Redis adapter");
     let user = 1119;
     let post = 1126;
-    store.record(user, vec![post], 1).await.unwrap();
+    store
+        .record(user, vec![post], 1, test_identity())
+        .await
+        .unwrap();
 
     // A proxy idle timeout or server-side eviction closes the adapter's
     // connection between two requests. The next read must not fail open and
@@ -356,7 +421,7 @@ async fn first_read_after_a_server_side_disconnect_sees_the_served_history() {
     tokio::time::sleep(Duration::from_millis(50)).await;
 
     assert_eq!(
-        store.load(user).await,
+        store.load(user, test_identity()).await,
         Ok(FeedStateSnapshot {
             served_post_ids: vec![post],
             request_timestamps_ms: vec![1],
@@ -374,14 +439,17 @@ async fn first_read_after_a_redis_restart_sees_the_persisted_history() {
         .expect("create Redis adapter");
     let user = 1133;
     let post = 1140;
-    store.record(user, vec![post], 1).await.unwrap();
+    store
+        .record(user, vec![post], 1, test_identity())
+        .await
+        .unwrap();
 
     // Maintenance restart or failover with no request in flight.
     redis.stop_preserving_data();
     redis.restart();
 
     assert_eq!(
-        store.load(user).await,
+        store.load(user, test_identity()).await,
         Ok(FeedStateSnapshot {
             served_post_ids: vec![post],
             request_timestamps_ms: vec![1],
@@ -402,14 +470,23 @@ async fn first_read_after_an_outage_recovers_without_a_restart_of_the_adapter() 
         .expect("create Redis adapter");
     let user = 1147;
     let post = 1154;
-    store.record(user, vec![post], 1).await.unwrap();
+    store
+        .record(user, vec![post], 1, test_identity())
+        .await
+        .unwrap();
 
     // While Redis is down every request fails closed at the write, so the
     // read failing here cannot cause a duplicate.
     redis.stop_losing_data();
-    assert!(store.load(user).await.is_err(), "read during outage");
     assert!(
-        store.record(user, vec![post], 2).await.is_err(),
+        store.load(user, test_identity()).await.is_err(),
+        "read during outage"
+    );
+    assert!(
+        store
+            .record(user, vec![post], 2, test_identity())
+            .await
+            .is_err(),
         "write during outage"
     );
     // Let the background reconnect attempt run (and fail) while the server is
@@ -421,12 +498,22 @@ async fn first_read_after_an_outage_recovers_without_a_restart_of_the_adapter() 
     // successfully on the new connection.
     redis.restart();
     assert_eq!(
-        store.load(user).await,
+        store.load(user, test_identity()).await,
         Ok(FeedStateSnapshot::default()),
         "the first read after recovery must succeed on the new connection"
     );
-    store.record(user, vec![post], 3).await.unwrap();
-    assert_eq!(store.load(user).await.unwrap().served_post_ids, vec![post]);
+    store
+        .record(user, vec![post], 3, test_identity())
+        .await
+        .unwrap();
+    assert_eq!(
+        store
+            .load(user, test_identity())
+            .await
+            .unwrap()
+            .served_post_ids,
+        vec![post]
+    );
 }
 
 fn pause_redis(redis: &RedisFixture, duration_ms: u64) {
@@ -532,11 +619,11 @@ async fn cluster_routing_round_trips_feed_state_across_many_users() {
         let user = sequence;
         let post = sequence + 100;
         store
-            .record(user, vec![post], -(sequence as i64))
+            .record(user, vec![post], -(sequence as i64), test_identity())
             .await
             .expect("record through cluster routing");
         let snapshot = store
-            .load(user)
+            .load(user, test_identity())
             .await
             .expect("load through cluster routing");
         assert_eq!(snapshot.served_post_ids, vec![post]);
@@ -545,8 +632,19 @@ async fn cluster_routing_round_trips_feed_state_across_many_users() {
 
     // Users stay independent under cluster routing.
     assert_eq!(
-        store.load(second).await.unwrap().served_post_ids,
+        store
+            .load(second, test_identity())
+            .await
+            .unwrap()
+            .served_post_ids,
         vec![second + 100]
     );
-    assert_eq!(store.load(first).await.unwrap().served_post_ids, vec![first + 100]);
+    assert_eq!(
+        store
+            .load(first, test_identity())
+            .await
+            .unwrap()
+            .served_post_ids,
+        vec![first + 100]
+    );
 }

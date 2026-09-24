@@ -127,7 +127,7 @@ impl ScoredPostsServer {
         identity: Arc<crate::id::IdentityContext>,
     ) -> Result<(), String> {
         self.served_persist
-            .persist_with_identity(user_id, ids, request_time_ms, identity)
+            .persist(user_id, ids, request_time_ms, identity)
             .await
     }
 

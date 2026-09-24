@@ -1,6 +1,7 @@
 use home_mixer::feed_state::{FeedStateStore, InMemoryFeedStateStore};
 use home_mixer::feed_stats::{FeedResponseStats, FeedStatsSink, InMemoryFeedStats};
 use home_mixer::for_you_server::ForYouFeedServer;
+use home_mixer::id::{IdentityContext, PaddedIdentityResolver};
 use home_mixer::models::feed_item::{Advertisement, FeedItem, FeedItemContent, FeedItemKind};
 use home_mixer::models::ids::ObjectId;
 use home_mixer::models::query::ScoredPostsQuery;
@@ -18,6 +19,12 @@ use xai_candidate_pipeline::source::Source;
 
 fn ext(id: u64) -> String {
     ObjectId::from_u64_be_padded(id).to_string()
+}
+
+fn test_identity() -> Arc<IdentityContext> {
+    Arc::new(IdentityContext::new(
+        Arc::new(PaddedIdentityResolver::new()),
+    ))
 }
 
 fn post(id: u64, score: f32) -> FeedItem {
@@ -782,15 +789,18 @@ impl ScoredPostsProvider for ServedAwareScoredPostsProvider {
 async fn local_state_truncates_oldest_ids_and_timestamps() {
     let state = InMemoryFeedStateStore::new(2, 1);
     state
-        .record(uid(42), vec![pid(1), pid(2)], 100)
+        .record(uid(42), vec![pid(1), pid(2)], 100, test_identity())
         .await
         .expect("first update");
     state
-        .record(uid(42), vec![pid(3)], 200)
+        .record(uid(42), vec![pid(3)], 200, test_identity())
         .await
         .expect("second update");
 
-    let snapshot = state.load(uid(42)).await.expect("state snapshot");
+    let snapshot = state
+        .load(uid(42), test_identity())
+        .await
+        .expect("state snapshot");
 
     assert_eq!(snapshot.served_post_ids, vec![pid(2), pid(3)]);
     assert_eq!(snapshot.request_timestamps_ms, vec![200]);
@@ -800,25 +810,28 @@ async fn local_state_truncates_oldest_ids_and_timestamps() {
 async fn local_state_evicts_the_least_recently_updated_user() {
     let state = InMemoryFeedStateStore::with_max_users(2, 1, 2);
     state
-        .record(uid(1), vec![pid(10)], 100)
+        .record(uid(1), vec![pid(10)], 100, test_identity())
         .await
         .expect("user one");
     state
-        .record(uid(2), vec![pid(20)], 200)
+        .record(uid(2), vec![pid(20)], 200, test_identity())
         .await
         .expect("user two");
     state
-        .record(uid(3), vec![pid(30)], 300)
+        .record(uid(3), vec![pid(30)], 300, test_identity())
         .await
         .expect("user three");
 
     assert_eq!(
-        state.load(uid(1)).await.expect("evicted user"),
+        state
+            .load(uid(1), test_identity())
+            .await
+            .expect("evicted user"),
         Default::default()
     );
     assert_eq!(
         state
-            .load(uid(2))
+            .load(uid(2), test_identity())
             .await
             .expect("second user")
             .served_post_ids,
@@ -826,7 +839,7 @@ async fn local_state_evicts_the_least_recently_updated_user() {
     );
     assert_eq!(
         state
-            .load(uid(3))
+            .load(uid(3), test_identity())
             .await
             .expect("third user")
             .served_post_ids,

@@ -177,7 +177,7 @@ impl ForYouFeedServer {
                 .filter_map(FeedItem::served_post_id)
                 .collect::<Vec<_>>();
             persist
-                .persist_with_identity(
+                .persist(
                     result.query.user_id,
                     &served_post_ids,
                     result.query.request_time_ms,

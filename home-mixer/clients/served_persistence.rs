@@ -15,18 +15,8 @@ pub trait ServedPersistence: Send + Sync {
         viewer_id: UserId,
         served_post_ids: &[PostId],
         request_time_ms: i64,
+        identity: Arc<crate::id::IdentityContext>,
     ) -> Result<(), String>;
-
-    async fn persist_with_identity(
-        &self,
-        viewer_id: UserId,
-        served_post_ids: &[PostId],
-        request_time_ms: i64,
-        _identity: Arc<crate::id::IdentityContext>,
-    ) -> Result<(), String> {
-        self.persist(viewer_id, served_post_ids, request_time_ms)
-            .await
-    }
 }
 
 /// Persistence adapter backed by a [`FeedStateStore`]. The same type works
@@ -48,21 +38,10 @@ impl ServedPersistence for FeedStateServedPersistence {
         viewer_id: UserId,
         served_post_ids: &[PostId],
         request_time_ms: i64,
-    ) -> Result<(), String> {
-        self.store
-            .record(viewer_id, served_post_ids.to_vec(), request_time_ms)
-            .await
-    }
-
-    async fn persist_with_identity(
-        &self,
-        viewer_id: UserId,
-        served_post_ids: &[PostId],
-        request_time_ms: i64,
         identity: Arc<crate::id::IdentityContext>,
     ) -> Result<(), String> {
         self.store
-            .record_with_identity(
+            .record(
                 viewer_id,
                 served_post_ids.to_vec(),
                 request_time_ms,
@@ -80,13 +59,20 @@ pub type InMemoryServedPersistence = FeedStateServedPersistence;
 mod tests {
     use super::*;
     use crate::feed_state::InMemoryFeedStateStore;
+    use crate::id::{IdentityContext, PaddedIdentityResolver};
     use crate::models::{pid, uid};
+
+    fn test_identity() -> Arc<IdentityContext> {
+        Arc::new(IdentityContext::new(
+            Arc::new(PaddedIdentityResolver::new()),
+        ))
+    }
 
     #[tokio::test]
     async fn persists_served_ids_through_the_domain_port() {
         let adapter = InMemoryServedPersistence::new(Arc::new(InMemoryFeedStateStore::new(10, 2)));
         adapter
-            .persist(uid(7), &[pid(1), pid(2)], 100)
+            .persist(uid(7), &[pid(1), pid(2)], 100, test_identity())
             .await
             .unwrap();
     }

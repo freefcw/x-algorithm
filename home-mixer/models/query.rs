@@ -194,7 +194,7 @@ impl ScoredPostsQuery {
         self.feed_state_snapshot
             .get_or_init(|| async {
                 store
-                    .load_with_identity(self.user_id, Arc::clone(&self.identity.context))
+                    .load(self.user_id, Arc::clone(&self.identity.context))
                     .await
             })
             .await

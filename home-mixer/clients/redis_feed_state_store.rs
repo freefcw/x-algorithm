@@ -130,7 +130,6 @@ impl RedisFeedStateConfig {
 /// have been executed.
 pub struct RedisFeedStateStore {
     connection: ManagedRedisConnection,
-    identity: crate::id::SharedIdentityReader,
     key_prefix: String,
     max_served_ids: usize,
     max_request_timestamps: usize,
@@ -140,20 +139,7 @@ pub struct RedisFeedStateStore {
 }
 
 impl RedisFeedStateStore {
-    /// Test/compatibility constructor: resolves zero-padded ObjectIds without
-    /// external services. Production must use [`Self::new_with_identity`].
     pub async fn new(config: RedisFeedStateConfig) -> Result<Self, String> {
-        Self::new_with_identity(
-            config,
-            std::sync::Arc::new(crate::id::PaddedIdentityResolver::new()),
-        )
-        .await
-    }
-
-    pub async fn new_with_identity(
-        config: RedisFeedStateConfig,
-        identity: crate::id::SharedIdentityReader,
-    ) -> Result<Self, String> {
         config.validate()?;
 
         let connection = ManagedRedisConnection::connect(
@@ -166,7 +152,6 @@ impl RedisFeedStateStore {
 
         Ok(Self {
             connection,
-            identity,
             key_prefix: config.key_prefix,
             max_served_ids: config.max_served_ids,
             max_request_timestamps: config.max_request_timestamps,
@@ -212,25 +197,13 @@ impl RedisFeedStateStore {
 
 #[tonic::async_trait]
 impl FeedStateStore for RedisFeedStateStore {
-    async fn load(&self, user_id: UserId) -> Result<FeedStateSnapshot, String> {
-        let started = Instant::now();
-        let result = self.load_inner(user_id).await;
-        self.calls.record(
-            "redis_feed_state",
-            "load",
-            if result.is_ok() { "ok" } else { "error" },
-            started,
-        );
-        result
-    }
-
-    async fn load_with_identity(
+    async fn load(
         &self,
         user_id: UserId,
         identity: std::sync::Arc<crate::id::IdentityContext>,
     ) -> Result<FeedStateSnapshot, String> {
         let started = Instant::now();
-        let result = self.load_inner_with_identity(user_id, &*identity).await;
+        let result = self.load_inner(user_id, &*identity).await;
         self.calls.record(
             "redis_feed_state",
             "load",
@@ -245,30 +218,11 @@ impl FeedStateStore for RedisFeedStateStore {
         user_id: UserId,
         served_post_ids: Vec<PostId>,
         request_timestamp_ms: i64,
-    ) -> Result<(), String> {
-        let started = Instant::now();
-        let result = self
-            .record_inner(user_id, served_post_ids, request_timestamp_ms)
-            .await;
-        self.calls.record(
-            "redis_feed_state",
-            "record",
-            if result.is_ok() { "ok" } else { "error" },
-            started,
-        );
-        result
-    }
-
-    async fn record_with_identity(
-        &self,
-        user_id: UserId,
-        served_post_ids: Vec<PostId>,
-        request_timestamp_ms: i64,
         identity: std::sync::Arc<crate::id::IdentityContext>,
     ) -> Result<(), String> {
         let started = Instant::now();
         let result = self
-            .record_inner_with_identity(user_id, served_post_ids, request_timestamp_ms, &*identity)
+            .record_inner(user_id, served_post_ids, request_timestamp_ms, &*identity)
             .await;
         self.calls.record(
             "redis_feed_state",
@@ -281,12 +235,7 @@ impl FeedStateStore for RedisFeedStateStore {
 }
 
 impl RedisFeedStateStore {
-    async fn load_inner(&self, user_id: UserId) -> Result<FeedStateSnapshot, String> {
-        self.load_inner_with_identity(user_id, &*self.identity)
-            .await
-    }
-
-    async fn load_inner_with_identity(
+    async fn load_inner(
         &self,
         user_id: UserId,
         identity: &dyn crate::id::IdentityReader,
@@ -338,21 +287,6 @@ impl RedisFeedStateStore {
     }
 
     async fn record_inner(
-        &self,
-        user_id: UserId,
-        served_post_ids: Vec<PostId>,
-        request_timestamp_ms: i64,
-    ) -> Result<(), String> {
-        self.record_inner_with_identity(
-            user_id,
-            served_post_ids,
-            request_timestamp_ms,
-            &*self.identity,
-        )
-        .await
-    }
-
-    async fn record_inner_with_identity(
         &self,
         user_id: UserId,
         served_post_ids: Vec<PostId>,

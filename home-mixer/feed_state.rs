@@ -16,36 +16,18 @@ pub struct FeedStateSnapshot {
 
 #[tonic::async_trait]
 pub trait FeedStateStore: Send + Sync {
-    async fn load(&self, user_id: crate::models::UserId) -> Result<FeedStateSnapshot, String>;
+    async fn load(
+        &self,
+        user_id: crate::models::UserId,
+        identity: Arc<crate::id::IdentityContext>,
+    ) -> Result<FeedStateSnapshot, String>;
     async fn record(
         &self,
         user_id: crate::models::UserId,
         served_post_ids: Vec<crate::models::PostId>,
         request_timestamp_ms: i64,
+        identity: Arc<crate::id::IdentityContext>,
     ) -> Result<(), String>;
-
-    /// Request-aware read hook. Stateless implementations can keep the
-    /// legacy behavior; external-key adapters use the context to avoid a
-    /// second Registry lookup in the same request.
-    async fn load_with_identity(
-        &self,
-        user_id: crate::models::UserId,
-        _identity: Arc<crate::id::IdentityContext>,
-    ) -> Result<FeedStateSnapshot, String> {
-        self.load(user_id).await
-    }
-
-    /// Request-aware write hook with the same compatibility default.
-    async fn record_with_identity(
-        &self,
-        user_id: crate::models::UserId,
-        served_post_ids: Vec<crate::models::PostId>,
-        request_timestamp_ms: i64,
-        _identity: Arc<crate::id::IdentityContext>,
-    ) -> Result<(), String> {
-        self.record(user_id, served_post_ids, request_timestamp_ms)
-            .await
-    }
 }
 
 #[derive(Default)]
@@ -92,7 +74,11 @@ impl InMemoryFeedStateStore {
 
 #[tonic::async_trait]
 impl FeedStateStore for InMemoryFeedStateStore {
-    async fn load(&self, user_id: crate::models::UserId) -> Result<FeedStateSnapshot, String> {
+    async fn load(
+        &self,
+        user_id: crate::models::UserId,
+        _identity: Arc<crate::id::IdentityContext>,
+    ) -> Result<FeedStateSnapshot, String> {
         let mut cache = self
             .cache
             .lock()
@@ -112,6 +98,7 @@ impl FeedStateStore for InMemoryFeedStateStore {
         user_id: crate::models::UserId,
         served_post_ids: Vec<crate::models::PostId>,
         request_timestamp_ms: i64,
+        _identity: Arc<crate::id::IdentityContext>,
     ) -> Result<(), String> {
         if self.max_users == 0 {
             return Ok(());
