@@ -131,11 +131,11 @@ async fn reverse_external_ids(
 /// read per ID, so hydrating each port on its own multiplies that fan-out by
 /// the number of ports.
 ///
-/// Concurrent callers asking for the same feeds share one fetch through an
-/// in-flight cell rather than through the state lock, so the lock is only ever
-/// held to inspect or update the map — never across an RPC. A `Weak` handle
-/// keeps a failed fetch out of the cache: the last waiter drops the cell and
-/// the next call starts a new one.
+/// Concurrent ports within one request asking for the same feeds share one
+/// fetch through an in-flight cell rather than through the state lock, so the
+/// lock is only ever held to inspect or update the map — never across an RPC.
+/// A `Weak` handle keeps a failed fetch out of the cache: the last waiter drops
+/// the cell and the next call starts a new one.
 struct ContentCache {
     client: Arc<dyn MrpyqRecommendationDataClient>,
     state: Mutex<CacheState>,
@@ -143,6 +143,12 @@ struct ContentCache {
 
 /// Result of one hydration pass, shared by everyone who joined it.
 type FetchCell = OnceCell<Result<Arc<Vec<(PostId, HydratedContent)>>, MrpyqClientError>>;
+
+#[derive(Clone, Eq, Hash, PartialEq)]
+struct InflightKey {
+    request_identity: usize,
+    missing: Vec<PostId>,
+}
 
 /// A fetched feed plus its author resolved into the internal numeric domain.
 /// Author resolution is part of the fetch: `creator_member_id` is an external
@@ -158,10 +164,10 @@ struct CacheState {
     /// `None` records a feed mrpyq did not return, so a missing feed is not
     /// re-requested by every port.
     contents: HashMap<PostId, Option<HydratedContent>>,
-    /// Keyed by the sorted feed set a caller is about to fetch. Core data and
-    /// media entities are polled concurrently over the same candidates, so
-    /// their keys match and they join one RPC batch.
-    inflight: HashMap<Vec<PostId>, Weak<FetchCell>>,
+    /// Keyed by request identity and the sorted feed set a caller is about to
+    /// fetch. Ports within one request join one RPC batch, while independent
+    /// requests never inherit the initializing request's deadline or stats.
+    inflight: HashMap<InflightKey, Weak<FetchCell>>,
     filled_at: Option<Instant>,
 }
 
@@ -204,15 +210,31 @@ impl ContentCache {
         missing.sort_unstable();
 
         if !missing.is_empty() {
+            // IdentityContext owns the request deadline, request-local cache
+            // and stats. Its Arc allocation stays alive through `identity`,
+            // so the address is stable for the lifetime of this in-flight
+            // operation without retaining request state in the process cache.
+            let request_identity = identity.reader();
+            let inflight_key = InflightKey {
+                request_identity: Arc::as_ptr(&request_identity) as usize,
+                missing: missing.clone(),
+            };
             let cell = {
                 let mut state = self.state.lock().await;
-                match state.inflight.get(&missing).and_then(Weak::upgrade) {
+                // A caller can be cancelled while awaiting `get_or_init`,
+                // before the normal removal below runs. Since request identity
+                // is part of the key, a later request would not overwrite that
+                // dead entry; prune abandoned weak cells on every miss.
+                state
+                    .inflight
+                    .retain(|_, existing| existing.strong_count() > 0);
+                match state.inflight.get(&inflight_key).and_then(Weak::upgrade) {
                     Some(cell) => cell,
                     None => {
                         let cell = Arc::new(FetchCell::new());
                         state
                             .inflight
-                            .insert(missing.clone(), Arc::downgrade(&cell));
+                            .insert(inflight_key.clone(), Arc::downgrade(&cell));
                         cell
                     }
                 }
@@ -249,11 +271,11 @@ impl ContentCache {
             let mut state = self.state.lock().await;
             if state
                 .inflight
-                .get(&missing)
+                .get(&inflight_key)
                 .and_then(Weak::upgrade)
                 .is_some_and(|cached| Arc::ptr_eq(&cached, &cell))
             {
-                state.inflight.remove(&missing);
+                state.inflight.remove(&inflight_key);
             }
 
             let fetched = fetched?;
@@ -1505,13 +1527,14 @@ mod tests {
         );
         let adapters =
             content_adapters(Arc::clone(&fake) as Arc<dyn MrpyqRecommendationDataClient>);
+        let registration = test_registration();
         let (core, media) = tokio::join!(
             adapters
                 .tes
-                .get_tweet_core_datas(vec![pid(1)], test_registration()),
+                .get_tweet_core_datas(vec![pid(1)], Arc::clone(&registration)),
             adapters
                 .tes
-                .get_tweet_media_entities(vec![pid(1)], test_registration()),
+                .get_tweet_media_entities(vec![pid(1)], Arc::clone(&registration)),
         );
         assert!(core
             .expect("core")
@@ -1526,6 +1549,80 @@ mod tests {
             .flatten()
             .is_some());
         assert_eq!(fake.content_call_count(), 1);
+        let stats = registration.reader().stats();
+        assert_eq!(stats.reverse_batches, 1);
+        assert_eq!(stats.allocate_batches, 1);
+    }
+
+    #[tokio::test]
+    async fn concurrent_requests_for_the_same_feeds_do_not_share_identity_bound_fetch() {
+        let fake = Arc::new(
+            FakeMrpyq::new()
+                .with_contents(vec![eligible_content(pid(1), uid(7))])
+                .with_content_delay(Duration::from_millis(30)),
+        );
+        let adapters =
+            content_adapters(Arc::clone(&fake) as Arc<dyn MrpyqRecommendationDataClient>);
+        let first_request = test_registration();
+        let second_request = test_registration();
+
+        let (first, second) = tokio::join!(
+            adapters
+                .tes
+                .get_tweet_core_datas(vec![pid(1)], Arc::clone(&first_request)),
+            adapters.vf.get_result(
+                vec![pid(1)],
+                SafetyLevel::TimelineHomeRecommendations,
+                uid(9),
+                None,
+                Arc::clone(&second_request),
+            ),
+        );
+
+        first.expect("first request");
+        second.expect("second request");
+        assert_eq!(fake.content_call_count(), 2);
+        for registration in [first_request, second_request] {
+            let stats = registration.reader().stats();
+            assert_eq!(stats.reverse_batches, 1);
+            assert_eq!(stats.allocate_batches, 1);
+        }
+    }
+
+    #[tokio::test]
+    async fn cancelled_hydration_does_not_leave_a_dead_request_inflight_key() {
+        let fake = Arc::new(
+            FakeMrpyq::new()
+                .with_contents(vec![eligible_content(pid(1), uid(7))])
+                .with_content_delay(Duration::from_millis(200)),
+        );
+        let cache = Arc::new(ContentCache::new(
+            Arc::clone(&fake) as Arc<dyn MrpyqRecommendationDataClient>
+        ));
+        let tes = Arc::new(MrpyqTESClient::with_cache(Arc::clone(&cache)));
+        let cancelled_request = test_registration();
+        let cancelled = tokio::spawn({
+            let tes = Arc::clone(&tes);
+            let registration = Arc::clone(&cancelled_request);
+            async move { tes.get_tweet_core_datas(vec![pid(1)], registration).await }
+        });
+        tokio::time::timeout(Duration::from_secs(1), async {
+            while fake.content_call_count() == 0 {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("cancelled fetch must start");
+        cancelled.abort();
+        let _ = cancelled.await;
+
+        // Keep the cancelled request identity alive so the replacement request
+        // cannot accidentally reuse its address and overwrite the stale key.
+        assert_eq!(cache.state.lock().await.inflight.len(), 1);
+        tes.get_tweet_media_entities(vec![pid(1)], test_registration())
+            .await
+            .expect("replacement request");
+        assert!(cache.state.lock().await.inflight.is_empty());
     }
 
     #[tokio::test]
