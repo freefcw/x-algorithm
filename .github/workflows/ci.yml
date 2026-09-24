@@ -33,6 +33,32 @@ jobs:
           cargo test -p home-mixer --test redis_feed_state --test redis_uas -- --ignored \
             --skip cluster_routing
 
+  xrex-contract:
+    name: xrex adapter contract
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - uses: astral-sh/setup-uv@v6
+        with:
+          enable-cache: true
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      # Keep this wire contract CPU-only; xrex model/engine tests have separate
+      # GPU and checkpoint prerequisites.
+      - name: Install adapter contract dependencies
+        run: |
+          uv venv --python 3.11 phoenix/.venv
+          uv pip install --python phoenix/.venv/bin/python \
+            pytest numpy ./phoenix/python/common/xai-proto
+      - name: Adapter translation contract
+        working-directory: phoenix
+        run: .venv/bin/python -m pytest tests/test_adapter_contract.py -q
+      - name: Home Mixer to adapter to fake xrex ranking RPC
+        run: cargo test -p home-mixer --test xrex_adapter_contract -- --ignored
+
   docker:
     name: docker build
     runs-on: ubuntu-latest
