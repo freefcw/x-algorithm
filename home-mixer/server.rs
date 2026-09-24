@@ -202,6 +202,23 @@ fn persist_unavailable(error: String) -> Status {
     Status::unavailable(format!("served persist failed: {error}"))
 }
 
+fn log_main_path_identity_registry_snapshot(
+    request_id: &str,
+    identity_context: &crate::id::IdentityContext,
+) {
+    let identity_stats = identity_context.stats();
+    log::debug!(
+        "request_id={} main_path_identity_registry_snapshot allocate_batches={} allocate_ids={} resolve_batches={} resolve_ids={} reverse_batches={} reverse_ids={}",
+        request_id,
+        identity_stats.allocate_batches,
+        identity_stats.allocate_ids,
+        identity_stats.resolve_batches,
+        identity_stats.resolve_ids,
+        identity_stats.reverse_batches,
+        identity_stats.reverse_ids,
+    );
+}
+
 async fn run_for_you_rpc(
     server: &ForYouFeedServer,
     proto_query: pb::ScoredPostsQuery,
@@ -229,17 +246,7 @@ async fn run_for_you_rpc(
             .map_err(Status::unavailable)
     })
     .await?;
-    let identity_stats = output.identity_context.stats();
-    log::debug!(
-        "request_id={} main_path_identity_registry_snapshot allocate_batches={} allocate_ids={} resolve_batches={} resolve_ids={} reverse_batches={} reverse_ids={}",
-        output.request_id,
-        identity_stats.allocate_batches,
-        identity_stats.allocate_ids,
-        identity_stats.resolve_batches,
-        identity_stats.resolve_ids,
-        identity_stats.reverse_batches,
-        identity_stats.reverse_ids,
-    );
+    log_main_path_identity_registry_snapshot(&output.request_id, &output.identity_context);
     Ok(Response::new(pb::ForYouFeedResponse {
         items: output
             .items
@@ -280,17 +287,7 @@ impl pb::scored_posts_service_server::ScoredPostsService for ScoredPostsServer {
                     )
                     .await
                     .map_err(persist_unavailable)?;
-                    let identity_stats = identity_context.stats();
-                    log::debug!(
-                        "request_id={} main_path_identity_registry_snapshot allocate_batches={} allocate_ids={} resolve_batches={} resolve_ids={} reverse_batches={} reverse_ids={}",
-                        request_id,
-                        identity_stats.allocate_batches,
-                        identity_stats.allocate_ids,
-                        identity_stats.resolve_batches,
-                        identity_stats.resolve_ids,
-                        identity_stats.reverse_batches,
-                        identity_stats.reverse_ids,
-                    );
+                    log_main_path_identity_registry_snapshot(&request_id, &identity_context);
                     Ok(output)
                 })
                 .await?;
@@ -334,17 +331,7 @@ impl pb::scored_posts_service_server::ScoredPostsService for ScoredPostsServer {
                     )
                     .await
                     .map_err(persist_unavailable)?;
-                    let identity_stats = identity_context.stats();
-                    log::debug!(
-                        "request_id={} main_path_identity_registry_snapshot allocate_batches={} allocate_ids={} resolve_batches={} resolve_ids={} reverse_batches={} reverse_ids={}",
-                        request_id,
-                        identity_stats.allocate_batches,
-                        identity_stats.allocate_ids,
-                        identity_stats.resolve_batches,
-                        identity_stats.resolve_ids,
-                        identity_stats.reverse_batches,
-                        identity_stats.reverse_ids,
-                    );
+                    log_main_path_identity_registry_snapshot(&request_id, &identity_context);
                     Ok((output, debug))
                 })
                 .await?;
