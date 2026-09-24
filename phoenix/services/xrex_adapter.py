@@ -16,6 +16,7 @@ from services.id_registry_client import IdentityRegistryClient  # noqa: F401
 from services.model_contract import (
     FEATURE_SCHEMA,
     IDENTITY_MAPPING_VERSION,
+    NONZERO_WEIGHT_ACTION_ENUMS,
     RANDOM_MODEL_VERSION,
 )
 from services.recsys_proto import load_proto_modules
@@ -139,9 +140,8 @@ class PhoenixXrexTranslator:
             sequences=[self._xrex_sequence(request.user_action_sequence, user_id)],
             candidateSets=[candidate_set],
             returnLogprob=True,
-            returnLogMap=True,
-            requestedActionIndices=sorted(PHOENIX_TO_XREX_ACTION.values()),
-            requestedContinuousActionIndices=[1],
+            # xrex's map mode omits the arrays consumed by prediction_response.
+            returnLogMap=False,
         )
 
     def prediction_response(self, request: Any, response: Any) -> Any:
@@ -162,6 +162,18 @@ class PhoenixXrexTranslator:
             returned_ids.add(candidate_id)
             if item.candidate.authorId != self._numeric_id(original.author_id, "author_id"):
                 raise ValueError(f"xrex author mismatch for candidate {original.tweet_id}")
+            for action in NONZERO_WEIGHT_ACTION_ENUMS:
+                xrex_index = PHOENIX_TO_XREX_ACTION[action]
+                if xrex_index >= len(item.topLogProbs):
+                    raise ValueError(
+                        f"xrex missing required action {action} for candidate {candidate_id}"
+                    )
+            if any(not math.isfinite(value) for value in item.topLogProbs):
+                raise ValueError(f"xrex returned non-finite action for candidate {candidate_id}")
+            if len(item.continuousActionsValues) < 2:
+                raise ValueError(f"xrex missing continuous head for candidate {candidate_id}")
+            if any(not math.isfinite(value) for value in item.continuousActionsValues[:2]):
+                raise ValueError(f"xrex returned non-finite continuous value for {candidate_id}")
             values = [0.0] * 19
             for xrex_action, phoenix_action in XREX_TO_PHOENIX_ACTION.items():
                 # Home Mixer v2 has a 19-slot response contract. The two
@@ -169,7 +181,6 @@ class PhoenixXrexTranslator:
                 if phoenix_action < len(values) and xrex_action < len(item.topLogProbs):
                     values[phoenix_action] = item.topLogProbs[xrex_action]
             continuous = list(item.continuousActionsValues[:2])
-            continuous.extend([0.0] * (2 - len(continuous)))
             distributions.append(
                 recsys_pb2.CandidateDistribution(
                     candidate=original,

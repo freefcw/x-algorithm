@@ -67,6 +67,8 @@ def test_prediction_request_passes_numeric_ids_without_a_registry() -> None:
     assert translated.candidateSets[0].userId == 11
     assert translated.candidateSets[0].candidates[0].tweetId == 22
     assert translated.candidateSets[0].candidates[0].authorId == 33
+    assert translated.returnLogprob
+    assert not translated.returnLogMap
 
 
 def test_prediction_request_rejects_non_snowflake_ids() -> None:
@@ -141,6 +143,71 @@ def test_prediction_response_maps_xrex_actions_and_restores_requested_ids() -> N
     assert distribution.top_log_probs[3] == 6.0
     assert distribution.continuous_actions_values == [0.0, 2.5]
     assert XREX_TO_PHOENIX_ACTION[21] == 14
+
+
+def test_prediction_request_uses_the_response_shape_the_adapter_reads() -> None:
+    request = recsys_pb2.PredictNextActionsRequest(
+        user_id=11,
+        candidates=[recsys_pb2.TweetInfo(tweet_id=22, author_id=33)],
+    )
+    translated_request = translator().prediction_request(request)
+    distribution = xrex_pb2.NextActionDistribution(
+        candidate=xrex_pb2.TweetInfo(tweetId=22, authorId=33)
+    )
+    log_probs = [-10.0] * 49
+    log_probs[1], log_probs[4], log_probs[16] = -0.1, -0.2, -0.3
+    if translated_request.returnLogMap:
+        distribution.indexToLogits.update({1: -0.1, 4: -0.2, 16: -0.3})
+        distribution.indexToContinuousValues[1] = 2.5
+    elif translated_request.returnLogprob:
+        distribution.topLogProbs.extend(log_probs)
+        distribution.continuousActionsValues.extend([0.0, 2.5])
+
+    response = xrex_pb2.PredictNextActionsResponse(
+        distributionSets=[
+            xrex_pb2.CandidateDistributionSet(candidateDistributions=[distribution])
+        ]
+    )
+    converted = translator().prediction_response(request, response)
+    result = converted.distribution_sets[0].candidate_distributions[0]
+    assert result.top_log_probs[1] == pytest.approx(-0.1)  # favorite
+    assert result.top_log_probs[2] == pytest.approx(-0.2)  # reply
+    assert result.top_log_probs[18] == pytest.approx(-0.3)  # report
+    assert result.continuous_actions_values == [0.0, 2.5]
+
+
+@pytest.mark.parametrize(
+    ("log_probs", "continuous", "error"),
+    [
+        ([], [0.0, 2.5], "required action"),
+        ([-0.1] * 16, [0.0, 2.5], "required action"),
+        ([-0.1] * 17, [0.0], "continuous"),
+        ([-0.1] * 16 + [float("nan")], [0.0, 2.5], "non-finite"),
+    ],
+)
+def test_prediction_response_rejects_missing_or_invalid_required_heads(
+    log_probs: list[float], continuous: list[float], error: str
+) -> None:
+    request = recsys_pb2.PredictNextActionsRequest(
+        user_id=11,
+        candidates=[recsys_pb2.TweetInfo(tweet_id=22, author_id=33)],
+    )
+    response = xrex_pb2.PredictNextActionsResponse(
+        distributionSets=[
+            xrex_pb2.CandidateDistributionSet(
+                candidateDistributions=[
+                    xrex_pb2.NextActionDistribution(
+                        candidate=xrex_pb2.TweetInfo(tweetId=22, authorId=33),
+                        topLogProbs=log_probs,
+                        continuousActionsValues=continuous,
+                    )
+                ]
+            )
+        ]
+    )
+
+    with pytest.raises(ValueError, match=error):
+        translator().prediction_response(request, response)
 
 
 def test_prediction_response_rejects_unknown_candidates() -> None:
